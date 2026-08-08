@@ -364,6 +364,31 @@ func TestPromptCachingOnlyTargetsCapableModels(t *testing.T) {
 	}
 }
 
+func TestModelWrapperControlsProviderReasoning(t *testing.T) {
+	script := modeltest.New(model.Profile{SupportsReasoning: true}, modeltest.Step{
+		Check: func(request model.Request) error {
+			if request.Reasoning == nil || request.Reasoning.Effort != "high" || request.Reasoning.Summary != "auto" {
+				return fmt.Errorf("reasoning = %#v", request.Reasoning)
+			}
+			return nil
+		},
+		Response: model.Response{Message: message.Assistant("done")},
+	})
+	compiled, err := New(Options{Model: script, Middleware: []Middleware{{
+		Name: "reasoning",
+		WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
+			request.Reasoning = &model.Reasoning{Effort: "high", Summary: "auto"}
+			return next(ctx, request)
+		},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCheckpointHistoryReplayForkAndDelete(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	script := modeltest.New(model.Profile{},

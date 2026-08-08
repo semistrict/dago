@@ -64,6 +64,7 @@ type ModelRequest struct {
 	ToolChoice     *model.ToolChoice
 	ResponseFormat *model.ResponseFormat
 	PromptCache    *model.PromptCache
+	Reasoning      *model.Reasoning
 	State          state.Values
 	Runtime        Runtime
 	Metadata       map[string]json.RawMessage
@@ -90,6 +91,10 @@ func (request ModelRequest) Clone() ModelRequest {
 	if request.PromptCache != nil {
 		cache := *request.PromptCache
 		copy.PromptCache = &cache
+	}
+	if request.Reasoning != nil {
+		reasoning := *request.Reasoning
+		copy.Reasoning = &reasoning
 	}
 	copy.State = request.State.Clone()
 	copy.Metadata = cloneRawMap(request.Metadata)

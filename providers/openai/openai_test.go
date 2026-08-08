@@ -54,6 +54,7 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 		Messages:    []message.Message{message.System("be useful"), message.Human("hello")},
 		Tools:       []tool.Definition{{Name: "lookup", Description: "look up a value", InputSchema: json.RawMessage(`{"type":"object"}`), Strict: true}},
 		PromptCache: &model.PromptCache{Key: "thread-key", Retention: "24h"},
+		Reasoning:   &model.Reasoning{Effort: "high", Summary: "auto"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +76,14 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 	}
 	if got["prompt_cache_key"] != "thread-key" || got["prompt_cache_retention"] != "24h" {
 		t.Fatalf("prompt cache = %#v", got)
+	}
+	reasoning, ok := got["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "high" || reasoning["summary"] != "auto" {
+		t.Fatalf("reasoning = %#v", got["reasoning"])
+	}
+	include, ok := got["include"].([]any)
+	if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %#v", got["include"])
 	}
 	tools, ok := got["tools"].([]any)
 	if !ok || len(tools) != 1 || tools[0].(map[string]any)["strict"] != true {
@@ -104,6 +113,81 @@ func TestInvokeMapsToolHistoryAndStructuredOutput(t *testing.T) {
 	input := got["input"].([]any)
 	if input[0].(map[string]any)["type"] != "function_call" || input[1].(map[string]any)["type"] != "function_call_output" {
 		t.Fatalf("input = %#v", input)
+	}
+}
+
+func TestInvokePreservesAndReplaysEncryptedReasoning(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, body)
+		if len(requests) == 1 {
+			_, _ = io.WriteString(writer, `{
+                  "id":"r1","output":[
+                    {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"Need a lookup."}],"encrypted_content":"opaque-state"},
+                    {"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"go\"}"}
+                  ]}`)
+			return
+		}
+		_, _ = io.WriteString(writer, `{"id":"r2","output":[{"type":"message","id":"m2","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+	}))
+	defer server.Close()
+
+	client, _ := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	first, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("look it up")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Message.Content) != 1 || first.Message.Content[0].Type != message.BlockReasoning || first.Message.Content[0].Reasoning != "Need a lookup." {
+		t.Fatalf("first reasoning = %#v", first.Message.Content)
+	}
+	if len(first.Message.ToolCalls) != 1 {
+		t.Fatalf("first tool calls = %#v", first.Message.ToolCalls)
+	}
+	if _, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{first.Message, message.Tool("call_1", "result")}}); err != nil {
+		t.Fatal(err)
+	}
+	input := requests[1]["input"].([]any)
+	if len(input) != 3 {
+		t.Fatalf("replayed input = %#v", input)
+	}
+	reasoning := input[0].(map[string]any)
+	if reasoning["type"] != "reasoning" || reasoning["id"] != "rs_1" || reasoning["encrypted_content"] != "opaque-state" {
+		t.Fatalf("replayed reasoning = %#v", reasoning)
+	}
+	if input[1].(map[string]any)["type"] != "function_call" || input[2].(map[string]any)["type"] != "function_call_output" {
+		t.Fatalf("replayed tool turn = %#v", input)
+	}
+}
+
+func TestStreamPreservesReasoningSummaryAndOpaqueState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs_1\",\"output_index\":0,\"delta\":\"thinking\"}\n\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking\"}],\"encrypted_content\":\"opaque\"}}\n\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{}}\n\n")
+	}))
+	defer server.Close()
+	client, _ := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	stream, err := client.Stream(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	delta, err := stream.Next(context.Background())
+	if err != nil || delta.MessageDelta.Content[0].Reasoning != "thinking" {
+		t.Fatalf("reasoning delta = %#v, %v", delta, err)
+	}
+	state, err := stream.Next(context.Background())
+	if err != nil || len(state.MessageDelta.Content[0].Extra[reasoningStateKey]) == 0 {
+		t.Fatalf("reasoning state = %#v, %v", state, err)
+	}
+	done, err := stream.Next(context.Background())
+	if err != nil || !done.Done {
+		t.Fatalf("done = %#v, %v", done, err)
 	}
 }
 

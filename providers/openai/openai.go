@@ -47,6 +47,9 @@ type Options struct {
 	MaxOutputTokens int
 	ContextWindow   int
 	Headers         http.Header
+	// DefaultReasoning applies when a request does not carry an override. A
+	// non-nil empty Reasoning on the request explicitly disables this default.
+	DefaultReasoning *model.Reasoning
 	// Store controls server-side response retention when explicitly set.
 	Store *bool
 }
@@ -107,6 +110,10 @@ func newClient(source CredentialSource, options Options) (*Client, error) {
 	if options.HTTPClient == nil {
 		options.HTTPClient = http.DefaultClient
 	}
+	if options.DefaultReasoning != nil {
+		reasoning := *options.DefaultReasoning
+		options.DefaultReasoning = &reasoning
+	}
 	return &Client{options: options, credentials: source}, nil
 }
 
@@ -127,7 +134,7 @@ func (client *Client) Profile() model.Profile {
 		Provider: "openai", Model: client.options.Model,
 		ContextWindow: client.options.ContextWindow, MaxOutputTokens: client.options.MaxOutputTokens,
 		ToolCalling: true, ParallelToolCalls: true, StructuredOutput: true,
-		NativeStreaming: true, SupportsPromptCaching: true,
+		NativeStreaming: true, SupportsPromptCaching: true, SupportsReasoning: true,
 	}
 }
 
@@ -194,6 +201,32 @@ func mergeChunk(response *model.Response, chunk model.Chunk) {
 		if block.Type == message.BlockText && len(response.Message.Content) > 0 && response.Message.Content[len(response.Message.Content)-1].Type == message.BlockText {
 			response.Message.Content[len(response.Message.Content)-1].Text += block.Text
 			continue
+		}
+		if block.Type == message.BlockReasoning {
+			merged := false
+			for index := len(response.Message.Content) - 1; index >= 0; index-- {
+				current := &response.Message.Content[index]
+				if current.Type != message.BlockReasoning || (block.ID != "" && current.ID != "" && current.ID != block.ID) {
+					continue
+				}
+				current.Reasoning += block.Reasoning
+				if current.ID == "" {
+					current.ID = block.ID
+				}
+				if len(block.Extra) > 0 {
+					if current.Extra == nil {
+						current.Extra = map[string]json.RawMessage{}
+					}
+					for key, value := range block.Extra {
+						current.Extra[key] = append(json.RawMessage(nil), value...)
+					}
+				}
+				merged = true
+				break
+			}
+			if merged {
+				continue
+			}
 		}
 		response.Message.Content = append(response.Message.Content, block)
 	}
@@ -272,7 +305,14 @@ type responsesRequest struct {
 	ParallelToolCalls    bool           `json:"parallel_tool_calls,omitempty"`
 	PromptCacheKey       string         `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention string         `json:"prompt_cache_retention,omitempty"`
+	Reasoning            *reasoning     `json:"reasoning,omitempty"`
+	Include              []string       `json:"include,omitempty"`
 	Store                *bool          `json:"store,omitempty"`
+}
+
+type reasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type responseTool struct {
@@ -324,6 +364,16 @@ func (client *Client) requestBody(request model.Request, stream bool) ([]byte, e
 		MaxOutputTokens: maxOutputTokens, ParallelToolCalls: len(tools) > 0,
 		Store: client.options.Store,
 	}
+	reasoningRequest := request.Reasoning
+	if reasoningRequest == nil {
+		reasoningRequest = client.options.DefaultReasoning
+	}
+	if reasoningRequest != nil && (reasoningRequest.Effort != "" || reasoningRequest.Summary != "") {
+		payload.Reasoning = &reasoning{Effort: reasoningRequest.Effort, Summary: reasoningRequest.Summary}
+	}
+	if client.subscription || (reasoningRequest != nil && reasoningRequest.Summary != "") {
+		payload.Include = []string{"reasoning.encrypted_content"}
+	}
 	if request.PromptCache != nil {
 		payload.PromptCacheKey = request.PromptCache.Key
 		payload.PromptCacheRetention = request.PromptCache.Retention
@@ -355,6 +405,14 @@ func (client *Client) requestBody(request model.Request, stream bool) ([]byte, e
 		}}
 	}
 	return json.Marshal(payload)
+}
+
+const reasoningStateKey = "openai.responses.reasoning"
+
+type reasoningState struct {
+	ID               string            `json:"id"`
+	Summary          []responseSummary `json:"summary"`
+	EncryptedContent string            `json:"encrypted_content"`
 }
 
 func inputItems(value message.Message) ([]any, error) {
@@ -399,6 +457,27 @@ func inputItems(value message.Message) ([]any, error) {
 				return nil, fmt.Errorf("openai: file block requires a URL")
 			}
 			contents = append(contents, map[string]any{"type": "input_file", "file_url": block.URL})
+		case message.BlockReasoning:
+			if value.Role != message.RoleAssistant {
+				return nil, fmt.Errorf("openai: reasoning content is only supported in assistant messages")
+			}
+			raw := block.Extra[reasoningStateKey]
+			if len(raw) == 0 {
+				// Display-only reasoning cannot be replayed safely. The provider
+				// requires its opaque encrypted state, not summary prose.
+				continue
+			}
+			var state reasoningState
+			if err := json.Unmarshal(raw, &state); err != nil {
+				return nil, fmt.Errorf("openai: decode reasoning state: %w", err)
+			}
+			if state.EncryptedContent == "" {
+				continue
+			}
+			items = append(items, map[string]any{
+				"type": "reasoning", "id": state.ID, "summary": state.Summary,
+				"encrypted_content": state.EncryptedContent,
+			})
 		default:
 			return nil, fmt.Errorf("openai: unsupported content block %q", block.Type)
 		}
@@ -421,13 +500,20 @@ type responsesResponse struct {
 }
 
 type responseOutput struct {
-	Type      string            `json:"type"`
-	ID        string            `json:"id"`
-	Role      string            `json:"role"`
-	CallID    string            `json:"call_id"`
-	Name      string            `json:"name"`
-	Arguments json.RawMessage   `json:"arguments"`
-	Content   []responseContent `json:"content"`
+	Type             string            `json:"type"`
+	ID               string            `json:"id"`
+	Role             string            `json:"role"`
+	CallID           string            `json:"call_id"`
+	Name             string            `json:"name"`
+	Arguments        json.RawMessage   `json:"arguments"`
+	Content          []responseContent `json:"content"`
+	Summary          []responseSummary `json:"summary,omitempty"`
+	EncryptedContent string            `json:"encrypted_content,omitempty"`
+}
+
+type responseSummary struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 type responseContent struct {
@@ -450,6 +536,8 @@ func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) 
 	result := message.Message{ID: payload.ID, Role: message.RoleAssistant}
 	for _, output := range payload.Output {
 		switch output.Type {
+		case "reasoning":
+			result.Content = append(result.Content, reasoningContentBlock(output))
 		case "message":
 			if output.ID != "" {
 				result.ID = output.ID
@@ -483,6 +571,27 @@ func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) 
 		response.Structured = json.RawMessage(text)
 	}
 	return response, nil
+}
+
+func reasoningContentBlock(output responseOutput) message.ContentBlock {
+	return reasoningContentBlockWithText(output, true)
+}
+
+func reasoningContentBlockWithText(output responseOutput, includeText bool) message.ContentBlock {
+	parts := make([]string, 0, len(output.Summary))
+	if includeText {
+		for _, summary := range output.Summary {
+			if summary.Text != "" {
+				parts = append(parts, summary.Text)
+			}
+		}
+	}
+	state := reasoningState{ID: output.ID, Summary: append([]responseSummary(nil), output.Summary...), EncryptedContent: output.EncryptedContent}
+	raw, _ := json.Marshal(state)
+	return message.ContentBlock{
+		Type: message.BlockReasoning, ID: output.ID, Reasoning: strings.Join(parts, "\n"),
+		Extra: map[string]json.RawMessage{reasoningStateKey: raw},
+	}
 }
 
 type apiError struct {
@@ -587,13 +696,14 @@ func (stream *responseStream) Next(ctx context.Context) (model.Chunk, error) {
 
 func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
 	var envelope struct {
-		Type      string            `json:"type"`
-		Delta     string            `json:"delta"`
-		Item      responseOutput    `json:"item"`
-		ItemID    string            `json:"item_id"`
-		Arguments json.RawMessage   `json:"arguments"`
-		Response  responsesResponse `json:"response"`
-		Error     *apiError         `json:"error"`
+		Type        string            `json:"type"`
+		Delta       string            `json:"delta"`
+		Item        responseOutput    `json:"item"`
+		ItemID      string            `json:"item_id"`
+		OutputIndex int               `json:"output_index"`
+		Arguments   json.RawMessage   `json:"arguments"`
+		Response    responsesResponse `json:"response"`
+		Error       *apiError         `json:"error"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return model.Chunk{}, false, fmt.Errorf("openai: decode stream event: %w", err)
@@ -601,9 +711,20 @@ func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
 	switch envelope.Type {
 	case "response.output_text.delta":
 		return model.Chunk{MessageDelta: message.Assistant(envelope.Delta)}, true, nil
+	case "response.reasoning_summary_text.delta":
+		index := envelope.OutputIndex
+		return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, Content: []message.ContentBlock{{
+			Type: message.BlockReasoning, ID: envelope.ItemID, Reasoning: envelope.Delta, Index: &index,
+		}}}}, true, nil
 	case "response.output_item.added":
 		if envelope.Item.Type == "function_call" {
 			stream.calls[envelope.Item.ID] = envelope.Item
+		}
+	case "response.output_item.done":
+		if envelope.Item.Type == "reasoning" {
+			return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, Content: []message.ContentBlock{
+				reasoningContentBlockWithText(envelope.Item, false),
+			}}}, true, nil
 		}
 	case "response.function_call_arguments.delta":
 		call := stream.calls[envelope.ItemID]

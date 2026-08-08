@@ -342,7 +342,8 @@ func (compiler *compiler) modelHandler() ModelHandler {
 		providerRequest := model.Request{
 			Messages: messages, Tools: definitions, ToolChoice: request.ToolChoice,
 			ResponseFormat: request.ResponseFormat, PromptCache: request.PromptCache,
-			Metadata: cloneRawMap(request.Metadata), Tags: append([]string(nil), request.Tags...),
+			Reasoning: request.Reasoning,
+			Metadata:  cloneRawMap(request.Metadata), Tags: append([]string(nil), request.Tags...),
 		}
 		var response model.Response
 		var err error
@@ -357,6 +358,10 @@ func (compiler *compiler) modelHandler() ModelHandler {
 		if response.Message.Role != message.RoleAssistant {
 			return ModelResponse{}, fmt.Errorf("%w: response role is %q", ErrInvalidModelOutput, response.Message.Role)
 		}
+		if response.Message.ResponseMetadata == nil {
+			response.Message.ResponseMetadata = map[string]json.RawMessage{}
+		}
+		response.Message.ResponseMetadata[model.ResponseMetadataKey] = json.RawMessage(`true`)
 		if compiler.options.Name != "" && response.Message.Name == "" {
 			response.Message.Name = compiler.options.Name
 		}
@@ -428,6 +433,32 @@ func mergeModelChunk(response *model.Response, chunk model.Chunk) {
 		if block.Type == message.BlockText && len(response.Message.Content) > 0 && response.Message.Content[len(response.Message.Content)-1].Type == message.BlockText {
 			response.Message.Content[len(response.Message.Content)-1].Text += block.Text
 			continue
+		}
+		if block.Type == message.BlockReasoning {
+			merged := false
+			for index := len(response.Message.Content) - 1; index >= 0; index-- {
+				current := &response.Message.Content[index]
+				if current.Type != message.BlockReasoning || (block.ID != "" && current.ID != "" && current.ID != block.ID) {
+					continue
+				}
+				current.Reasoning += block.Reasoning
+				if current.ID == "" {
+					current.ID = block.ID
+				}
+				if len(block.Extra) > 0 {
+					if current.Extra == nil {
+						current.Extra = map[string]json.RawMessage{}
+					}
+					for key, value := range block.Extra {
+						current.Extra[key] = append(json.RawMessage(nil), value...)
+					}
+				}
+				merged = true
+				break
+			}
+			if merged {
+				continue
+			}
 		}
 		response.Message.Content = append(response.Message.Content, block)
 	}

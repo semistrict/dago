@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/llmhttp"
 )
@@ -53,6 +55,19 @@ var _ llm.Service = (*ResponsesService)(nil)
 func NewNativeResponsesService(config ResponsesService, native llm.Service) *ResponsesService {
 	config.native = native
 	return &config
+}
+
+// DagoChat exposes the native model owned by a production Responses service.
+// Literal ResponsesService values used by the provider contract tests do not
+// have one and continue through the tested wire facade.
+func (s *ResponsesService) DagoChat() dmodel.Chat {
+	if s == nil || s.native == nil {
+		return nil
+	}
+	if native, ok := s.native.(interface{ DagoChat() dmodel.Chat }); ok {
+		return native.DagoChat()
+	}
+	return nil
 }
 
 // Responses API request/response types

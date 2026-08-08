@@ -18,7 +18,6 @@ import (
 	dmodel "github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/state"
 
-	"shelley.exe.dev/dagoruntime"
 	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/llmhttp"
@@ -341,7 +340,7 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	system := append([]llm.SystemContent(nil), l.system...)
 	l.mu.Unlock()
 
-	dagoTools, err := dagoruntime.Tools(tools, dagoruntime.ToolOptions{
+	dagoTools, err := nativeTools(tools, nativeToolOptions{
 		WorkingDir: l.currentWorkingDir,
 		Progress:   l.onToolProgress,
 		Service:    service,
@@ -349,14 +348,14 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	dagoMessages, err := dagoruntime.MessagesToDago(inputMessages)
+	dagoMessages, err := messagesToDago(inputMessages)
 	if err != nil {
 		return err
 	}
 
 	middleware := []dagent.Middleware{l.runtimeMiddleware()}
 	runtime, err := dagent.New(dagent.Options{
-		Name: "Shelley", Model: dagoruntime.NewChat(service, dagoruntime.ChatOptions{
+		Name: "Shelley", Model: nativeChat(service, nativeChatOptions{
 			ThinkingLevel: l.getThinkingLevel,
 			OnRetry:       l.recordRetryWarning(ctx),
 		}),
@@ -419,7 +418,7 @@ func (l *Loop) ResolveCancellation(ctx context.Context, messages ...llm.Message)
 	if l.runtime == nil {
 		return nil
 	}
-	converted, err := dagoruntime.MessagesToDago(messages)
+	converted, err := messagesToDago(messages)
 	if err != nil {
 		return err
 	}
@@ -483,13 +482,21 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 			if len(additions) == 0 {
 				return nil, nil
 			}
-			converted, err := dagoruntime.MessagesToDago(additions)
+			converted, err := messagesToDago(additions)
 			if err != nil {
 				return nil, err
 			}
 			return state.Values{dagent.MessagesKey: converted}, nil
 		},
 		WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
+			level := l.getThinkingLevel()
+			if request.Model.Profile().SupportsReasoning && level != llm.ThinkingLevelDefault {
+				request.Reasoning = &dmodel.Reasoning{}
+				if level != llm.ThinkingLevelOff {
+					request.Reasoning.Effort = level.ThinkingEffort()
+					request.Reasoning.Summary = "auto"
+				}
+			}
 			requestCtx, cancel := context.WithTimeout(ctx, maxTurnDuration)
 			defer cancel()
 			const attempts = 2
@@ -521,7 +528,7 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 				return nil, nil
 			}
 			last := messages[len(messages)-1]
-			response, ok, err := dagoruntime.ResponseFromDago(last)
+			response, ok, err := responseFromDago(last)
 			if err != nil || !ok {
 				return nil, err
 			}
@@ -574,12 +581,18 @@ func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update sta
 	if node == "model" {
 		l.flushStream()
 		for _, item := range messages {
-			response, found, err := dagoruntime.ResponseFromDago(item)
+			response, found, err := responseFromDago(item)
 			if err != nil {
 				return err
 			}
 			if !found {
 				continue
+			}
+			if response.Model == "" {
+				if identified, ok := l.llm.(interface{ ModelID() string }); ok {
+					response.Model = identified.ModelID()
+					response.Usage.Model = response.Model
+				}
 			}
 			l.mu.Lock()
 			l.totalUsage.Add(response.Usage)
@@ -609,7 +622,7 @@ func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update sta
 		if item.Role != dmessage.RoleTool {
 			continue
 		}
-		content, usage, err := dagoruntime.ToolResultFromDago(item)
+		content, usage, err := toolResultFromDago(item)
 		if err != nil {
 			return err
 		}
@@ -660,9 +673,13 @@ func (l *Loop) emitToken(chunk dmodel.Chunk) {
 		}
 		switch block.Type {
 		case dmessage.BlockText:
-			l.onStreamDelta(llm.StreamDelta{Type: "text", Text: block.Text, Index: blockIndex})
+			if block.Text != "" {
+				l.onStreamDelta(llm.StreamDelta{Type: "text", Text: block.Text, Index: blockIndex})
+			}
 		case dmessage.BlockReasoning:
-			l.onStreamDelta(llm.StreamDelta{Type: "thinking", Text: block.Reasoning, Index: blockIndex})
+			if block.Reasoning != "" {
+				l.onStreamDelta(llm.StreamDelta{Type: "thinking", Text: block.Reasoning, Index: blockIndex})
+			}
 		}
 	}
 }
@@ -853,112 +870,6 @@ func (l *Loop) handleRefusal(ctx context.Context, resp *llm.Response) error {
 
 	// End the turn - don't automatically continue.
 	l.checkGitStateChange(ctx)
-	return nil
-}
-
-// executeToolCalls runs the tools from an LLM response and appends the results
-// to l.history. It does NOT call processLLMRequest — the caller loops instead.
-func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) error {
-	var toolResults []llm.Content
-	// Collect the usage of indirect LLM calls made by tools (keyword_search,
-	// llm_one_shot, tool install validation, subagent progress summaries, ...)
-	// so it can be attached to the tool-result message below. Tools run
-	// sequentially in this loop, but a tool may fan out goroutines internally;
-	// the accumulator is mutex-guarded.
-	var otherUsage llmhttp.UsageAccumulator
-	ctx = llmhttp.WithUsageCollector(ctx, otherUsage.Collect)
-
-	for _, c := range content {
-		if c.Type != llm.ContentTypeToolUse {
-			continue
-		}
-
-		l.logger.Debug("executing tool", "name", c.ToolName, "id", c.ID)
-
-		// Find the tool
-		var tool *llm.Tool
-		for _, t := range l.tools {
-			if t.Name == c.ToolName {
-				tool = t
-				break
-			}
-		}
-
-		if tool == nil {
-			l.logger.Error("tool not found", "name", c.ToolName)
-			toolResults = append(toolResults, llm.Content{
-				Type:      llm.ContentTypeToolResult,
-				ToolUseID: c.ID,
-				ToolError: true,
-				ToolResult: []llm.Content{
-					{Type: llm.ContentTypeText, Text: fmt.Sprintf("Tool '%s' not found", c.ToolName)},
-				},
-			})
-			continue
-		}
-
-		// Execute the tool with working directory and progress callback set in context
-		toolCtx := ctx
-		if l.workingDir != "" {
-			toolCtx = llm.WithWorkingDir(ctx, l.workingDir)
-		}
-		if l.onToolProgress != nil {
-			toolCtx = llm.WithToolProgress(toolCtx, l.onToolProgress)
-		}
-		toolCtx = llm.WithToolUseID(toolCtx, c.ID)
-		toolCtx = llm.WithLLMService(toolCtx, l.llm)
-		startTime := time.Now()
-		result := tool.Run(toolCtx, c.ToolInput)
-		endTime := time.Now()
-
-		var toolResultContent []llm.Content
-		if result.Error != nil {
-			l.logger.Error("tool execution failed", "name", c.ToolName, "error", result.Error)
-			toolResultContent = []llm.Content{
-				{Type: llm.ContentTypeText, Text: result.Error.Error()},
-			}
-		} else {
-			toolResultContent = result.LLMContent
-			l.logger.Debug("tool executed successfully", "name", c.ToolName, "duration", endTime.Sub(startTime))
-		}
-
-		toolResults = append(toolResults, llm.Content{
-			Type:             llm.ContentTypeToolResult,
-			ToolUseID:        c.ID,
-			ToolError:        result.Error != nil,
-			ToolResult:       toolResultContent,
-			ToolUseStartTime: &startTime,
-			ToolUseEndTime:   &endTime,
-			Display:          result.Display,
-		})
-	}
-
-	if len(toolResults) > 0 {
-		// Add tool results to history as a user message
-		toolMessage := llm.Message{
-			Role:    llm.MessageRoleUser,
-			Content: toolResults,
-		}
-
-		l.mu.Lock()
-		l.history = append(l.history, toolMessage)
-		// Check for queued user messages (interruptions) before continuing.
-		// This allows user messages to be processed as soon as possible.
-		if len(l.messageQueue) > 0 {
-			for _, msg := range l.messageQueue {
-				l.history = append(l.history, msg)
-			}
-			l.messageQueue = l.messageQueue[:0]
-			l.logger.Info("processing user interruption during tool execution")
-		}
-		l.mu.Unlock()
-
-		// Record tool result message
-		if err := l.recordMessage(ctx, toolMessage, llm.Usage{}, otherUsage.Take()); err != nil {
-			l.logger.Error("failed to record tool result message", "error", err)
-		}
-	}
-
 	return nil
 }
 

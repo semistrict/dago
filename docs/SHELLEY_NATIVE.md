@@ -33,9 +33,11 @@ Shelley HTTP/UI server
   -> Shelley SSE/UI event projection
 ```
 
-The `dagoruntime` package is temporary migration code. Completion removes it from
-the executable dependency graph. Test-only facade helpers may remain elsewhere when
-the pinned suite directly names an upstream type.
+The former `dagoruntime` migration package has been removed from the executable
+dependency graph. Model-facade conversion now lives at `llm.NativeService`, provider
+construction lives with the provider, and runtime projection lives inside `loop`.
+Test-only facade helpers may remain when the pinned suite directly names an upstream
+package-private surface.
 
 ## Replacement matrix
 

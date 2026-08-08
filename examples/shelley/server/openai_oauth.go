@@ -11,9 +11,10 @@ import (
 	"sync"
 	"time"
 
+	dmodel "github.com/semistrict/dago/model"
 	dopenai "github.com/semistrict/dago/providers/openai"
 
-	"shelley.exe.dev/dagoruntime"
+	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/models"
 )
@@ -117,12 +118,13 @@ func (controller *OpenAIOAuth) BuiltModels() ([]models.Built, error) {
 	metadata := &oai.ResponsesService{Model: oai.GPT56Luna}
 	chat, err := dopenai.NewSubscription(session, dopenai.Options{
 		Model: OpenAISubscriptionModelID, ContextWindow: metadata.TokenContextWindow(),
-		MaxOutputTokens: oai.DefaultMaxTokens,
+		MaxOutputTokens:  oai.DefaultMaxTokens,
+		DefaultReasoning: &dmodel.Reasoning{Effort: "medium", Summary: "auto"},
 	})
 	if err != nil {
 		return nil, err
 	}
-	service, err := dagoruntime.NewServiceWithOptions(chat, dagoruntime.ServiceOptions{
+	service, err := llm.NewNativeServiceWithOptions(chat, llm.NativeServiceOptions{
 		SupportsImages: true, SupportsReasoning: true, Provider: "openai",
 		ModelID: OpenAISubscriptionModelID, BaseURL: "https://chatgpt.com",
 		MaxImageBytes: 20 * 1024 * 1024,

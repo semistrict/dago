@@ -1,4 +1,4 @@
-package dagoruntime
+package llm
 
 import (
 	"context"
@@ -8,8 +8,6 @@ import (
 	dmessage "github.com/semistrict/dago/message"
 	dmodel "github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
-
-	"shelley.exe.dev/llm"
 )
 
 func TestServiceConvertsMessagesToolsAndResponse(t *testing.T) {
@@ -31,19 +29,19 @@ func TestServiceConvertsMessagesToolsAndResponse(t *testing.T) {
 			Usage:     &dmessage.Usage{InputTokens: 3, OutputTokens: 4},
 		}},
 	})
-	service, err := NewService(chat)
+	service, err := NewNativeService(chat)
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := service.Do(context.Background(), &llm.Request{
-		System:   []llm.SystemContent{{Type: "text", Text: "system"}},
-		Messages: []llm.Message{llm.UserStringMessage("hello")},
-		Tools:    []*llm.Tool{{Name: "lookup", Description: "look something up", InputSchema: llm.MustSchema(`{"type":"object","properties":{"q":{"type":"string"}}}`)}},
+	response, err := service.Do(context.Background(), &Request{
+		System:   []SystemContent{{Type: "text", Text: "system"}},
+		Messages: []Message{UserStringMessage("hello")},
+		Tools:    []*Tool{{Name: "lookup", Description: "look something up", InputSchema: MustSchema(`{"type":"object","properties":{"q":{"type":"string"}}}`)}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.ID != "response-1" || response.StopReason != llm.StopReasonToolUse || response.Usage.InputTokens != 3 || response.Usage.OutputTokens != 4 {
+	if response.ID != "response-1" || response.StopReason != StopReasonToolUse || response.Usage.InputTokens != 3 || response.Usage.OutputTokens != 4 {
 		t.Fatalf("response = %#v", response)
 	}
 	if len(response.Content) != 2 || response.Content[1].ToolName != "lookup" || string(response.Content[1].ToolInput) != `{"q":"go"}` {
@@ -56,12 +54,12 @@ func TestServiceStreamsTextAndToolInput(t *testing.T) {
 		{MessageDelta: dmessage.Assistant("hel")},
 		{MessageDelta: dmessage.Message{Role: dmessage.RoleAssistant, Content: []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: "lo"}}, ToolCalls: []dmessage.ToolCall{{ID: "call-1", Name: "lookup", Arguments: json.RawMessage(`{"q":"go"}`)}}}},
 	}})
-	service, err := NewService(chat)
+	service, err := NewNativeService(chat)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var deltas []llm.StreamDelta
-	response, err := service.Do(context.Background(), &llm.Request{Messages: []llm.Message{llm.UserStringMessage("hello")}, OnStream: func(delta llm.StreamDelta) {
+	var deltas []StreamDelta
+	response, err := service.Do(context.Background(), &Request{Messages: []Message{UserStringMessage("hello")}, OnStream: func(delta StreamDelta) {
 		deltas = append(deltas, delta)
 	}})
 	if err != nil {
@@ -86,14 +84,58 @@ func TestServiceConvertsToolResults(t *testing.T) {
 		},
 		Response: dmodel.Response{Message: dmessage.Assistant("done")},
 	})
-	service, err := NewService(chat)
+	service, err := NewNativeService(chat)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.Do(context.Background(), &llm.Request{Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{
-		Type: llm.ContentTypeToolResult, ToolUseID: "call-1", ToolError: true, ToolResult: llm.TextContent("failed"),
+	_, err = service.Do(context.Background(), &Request{Messages: []Message{{Role: MessageRoleUser, Content: []Content{{
+		Type: ContentTypeToolResult, ToolUseID: "call-1", ToolError: true, ToolResult: TextContent("failed"),
 	}}}}})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNativeServicePreservesReasoningControlAndState(t *testing.T) {
+	state := OpenAIResponsesReasoningMetadata{
+		ID: "rs_in", EncryptedContent: "opaque-in",
+		Summary: []OpenAIResponsesReasoningSummary{{Type: "summary_text", Text: "input thought"}},
+	}
+	outputState, _ := json.Marshal(nativeOpenAIReasoningState{
+		ID: "rs_out", EncryptedContent: "opaque-out",
+		Summary: []OpenAIResponsesReasoningSummary{{Type: "summary_text", Text: "output thought"}},
+	})
+	chat := modeltest.New(dmodel.Profile{Provider: "test", Model: "reasoning", SupportsReasoning: true}, modeltest.Step{
+		Check: func(request dmodel.Request) error {
+			if request.Reasoning == nil || request.Reasoning.Effort != "high" || request.Reasoning.Summary != "auto" {
+				t.Fatalf("reasoning control = %#v", request.Reasoning)
+			}
+			block := request.Messages[0].Content[0]
+			if len(block.Extra[nativeOpenAIReasoningStateKey]) == 0 {
+				t.Fatalf("reasoning input state = %#v", block)
+			}
+			return nil
+		},
+		Response: dmodel.Response{Message: dmessage.Message{Role: dmessage.RoleAssistant, Content: []dmessage.ContentBlock{{
+			Type: dmessage.BlockReasoning, ID: "rs_out", Reasoning: "output thought",
+			Extra: map[string]json.RawMessage{nativeOpenAIReasoningStateKey: outputState},
+		}}}},
+	})
+	service, err := NewNativeService(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := service.Do(context.Background(), &Request{
+		ThinkingLevel: ThinkingLevelHigh,
+		Messages: []Message{{Role: MessageRoleAssistant, Content: []Content{{
+			Type: ContentTypeThinking, Thinking: "input thought", OpenAIResponsesReasoning: &state,
+		}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := response.Content[0].OpenAIResponsesReasoning
+	if got == nil || got.ID != "rs_out" || got.EncryptedContent != "opaque-out" {
+		t.Fatalf("reasoning output state = %#v", got)
 	}
 }

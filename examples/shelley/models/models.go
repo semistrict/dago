@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"shelley.exe.dev/dagoruntime"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
@@ -159,10 +158,11 @@ func oaiResponsesSvc(model oai.Model) func(baseURL, apiKey string, httpc *http.C
 func oaiResponsesSvcNamed(model oai.Model, providerName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 		metadata := &oai.ResponsesService{Model: model}
-		return dagoruntime.NewOpenAIResponses(apiKey, model.ModelName, baseURL, httpc, dagoruntime.OpenAIResponsesOptions{
+		return oai.NewNativeResponses(apiKey, model.ModelName, baseURL, httpc, oai.NativeResponsesOptions{
 			Provider: providerName, ContextWindow: metadata.TokenContextWindow(), MaxOutputTokens: oai.DefaultMaxTokens,
 			SupportsImages: model.SupportsImages, SupportsReasoning: model.IsReasoningModel,
 			UseSimplifiedPatch: model.UseSimplifiedPatch, MaxImageBytes: 20 * 1024 * 1024,
+			ThinkingLevel: llm.ThinkingLevelMedium,
 		})
 	}
 }

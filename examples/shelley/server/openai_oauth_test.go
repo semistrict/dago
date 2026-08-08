@@ -16,7 +16,7 @@ import (
 
 	dopenai "github.com/semistrict/dago/providers/openai"
 
-	"shelley.exe.dev/dagoruntime"
+	"shelley.exe.dev/llm"
 )
 
 type staticOAuthCredentials struct{}
@@ -46,7 +46,7 @@ func TestOpenAIOAuthLoadsPersistedSessionAndBuildsLuna(t *testing.T) {
 	if len(built) != 1 || built[0].ID != OpenAISubscriptionModelID || built[0].Source != "OpenAI subscription" {
 		t.Fatalf("BuiltModels() = %#v", built)
 	}
-	service, ok := built[0].Service.(*dagoruntime.Service)
+	service, ok := built[0].Service.(*llm.NativeService)
 	if !ok {
 		t.Fatalf("service type = %T", built[0].Service)
 	}

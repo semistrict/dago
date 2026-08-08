@@ -13,6 +13,11 @@ import (
 
 var ErrContextOverflow = errors.New("model context window exceeded")
 
+// ResponseMetadataKey marks assistant messages that were produced by a model
+// invocation. Agent middleware and projections use it to distinguish model
+// output from caller-supplied assistant history.
+const ResponseMetadataKey = "dago.model.response.v1"
+
 // ToolChoice controls whether and how a model may call tools.
 type ToolChoice struct {
 	Mode string `json:"mode,omitempty"`
@@ -34,6 +39,15 @@ type PromptCache struct {
 	Retention string `json:"retention,omitempty"`
 }
 
+// Reasoning requests provider-native reasoning behavior. Effort is deliberately
+// a string because providers expose different, evolving level vocabularies.
+// Summary asks the provider to return a displayable reasoning summary when it
+// supports one.
+type Reasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
+}
+
 // Request is one model invocation.
 type Request struct {
 	Messages       []message.Message          `json:"messages"`
@@ -41,6 +55,7 @@ type Request struct {
 	ToolChoice     *ToolChoice                `json:"tool_choice,omitempty"`
 	ResponseFormat *ResponseFormat            `json:"response_format,omitempty"`
 	PromptCache    *PromptCache               `json:"prompt_cache,omitempty"`
+	Reasoning      *Reasoning                 `json:"reasoning,omitempty"`
 	Metadata       map[string]json.RawMessage `json:"metadata,omitempty"`
 	Tags           []string                   `json:"tags,omitempty"`
 	Stop           []string                   `json:"stop,omitempty"`
@@ -95,6 +110,7 @@ type Profile struct {
 	StructuredOutput      bool   `json:"structured_output,omitempty"`
 	NativeStreaming       bool   `json:"native_streaming,omitempty"`
 	SupportsPromptCaching bool   `json:"supports_prompt_caching,omitempty"`
+	SupportsReasoning     bool   `json:"supports_reasoning,omitempty"`
 }
 
 // EmptyStream is a stream that immediately terminates.
