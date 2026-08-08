@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/semistrict/dago/message"
 )
 
 func TestDefinitionValidate(t *testing.T) {
@@ -78,5 +80,25 @@ func TestFuncRejectsInvalidArgumentsAndWrapsErrors(t *testing.T) {
 	}
 	if _, err := function.Execute(context.Background(), []byte(`{}`), Runtime{}); !errors.Is(err, wantErr) || !strings.Contains(err.Error(), `tool "f"`) {
 		t.Fatalf("failed Execute() error = %v", err)
+	}
+}
+
+func TestFuncClonesPurposedUsage(t *testing.T) {
+	usage := []message.PurposedUsage{{Purpose: "lookup", Usage: message.Usage{
+		InputTokens: 3, InputDetails: map[string]int{"cached": 2},
+	}}}
+	function := Func{
+		Spec: Definition{Name: "f"},
+		Run: func(context.Context, json.RawMessage, Runtime) (Result, error) {
+			return Result{OtherUsage: usage}, nil
+		},
+	}
+	result, err := function.Execute(context.Background(), json.RawMessage(`{}`), Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage[0].InputDetails["cached"] = 9
+	if result.OtherUsage[0].InputDetails["cached"] != 2 {
+		t.Fatalf("purposed usage was not cloned: %#v", result.OtherUsage)
 	}
 }

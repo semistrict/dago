@@ -636,7 +636,7 @@ func (compiler *compiler) executeTool(ctx context.Context, call message.ToolCall
 	result.message = message.Message{
 		Role: message.RoleTool, Name: call.Name, ToolCallID: call.ID,
 		ToolStatus: message.ToolStatusSuccess, Content: response.Result.Content,
-		Artifact: response.Result.Artifact,
+		Artifact: response.Result.Artifact, OtherUsage: response.Result.OtherUsage,
 	}
 	result.update = state.Values(response.Result.Update)
 	result.direct = executable.Definition().Direct

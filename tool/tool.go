@@ -80,9 +80,10 @@ type Runtime struct {
 // Result is normalized tool output. Update is merged into graph state by reducers;
 // it is not exposed to the model directly.
 type Result struct {
-	Content  []message.ContentBlock `json:"content,omitempty"`
-	Artifact json.RawMessage        `json:"artifact,omitempty"`
-	Update   map[string]any         `json:"-"`
+	Content    []message.ContentBlock  `json:"content,omitempty"`
+	Artifact   json.RawMessage         `json:"artifact,omitempty"`
+	OtherUsage []message.PurposedUsage `json:"other_usage,omitempty"`
+	Update     map[string]any          `json:"-"`
 }
 
 // TextResult creates a text-only tool result.
@@ -140,6 +141,11 @@ func (result Result) Clone() Result {
 		}
 	}
 	copy.Artifact = cloneRaw(result.Artifact)
+	copy.OtherUsage = append([]message.PurposedUsage{}, result.OtherUsage...)
+	for index := range copy.OtherUsage {
+		copy.OtherUsage[index].InputDetails = cloneMap(result.OtherUsage[index].InputDetails)
+		copy.OtherUsage[index].OutputDetails = cloneMap(result.OtherUsage[index].OutputDetails)
+	}
 	if result.Update != nil {
 		copy.Update = make(map[string]any, len(result.Update))
 		for key, value := range result.Update {
@@ -147,6 +153,17 @@ func (result Result) Clone() Result {
 		}
 	}
 	return copy
+}
+
+func cloneMap[K comparable, V any](values map[K]V) map[K]V {
+	if values == nil {
+		return nil
+	}
+	result := make(map[K]V, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 func cloneRaw(value json.RawMessage) json.RawMessage {

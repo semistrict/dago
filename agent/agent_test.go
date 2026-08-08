@@ -32,7 +32,9 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 			if runtime.CallID != "call-1" {
 				t.Fatalf("CallID = %q", runtime.CallID)
 			}
-			return tool.TextResult("sunny"), nil
+			result := tool.TextResult("sunny")
+			result.OtherUsage = []message.PurposedUsage{{Purpose: "weather_lookup", Usage: message.Usage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}}}
+			return result, nil
 		},
 	}
 	script := modeltest.New(model.Profile{ToolCalling: true},
@@ -53,6 +55,9 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 				if len(request.Messages) != 4 || request.Messages[3].Role != message.RoleTool || request.Messages[3].TextContent() != "sunny" {
 					return errors.New("tool result missing from second model request")
 				}
+				if len(request.Messages[3].OtherUsage) != 1 || request.Messages[3].OtherUsage[0].Purpose != "weather_lookup" {
+					return errors.New("tool usage missing from second model request")
+				}
 				return nil
 			},
 			Response: model.Response{Message: message.Assistant("It is sunny.")},
@@ -68,6 +73,9 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 	}
 	if len(result.Messages) != 4 || result.Messages[3].TextContent() != "It is sunny." {
 		t.Fatalf("messages = %#v", result.Messages)
+	}
+	if len(result.Messages[2].OtherUsage) != 1 || result.Messages[2].OtherUsage[0].TotalTokens != 3 {
+		t.Fatalf("tool usage = %#v", result.Messages[2].OtherUsage)
 	}
 	if script.Remaining() != 0 {
 		t.Fatalf("remaining model steps = %d", script.Remaining())

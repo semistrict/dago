@@ -81,6 +81,19 @@ type Usage struct {
 	TotalTokens   int            `json:"total_tokens"`
 	InputDetails  map[string]int `json:"input_token_details,omitempty"`
 	OutputDetails map[string]int `json:"output_token_details,omitempty"`
+	Provider      string         `json:"provider,omitempty"`
+	Model         string         `json:"model,omitempty"`
+	URL           string         `json:"url,omitempty"`
+	CostUSD       float64        `json:"cost_usd,omitempty"`
+	StartedAt     string         `json:"started_at,omitempty"`
+	FinishedAt    string         `json:"finished_at,omitempty"`
+}
+
+// PurposedUsage accounts for a nested model call made while producing another
+// message, such as summarization or a model-backed tool.
+type PurposedUsage struct {
+	Purpose string `json:"purpose"`
+	Usage
 }
 
 // ToolStatus describes whether a tool call completed successfully.
@@ -106,6 +119,7 @@ type Message struct {
 	Metadata         map[string]json.RawMessage `json:"metadata,omitempty"`
 	ResponseMetadata map[string]json.RawMessage `json:"response_metadata,omitempty"`
 	Usage            *Usage                     `json:"usage,omitempty"`
+	OtherUsage       []PurposedUsage            `json:"other_usage,omitempty"`
 }
 
 // Text creates a one-block text message.
@@ -167,6 +181,11 @@ func (message Message) Clone() Message {
 		usage.InputDetails = cloneMap(message.Usage.InputDetails)
 		usage.OutputDetails = cloneMap(message.Usage.OutputDetails)
 		copy.Usage = &usage
+	}
+	copy.OtherUsage = cloneSlice(message.OtherUsage)
+	for index := range copy.OtherUsage {
+		copy.OtherUsage[index].InputDetails = cloneMap(message.OtherUsage[index].InputDetails)
+		copy.OtherUsage[index].OutputDetails = cloneMap(message.OtherUsage[index].OutputDetails)
 	}
 	return copy
 }
