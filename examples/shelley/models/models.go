@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	dmodel "github.com/semistrict/dago/model"
 
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
@@ -143,11 +146,9 @@ type Config struct {
 // per-API-type paths like "/v1" or "/v1/messages".
 func antSvc(modelName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		s := &ant.Service{APIKey: apiKey, Model: modelName, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium, SupportsImages_: true}
-		if baseURL != "" {
-			s.URL = baseURL + "/v1/messages"
-		}
-		return s
+		return ant.NewNative(apiKey, modelName, baseURL, httpc, ant.NativeOptions{
+			SupportsImages: true, SupportsReasoning: true, ThinkingLevel: llm.ThinkingLevelMedium,
+		})
 	}
 }
 
@@ -169,21 +170,28 @@ func oaiResponsesSvcNamed(model oai.Model, providerName string) func(baseURL, ap
 
 func oaiChatSvc(model oai.Model, providerName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		s := &oai.Service{Model: model, APIKey: apiKey, HTTPC: httpc, ProviderName: providerName}
+		apiBaseURL := baseURL
 		if baseURL != "" {
-			s.ModelURL = baseURL + "/v1"
+			apiBaseURL = strings.TrimRight(baseURL, "/") + "/v1"
 		}
-		return s
+		metadata := &oai.Service{Model: model}
+		return oai.NewNativeChat(apiKey, model.ModelName, apiBaseURL, httpc, oai.NativeChatOptions{
+			Provider: providerName, ContextWindow: metadata.TokenContextWindow(), MaxOutputTokens: oai.DefaultMaxTokens,
+			SupportsImages: model.SupportsImages, SupportsReasoning: model.IsReasoningModel,
+			UseSimplifiedPatch: model.UseSimplifiedPatch,
+		})
 	}
 }
 
 func gemSvc(modelName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		s := &gem.Service{APIKey: apiKey, Model: modelName, HTTPC: httpc, SupportsImages_: true}
+		endpoint := baseURL
 		if baseURL != "" {
-			s.URL = baseURL + "/v1beta"
+			endpoint = strings.TrimRight(baseURL, "/") + "/v1beta"
 		}
-		return s
+		return gem.NewNative(apiKey, modelName, endpoint, httpc, gem.NativeOptions{
+			SupportsImages: true, SupportsReasoning: true,
+		})
 	}
 }
 
@@ -514,6 +522,20 @@ func (l *loggingService) TokenContextWindow() int { return l.service.TokenContex
 func (l *loggingService) MaxImageDimension() int  { return l.service.MaxImageDimension() }
 func (l *loggingService) MaxImageBytes() int      { return l.service.MaxImageBytes() }
 
+func (l *loggingService) DagoChat() dmodel.Chat {
+	if native, ok := l.service.(interface{ DagoChat() dmodel.Chat }); ok {
+		return native.DagoChat()
+	}
+	return nil
+}
+
+func (l *loggingService) UseDagoChatInAgent() bool {
+	if policy, ok := l.service.(interface{ UseDagoChatInAgent() bool }); ok {
+		return policy.UseDagoChatInAgent()
+	}
+	return true
+}
+
 func (l *loggingService) UseSimplifiedPatch() bool {
 	if sp, ok := l.service.(llm.SimplifiedPatcher); ok {
 		return sp.UseSimplifiedPatch()
@@ -688,6 +710,22 @@ func (m *Manager) GetService(modelID string) (llm.Service, error) {
 	return entry.service, nil
 }
 
+// GetChat returns the native model contract for modelID. Product features use
+// this instead of crossing through Shelley's legacy request/response facade.
+func (m *Manager) GetChat(modelID string) (dmodel.Chat, error) {
+	m.mu.RLock()
+	entry, ok := m.services[modelID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("unsupported model: %s", modelID)
+	}
+	native, ok := entry.service.(interface{ DagoChat() dmodel.Chat })
+	if !ok || native.DagoChat() == nil {
+		return nil, fmt.Errorf("model %s does not provide a native chat implementation", modelID)
+	}
+	return native.DagoChat(), nil
+}
+
 func (m *Manager) GetAvailableModels() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -733,6 +771,74 @@ type reasoningService struct {
 	levels        []llm.ThinkingLevel
 	mapping       map[llm.ThinkingLevel]reasoningMapping
 	defaultSource llm.ThinkingLevel
+}
+
+func (s *reasoningService) DagoChat() dmodel.Chat {
+	native, ok := s.Service.(interface{ DagoChat() dmodel.Chat })
+	if !ok || native.DagoChat() == nil {
+		return nil
+	}
+	return &reasoningChat{Chat: native.DagoChat(), service: s}
+}
+
+type reasoningChat struct {
+	dmodel.Chat
+	service *reasoningService
+}
+
+func (chat *reasoningChat) Profile() dmodel.Profile {
+	profile := chat.Chat.Profile()
+	profile.SupportsReasoning = chat.service.supported
+	return profile
+}
+
+func (chat *reasoningChat) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
+	configured, err := chat.configure(request)
+	if err != nil {
+		return dmodel.Response{}, err
+	}
+	return chat.Chat.Invoke(ctx, configured)
+}
+
+func (chat *reasoningChat) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
+	configured, err := chat.configure(request)
+	if err != nil {
+		return nil, err
+	}
+	return chat.Chat.Stream(ctx, configured)
+}
+
+func (chat *reasoningChat) configure(request dmodel.Request) (dmodel.Request, error) {
+	copyRequest := request
+	if !chat.service.supported {
+		copyRequest.Reasoning = nil
+		return copyRequest, nil
+	}
+	if request.Reasoning == nil {
+		if mapped, ok := chat.service.mapping[chat.service.defaultSource]; ok {
+			copyRequest.Reasoning = &dmodel.Reasoning{Effort: nativeReasoningEffort(mapped)}
+		}
+		return copyRequest, nil
+	}
+	if len(chat.service.mapping) == 0 {
+		return copyRequest, nil
+	}
+	level := llm.ParseThinkingLevel(request.Reasoning.Effort)
+	mapped, ok := chat.service.mapping[level]
+	if !ok {
+		return dmodel.Request{}, fmt.Errorf("reasoning level %q is not supported by this model", request.Reasoning.Effort)
+	}
+	reasoning := *request.Reasoning
+	reasoning.Effort = nativeReasoningEffort(mapped)
+	copyRequest.Reasoning = &reasoning
+	return copyRequest, nil
+}
+
+func nativeReasoningEffort(mapped reasoningMapping) string {
+	if mapped.effort != "" {
+		return mapped.effort
+	}
+	return mapped.level.ThinkingEffort()
 }
 
 func (s *reasoningService) SupportsReasoning() bool  { return s.supported }
@@ -826,62 +932,40 @@ func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
 	var service llm.Service
 	switch model.ProviderType {
 	case "anthropic":
-		service = &ant.Service{
-			APIKey:          model.ApiKey,
-			URL:             model.Endpoint,
-			Model:           model.ModelName,
-			HTTPC:           m.httpc,
-			ThinkingLevel:   llm.ThinkingLevelMedium,
-			SupportsImages_: supportsImages,
-		}
+		service = ant.NewNative(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, ant.NativeOptions{
+			SupportsImages: supportsImages,
+			SupportsReasoning: ResolveSupportsReasoning(
+				model.Endpoint, model.ModelName, model.ReasoningSupport,
+			),
+			ThinkingLevel: llm.ThinkingLevelMedium,
+		})
 	case "openai":
-		service = &oai.Service{
-			APIKey:   model.ApiKey,
-			ModelURL: model.Endpoint,
-			Model: oai.Model{
-				UserName:           "",
-				ModelName:          model.ModelName,
-				TextVerbosity:      "",
-				URL:                model.Endpoint,
-				APIKeyEnv:          "",
-				IsReasoningModel:   false,
-				UseSimplifiedPatch: false,
-				SupportsImages:     supportsImages,
-			},
-			MaxTokens:       int(model.MaxTokens),
-			HTTPC:           m.httpc,
-			ProviderName:    "openai",
+		service = oai.NewNativeChat(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, oai.NativeChatOptions{
+			Provider: "openai", MaxOutputTokens: int(model.MaxTokens),
+			SupportsImages: supportsImages,
+			SupportsReasoning: ResolveSupportsReasoning(
+				model.Endpoint, model.ModelName, model.ReasoningSupport,
+			),
 			ReasoningEffort: model.ReasoningEffort,
-		}
+		})
 	case "openai-responses":
-		service = &oai.ResponsesService{
-			APIKey:   model.ApiKey,
-			ModelURL: model.Endpoint,
-			Model: oai.Model{
-				UserName:           "",
-				ModelName:          model.ModelName,
-				TextVerbosity:      "",
-				URL:                model.Endpoint,
-				APIKeyEnv:          "",
-				IsReasoningModel:   false,
-				UseSimplifiedPatch: false,
-				SupportsImages:     supportsImages,
-			},
-			MaxTokens:       int(model.MaxTokens),
-			HTTPC:           m.httpc,
+		service = oai.NewNativeResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, oai.NativeResponsesOptions{
+			Provider: "openai", MaxOutputTokens: int(model.MaxTokens),
+			SupportsImages: supportsImages,
+			SupportsReasoning: ResolveSupportsReasoning(
+				model.Endpoint, model.ModelName, model.ReasoningSupport,
+			),
 			ThinkingLevel:   llm.ThinkingLevelMedium,
 			ReasoningEffort: model.ReasoningEffort,
-			ProviderName:    "openai",
-		}
+		})
 	case "gemini":
-		service = &gem.Service{
-			APIKey:          model.ApiKey,
-			URL:             model.Endpoint,
-			Model:           model.ModelName,
-			HTTPC:           m.httpc,
+		service = gem.NewNative(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, gem.NativeOptions{
+			SupportsImages: supportsImages,
+			SupportsReasoning: ResolveSupportsReasoning(
+				model.Endpoint, model.ModelName, model.ReasoningSupport,
+			),
 			ReasoningEffort: model.ReasoningEffort,
-			SupportsImages_: supportsImages,
-		}
+		})
 	default:
 		if m.logger != nil {
 			m.logger.Error("Unknown provider type for model", "model_id", model.ModelID, "provider_type", model.ProviderType)

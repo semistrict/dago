@@ -161,6 +161,8 @@ type Service struct {
 	ThinkingLevel   llm.ThinkingLevel // service-level default; ThinkingLevelDefault (zero) means "none configured"
 	Backoff         []time.Duration   // retry backoff durations; defaults to {15s, 30s, 60s} if nil
 	SupportsImages_ bool              // whether this service accepts image inputs
+
+	native llm.Service
 }
 
 var _ llm.Service = (*Service)(nil)

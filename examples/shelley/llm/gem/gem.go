@@ -40,6 +40,8 @@ type Service struct {
 	// SupportsImages_ controls whether this service advertises image-input support.
 	// Default false (supports images).
 	SupportsImages_ bool
+
+	native llm.Service
 }
 
 var _ llm.Service = (*Service)(nil)

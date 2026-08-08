@@ -79,7 +79,9 @@ func (k *KeywordTool) NativeTool() dtool.Tool {
 			if !ok || native.DagoChat() == nil {
 				return dtool.Result{}, fmt.Errorf("keyword relevance model does not expose a native Dago chat")
 			}
-			response, err := native.DagoChat().Invoke(llmhttp.WithPurpose(ctx, "keyword_search"), dmodel.Request{
+			chat := native.DagoChat()
+			started := time.Now()
+			response, err := chat.Invoke(ctx, dmodel.Request{
 				Messages: []dmessage.Message{
 					dmessage.System(strings.TrimSpace(keywordSystemPrompt)),
 					{Role: dmessage.RoleHuman, Content: []dmessage.ContentBlock{
@@ -89,6 +91,7 @@ func (k *KeywordTool) NativeTool() dtool.Tool {
 					}},
 				},
 			})
+			finished := time.Now()
 			if err != nil {
 				return dtool.Result{}, fmt.Errorf("failed to send relevance filtering message: %w", err)
 			}
@@ -97,7 +100,9 @@ func (k *KeywordTool) NativeTool() dtool.Tool {
 				return dtool.Result{}, err
 			}
 			k.logResult(ctx, input.Query, search.output, filtered)
-			return dtool.TextResult(filtered), nil
+			result := dtool.TextResult(filtered)
+			result.OtherUsage = nativePurposedUsage("keyword_search", chat, response.Message.Usage, started, finished)
+			return result, nil
 		},
 	}
 }

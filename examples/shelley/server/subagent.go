@@ -9,12 +9,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
 
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
 )
 
 // SubagentRunner implements claudetool.SubagentRunner.
@@ -186,7 +187,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 			// completion is delivered asynchronously (endWait handles a finish
 			// that was suppressed while we held the slot).
 			r.endWait(manager, conversationID, false)
-			return r.generateProgressSummary(ctx, conversationID, modelID, llmService)
+			return r.generateProgressSummary(ctx, conversationID, modelID)
 		}
 		// The in-flight turn finished while we held the slot, so its onDone was
 		// suppressed and recorded as a pending suppressed-finish. That is the
@@ -226,7 +227,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 
 	// Wait for the agent to finish (or timeout). waitForResponse owns the
 	// synchronous-waiter slot registered above and releases it on every exit.
-	return r.waitForResponse(ctx, manager, conversationID, modelID, llmService, deadline)
+	return r.waitForResponse(ctx, manager, conversationID, modelID, deadline)
 }
 
 // waitForIdle blocks until the subagent's current turn finishes (returns
@@ -267,7 +268,7 @@ func (r *SubagentRunner) endWait(manager *ConversationManager, conversationID st
 	}
 }
 
-func (r *SubagentRunner) waitForResponse(ctx context.Context, manager *ConversationManager, conversationID, modelID string, llmService llm.Service, deadline time.Time) (string, error) {
+func (r *SubagentRunner) waitForResponse(ctx context.Context, manager *ConversationManager, conversationID, modelID string, deadline time.Time) (string, error) {
 	s := r.server
 
 	pollInterval := 500 * time.Millisecond
@@ -288,7 +289,7 @@ func (r *SubagentRunner) waitForResponse(ctx context.Context, manager *Conversat
 			// learns the outcome. If it is still working, a later onDone fires
 			// normally now that the slot is freed.
 			r.endWait(manager, conversationID, false)
-			return r.generateProgressSummary(ctx, conversationID, modelID, llmService)
+			return r.generateProgressSummary(ctx, conversationID, modelID)
 		}
 
 		// Check if agent is still working
@@ -432,19 +433,18 @@ func (r *SubagentRunner) lastAgentSeq(ctx context.Context, conversationID string
 
 // generateProgressSummary makes a non-conversation LLM call to summarize the subagent's progress.
 // This is called when the timeout is reached and the subagent is still working.
-func (r *SubagentRunner) generateProgressSummary(ctx context.Context, conversationID, modelID string, llmService llm.Service) (string, error) {
+func (r *SubagentRunner) generateProgressSummary(ctx context.Context, conversationID, modelID string) (string, error) {
 	s := r.server
 
-	// Tag the purpose so the summary call's usage is collected by the parent
-	// loop's tool-call collector (this runs inside the subagent tool's Run) and
-	// lands on the parent's tool-result message. WithConversationID re-tags the
-	// request with the subagent's ID for gateway logging and cache affinity
-	// (the incoming ctx carries the parent's ID).
-	ctx = llmhttp.WithConversationID(llmhttp.WithPurpose(ctx, "subagent_progress"), conversationID)
+	chat, err := nativeChatFor(s.llmManager, modelID)
+	if err != nil {
+		s.logger.Error("Failed to get native model for progress summary", "model", modelID, "error", err)
+		return "[Subagent is still working (timeout reached). Failed to generate progress summary.]", nil
+	}
 
 	// Get the conversation messages
 	var messages []generated.Message
-	err := s.db.Queries(ctx, func(q *generated.Queries) error {
+	err = s.db.Queries(ctx, func(q *generated.Queries) error {
 		var err error
 		messages, err = q.ListMessages(ctx, conversationID)
 		return err
@@ -477,20 +477,11 @@ Conversation history:
 
 Provide your summary now:`
 
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{
-				Role:    llm.MessageRoleUser,
-				Content: []llm.Content{{Type: llm.ContentTypeText, Text: summaryPrompt}},
-			},
-		},
-	}
-
 	// Use a short timeout for the summary call
 	summaryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	resp, err := llmService.Do(summaryCtx, req)
+	resp, err := chat.Invoke(summaryCtx, dmodel.Request{Messages: []dmessage.Message{dmessage.Human(summaryPrompt)}})
 	if err != nil {
 		s.logger.Error("Failed to generate progress summary via LLM", "error", err)
 		return "[Subagent is still working (timeout reached). Failed to generate progress summary.]", nil
@@ -498,8 +489,8 @@ Provide your summary now:`
 
 	// Extract the summary text
 	var summaryText string
-	for _, content := range resp.Content {
-		if content.Type == llm.ContentTypeText && content.Text != "" {
+	for _, content := range resp.Message.Content {
+		if content.Type == dmessage.BlockText && content.Text != "" {
 			summaryText = content.Text
 			break
 		}

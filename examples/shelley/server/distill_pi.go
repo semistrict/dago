@@ -10,10 +10,12 @@ import (
 	"strings"
 	"time"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
 )
 
 // This file implements a second distillation strategy modeled on the
@@ -417,44 +419,54 @@ func userDataForCopy(m generated.Message) map[string]string {
 
 // generatePiSummary runs the structured pi summarization prompt over the older
 // messages and returns the summary text (with file-operation tags appended).
-func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older []llm.Message, instructions string) (string, error) {
+func (s *Server) generatePiSummary(ctx context.Context, chat dmodel.Chat, older []llm.Message, instructions string) (string, []llm.PurposedUsage, error) {
 	conversationText := serializePiConversation(older)
 	promptText := fmt.Sprintf("<conversation>\n%s\n</conversation>\n\n%s", conversationText, piSummarizationPrompt)
 	if steer := strings.TrimSpace(instructions); steer != "" {
 		promptText += steeringSection(steer)
 	}
 
-	resp, err := svc.Do(ctx, &llm.Request{
-		// Summarization is a simple extraction task; disable thinking to cut
-		// cost and latency.
-		ThinkingLevel: llm.ThinkingLevelOff,
-		System: []llm.SystemContent{
-			{Text: piSummarizationSystemPrompt, Type: "text"},
-		},
-		Messages: []llm.Message{
-			{
-				Role:    llm.MessageRoleUser,
-				Content: []llm.Content{{Type: llm.ContentTypeText, Text: promptText}},
-			},
-		},
+	started := time.Now()
+	resp, err := chat.Invoke(ctx, dmodel.Request{
+		Messages:  []dmessage.Message{dmessage.System(piSummarizationSystemPrompt), dmessage.Human(promptText)},
+		Reasoning: &dmodel.Reasoning{Effort: "off"},
 	})
+	finished := time.Now()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	var summary string
-	for _, c := range resp.Content {
-		if c.Type == llm.ContentTypeText {
+	for _, c := range resp.Message.Content {
+		if c.Type == dmessage.BlockText {
 			summary += c.Text
 		}
 	}
 	if strings.TrimSpace(summary) == "" {
-		return "", fmt.Errorf("summarization returned empty result")
+		return "", nil, fmt.Errorf("summarization returned empty result")
 	}
 
 	readFiles, modifiedFiles := extractPiFileOps(older)
 	summary += formatPiFileOperations(readFiles, modifiedFiles)
-	return summary, nil
+	return summary, piPurposedUsage(chat, resp.Message.Usage, started, finished), nil
+}
+
+func piPurposedUsage(chat dmodel.Chat, tokens *dmessage.Usage, started, finished time.Time) []llm.PurposedUsage {
+	if tokens == nil {
+		return nil
+	}
+	profile := chat.Profile()
+	return []llm.PurposedUsage{{Purpose: "compaction", Usage: llm.Usage{
+		InputTokens:              uint64(max(0, tokens.InputTokens)),
+		CacheCreationInputTokens: uint64(max(0, tokens.InputDetails["cache_creation"])),
+		CacheReadInputTokens:     uint64(max(0, tokens.InputDetails["cache_read"])),
+		OutputTokens:             uint64(max(0, tokens.OutputTokens)),
+		CostUSD:                  tokens.CostUSD,
+		Model:                    profile.Model,
+		URL:                      tokens.URL,
+		StartTime:                &started,
+		EndTime:                  &finished,
+	}}}
 }
 
 // rollbackCompactionFailure restores the conversation to its pre-compaction
@@ -503,17 +515,9 @@ func (s *Server) rollbackCompactionFailure(ctx context.Context, logger *slog.Log
 func (s *Server) performPiDistillation(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, sourceGeneration int64, messages []generated.Message) string {
 	logger := s.logger.With("conversationID", conversationID, "sourceSlug", sourceSlug, "method", "compact")
 
-	// Tag the ctx so the summarization calls' usage is collected (and so the
-	// gateway request logs carry the conversation ID; the HTTP request ctx
-	// this derives from carries neither). The collected entries are attached
-	// to the summary message below.
-	var otherUsage llmhttp.UsageAccumulator
-	ctx = llmhttp.WithUsageCollector(ctx, otherUsage.Collect)
-	ctx = llmhttp.WithConversationID(llmhttp.WithPurpose(ctx, "compaction"), conversationID)
-
-	svc, err := s.llmManager.GetService(modelID)
+	chat, err := nativeChatFor(s.llmManager, modelID)
 	if err != nil {
-		logger.Error("Failed to get LLM service for pi distillation", "model", modelID, "error", err)
+		logger.Error("Failed to get native model for pi distillation", "model", modelID, "error", err)
 		// The generation was already incremented; roll back so the old
 		// (intact) generation stays active (see rollbackCompactionFailure).
 		s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: model %q unavailable: %v", modelID, err), sourceGeneration)
@@ -550,9 +554,12 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 
 	var summary string
 	var fallbackNotice string
+	var otherUsage []llm.PurposedUsage
 	if len(older) > 0 {
 		distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-		summary, err = s.generatePiSummary(distillCtx, svc, olderMsgs, instructions)
+		var usage []llm.PurposedUsage
+		summary, usage, err = s.generatePiSummary(distillCtx, chat, olderMsgs, instructions)
+		otherUsage = append(otherUsage, usage...)
 		cancel()
 		if err != nil {
 			// Some models decline summarization prompts (e.g. fable returns
@@ -565,11 +572,13 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 			} else {
 				fallbackErr := err
 				logger.Warn("pi summarization failed; retrying with default model", "error", err, "fallback_model", fallbackID)
-				if fallbackSvc, ferr := s.llmManager.GetService(fallbackID); ferr != nil {
-					logger.Error("Failed to get fallback LLM service", "model", fallbackID, "error", ferr)
+				if fallbackChat, ferr := nativeChatFor(s.llmManager, fallbackID); ferr != nil {
+					logger.Error("Failed to get fallback native model", "model", fallbackID, "error", ferr)
 				} else {
 					distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-					summary, err = s.generatePiSummary(distillCtx, fallbackSvc, olderMsgs, instructions)
+					var usage []llm.PurposedUsage
+					summary, usage, err = s.generatePiSummary(distillCtx, fallbackChat, olderMsgs, instructions)
+					otherUsage = append(otherUsage, usage...)
 					cancel()
 					if err == nil {
 						fallbackNotice = fmt.Sprintf("Note: %s failed to summarize the conversation (%v); the summary was generated by %s instead.", modelID, fallbackErr, fallbackID)
@@ -631,7 +640,7 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 		}
 		// Attach the summarization calls' usage (primary + fallback) to the
 		// summary message so compaction cost is visible in cost reporting.
-		batch = append(batch, recordMessageInput{message: summaryMessage, otherUsage: otherUsage.Take(), userData: []interface{}{userData}})
+		batch = append(batch, recordMessageInput{message: summaryMessage, otherUsage: otherUsage, userData: []interface{}{userData}})
 	}
 
 	// Copy recent messages verbatim into the new generation so the agent keeps

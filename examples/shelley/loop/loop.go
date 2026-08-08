@@ -59,6 +59,10 @@ type Config struct {
 	// matching Dago implementation. The server enables this; pinned unit
 	// fixtures may leave it false when exercising Shelley facade types.
 	RequireNativeTools bool
+	// RequireNativeModel rejects services that do not expose a Dago chat. The
+	// application enables this so the legacy model adapter cannot be reached by
+	// executable traffic while its provider-contract fixtures are migrated.
+	RequireNativeModel bool
 	RecordMessage      MessageRecordFunc
 	RecordWarning      WarningRecordFunc
 	Logger             *slog.Logger
@@ -103,36 +107,37 @@ type Config struct {
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
 // Notably, when the turn ends, the "Loop" is over. TODO: maybe rename to Turn?
 type Loop struct {
-	llm              llm.Service
-	tools            []*llm.Tool
-	nativeTools      []dtool.Tool
-	requireNative    bool
-	recordMessage    MessageRecordFunc
-	recordWarning    WarningRecordFunc
-	history          []llm.Message
-	messageQueue     []llm.Message
-	totalUsage       llm.Usage
-	mu               sync.Mutex
-	logger           *slog.Logger
-	system           []llm.SystemContent
-	workingDir       string
-	onGitStateChange GitStateChangeFunc
-	getWorkingDir    func() string
-	lastGitState     *gitstate.GitState
-	onToolProgress   llm.ToolProgressFunc
-	onStreamDelta    func(llm.StreamDelta)
-	onStreamDone     func()
-	injectMessages   func(ctx context.Context) []llm.Message
-	thinkingLevel    llm.ThinkingLevel
-	notify           chan struct{} // signaled when a message is queued or retry requested
-	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
-	saver            checkpoint.Saver
-	threadID         string
-	namespace        string
-	runtimeSeeded    bool
-	pendingInput     []llm.Message
-	executionMu      sync.Mutex
-	runtime          *dagent.Agent
+	llm                llm.Service
+	tools              []*llm.Tool
+	nativeTools        []dtool.Tool
+	requireNative      bool
+	requireNativeModel bool
+	recordMessage      MessageRecordFunc
+	recordWarning      WarningRecordFunc
+	history            []llm.Message
+	messageQueue       []llm.Message
+	totalUsage         llm.Usage
+	mu                 sync.Mutex
+	logger             *slog.Logger
+	system             []llm.SystemContent
+	workingDir         string
+	onGitStateChange   GitStateChangeFunc
+	getWorkingDir      func() string
+	lastGitState       *gitstate.GitState
+	onToolProgress     llm.ToolProgressFunc
+	onStreamDelta      func(llm.StreamDelta)
+	onStreamDone       func()
+	injectMessages     func(ctx context.Context) []llm.Message
+	thinkingLevel      llm.ThinkingLevel
+	notify             chan struct{} // signaled when a message is queued or retry requested
+	retryPending       bool          // set by Retry() to re-run processLLMRequest with current history
+	saver              checkpoint.Saver
+	threadID           string
+	namespace          string
+	runtimeSeeded      bool
+	pendingInput       []llm.Message
+	executionMu        sync.Mutex
+	runtime            *dagent.Agent
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -154,29 +159,30 @@ func NewLoop(config Config) *Loop {
 		saver = checkpoint.NewMemorySaver()
 	}
 	loop := &Loop{
-		llm:              config.LLM,
-		history:          config.History,
-		tools:            config.Tools,
-		nativeTools:      append([]dtool.Tool(nil), config.NativeTools...),
-		requireNative:    config.RequireNativeTools,
-		recordMessage:    config.RecordMessage,
-		recordWarning:    config.RecordWarning,
-		messageQueue:     make([]llm.Message, 0),
-		logger:           logger,
-		system:           config.System,
-		workingDir:       config.WorkingDir,
-		onGitStateChange: config.OnGitStateChange,
-		getWorkingDir:    config.GetWorkingDir,
-		lastGitState:     initialGitState,
-		onToolProgress:   config.OnToolProgress,
-		onStreamDelta:    config.OnStreamDelta,
-		onStreamDone:     config.OnStreamDone,
-		injectMessages:   config.InjectMessages,
-		thinkingLevel:    config.ThinkingLevel,
-		notify:           make(chan struct{}, 1),
-		saver:            saver,
-		threadID:         config.ThreadID,
-		namespace:        config.Namespace,
+		llm:                config.LLM,
+		history:            config.History,
+		tools:              config.Tools,
+		nativeTools:        append([]dtool.Tool(nil), config.NativeTools...),
+		requireNative:      config.RequireNativeTools,
+		requireNativeModel: config.RequireNativeModel,
+		recordMessage:      config.RecordMessage,
+		recordWarning:      config.RecordWarning,
+		messageQueue:       make([]llm.Message, 0),
+		logger:             logger,
+		system:             config.System,
+		workingDir:         config.WorkingDir,
+		onGitStateChange:   config.OnGitStateChange,
+		getWorkingDir:      config.GetWorkingDir,
+		lastGitState:       initialGitState,
+		onToolProgress:     config.OnToolProgress,
+		onStreamDelta:      config.OnStreamDelta,
+		onStreamDone:       config.OnStreamDone,
+		injectMessages:     config.InjectMessages,
+		thinkingLevel:      config.ThinkingLevel,
+		notify:             make(chan struct{}, 1),
+		saver:              saver,
+		threadID:           config.ThreadID,
+		namespace:          config.Namespace,
 	}
 	if loop.threadID == "" {
 		loop.threadID = fmt.Sprintf("shelley-loop-%p", loop)
@@ -368,12 +374,16 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		return err
 	}
 
+	chat, err := resolveNativeChat(service, nativeChatOptions{
+		ThinkingLevel: l.getThinkingLevel,
+		OnRetry:       l.recordRetryWarning(ctx),
+	}, l.requireNativeModel)
+	if err != nil {
+		return err
+	}
 	middleware := []dagent.Middleware{l.runtimeMiddleware()}
 	runtime, err := dagent.New(dagent.Options{
-		Name: "Shelley", Model: nativeChat(service, nativeChatOptions{
-			ThinkingLevel: l.getThinkingLevel,
-			OnRetry:       l.recordRetryWarning(ctx),
-		}),
+		Name: "Shelley", Model: chat,
 		Tools: dagoTools, SystemPrompt: joinSystem(system), Middleware: middleware,
 		Saver: l.saver, MaxConcurrency: 1, FailOnToolError: false,
 		StateFields: map[string]dagent.StateField{

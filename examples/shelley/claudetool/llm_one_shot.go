@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -173,7 +174,10 @@ func (t *LLMOneShotTool) NativeTool() dtool.Tool {
 			if input.SystemPrompt != "" {
 				messages = append([]dmessage.Message{dmessage.System(input.SystemPrompt)}, messages...)
 			}
-			response, err := native.DagoChat().Invoke(llmhttp.WithPurpose(ctx, "llm_one_shot"), dmodel.Request{Messages: messages})
+			chat := native.DagoChat()
+			started := time.Now()
+			response, err := chat.Invoke(ctx, dmodel.Request{Messages: messages})
+			finished := time.Now()
 			if err != nil {
 				return dtool.Result{}, fmt.Errorf("LLM request failed: %w", err)
 			}
@@ -195,6 +199,7 @@ func (t *LLMOneShotTool) NativeTool() dtool.Tool {
 			}
 			return dtool.Result{
 				Content: []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}}, Artifact: artifact,
+				OtherUsage: nativePurposedUsage("llm_one_shot", chat, response.Message.Usage, started, finished),
 			}, nil
 		},
 	}

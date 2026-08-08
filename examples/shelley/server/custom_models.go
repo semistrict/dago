@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/ant"
@@ -488,53 +491,34 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 	var service llm.Service
 	switch req.ProviderType {
 	case "anthropic":
-		service = &ant.Service{
-			APIKey:        req.APIKey,
-			URL:           req.Endpoint,
-			Model:         req.ModelName,
-			ThinkingLevel: llm.ThinkingLevelMedium,
-		}
+		service = ant.NewNative(req.APIKey, req.ModelName, req.Endpoint, nil, ant.NativeOptions{
+			SupportsImages:    true,
+			SupportsReasoning: models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
+			ThinkingLevel:     llm.ThinkingLevelMedium,
+		})
 	case "openai":
-		service = &oai.Service{
-			APIKey:          req.APIKey,
-			ModelURL:        req.Endpoint,
-			ReasoningEffort: reasoningEffort,
-			Model: oai.Model{
-				UserName:           "",
-				ModelName:          req.ModelName,
-				TextVerbosity:      "",
-				URL:                req.Endpoint,
-				APIKeyEnv:          "",
-				IsReasoningModel:   false,
-				UseSimplifiedPatch: false,
-				SupportsImages:     true,
-			},
-		}
+		service = oai.NewNativeChat(req.APIKey, req.ModelName, req.Endpoint, nil, oai.NativeChatOptions{
+			Provider:          "openai",
+			SupportsImages:    true,
+			SupportsReasoning: models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
+			ReasoningEffort:   reasoningEffort,
+		})
 	case "gemini":
-		service = &gem.Service{
-			APIKey:          req.APIKey,
-			URL:             req.Endpoint,
-			Model:           req.ModelName,
-			ReasoningEffort: reasoningEffort,
-		}
+		service = gem.NewNative(req.APIKey, req.ModelName, req.Endpoint, nil, gem.NativeOptions{
+			SupportsImages:    true,
+			SupportsReasoning: models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
+			ReasoningEffort:   reasoningEffort,
+		})
 	case "openai-responses":
-		service = &oai.ResponsesService{
-			APIKey: req.APIKey,
-			Model: oai.Model{
-				UserName:           "",
-				ModelName:          req.ModelName,
-				TextVerbosity:      "",
-				URL:                req.Endpoint,
-				APIKeyEnv:          "",
-				IsReasoningModel:   false,
-				UseSimplifiedPatch: false,
-				SupportsImages:     true,
-			},
+		service = oai.NewNativeResponses(req.APIKey, req.ModelName, req.Endpoint, nil, oai.NativeResponsesOptions{
+			Provider:          "openai",
+			SupportsImages:    true,
+			SupportsReasoning: models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
 			// Match createServiceFromModel so Test reflects real runtime behavior:
 			// medium is the default when no explicit override is given.
 			ThinkingLevel:   llm.ThinkingLevelMedium,
 			ReasoningEffort: reasoningEffort,
-		}
+		})
 	default:
 		http.Error(w, "Invalid provider_type", http.StatusBadRequest)
 		return
@@ -553,18 +537,18 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	request := &llm.Request{
-		Messages: []llm.Message{
-			{
-				Role: llm.MessageRoleUser,
-				Content: []llm.Content{
-					{Type: llm.ContentTypeText, Text: "Say 'test successful' in exactly two words."},
-				},
-			},
-		},
+	native, ok := service.(interface{ DagoChat() dmodel.Chat })
+	if !ok || native.DagoChat() == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Test failed: provider does not expose a native chat implementation",
+		})
+		return
 	}
-
-	response, err := service.Do(ctx, request)
+	response, err := native.DagoChat().Invoke(ctx, dmodel.Request{Messages: []dmessage.Message{
+		dmessage.Human("Say 'test successful' in exactly two words."),
+	}})
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -577,8 +561,8 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 	// Check if we got a response with actual text content
 	// (skip thinking blocks which may appear first)
 	var responseText string
-	for _, content := range response.Content {
-		if content.Type == llm.ContentTypeText && content.Text != "" {
+	for _, content := range response.Message.Content {
+		if content.Type == dmessage.BlockText && content.Text != "" {
 			responseText = content.Text
 			break
 		}

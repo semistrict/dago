@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/llm"
 )
 
@@ -97,6 +99,16 @@ func NewPredictableService() *PredictableService {
 }
 
 func (s *PredictableService) Provider() string { return "builtin" }
+
+// DagoChat exposes the predictable fixture through the native agent model
+// contract while its original behavioral corpus is migrated.
+func (s *PredictableService) DagoChat() dmodel.Chat {
+	return &chatAdapter{service: s}
+}
+
+// UseDagoChatInAgent keeps request-scoped retry/reasoning callbacks on the
+// agent adapter until the predictable corpus itself is fully native.
+func (s *PredictableService) UseDagoChatInAgent() bool { return false }
 
 // SupportsImages reports that the predictable service accepts image inputs
 // (it returns image dimensions in its synthetic responses).

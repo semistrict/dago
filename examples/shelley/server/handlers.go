@@ -1301,7 +1301,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		go func() {
 			slugCtx, cancel := context.WithTimeout(ctxNoCancel, 15*time.Second)
 			defer cancel()
-			_, marker, err := slug.GenerateSlug(slugCtx, s.llmManager, s.db, s.logger, conversationID, req.Message, modelID)
+			_, marker, err := slug.GenerateSlug(slugCtx, nativeModelProvider{s.llmManager}, s.db, s.logger, conversationID, req.Message, modelID)
 			// Publish the usage marker before anything else. It owns a real
 			// sequence_id, so a client that never sees it observes a hole and
 			// throws away its cached history. Publish even when slug assignment
@@ -1499,7 +1499,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			slugCtx, cancel := context.WithTimeout(ctxNoCancel, 15*time.Second)
 			defer cancel()
-			_, marker, err := slug.GenerateSlug(slugCtx, s.llmManager, s.db, s.logger, conversationID, req.Message, modelID)
+			_, marker, err := slug.GenerateSlug(slugCtx, nativeModelProvider{s.llmManager}, s.db, s.logger, conversationID, req.Message, modelID)
 			// Publish the usage marker before anything else. It owns a real
 			// sequence_id, so a client that never sees it observes a hole and
 			// throws away its cached history. Publish even when slug assignment

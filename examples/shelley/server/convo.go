@@ -1853,6 +1853,7 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 		Tools:              toolSet.Tools(),
 		NativeTools:        toolSet.NativeTools(),
 		RequireNativeTools: true,
+		RequireNativeModel: serviceHasNativeChat(service),
 		ThinkingLevel:      llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),
 		RecordMessage:      recordMessage,
 		RecordWarning: func(ctx context.Context, text string) error {

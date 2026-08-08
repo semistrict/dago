@@ -8,16 +8,18 @@ import (
 	"strings"
 	"time"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/models"
 )
 
-// LLMServiceProvider defines the interface for getting LLM services
+// LLMServiceProvider supplies native chat models and their catalog metadata.
 type LLMServiceProvider interface {
-	GetService(modelID string) (llm.Service, error)
+	GetChat(modelID string) (dmodel.Chat, error)
 	GetAvailableModels() []string
 	GetModelInfo(modelID string) *models.ModelInfo
 }
@@ -38,14 +40,7 @@ func GenerateSlug(ctx context.Context, llmProvider LLMServiceProvider, database 
 		return *conv.Slug, nil, nil
 	}
 
-	// Tag the ctx so the slug LLM call's usage is collected; it is recorded on
-	// an appended slug marker message below. (WithConversationID also stamps the
-	// gateway request logs; the caller's ctx does not carry it.)
-	var otherUsage llmhttp.UsageAccumulator
-	ctx = llmhttp.WithUsageCollector(ctx, otherUsage.Collect)
-	ctx = llmhttp.WithConversationID(llmhttp.WithPurpose(ctx, "slug"), conversationID)
-
-	baseSlug, err := generateSlugText(ctx, llmProvider, logger, userMessage, conversationModelID)
+	baseSlug, usage, err := generateSlugText(ctx, llmProvider, logger, userMessage, conversationModelID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -57,8 +52,19 @@ func GenerateSlug(ctx context.Context, llmProvider LLMServiceProvider, database 
 	// marker renders as nothing and is never sent to the LLM; it exists purely so
 	// the usage is accounted for through the ordinary message-usage path.
 	var marker *generated.Message
-	if entries := otherUsage.Take(); len(entries) > 0 {
-		marker, err = database.CreateSlugMessage(ctx, conversationID, entries)
+	if usage != nil {
+		marker, err = database.CreateSlugMessage(ctx, conversationID, []llm.PurposedUsage{{
+			Purpose: "slug",
+			Usage: llm.Usage{
+				InputTokens:              uint64(max(0, usage.tokens.InputTokens)),
+				CacheCreationInputTokens: uint64(max(0, usage.tokens.InputDetails["cache_creation"])),
+				CacheReadInputTokens:     uint64(max(0, usage.tokens.InputDetails["cache_read"])),
+				OutputTokens:             uint64(max(0, usage.tokens.OutputTokens)),
+				Model:                    usage.model,
+				StartTime:                &usage.started,
+				EndTime:                  &usage.finished,
+			},
+		}})
 		if err != nil {
 			logger.Error("Failed to record slug usage", "conversationID", conversationID, "error", err)
 		}
@@ -130,13 +136,13 @@ func preferredModels(available []string, tried map[string]bool) []string {
 // 3. Try models tagged with "slug-backup"
 // 4. Try models matching preferredModelSubstrings (covers untagged gateway models)
 // 5. Fall back to the conversation's model (conversationModelID)
-func generateSlugText(ctx context.Context, llmProvider LLMServiceProvider, logger *slog.Logger, userMessage, conversationModelID string) (string, error) {
+func generateSlugText(ctx context.Context, llmProvider LLMServiceProvider, logger *slog.Logger, userMessage, conversationModelID string) (string, *slugUsage, error) {
 	// If conversation is using predictable model, use it for slug generation too
 	if conversationModelID == "predictable" {
-		llmService, err := llmProvider.GetService("predictable")
+		chat, err := llmProvider.GetChat("predictable")
 		if err == nil {
 			logger.Debug("Using predictable model for slug generation")
-			return callSlugLLM(ctx, llmService, userMessage)
+			return callSlugLLM(ctx, chat, userMessage)
 		}
 		logger.Debug("Predictable model not available for slug generation", "error", err)
 	}
@@ -153,15 +159,15 @@ func generateSlugText(ctx context.Context, llmProvider LLMServiceProvider, logge
 				continue
 			}
 			tried[modelID] = true
-			llmService, err := llmProvider.GetService(modelID)
+			chat, err := llmProvider.GetChat(modelID)
 			if err != nil {
 				logger.Debug("Failed to get model for slug generation", "model", modelID, "tag", tag, "error", err)
 				continue
 			}
 			logger.Debug("Trying model for slug generation", "model", modelID, "tag", tag)
-			slug, err := callSlugLLM(ctx, llmService, userMessage)
+			slug, usage, err := callSlugLLM(ctx, chat, userMessage)
 			if err == nil {
-				return slug, nil
+				return slug, usage, nil
 			}
 			logger.Warn("Slug generation failed, trying next model", "model", modelID, "tag", tag, "error", err)
 		}
@@ -175,30 +181,30 @@ func generateSlugText(ctx context.Context, llmProvider LLMServiceProvider, logge
 			break
 		}
 		tried[modelID] = true
-		llmService, err := llmProvider.GetService(modelID)
+		chat, err := llmProvider.GetChat(modelID)
 		if err != nil {
 			logger.Debug("Failed to get preferred model for slug generation", "model", modelID, "error", err)
 			continue
 		}
 		logger.Debug("Trying preferred model for slug generation", "model", modelID)
-		slug, err := callSlugLLM(ctx, llmService, userMessage)
+		slug, usage, err := callSlugLLM(ctx, chat, userMessage)
 		if err == nil {
-			return slug, nil
+			return slug, usage, nil
 		}
 		logger.Warn("Slug generation failed, trying next model", "model", modelID, "error", err)
 	}
 
 	// Fall back to the conversation's model
 	if conversationModelID != "" && conversationModelID != "predictable" && !tried[conversationModelID] {
-		llmService, err := llmProvider.GetService(conversationModelID)
+		chat, err := llmProvider.GetChat(conversationModelID)
 		if err == nil {
 			logger.Debug("Using conversation model for slug generation", "model", conversationModelID)
-			return callSlugLLM(ctx, llmService, userMessage)
+			return callSlugLLM(ctx, chat, userMessage)
 		}
 		logger.Debug("Conversation model not available for slug generation", "model", conversationModelID, "error", err)
 	}
 
-	return "", fmt.Errorf("no suitable model available for slug generation")
+	return "", nil, fmt.Errorf("no suitable model available for slug generation")
 }
 
 // hasTag checks if a comma-separated tag list contains the exact given tag.
@@ -217,8 +223,15 @@ func hasTag(tags, tag string) bool {
 // with the format string in callSlugLLM.
 const PromptPreamble = "Generate a short, descriptive slug (2-6 words, lowercase, hyphen-separated) for a conversation that starts with this user message:"
 
-// callSlugLLM calls an LLM service to generate a slug from a user message.
-func callSlugLLM(ctx context.Context, llmService llm.Service, userMessage string) (string, error) {
+// callSlugLLM calls a native chat model to generate a slug from a user message.
+type slugUsage struct {
+	tokens   dmessage.Usage
+	model    string
+	started  time.Time
+	finished time.Time
+}
+
+func callSlugLLM(ctx context.Context, chat dmodel.Chat, userMessage string) (string, *slugUsage, error) {
 	slugPrompt := fmt.Sprintf(PromptPreamble+`
 
 %s
@@ -231,35 +244,26 @@ The slug should:
 
 Respond with only the slug, nothing else.`, userMessage)
 
-	message := llm.Message{
-		Role: llm.MessageRoleUser,
-		Content: []llm.Content{
-			{Type: llm.ContentTypeText, Text: slugPrompt},
-		},
-	}
-
-	request := &llm.Request{
-		Messages: []llm.Message{message},
-	}
-
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	response, err := llmService.Do(ctxWithTimeout, request)
+	started := time.Now()
+	response, err := chat.Invoke(ctxWithTimeout, dmodel.Request{Messages: []dmessage.Message{dmessage.Human(slugPrompt)}})
+	finished := time.Now()
 	if err != nil {
-		return "", fmt.Errorf("failed to generate slug: %w", err)
+		return "", nil, fmt.Errorf("failed to generate slug: %w", err)
 	}
 
-	if len(response.Content) == 0 {
-		return "", fmt.Errorf("empty response from LLM")
+	if len(response.Message.Content) == 0 {
+		return "", nil, fmt.Errorf("empty response from LLM")
 	}
 
 	// Find the first text content block. Reasoning models (e.g.
 	// gpt-oss-20b) return a leading Thinking block with the actual answer
 	// in a later text block, so we can't just read Content[0].
 	var text string
-	for _, content := range response.Content {
-		if content.Type == llm.ContentTypeText && strings.TrimSpace(content.Text) != "" {
+	for _, content := range response.Message.Content {
+		if content.Type == dmessage.BlockText && strings.TrimSpace(content.Text) != "" {
 			text = content.Text
 			break
 		}
@@ -268,10 +272,14 @@ Respond with only the slug, nothing else.`, userMessage)
 	slug := strings.TrimSpace(text)
 	slug = Sanitize(slug)
 	if slug == "" {
-		return "", fmt.Errorf("generated slug is empty after sanitization")
+		return "", nil, fmt.Errorf("generated slug is empty after sanitization")
 	}
 
-	return slug, nil
+	var usage *slugUsage
+	if response.Message.Usage != nil {
+		usage = &slugUsage{tokens: *response.Message.Usage, model: chat.Profile().Model, started: started, finished: finished}
+	}
+	return slug, usage, nil
 }
 
 // Sanitize cleans a string to be a valid slug

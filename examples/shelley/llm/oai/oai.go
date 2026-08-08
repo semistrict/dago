@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sashabaranov/go-openai"
+	dmodel "github.com/semistrict/dago/model"
 	"shelley.exe.dev/llm"
 )
 
@@ -564,9 +565,28 @@ type Service struct {
 	// value (used by custom-model config to pass provider-specific values like
 	// "xhigh" or "none"). Overridden by Request.ThinkingLevel when set.
 	ReasoningEffort string
+
+	native llm.Service
 }
 
 var _ llm.Service = (*Service)(nil)
+
+// NewNativeChatService retains the catalog metadata facade while making the
+// executable model path a Dago chat implementation.
+func NewNativeChatService(config Service, native llm.Service) *Service {
+	config.native = native
+	return &config
+}
+
+func (s *Service) DagoChat() dmodel.Chat {
+	if s == nil || s.native == nil {
+		return nil
+	}
+	if native, ok := s.native.(interface{ DagoChat() dmodel.Chat }); ok {
+		return native.DagoChat()
+	}
+	return nil
+}
 
 // ModelsRegistry is a registry of all known models with their user-friendly names.
 // Declaration order is display order — keep current models at top, old models at bottom.

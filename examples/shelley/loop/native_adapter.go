@@ -41,12 +41,24 @@ type nativeChatOptions struct {
 // nativeChat exposes any Shelley model implementation through Dago's model
 // contract. The Dago agent graph remains the sole owner of the model/tool loop.
 func nativeChat(service llm.Service, options nativeChatOptions) dmodel.Chat {
+	chat, _ := resolveNativeChat(service, options, false)
+	return chat
+}
+
+func resolveNativeChat(service llm.Service, options nativeChatOptions, requireNative bool) (dmodel.Chat, error) {
 	if native, ok := service.(interface{ DagoChat() dmodel.Chat }); ok {
-		if chat := native.DagoChat(); chat != nil {
-			return chat
+		useDirect := true
+		if policy, ok := service.(interface{ UseDagoChatInAgent() bool }); ok {
+			useDirect = policy.UseDagoChatInAgent()
+		}
+		if chat := native.DagoChat(); chat != nil && (useDirect || requireNative) {
+			return chat, nil
 		}
 	}
-	return &chatAdapter{service: service, options: options}
+	if requireNative {
+		return nil, fmt.Errorf("Shelley model %T does not expose a native Dago chat", service)
+	}
+	return &chatAdapter{service: service, options: options}, nil
 }
 
 type chatAdapter struct {
@@ -512,7 +524,33 @@ func toolResultFromDago(item dmessage.Message) (llm.Content, []llm.PurposedUsage
 		ToolError:  item.ToolStatus == dmessage.ToolStatusError,
 		ToolResult: contentFromDago(item.Content),
 	}
-	return content, nil, nil
+	return content, purposedUsageFromDago(item.OtherUsage), nil
+}
+
+func purposedUsageFromDago(items []dmessage.PurposedUsage) []llm.PurposedUsage {
+	if len(items) == 0 {
+		return nil
+	}
+	result := make([]llm.PurposedUsage, 0, len(items))
+	for _, item := range items {
+		usage := llm.Usage{
+			InputTokens:              uint64(max(0, item.InputTokens)),
+			CacheCreationInputTokens: uint64(max(0, item.InputDetails["cache_creation"])),
+			CacheReadInputTokens:     uint64(max(0, item.InputDetails["cache_read"])),
+			OutputTokens:             uint64(max(0, item.OutputTokens)),
+			CostUSD:                  item.CostUSD,
+			Model:                    item.Model,
+			URL:                      item.URL,
+		}
+		if started, err := time.Parse(time.RFC3339Nano, item.StartedAt); err == nil {
+			usage.StartTime = &started
+		}
+		if finished, err := time.Parse(time.RFC3339Nano, item.FinishedAt); err == nil {
+			usage.EndTime = &finished
+		}
+		result = append(result, llm.PurposedUsage{Purpose: item.Purpose, Usage: usage})
+	}
+	return result
 }
 
 func responseToDago(response *llm.Response) (dmodel.Response, error) {
