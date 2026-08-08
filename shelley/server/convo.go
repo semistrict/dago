@@ -1793,6 +1793,11 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 	}
 	history, system := cm.partitionMessages(dbMessages)
 	cm.logSystemPromptState(system, len(dbMessages))
+	conversation, err := database.GetConversationByID(context.Background(), conversationID)
+	if err != nil {
+		return fmt.Errorf("failed to load conversation generation: %w", err)
+	}
+	checkpointNamespace := fmt.Sprintf("generation-%d", conversation.CurrentGeneration)
 
 	// Create tools for this conversation with the conversation's working directory
 	toolSetConfig.WorkingDir = cwd
@@ -1868,6 +1873,9 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 		InjectMessages: func(ctx context.Context) []llm.Message {
 			return cm.takeInjectableSubagentDone(ctx)
 		},
+		Saver:     database.CheckpointSaver(),
+		ThreadID:  conversationID,
+		Namespace: checkpointNamespace,
 	})
 
 	cm.mu.Lock()
@@ -2040,7 +2048,9 @@ func (cm *ConversationManager) CancelConversation(ctx context.Context) error {
 		}
 	}
 
-	// Record cancellation messages
+	// Build and record cancellation messages. The same messages are committed
+	// to Dago below as the durable terminal transition for the cancelled run.
+	var runtimeCancellation []llm.Message
 	if inProgressToolID != "" {
 		// If there was an in-progress tool, record a cancelled result
 		cm.logger.Info("Recording cancelled tool result", "tool_id", inProgressToolID, "tool_name", inProgressToolName)
@@ -2058,6 +2068,7 @@ func (cm *ConversationManager) CancelConversation(ctx context.Context) error {
 				},
 			},
 		}
+		runtimeCancellation = append(runtimeCancellation, cancelledMessage)
 
 		if err := cm.recordMessage(ctx, cancelledMessage, llm.Usage{}, nil); err != nil {
 			cm.logger.Error("Failed to record cancelled tool result", "error", err)
@@ -2099,10 +2110,14 @@ func (cm *ConversationManager) CancelConversation(ctx context.Context) error {
 		Content:   []llm.Content{{Type: llm.ContentTypeText, Text: "[Operation cancelled]"}},
 		EndOfTurn: true,
 	}
+	runtimeCancellation = append(runtimeCancellation, endTurnMessage)
 
 	if err := cm.recordMessage(ctx, endTurnMessage, llm.Usage{}, nil); err != nil {
 		cm.logger.Error("Failed to record end turn message", "error", err)
 		return fmt.Errorf("failed to record end turn message: %w", err)
+	}
+	if err := loopInstance.ResolveCancellation(context.WithoutCancel(ctx), runtimeCancellation...); err != nil {
+		return err
 	}
 
 	// Mark agent as not working

@@ -2,10 +2,21 @@ package dtach
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "sdt-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
 
 func TestRingDropsOldest(t *testing.T) {
 	r := newRing(8)
@@ -35,7 +46,7 @@ func serveInBackground(t *testing.T, opts ServerOptions) <-chan error {
 }
 
 func TestServeAttachSurvivesDetach(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sock := filepath.Join(dir, "sock")
 
 	// Use `cat` so the session stays alive until we explicitly signal EOF.
@@ -94,7 +105,7 @@ func TestServeAttachSurvivesDetach(t *testing.T) {
 }
 
 func TestAttachReplaysScrollbackToLateClient(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sock := filepath.Join(dir, "sock")
 
 	// Use `cat` so the session stays alive until we send EOF. While running,

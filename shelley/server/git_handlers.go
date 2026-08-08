@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"shelley.exe.dev/pathutil"
 )
 
 // GitDiffInfo represents a commit or working changes
@@ -79,7 +81,7 @@ func getGitRoot(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(output)), nil
+	return pathutil.Logical(strings.TrimSpace(string(output)), dir), nil
 }
 
 // parseDiffStat parses git diff --numstat output

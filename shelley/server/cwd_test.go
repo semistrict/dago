@@ -717,12 +717,10 @@ func TestGitInfoForCwd(t *testing.T) {
 	runGit(tmpDir, "init")
 	runGit(tmpDir, "commit", "--allow-empty", "-m", "initial\n\nPrompt: test")
 
-	resolved, _ := filepath.EvalSymlinks(tmpDir)
-
 	t.Run("regular_repo", func(t *testing.T) {
 		repoRoot, worktreeRoot := gitInfoForCwd(tmpDir)
-		if repoRoot != resolved {
-			t.Errorf("expected repo_root=%q, got %q", resolved, repoRoot)
+		if repoRoot != tmpDir {
+			t.Errorf("expected repo_root=%q, got %q", tmpDir, repoRoot)
 		}
 		if worktreeRoot != "" {
 			t.Errorf("expected empty worktree_root, got %q", worktreeRoot)
@@ -745,12 +743,11 @@ func TestGitInfoForCwd(t *testing.T) {
 		runGit(tmpDir, "worktree", "add", "-b", "test-wt", worktreePath)
 
 		repoRoot, worktreeRoot := gitInfoForCwd(worktreePath)
-		resolvedWt, _ := filepath.EvalSymlinks(worktreePath)
-		if repoRoot != resolvedWt {
-			t.Errorf("expected repo_root=%q, got %q", resolvedWt, repoRoot)
+		if repoRoot != worktreePath {
+			t.Errorf("expected repo_root=%q, got %q", worktreePath, repoRoot)
 		}
-		if worktreeRoot != resolved {
-			t.Errorf("expected worktree_root=%q, got %q", resolved, worktreeRoot)
+		if worktreeRoot != tmpDir {
+			t.Errorf("expected worktree_root=%q, got %q", tmpDir, worktreeRoot)
 		}
 	})
 }

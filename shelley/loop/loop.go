@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,13 @@ import (
 	"sync"
 	"time"
 
+	dagent "github.com/semistrict/dago/agent"
+	"github.com/semistrict/dago/checkpoint"
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/state"
+
+	"shelley.exe.dev/dagoruntime"
 	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/llmhttp"
@@ -74,6 +82,14 @@ type Config struct {
 	// returning them, so the DB sequence order matches the in-memory splice
 	// point.
 	InjectMessages func(ctx context.Context) []llm.Message
+	// Saver is the durable Dago checkpoint store for this conversation. When
+	// nil, the loop uses an isolated in-memory saver.
+	Saver checkpoint.Saver
+	// ThreadID is the stable Dago checkpoint thread id. The server uses the
+	// conversation id; direct callers receive an isolated per-loop id.
+	ThreadID string
+	// Namespace isolates independent conversation generations under one thread.
+	Namespace string
 }
 
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
@@ -100,6 +116,13 @@ type Loop struct {
 	thinkingLevel    llm.ThinkingLevel
 	notify           chan struct{} // signaled when a message is queued or retry requested
 	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
+	saver            checkpoint.Saver
+	threadID         string
+	namespace        string
+	runtimeSeeded    bool
+	pendingInput     []llm.Message
+	executionMu      sync.Mutex
+	runtime          *dagent.Agent
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -116,7 +139,11 @@ func NewLoop(config Config) *Loop {
 	}
 	initialGitState := gitstate.GetGitState(workingDir)
 
-	return &Loop{
+	saver := config.Saver
+	if saver == nil {
+		saver = checkpoint.NewMemorySaver()
+	}
+	loop := &Loop{
 		llm:              config.LLM,
 		history:          config.History,
 		tools:            config.Tools,
@@ -135,7 +162,14 @@ func NewLoop(config Config) *Loop {
 		injectMessages:   config.InjectMessages,
 		thinkingLevel:    config.ThinkingLevel,
 		notify:           make(chan struct{}, 1),
+		saver:            saver,
+		threadID:         config.ThreadID,
+		namespace:        config.Namespace,
 	}
+	if loop.threadID == "" {
+		loop.threadID = fmt.Sprintf("shelley-loop-%p", loop)
+	}
+	return loop
 }
 
 // Retry signals the loop to re-attempt the next LLM request without queueing
@@ -238,6 +272,7 @@ func (l *Loop) Go(ctx context.Context) error {
 			for _, msg := range l.messageQueue {
 				l.history = append(l.history, msg)
 			}
+			l.pendingInput = append(l.pendingInput, l.messageQueue...)
 			l.messageQueue = l.messageQueue[:0] // Clear queue
 		}
 		retryPending := l.retryPending
@@ -279,6 +314,7 @@ func (l *Loop) ProcessOneTurn(ctx context.Context) error {
 		for _, msg := range l.messageQueue {
 			l.history = append(l.history, msg)
 		}
+		l.pendingInput = append(l.pendingInput, l.messageQueue...)
 		l.messageQueue = nil
 	}
 	l.mu.Unlock()
@@ -287,287 +323,369 @@ func (l *Loop) ProcessOneTurn(ctx context.Context) error {
 	return l.processLLMRequest(ctx)
 }
 
-// processLLMRequest sends a request to the LLM and handles the response.
-// It loops internally: when the LLM responds with tool calls, it executes
-// the tools and sends another request, repeating until the turn ends or an
-// error occurs. This iterative design avoids the O(n²) peak memory that
-// mutual recursion (processLLMRequest ↔ executeToolCalls) caused, because
-// each iteration's locals are freed before the next iteration starts.
+// processLLMRequest runs one complete turn through Dago's compiled agent graph.
+// Shelley remains a UI/database projection layer; model routing, tool scheduling,
+// cancellation propagation, state reduction, and checkpoint persistence all occur
+// inside Dago.
 func (l *Loop) processLLMRequest(ctx context.Context) error {
-	for {
-		// Splice in externally injected messages (e.g. subagent completion
-		// notifications) so this request already carries them. This runs
-		// between tool rounds too, letting an in-flight turn react to a
-		// subagent finishing without waiting for the turn to end. The callback
-		// persists the messages itself; we only add them to in-memory history.
-		if l.injectMessages != nil {
-			if injected := l.injectMessages(ctx); len(injected) > 0 {
-				l.mu.Lock()
-				l.history = append(l.history, injected...)
-				l.mu.Unlock()
-			}
-		}
+	l.executionMu.Lock()
+	defer l.executionMu.Unlock()
+	inputMessages, err := l.runtimeInput(ctx)
+	if err != nil {
+		return err
+	}
 
-		l.mu.Lock()
-		messages := append([]llm.Message(nil), l.history...)
-		tools := l.tools
-		system := l.system
-		llmService := l.llm
-		l.mu.Unlock()
+	l.mu.Lock()
+	tools := append([]*llm.Tool(nil), l.tools...)
+	service := l.llm
+	system := append([]llm.SystemContent(nil), l.system...)
+	l.mu.Unlock()
 
-		// Enable prompt caching: set cache flag on last tool and last user message content
-		// See https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
-		if len(tools) > 0 {
-			// Make a copy of tools to avoid modifying the shared slice
-			tools = append([]*llm.Tool(nil), tools...)
-			// Copy the last tool and enable caching
-			lastTool := *tools[len(tools)-1]
-			lastTool.Cache = true
-			tools[len(tools)-1] = &lastTool
-		}
+	dagoTools, err := dagoruntime.Tools(tools, dagoruntime.ToolOptions{
+		WorkingDir: l.currentWorkingDir,
+		Progress:   l.onToolProgress,
+		Service:    service,
+	})
+	if err != nil {
+		return err
+	}
+	dagoMessages, err := dagoruntime.MessagesToDago(inputMessages)
+	if err != nil {
+		return err
+	}
 
-		// Set cache flag on the last content block of the last user message
-		if len(messages) > 0 {
-			for i := len(messages) - 1; i >= 0; i-- {
-				if messages[i].Role == llm.MessageRoleUser && len(messages[i].Content) > 0 {
-					// Deep copy the message to avoid modifying the shared history
-					msg := messages[i]
-					msg.Content = append([]llm.Content(nil), msg.Content...)
-					msg.Content[len(msg.Content)-1].Cache = true
-					messages[i] = msg
-					break
-				}
-			}
-		}
-
-		req := &llm.Request{
-			Messages:      messages,
-			Tools:         tools,
-			System:        system,
-			ThinkingLevel: l.thinkingLevel,
-			OnStream:      l.onStreamDelta,
+	middleware := []dagent.Middleware{l.runtimeMiddleware()}
+	runtime, err := dagent.New(dagent.Options{
+		Name: "Shelley", Model: dagoruntime.NewChat(service, dagoruntime.ChatOptions{
+			ThinkingLevel: l.getThinkingLevel,
 			OnRetry:       l.recordRetryWarning(ctx),
+		}),
+		Tools: dagoTools, SystemPrompt: joinSystem(system), Middleware: middleware,
+		Saver: l.saver, MaxConcurrency: 1, FailOnToolError: false,
+		StateFields: map[string]dagent.StateField{
+			"shelley.run": {Kind: dagent.FieldEphemeral, Contract: "shelley.run.v1", Clone: func(value any) any { return value }},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create Dago Shelley agent: %w", err)
+	}
+	l.runtime = runtime
+
+	stream := runtime.Stream(ctx, dagent.Input{
+		Config: l.checkpointConfig(), Messages: dagoMessages,
+		State: state.Values{"shelley.run": true},
+	}, 64)
+	defer stream.Close()
+	for {
+		event, nextErr := stream.Next(ctx)
+		if nextErr == io.EOF {
+			break
 		}
-
-		// Insert missing tool results if the previous message had tool_use blocks
-		// without corresponding tool_result blocks. This can happen when a request
-		// is cancelled or fails after the LLM responds but before tools execute.
-		l.insertMissingToolResults(req)
-
-		systemLen := 0
-		for _, sys := range system {
-			systemLen += len(sys.Text)
+		if nextErr != nil {
+			l.flushStream()
+			return l.recordRuntimeError(ctx, nextErr)
 		}
-		l.logger.Debug("sending LLM request", "message_count", len(messages), "tool_count", len(tools), "system_items", len(system), "system_length", systemLen)
-
-		// sendWithRetry issues a single LLM request, retrying transient transport
-		// failures (EOF, connection reset). Provider-internal retries own
-		// user-visible retry warnings; this outer retry catches transport failures
-		// that escape the provider without adding noise.
-		//
-		// Timeouts are layered:
-		//   - The primary bound is the transport-level idle/stall timeout (see
-		//     llmhttp.Transport.IdleTimeout), which aborts only when no bytes
-		//     arrive for the idle window. This lets a slow-but-progressing turn
-		//     (a long high-reasoning response, or a slow ChatGPT-subscription
-		//     proxy hop) run to completion instead of dying at a fixed cap.
-		//   - maxTurnDuration is a generous absolute backstop so a provider that
-		//     keeps the socket warm with heartbeats/keepalives while otherwise
-		//     wedged (which would keep resetting the idle timer) can't hang the
-		//     turn forever. It is intentionally far larger than the idle window.
-		// User cancellation still flows through ctx.
-		// requestTrace collects correlation ids (Shelley's own request id, plus
-		// any upstream provider request id) for this turn so we can surface them
-		// in a user-facing error — including on the idle/stall-timeout path, where
-		// there is no successful response to read an id from.
-		var requestTrace *llmhttp.RequestTrace
-		sendWithRetry := func(req *llm.Request) (*llm.Response, error) {
-			llmCtx, cancel := context.WithTimeout(ctx, maxTurnDuration)
-			defer cancel()
-			llmCtx, requestTrace = llmhttp.WithRequestTrace(llmCtx)
-			const maxRetries = 2
-			var resp *llm.Response
-			var err error
-			for attempt := 1; attempt <= maxRetries; attempt++ {
-				resp, err = llmService.Do(llmCtx, req)
-				if err == nil {
-					return resp, nil
-				}
-				if !isRetryableError(err) || attempt == maxRetries {
-					return nil, err
-				}
-				sleep := time.Second * time.Duration(attempt)
-				l.logger.Warn("LLM request failed with retryable error, retrying",
-					"error", err,
-					"attempt", attempt,
-					"max_retries", maxRetries)
-				select {
-				case <-time.After(sleep):
-				case <-llmCtx.Done():
-					return nil, llmCtx.Err()
-				}
-			}
-			return resp, err
+		if event.Mode == dagent.EventToken && event.Chunk != nil {
+			l.emitToken(*event.Chunk)
+			continue
 		}
-
-		resp, err := sendWithRetry(req)
-
-		// Resolve server-side tool "pause_turn" responses before any further
-		// handling. When Anthropic pauses mid-turn to run a server-side tool
-		// (e.g. web_search), it returns stop_reason=pause_turn with a
-		// server_tool_use block that has no result yet. The continuation arrives
-		// in a *separate* response that begins with the matching
-		// web_search_tool_result. Anthropic requires the server_tool_use and its
-		// result to live in the SAME message, so we re-request and merge the
-		// continuation into a single assistant message rather than letting the
-		// loop interleave client tool execution (which permanently splits the
-		// pair and wedges the conversation). See resolvePausedTurn.
-		if err == nil && resp != nil && resp.StopReason == llm.StopReasonPause {
-			resp, err = l.resolvePausedTurn(ctx, sendWithRetry, req, resp)
+		if event.Mode != dagent.EventUpdate {
+			continue
 		}
-
-		// Flush any buffered stream deltas before recording the message,
-		// so the UI sees the streaming text before the full message replaces it.
-		if l.onStreamDone != nil {
-			l.onStreamDone()
-		}
-
-		if err != nil {
-			// Record the error as a message so it can be displayed in the UI
-			// EndOfTurn must be true so the agent working state is properly updated
-			errorMessage := llm.Message{
-				Role: llm.MessageRoleAssistant,
-				Content: []llm.Content{
-					{
-						Type: llm.ContentTypeText,
-						Text: userFacingLLMError(err, requestTrace),
-					},
-				},
-				EndOfTurn:      true,
-				ErrorType:      llm.ErrorTypeLLMRequest,
-				ErrorRetryable: IsRetryableLLMError(err),
-			}
-			if recordErr := l.recordMessage(ctx, errorMessage, llm.Usage{}, nil); recordErr != nil {
-				l.logger.Error("failed to record error message", "error", recordErr)
-			}
-			return fmt.Errorf("LLM request failed: %w", err)
-		}
-
-		l.logger.Debug("received LLM response", "content_count", len(resp.Content), "stop_reason", resp.StopReason.String(), "usage", resp.Usage.String())
-
-		// Update total usage
-		l.mu.Lock()
-		l.totalUsage.Add(resp.Usage)
-		l.mu.Unlock()
-
-		// Handle max tokens truncation BEFORE adding to history - truncated responses
-		// should not be added to history normally (they get special handling)
-		if resp.StopReason == llm.StopReasonMaxTokens {
-			l.logger.Warn("LLM response truncated due to max tokens")
-			return l.handleMaxTokensTruncation(ctx, resp)
-		}
-
-		// Handle refusals BEFORE adding to history. On stop_reason=refusal the
-		// model declines to continue and typically returns no visible content
-		// (often just a thinking block). Recorded normally it becomes a silent
-		// empty end-of-turn bubble, and — worse — re-queuing "continue" replays
-		// the same context and refuses again, wedging the conversation in an
-		// endless string of blank turns. Surface it as a visible error instead.
-		if resp.StopReason == llm.StopReasonRefusal {
-			l.logger.Warn("LLM declined to continue (stop_reason=refusal)")
-			return l.handleRefusal(ctx, resp)
-		}
-
-		// Convert response to message and add to history
-		assistantMessage := resp.ToMessage()
-		l.mu.Lock()
-		l.history = append(l.history, assistantMessage)
-		l.mu.Unlock()
-
-		// Record assistant message with model and timing metadata
-		if err := l.recordMessage(ctx, assistantMessage, resp.UsageWithMeta(), nil); err != nil {
-			l.logger.Error("failed to record assistant message", "error", err)
-		}
-
-		// If no tool calls, the turn is over
-		if resp.StopReason != llm.StopReasonToolUse {
-			l.checkGitStateChange(ctx)
-			return nil
-		}
-
-		// Execute tool calls and loop back for the next LLM request
-		l.logger.Debug("handling tool calls", "content_count", len(resp.Content))
-		if err := l.executeToolCalls(ctx, resp.Content); err != nil {
+		if err := l.projectRuntimeUpdate(ctx, event.Node, event.Update); err != nil {
 			return err
+		}
+	}
+	result, err := stream.Result(ctx)
+	if err != nil {
+		l.flushStream()
+		return l.recordRuntimeError(ctx, err)
+	}
+	l.mu.Lock()
+	l.runtimeSeeded = true
+	l.mu.Unlock()
+	if len(result.Interrupts) > 0 {
+		return fmt.Errorf("Dago Shelley agent paused with %d unresolved interrupt(s)", len(result.Interrupts))
+	}
+	l.checkGitStateChange(ctx)
+	return nil
+}
+
+// ResolveCancellation durably appends cancellation messages and clears any
+// pending model/tool tasks in the Dago graph before a later turn resumes.
+func (l *Loop) ResolveCancellation(ctx context.Context, messages ...llm.Message) error {
+	l.executionMu.Lock()
+	defer l.executionMu.Unlock()
+	if l.runtime == nil {
+		return nil
+	}
+	converted, err := dagoruntime.MessagesToDago(messages)
+	if err != nil {
+		return err
+	}
+	if _, err := l.runtime.Cancel(ctx, dagent.Input{
+		Config: l.checkpointConfig(), Messages: converted,
+	}); err != nil {
+		return fmt.Errorf("resolve Dago Shelley cancellation: %w", err)
+	}
+	l.mu.Lock()
+	l.history = append(l.history, messages...)
+	l.runtimeSeeded = true
+	l.mu.Unlock()
+	return nil
+}
+
+func (l *Loop) runtimeInput(ctx context.Context) ([]llm.Message, error) {
+	l.mu.Lock()
+	seeded := l.runtimeSeeded
+	pending := append([]llm.Message(nil), l.pendingInput...)
+	l.pendingInput = nil
+	history := append([]llm.Message(nil), l.history...)
+	l.mu.Unlock()
+	if !seeded {
+		tuple, err := l.saver.GetTuple(ctx, l.checkpointConfig())
+		if err != nil {
+			return nil, fmt.Errorf("load Dago Shelley checkpoint: %w", err)
+		}
+		if tuple != nil {
+			l.mu.Lock()
+			l.runtimeSeeded = true
+			l.mu.Unlock()
+			return pending, nil
+		}
+		request := &llm.Request{Messages: history}
+		l.insertMissingToolResults(request)
+		return request.Messages, nil
+	}
+	return pending, nil
+}
+
+func (l *Loop) checkpointConfig() checkpoint.Config {
+	return checkpoint.Config{ThreadID: l.threadID, Namespace: l.namespace}
+}
+
+func (l *Loop) runtimeMiddleware() dagent.Middleware {
+	return dagent.Middleware{
+		Name: "shelley_runtime",
+		BeforeModel: func(ctx context.Context, _ state.Values, _ dagent.Runtime) (state.Values, error) {
+			var additions []llm.Message
+			if l.injectMessages != nil {
+				additions = append(additions, l.injectMessages(ctx)...)
+			}
+			l.mu.Lock()
+			if len(l.messageQueue) > 0 {
+				additions = append(additions, l.messageQueue...)
+				l.messageQueue = nil
+				l.logger.Info("processing user interruption during Dago tool execution")
+			}
+			l.history = append(l.history, additions...)
+			l.mu.Unlock()
+			if len(additions) == 0 {
+				return nil, nil
+			}
+			converted, err := dagoruntime.MessagesToDago(additions)
+			if err != nil {
+				return nil, err
+			}
+			return state.Values{dagent.MessagesKey: converted}, nil
+		},
+		WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
+			requestCtx, cancel := context.WithTimeout(ctx, maxTurnDuration)
+			defer cancel()
+			const attempts = 2
+			var response dagent.ModelResponse
+			var err error
+			for attempt := 1; attempt <= attempts; attempt++ {
+				response, err = next(requestCtx, request)
+				if err == nil || !isRetryableError(err) || attempt == attempts {
+					return response, err
+				}
+				timer := time.NewTimer(time.Duration(attempt) * time.Second)
+				select {
+				case <-timer.C:
+				case <-requestCtx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return dagent.ModelResponse{}, requestCtx.Err()
+				}
+			}
+			return response, err
+		},
+		AfterModel: func(_ context.Context, values state.Values, _ dagent.Runtime) (state.Values, error) {
+			messages, _ := values[dagent.MessagesKey].([]dmessage.Message)
+			if len(messages) == 0 {
+				return nil, nil
+			}
+			last := messages[len(messages)-1]
+			response, ok, err := dagoruntime.ResponseFromDago(last)
+			if err != nil || !ok {
+				return nil, err
+			}
+			if response.StopReason == llm.StopReasonMaxTokens || response.StopReason == llm.StopReasonRefusal {
+				return state.Values{dagent.MessagesKey: []dmessage.Message{dmessage.Remove(last.ID)}}, nil
+			}
+			return nil, nil
+		},
+		BeforeTools: func(_ context.Context, request dagent.ToolBatchRequest) (dagent.ToolBatchResponse, error) {
+			calls := make([]dmessage.ToolCall, 0, len(request.Calls))
+			var missing []dmessage.Message
+			for _, call := range request.Calls {
+				if request.Tools[call.Name] != nil {
+					calls = append(calls, call)
+					continue
+				}
+				exact := llm.Content{
+					Type: llm.ContentTypeToolResult, ToolUseID: call.ID, ToolError: true,
+					ToolResult: llm.TextContent(fmt.Sprintf("Tool '%s' not found", call.Name)),
+				}
+				artifact, err := json.Marshal(map[string]any{
+					"version": 1, "kind": "shelley.tool_result.v1", "content": exact,
+				})
+				if err != nil {
+					return dagent.ToolBatchResponse{}, err
+				}
+				message := dmessage.Tool(call.ID, exact.ToolResult[0].Text)
+				message.Name = call.Name
+				message.ToolStatus = dmessage.ToolStatusError
+				message.Artifact = artifact
+				missing = append(missing, message)
+			}
+			if len(missing) == 0 {
+				return dagent.ToolBatchResponse{}, nil
+			}
+			return dagent.ToolBatchResponse{Calls: calls, Messages: missing}, nil
+		},
+	}
+}
+
+func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update state.Values) error {
+	value, ok := update[dagent.MessagesKey]
+	if !ok {
+		return nil
+	}
+	messages, ok := value.([]dmessage.Message)
+	if !ok {
+		return fmt.Errorf("Dago Shelley message update has type %T", value)
+	}
+	if node == "model" {
+		l.flushStream()
+		for _, item := range messages {
+			response, found, err := dagoruntime.ResponseFromDago(item)
+			if err != nil {
+				return err
+			}
+			if !found {
+				continue
+			}
+			l.mu.Lock()
+			l.totalUsage.Add(response.Usage)
+			l.mu.Unlock()
+			switch response.StopReason {
+			case llm.StopReasonMaxTokens:
+				return l.handleMaxTokensTruncation(ctx, response)
+			case llm.StopReasonRefusal:
+				return l.handleRefusal(ctx, response)
+			}
+			assistant := response.ToMessage()
+			l.mu.Lock()
+			l.history = append(l.history, assistant)
+			l.mu.Unlock()
+			if err := l.recordMessage(ctx, assistant, response.UsageWithMeta(), nil); err != nil {
+				l.logger.Error("failed to record assistant message", "error", err)
+			}
+		}
+		return nil
+	}
+	if node != "tools" {
+		return nil
+	}
+	toolMessage := llm.Message{Role: llm.MessageRoleUser}
+	var otherUsage []llm.PurposedUsage
+	for _, item := range messages {
+		if item.Role != dmessage.RoleTool {
+			continue
+		}
+		content, usage, err := dagoruntime.ToolResultFromDago(item)
+		if err != nil {
+			return err
+		}
+		toolMessage.Content = append(toolMessage.Content, content)
+		otherUsage = append(otherUsage, usage...)
+	}
+	if len(toolMessage.Content) == 0 {
+		return nil
+	}
+	l.mu.Lock()
+	l.history = append(l.history, toolMessage)
+	l.mu.Unlock()
+	if err := l.recordMessage(ctx, toolMessage, llm.Usage{}, otherUsage); err != nil {
+		l.logger.Error("failed to record tool result message", "error", err)
+	}
+	return nil
+}
+
+func (l *Loop) currentWorkingDir() string {
+	if l.getWorkingDir != nil {
+		return l.getWorkingDir()
+	}
+	return l.workingDir
+}
+
+func (l *Loop) getThinkingLevel() llm.ThinkingLevel {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.thinkingLevel
+}
+
+func joinSystem(items []llm.SystemContent) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, item.Text)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (l *Loop) emitToken(chunk dmodel.Chunk) {
+	if l.onStreamDelta == nil {
+		return
+	}
+	for index, block := range chunk.MessageDelta.Content {
+		blockIndex := index
+		if block.Index != nil {
+			blockIndex = *block.Index
+		}
+		switch block.Type {
+		case dmessage.BlockText:
+			l.onStreamDelta(llm.StreamDelta{Type: "text", Text: block.Text, Index: blockIndex})
+		case dmessage.BlockReasoning:
+			l.onStreamDelta(llm.StreamDelta{Type: "thinking", Text: block.Reasoning, Index: blockIndex})
 		}
 	}
 }
 
-// maxPauseContinuations bounds how many times we will re-request to resolve a
-// chain of server-side tool pauses, guarding against a pathological loop where
-// the provider keeps returning pause_turn forever.
-const maxPauseContinuations = 16
-
-// resolvePausedTurn handles a stop_reason=pause_turn response by re-requesting
-// the continuation(s) and merging all blocks into a single assistant message.
-//
-// Anthropic pauses a turn to run a server-side tool (e.g. web_search). The
-// paused response ends with a server_tool_use block whose result is not yet
-// available; the continuation arrives in a follow-up response that begins with
-// the matching web_search_tool_result. Because Anthropic requires the
-// server_tool_use and its web_search_tool_result to live in the SAME message,
-// we accumulate every block across the pause chain and return a single response
-// with the final (non-pause) stop reason. This keeps the stored history valid
-// on reload and prevents the client tool loop from interleaving a tool_result
-// message between the server_tool_use and its result.
-//
-// req is the request that produced the initial paused response; it is not
-// mutated — each continuation request is a shallow copy with a fresh Messages
-// slice that has the running assistant turn appended.
-func (l *Loop) resolvePausedTurn(
-	ctx context.Context,
-	send func(*llm.Request) (*llm.Response, error),
-	req *llm.Request,
-	resp *llm.Response,
-) (*llm.Response, error) {
-	// Copy the initial content so appends never alias the first response's
-	// backing array.
-	merged := append([]llm.Content(nil), resp.Content...)
-	// Accumulate usage across the whole pause chain, starting with the initial
-	// paused response's usage.
-	totalUsage := resp.Usage
-	// Preserve the start time of the first (paused) leg so the merged turn
-	// reflects the full wall-clock duration, not just the last continuation.
-	startTime := resp.StartTime
-	for i := 0; resp.StopReason == llm.StopReasonPause; i++ {
-		if i >= maxPauseContinuations {
-			l.logger.Warn("server-side tool pause did not resolve", "continuations", i)
-			break
-		}
-		l.logger.Debug("resolving paused turn (server-side tool)", "continuation", i+1)
-
-		// Append the running assistant turn so the provider resumes from it.
-		continueReq := *req
-		continueReq.Messages = append(append([]llm.Message(nil), req.Messages...),
-			llm.Message{Role: llm.MessageRoleAssistant, Content: merged})
-
-		next, err := send(&continueReq)
-		if err != nil {
-			return nil, err
-		}
-		totalUsage.Add(next.Usage)
-		merged = append(merged, next.Content...)
-		resp = next
+func (l *Loop) flushStream() {
+	if l.onStreamDone != nil {
+		l.onStreamDone()
 	}
+}
 
-	// Return a single response carrying every block from the pause chain with
-	// the final (resolved) stop reason. Usage is the sum across the whole chain
-	// (initial paused response + every continuation) so billing is not lost.
-	resolved := *resp
-	resolved.Content = merged
-	resolved.Usage = totalUsage
-	resolved.StartTime = startTime // EndTime stays at the final continuation
-	return &resolved, nil
+func (l *Loop) recordRuntimeError(ctx context.Context, err error) error {
+	displayErr := err
+	if text := strings.TrimPrefix(err.Error(), `execute node "model": `); text != err.Error() {
+		displayErr = errors.New(text)
+	}
+	message := llm.Message{
+		Role: llm.MessageRoleAssistant, Content: llm.TextContent(userFacingLLMError(displayErr, nil)),
+		EndOfTurn: true, ErrorType: llm.ErrorTypeLLMRequest, ErrorRetryable: IsRetryableLLMError(err),
+	}
+	if recordErr := l.recordMessage(ctx, message, llm.Usage{}, nil); recordErr != nil {
+		l.logger.Error("failed to record Dago runtime error", "error", recordErr)
+	}
+	return fmt.Errorf("LLM request failed: %w", err)
 }
 
 func (l *Loop) recordRetryWarning(ctx context.Context) func(llm.RetryEvent) {

@@ -27,6 +27,7 @@ import (
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/models"
+	"shelley.exe.dev/pathutil"
 	"shelley.exe.dev/server/notifications"
 	"shelley.exe.dev/subpub"
 	"shelley.exe.dev/ui"
@@ -844,7 +845,7 @@ func getGitWorktreeRoot(repoPath string) string {
 	}
 
 	// The main repo root is the parent of the common .git dir
-	return filepath.Dir(commonDir)
+	return pathutil.Logical(filepath.Dir(commonDir), repoPath)
 }
 
 // handleCreateDirectory creates a new directory

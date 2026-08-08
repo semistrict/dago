@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/semistrict/dago/checkpoint"
+	checkpointsqlite "github.com/semistrict/dago/checkpoint/sqlite"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 
@@ -42,7 +44,8 @@ func generateConversationID() (string, error) {
 
 // DB wraps the database connection pool and provides high-level operations
 type DB struct {
-	pool *Pool
+	pool  *Pool
+	saver *checkpointsqlite.Saver
 }
 
 // Config holds database configuration
@@ -83,15 +86,27 @@ func New(cfg Config) (*DB, error) {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
-	return &DB{
-		pool: pool,
-	}, nil
+	saver, err := checkpointsqlite.Open(dsn)
+	if err != nil {
+		_ = pool.Close()
+		return nil, fmt.Errorf("initialize Dago checkpoint store: %w", err)
+	}
+
+	return &DB{pool: pool, saver: saver}, nil
 }
 
 // Close closes the database connection pool
 func (db *DB) Close() error {
-	return db.pool.Close()
+	var saverErr error
+	if db.saver != nil {
+		saverErr = db.saver.Close()
+	}
+	return errors.Join(saverErr, db.pool.Close())
 }
+
+// CheckpointSaver returns the durable Dago runtime store backed by the same
+// SQLite database as Shelley's UI projection.
+func (db *DB) CheckpointSaver() checkpoint.Saver { return db.saver }
 
 // Migrate runs the database migrations.
 //
@@ -1713,14 +1728,22 @@ func (db *DB) UnarchiveConversation(ctx context.Context, conversationID string) 
 
 // DeleteConversation deletes a conversation and all its messages
 func (db *DB) DeleteConversation(ctx context.Context, conversationID string) error {
-	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+	if err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
 		// Delete messages first (foreign key constraint)
 		if err := q.DeleteConversationMessages(ctx, conversationID); err != nil {
 			return fmt.Errorf("failed to delete messages: %w", err)
 		}
 		return q.DeleteConversation(ctx, conversationID)
-	})
+	}); err != nil {
+		return err
+	}
+	if db.saver != nil {
+		if err := db.saver.DeleteThread(ctx, conversationID); err != nil {
+			return fmt.Errorf("delete Dago conversation checkpoint: %w", err)
+		}
+	}
+	return nil
 }
 
 // ForkConversation creates a new top-level conversation that copies the source

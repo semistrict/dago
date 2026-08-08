@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"shelley.exe.dev/dagoruntime"
 	"shelley.exe.dev/exeenv"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/ant"
@@ -329,14 +330,10 @@ func buildIntegrationService(catalog []models.Model, model IntegrationModel, bas
 			SupportsImages_: supportsImages,
 		}, true
 	case models.APITypeOpenAIResponses:
-		return apiType, &oai.ResponsesService{
-			APIKey:        "implicit",
-			ModelURL:      baseURL + "/v1",
-			Model:         oai.Model{ModelName: modelName, SupportsImages: supportsImages},
-			HTTPC:         httpc,
-			ThinkingLevel: llm.ThinkingLevelMedium,
-			ProviderName:  model.Provider,
-		}, true
+		return apiType, dagoruntime.NewOpenAIResponses("implicit", modelName, baseURL, httpc, dagoruntime.OpenAIResponsesOptions{
+			Provider: model.Provider, ContextWindow: 128000, MaxOutputTokens: oai.DefaultMaxTokens,
+			SupportsImages: supportsImages, MaxImageBytes: 20 * 1024 * 1024,
+		}), true
 	case models.APITypeOpenAIChat:
 		return apiType, &oai.Service{
 			APIKey:       "implicit",

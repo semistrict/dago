@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"shelley.exe.dev/pathutil"
 )
 
 // GitState represents the current state of a git repository.
@@ -232,7 +234,7 @@ func getGitStateFromGit(dir string) *GitState {
 		return state
 	}
 	state.IsRepo = true
-	state.Worktree = strings.TrimSpace(string(output))
+	state.Worktree = pathutil.Logical(strings.TrimSpace(string(output)), dir)
 
 	// Get the current commit hash (short form)
 	cmd = exec.Command("git", "rev-parse", "--short", "HEAD")

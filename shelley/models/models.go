@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"shelley.exe.dev/dagoruntime"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
@@ -157,11 +158,12 @@ func oaiResponsesSvc(model oai.Model) func(baseURL, apiKey string, httpc *http.C
 
 func oaiResponsesSvcNamed(model oai.Model, providerName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		s := &oai.ResponsesService{Model: model, APIKey: apiKey, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium, ProviderName: providerName}
-		if baseURL != "" {
-			s.ModelURL = baseURL + "/v1"
-		}
-		return s
+		metadata := &oai.ResponsesService{Model: model}
+		return dagoruntime.NewOpenAIResponses(apiKey, model.ModelName, baseURL, httpc, dagoruntime.OpenAIResponsesOptions{
+			Provider: providerName, ContextWindow: metadata.TokenContextWindow(), MaxOutputTokens: oai.DefaultMaxTokens,
+			SupportsImages: model.SupportsImages, SupportsReasoning: model.IsReasoningModel,
+			UseSimplifiedPatch: model.UseSimplifiedPatch, MaxImageBytes: 20 * 1024 * 1024,
+		})
 	}
 }
 
