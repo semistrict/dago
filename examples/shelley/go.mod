@@ -103,7 +103,7 @@ require (
 
 replace github.com/boldsoftware/shelley/lazycue => ./lazycue
 
-replace github.com/semistrict/dago => ..
+replace github.com/semistrict/dago => ../..
 
 tool (
 	github.com/sqlc-dev/sqlc/cmd/sqlc

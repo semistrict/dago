@@ -129,9 +129,9 @@ LangChain or LangGraph compatibility.
 - [`examples/basic`](examples/basic) is a network-free invocation.
 - [`examples/openai`](examples/openai) streams a live workspace summary with an API
   key.
-- [`examples/shelley`](examples/shelley) is a complete responsive coding-agent
-  application with conversations, approvals, files, Git views, a terminal, local or
-  existing LangSmith sandbox execution, API-key access, and subscription sign-in.
+- [`examples/shelley`](examples/shelley) is the complete imported Shelley
+  application, retained as an end-to-end integration example and behavioral suite
+  while its agent runtime is ported to Dago.
 
 ## Verification
 

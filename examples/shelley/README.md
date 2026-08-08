@@ -1,31 +1,88 @@
-# Shelley example
+# Shelley: a coding agent for exe.dev
 
-This is a complete, mobile-first coding-agent application built on Dago. It is
-an independently written example inspired by the interaction surface of the pinned
-Apache-2.0 Shelley reference listed in `docs/upstream-manifest.json`.
+Shelley is a mobile-friendly, web-based, multi-conversation, multi-modal,
+multi-model, single-user coding agent built for but not exclusive to
+[exe.dev](https://exe.dev/). It does not come with authorization or sandboxing:
+bring your own.
 
-It includes:
+*Mobile-friendly* because ideas can come any time.
 
-- durable multi-conversation history and forking through the SQLite checkpointer;
-- streamed model tokens, graph events, tool calls, usage, cancellation, and human
-  approval for shell execution and recursive deletion;
-- API-key and subscription OAuth access to OpenAI models;
-- a confined local workspace with explicit shell execution, or connection to an
-  existing LangSmith sandbox through `langsmith-go`;
-- attachments and multimodal messages, file search/editor/download, Git status and
-  diff inspection, a terminal, command palette, themes, export, and responsive UI.
+*Web-based*, because terminal-based scroll back is punishment for shoplifting in some countries.
 
-Run it from the repository root:
+*Multi-modal* because screenshots, charts, and graphs are necessary, not to mention delightful.
 
-```sh
-go run ./examples/shelley -workspace /path/to/project
+*Multi-model* to benefit from all the innovation going on.
+
+*Single-user* because it makes sense to bring the agent to the compute.
+
+# Installation
+
+## Pre-Built Binaries (macOS/Linux)
+
+```bash
+curl -Lo shelley "https://github.com/boldsoftware/shelley/releases/latest/download/shelley_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x shelley
 ```
 
-Then open `http://127.0.0.1:9000`. Configure a credential and model in Settings.
-The default data directory is the operating system’s user configuration directory;
-override it with `-data`.
+The binaries are on the [releases page](https://github.com/boldsoftware/shelley/releases/latest).
 
-The local backend can execute host processes inside the selected workspace. This
-example is single-user and has no HTTP authentication. Keep it bound to loopback
-unless an external access-control layer is added. The LangSmith option only connects
-to an existing sandbox; it never creates or deletes remote resources.
+## Homebrew (macOS)
+
+```bash
+brew install --cask boldsoftware/tap/shelley
+```
+
+## Build from Source
+
+You'll need Go and Node.
+
+```bash
+git clone https://github.com/boldsoftware/shelley.git
+cd shelley
+make
+```
+
+# Releases
+
+New releases are automatically created on every commit to `main`. Versions
+follow the pattern `v0.N.9OCTAL` where N is the total commit count and 9OCTAL is the commit SHA encoded as octal (prefixed with 9).
+
+# Architecture
+
+The technical stack is Go for the backend, SQLite for storage, and Typescript
+with Vue 3 + PrimeVue for the UI.
+
+The data model is that Conversations have Messages, which might be from the
+user, the model, the tools, or the harness. All of that is stored in the
+database, and we use a SSE endpoint to keep the UI updated.
+
+# History
+
+Shelley is partially based on our previous coding agent effort, [Sketch](https://github.com/boldsoftware/sketch).
+
+Unsurprisingly, much of Shelley is written by Shelley, Sketch, Claude Code, and other coding agents.
+
+# Shelley's Name
+
+Shelley is so named because the main tool it uses is the shell, and I like
+putting "-ey" at the end of words. It is also named after Percy Bysshe Shelley,
+with an appropriately ironic nod at
+"[Ozymandias](https://www.poetryfoundation.org/poems/46565/ozymandias)."
+Shelley is a computer program, and, it's an it.
+
+# Open source
+
+Shelley is Apache licensed. We require a CLA for contributions.
+
+# Building Shelley
+
+Run `make`. Run `make serve` to start Shelley locally.
+
+## Dev Tricks
+
+If you want to see how mobile looks, and you're on your home
+network where you've got mDNS working fine, you can
+run
+
+```
+socat TCP-LISTEN:9001,fork TCP:localhost:9000
+```
