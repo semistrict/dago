@@ -801,7 +801,17 @@ func gitInfoForCwd(cwd string) (repoRoot, worktreeRoot string) {
 	if err != nil {
 		return "", ""
 	}
-	return root, getGitWorktreeRoot(root)
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+
+	worktree := getGitWorktreeRoot(root)
+	if worktree != "" {
+		if resolved, err := filepath.EvalSymlinks(worktree); err == nil {
+			worktree = resolved
+		}
+	}
+	return root, worktree
 }
 
 // getGitHeadSubject returns the subject line of HEAD commit for a git repository.

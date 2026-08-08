@@ -40,9 +40,20 @@ type ResponsesService struct {
 	// custom-model configurations to pass through provider-specific values
 	// (e.g. "xhigh", "none") without Shelley needing to know them.
 	ReasoningEffort string
+
+	native llm.Service
 }
 
 var _ llm.Service = (*ResponsesService)(nil)
+
+// NewNativeResponsesService preserves Shelley's tested provider facade while
+// delegating runtime requests to a Dago-backed service. The legacy wire
+// implementation remains available only for literal values constructed by the
+// pinned upstream provider tests and older custom-model records.
+func NewNativeResponsesService(config ResponsesService, native llm.Service) *ResponsesService {
+	config.native = native
+	return &config
+}
 
 // Responses API request/response types
 
@@ -529,6 +540,9 @@ func (s *ResponsesService) MaxImageBytes() int {
 
 // Do sends a request to OpenAI using the Responses API.
 func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error) {
+	if s.native != nil {
+		return s.native.Do(ctx, ir)
+	}
 	httpc := cmp.Or(s.HTTPC, http.DefaultClient)
 	model := cmp.Or(s.Model, DefaultModel)
 	openAIResponses := s.isOpenAIResponses()

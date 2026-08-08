@@ -19,7 +19,9 @@
 //     ("D", "<") and keyboard layouts don't matter.
 
 export const isMac =
-  typeof navigator !== "undefined" && navigator.platform.toUpperCase().includes("MAC");
+  typeof window !== "undefined" &&
+  typeof navigator !== "undefined" &&
+  navigator.platform.toUpperCase().includes("MAC");
 
 export type MenuActionId =
   | "commandPalette"
@@ -99,4 +101,6 @@ export function matchChatInterfaceAction(e: KeyboardEvent): MenuActionId | null 
 
 /** Firefox reserves Cmd/Ctrl+Shift+P; the Edit File shortcut is inert there. */
 export const isFirefox =
-  typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("firefox");
+  typeof window !== "undefined" &&
+  typeof navigator !== "undefined" &&
+  navigator.userAgent.toLowerCase().includes("firefox");

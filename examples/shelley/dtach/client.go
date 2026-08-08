@@ -19,11 +19,12 @@ type Client struct {
 
 // Attach dials the dtach server at socketPath. If the socket is missing or
 // dead, returns ErrNotRunning.
-func Attach(socketPath string) (*Client, error) {
-	if _, err := os.Stat(socketPath); err != nil {
+func Attach(logicalPath string) (*Client, error) {
+	actualSocketPath := socketPath(logicalPath)
+	if _, err := os.Stat(actualSocketPath); err != nil {
 		return nil, ErrNotRunning
 	}
-	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	conn, err := net.DialTimeout("unix", actualSocketPath, 2*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNotRunning, err)
 	}

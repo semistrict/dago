@@ -11,6 +11,7 @@ and any affected intentional differences.
 | LangChain Python | `langchain-ai/langchain` | `d048fbe170573b6e7056b5ef5f78d8451e54abaf` | `/Users/ramon/src/langchain-py` |
 | Deep Agents TypeScript | `langchain-ai/deepagentsjs` | `945b362d06d03728d16bc0020cb242a9eeae8451` | `/Users/ramon/src/deepagentsjs` |
 | LangChain TypeScript | `langchain-ai/langchainjs` | `62fc484b2a0d1ec5b8bebff4a8a0efe6300ada72` | `/Users/ramon/src/langchain` |
+| Shelley | `boldsoftware/shelley` | `1d4cbe79c6be45cc0105d46819cb54844f98eddd` | `/Users/ramon/src/shelley` |
 
 ## Normative surfaces
 
@@ -43,6 +44,21 @@ and any affected intentional differences.
 - `libs/core/langchain_core/language_models`
 - `libs/core/langchain_core/tools`
 - `libs/core/langchain_core/runnables/config.py`
+
+### Shelley
+
+The original Shelley tests and their fixtures are the behavioral contract for the
+Dago-native example. Their hashes are recorded in
+`docs/shelley-upstream-tests.sha256`; `make drift` fails if any pinned artifact is
+missing or modified. To intentionally update the pinned corpus after advancing the
+manifest revision, run:
+
+```sh
+sh scripts/sync-shelley-upstream-tests.sh /Users/ramon/src/shelley
+```
+
+Additional Dago-specific tests may be added, but upstream tests must not be edited to
+accommodate the implementation.
 
 ## Provenance rules
 

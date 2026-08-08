@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/dagoruntime"
 	"shelley.exe.dev/exeenv"
 	"shelley.exe.dev/llm/ant"
 	"shelley.exe.dev/llm/oai"
@@ -29,15 +28,6 @@ func findBuilt(bs []models.Built, id string) *models.Built {
 		}
 	}
 	return nil
-}
-
-func requireDagoResponses(t *testing.T, service any) *dagoruntime.Service {
-	t.Helper()
-	converted, ok := service.(*dagoruntime.Service)
-	if !ok {
-		t.Fatalf("service = %T, want Dago Responses service", service)
-	}
-	return converted
 }
 
 func TestPredictableBuilds(t *testing.T) {
@@ -201,17 +191,23 @@ func TestLLMIntegrationEnrichesCompatibleCatalogModel(t *testing.T) {
 	if built.APIType != models.APITypeOpenAIResponses {
 		t.Errorf("APIType = %q, want %q", built.APIType, models.APITypeOpenAIResponses)
 	}
-	service := requireDagoResponses(t, built.Service)
-	if service.ModelID() != "gpt-5.6-sol" {
-		t.Errorf("wire model = %q, want native ID", service.ModelID())
+	service, ok := built.Service.(*oai.ResponsesService)
+	if !ok {
+		t.Fatalf("service = %T, want *oai.ResponsesService", built.Service)
 	}
-	if service.BaseURL() != integrationURL+"/v1" {
-		t.Errorf("service URL = %q, want integration URL", service.BaseURL())
+	if service.Model.ModelName != "gpt-5.6-sol" {
+		t.Errorf("wire model = %q, want native ID", service.Model.ModelName)
+	}
+	if service.ModelURL != integrationURL+"/v1" {
+		t.Errorf("service URL = %q, want integration URL", service.ModelURL)
+	}
+	if service.APIKey != "implicit" {
+		t.Errorf("API key = %q, want implicit", service.APIKey)
 	}
 	if !service.SupportsImages() {
 		t.Error("known Sol should retain built-in image support")
 	}
-	if !service.SupportsReasoning() {
+	if !service.Model.IsReasoningModel {
 		t.Error("known Sol should retain built-in reasoning behavior")
 	}
 }
@@ -228,9 +224,12 @@ func TestLLMIntegrationEnrichesCatalogModelUsingIDFallback(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("built models = %+v, want one", got)
 	}
-	service := requireDagoResponses(t, got[0].Service)
-	if !service.SupportsImages() || !service.SupportsReasoning() {
-		t.Errorf("ID fallback did not retain Sol capabilities")
+	service, ok := got[0].Service.(*oai.ResponsesService)
+	if !ok {
+		t.Fatalf("service = %T, want *oai.ResponsesService", got[0].Service)
+	}
+	if !service.SupportsImages() || !service.Model.IsReasoningModel {
+		t.Errorf("ID fallback did not retain Sol capabilities: %+v", service.Model)
 	}
 }
 
@@ -257,14 +256,17 @@ func TestLLMIntegrationUnknownModelUsesDynamicCapabilities(t *testing.T) {
 	if got[0].ID != "upstream-only" {
 		t.Errorf("ID = %q, want short upstream ID", got[0].ID)
 	}
-	service := requireDagoResponses(t, got[0].Service)
-	if service.ModelID() != "native-upstream-only" {
-		t.Errorf("wire model = %q, want native ID", service.ModelID())
+	service, ok := got[0].Service.(*oai.ResponsesService)
+	if !ok {
+		t.Fatalf("service = %T, want dynamic *oai.ResponsesService", got[0].Service)
+	}
+	if service.Model.ModelName != "native-upstream-only" {
+		t.Errorf("wire model = %q, want native ID", service.Model.ModelName)
 	}
 	if !service.SupportsImages() {
 		t.Error("unknown model should preserve upstream image modality")
 	}
-	if service.SupportsReasoning() {
+	if service.Model.IsReasoningModel {
 		t.Error("unknown model should not inherit built-in reasoning behavior")
 	}
 }
@@ -287,7 +289,9 @@ func TestLLMIntegrationPrefersOpenAIAPIOverAnthropic(t *testing.T) {
 	if got[0].APIType != models.APITypeOpenAIResponses {
 		t.Errorf("APIType = %q, want %q", got[0].APIType, models.APITypeOpenAIResponses)
 	}
-	requireDagoResponses(t, got[0].Service)
+	if _, ok := got[0].Service.(*oai.ResponsesService); !ok {
+		t.Fatalf("service = %T, want *oai.ResponsesService", got[0].Service)
+	}
 	if got[1].APIType != models.APITypeOpenAIChat {
 		t.Errorf("APIType = %q, want %q", got[1].APIType, models.APITypeOpenAIChat)
 	}
@@ -335,9 +339,12 @@ func TestLLMIntegrationProviderMismatchUsesDynamicService(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("built models = %+v, want one", got)
 	}
-	service := requireDagoResponses(t, got[0].Service)
-	if service.SupportsImages() || service.SupportsReasoning() {
-		t.Errorf("provider mismatch inherited OpenAI catalog capabilities")
+	service, ok := got[0].Service.(*oai.ResponsesService)
+	if !ok {
+		t.Fatalf("service = %T, want dynamic *oai.ResponsesService", got[0].Service)
+	}
+	if service.SupportsImages() || service.Model.IsReasoningModel {
+		t.Errorf("provider mismatch inherited OpenAI catalog capabilities: %+v", service.Model)
 	}
 }
 
@@ -364,9 +371,12 @@ func TestLLMIntegrationModelsJSONIsAuthoritative(t *testing.T) {
 	if got[0].APIType != models.APITypeOpenAIResponses {
 		t.Errorf("first API type = %q, want %q", got[0].APIType, models.APITypeOpenAIResponses)
 	}
-	responses := requireDagoResponses(t, got[0].Service)
-	if responses.ModelID() != "native-upstream-only" {
-		t.Errorf("first wire model = %q, want native ID", responses.ModelID())
+	responses, ok := got[0].Service.(*oai.ResponsesService)
+	if !ok {
+		t.Fatalf("first service = %T, want *oai.ResponsesService", got[0].Service)
+	}
+	if responses.Model.ModelName != "native-upstream-only" {
+		t.Errorf("first wire model = %q, want native ID", responses.Model.ModelName)
 	}
 	if got[1].APIType != models.APITypeAnthropicMessages {
 		t.Errorf("second API type = %q, want %q", got[1].APIType, models.APITypeAnthropicMessages)

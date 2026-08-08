@@ -199,7 +199,7 @@ func runServe(global GlobalConfig, args []string) {
 	server.DBPath = global.DBPath
 
 	// Build LLM configuration
-	llmConfig, err := buildLLMConfig(global, logger, database, openAIOAuth)
+	llmConfig, err := buildLLMConfigWithOAuth(global, logger, database, openAIOAuth)
 	if err != nil {
 		logger.Error("Failed to load config", "path", global.ConfigPath, "error", err)
 		os.Exit(1)
@@ -430,7 +430,11 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 //  4. Predictable (always available).
 //
 // Custom DB-backed models load on top of the returned set.
-func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB, openAIOAuth *server.OpenAIOAuth) (*server.LLMConfig, error) {
+func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (*server.LLMConfig, error) {
+	return buildLLMConfigWithOAuth(global, logger, database, nil)
+}
+
+func buildLLMConfigWithOAuth(global GlobalConfig, logger *slog.Logger, database *db.DB, openAIOAuth *server.OpenAIOAuth) (*server.LLMConfig, error) {
 	config, err := loadConfig(global.ConfigPath)
 	if err != nil {
 		return nil, err
@@ -623,7 +627,7 @@ func runModels(global GlobalConfig, args []string) {
 	if openAIOAuth != nil {
 		defer openAIOAuth.Close()
 	}
-	llmCfg, err := buildLLMConfig(global, logger, nil, openAIOAuth)
+	llmCfg, err := buildLLMConfigWithOAuth(global, logger, nil, openAIOAuth)
 	if err != nil {
 		logger.Error("Failed to load config", "path", global.ConfigPath, "error", err)
 		os.Exit(1)

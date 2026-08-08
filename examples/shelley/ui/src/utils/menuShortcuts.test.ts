@@ -18,11 +18,9 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// Newer Node releases expose navigator. Validate the detected platform instead
-// of assuming the test process is platform-neutral.
-const expectedMac =
-  typeof navigator !== "undefined" && navigator.platform.toUpperCase().includes("MAC");
-assert(isMac === expectedMac, "isMac matches the runtime platform");
+// These tests run in Node (no `navigator`), so isMac === false: labels use the
+// "Ctrl+..." form and "mod" combos match Ctrl.
+assert(isMac === false, "isMac is false under Node");
 
 // Every action has a combo, and combos are unique by (mod, shift, code).
 const ids: MenuActionId[] = [
@@ -45,20 +43,16 @@ const sigs = ids.map((id) => {
 });
 assert(new Set(sigs).size === sigs.length, `combos are unique: ${sigs.join(", ")}`);
 
-const modLabel = isMac ? "⌘" : "Ctrl+";
-const shiftLabel = isMac ? "⇧" : "Shift+";
-assert(menuShortcutLabel("commandPalette") === `${modLabel}K`, "commandPalette label");
-assert(menuShortcutLabel("diffs") === `${modLabel}${shiftLabel}D`, "diffs label");
-assert(menuShortcutLabel("gitGraph") === `${modLabel}${shiftLabel}G`, "gitGraph label");
-assert(
-  menuShortcutLabel("terminal") === (isMac ? "⌃`" : "Ctrl+`"),
-  "terminal label (ctrl, no shift)",
-);
-assert(menuShortcutLabel("archive") === `${modLabel}${shiftLabel}A`, "archive label");
-assert(menuShortcutLabel("export") === `${modLabel}${shiftLabel}E`, "export label");
-assert(menuShortcutLabel("editAgentsMd") === `${modLabel}${shiftLabel},`, "editAgentsMd label");
-assert(menuShortcutLabel("editFile") === `${modLabel}${shiftLabel}P`, "editFile label");
-assert(menuShortcutLabel("checkVersion") === `${modLabel}${shiftLabel}U`, "checkVersion label");
+// Non-mac labels.
+assert(menuShortcutLabel("commandPalette") === "Ctrl+K", "commandPalette label");
+assert(menuShortcutLabel("diffs") === "Ctrl+Shift+D", "diffs label");
+assert(menuShortcutLabel("gitGraph") === "Ctrl+Shift+G", "gitGraph label");
+assert(menuShortcutLabel("terminal") === "Ctrl+`", "terminal label (ctrl, no shift)");
+assert(menuShortcutLabel("archive") === "Ctrl+Shift+A", "archive label");
+assert(menuShortcutLabel("export") === "Ctrl+Shift+E", "export label");
+assert(menuShortcutLabel("editAgentsMd") === "Ctrl+Shift+,", "editAgentsMd label");
+assert(menuShortcutLabel("editFile") === "Ctrl+Shift+P", "editFile label");
+assert(menuShortcutLabel("checkVersion") === "Ctrl+Shift+U", "checkVersion label");
 
 // Helper to fabricate a keydown-like event.
 function ev(part: Partial<KeyboardEvent>): KeyboardEvent {
@@ -74,11 +68,8 @@ function ev(part: Partial<KeyboardEvent>): KeyboardEvent {
 
 // comboMatches: exact modifier + physical key.
 assert(
-  comboMatches(
-    ev({ code: "KeyD", ctrlKey: !isMac, metaKey: isMac, shiftKey: true }),
-    MENU_COMBOS.diffs,
-  ),
-  "diffs matches the platform modifier",
+  comboMatches(ev({ code: "KeyD", ctrlKey: true, shiftKey: true }), MENU_COMBOS.diffs),
+  "diffs matches Ctrl+Shift+D",
 );
 assert(!comboMatches(ev({ code: "KeyD", ctrlKey: true }), MENU_COMBOS.diffs), "diffs needs shift");
 assert(
@@ -106,9 +97,7 @@ assert(
 
 // matchChatInterfaceAction only returns ChatInterface-owned actions.
 assert(
-  matchChatInterfaceAction(
-    ev({ code: "KeyD", ctrlKey: !isMac, metaKey: isMac, shiftKey: true }),
-  ) === "diffs",
+  matchChatInterfaceAction(ev({ code: "KeyD", ctrlKey: true, shiftKey: true })) === "diffs",
   "matches diffs",
 );
 assert(

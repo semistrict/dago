@@ -53,19 +53,20 @@ func Serve(opts ServerOptions) error {
 		return errors.New("dtach: empty command")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(opts.SocketPath), 0o700); err != nil {
+	actualSocketPath := socketPath(opts.SocketPath)
+	if err := os.MkdirAll(filepath.Dir(actualSocketPath), 0o700); err != nil {
 		return fmt.Errorf("dtach: mkdir socket dir: %w", err)
 	}
-	_ = os.Remove(opts.SocketPath)
-	ln, err := net.Listen("unix", opts.SocketPath)
+	_ = os.Remove(actualSocketPath)
+	ln, err := net.Listen("unix", actualSocketPath)
 	if err != nil {
 		return fmt.Errorf("dtach: listen: %w", err)
 	}
 	// Restrict access to the user.
-	_ = os.Chmod(opts.SocketPath, 0o600)
+	_ = os.Chmod(actualSocketPath, 0o600)
 	defer func() {
 		ln.Close()
-		_ = os.Remove(opts.SocketPath)
+		_ = os.Remove(actualSocketPath)
 	}()
 
 	cmd := exec.Command(opts.Command, opts.Args...)

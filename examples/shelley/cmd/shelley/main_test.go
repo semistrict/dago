@@ -20,7 +20,6 @@ import (
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/modelsources"
-	"shelley.exe.dev/server"
 	"shelley.exe.dev/slug"
 )
 
@@ -80,7 +79,7 @@ func TestBuildLLMConfigSkipsGatewayWhenReflectionFoundLLMIntegration(t *testing.
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg, err := buildLLMConfig(GlobalConfig{ConfigPath: configPath}, logger, nil, nil)
+	cfg, err := buildLLMConfig(GlobalConfig{ConfigPath: configPath}, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +128,7 @@ func TestBuildLLMConfigAppliesExeEnvironmentBeforeDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := buildLLMConfig(GlobalConfig{ConfigPath: configPath}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	cfg, err := buildLLMConfig(GlobalConfig{ConfigPath: configPath}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +214,7 @@ func TestBuildLLMConfigDefaultModelPrecedence(t *testing.T) {
 	}
 
 	// Flag unset (the VM case): shelley.json's default_model wins.
-	cfg, err := buildLLMConfig(parseGlobal(t, "serve"), logger, nil, nil)
+	cfg, err := buildLLMConfig(parseGlobal(t, "serve"), logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,42 +223,12 @@ func TestBuildLLMConfigDefaultModelPrecedence(t *testing.T) {
 	}
 
 	// Flag explicitly set: it overrides shelley.json.
-	cfg, err = buildLLMConfig(parseGlobal(t, "-default-model", "claude-opus-5", "serve"), logger, nil, nil)
+	cfg, err = buildLLMConfig(parseGlobal(t, "-default-model", "claude-opus-5", "serve"), logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.DefaultModel != "claude-opus-5" {
 		t.Fatalf("flag set: DefaultModel = %q, want claude-opus-5", cfg.DefaultModel)
-	}
-}
-
-func TestBuildLLMConfigRegistersAuthenticatedSubscriptionLuna(t *testing.T) {
-	for _, name := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "FIREWORKS_API_KEY"} {
-		t.Setenv(name, "")
-	}
-	storePath := filepath.Join(t.TempDir(), "openai-oauth.json")
-	if err := os.WriteFile(storePath, []byte(`{"access_token":"access","refresh_token":"refresh","account_id":"account"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	controller := server.NewOpenAIOAuth(storePath, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	cfg, err := buildLLMConfig(GlobalConfig{DisableLLMIntegration: true, DisableGateway: true}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, controller)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DefaultModel != server.OpenAISubscriptionModelID {
-		t.Fatalf("DefaultModel = %q", cfg.DefaultModel)
-	}
-	if len(cfg.Models) < 1 || cfg.Models[0].ID != server.OpenAISubscriptionModelID || cfg.Models[0].Source != "OpenAI subscription" {
-		t.Fatalf("Models = %#v", cfg.Models)
-	}
-	seen := 0
-	for _, model := range cfg.Models {
-		if model.ID == server.OpenAISubscriptionModelID {
-			seen++
-		}
-	}
-	if seen != 1 {
-		t.Fatalf("subscription Luna registrations = %d", seen)
 	}
 }
 
@@ -303,7 +272,7 @@ func TestBuildLLMConfigRejectsInvalidExeEnvironmentBeforeDiscovery(t *testing.T)
 		t.Fatal(err)
 	}
 
-	_, err := buildLLMConfig(GlobalConfig{ConfigPath: configPath}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	_, err := buildLLMConfig(GlobalConfig{ConfigPath: configPath}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err == nil || !strings.Contains(err.Error(), "exe_environment") {
 		t.Fatalf("buildLLMConfig() error = %v", err)
 	}

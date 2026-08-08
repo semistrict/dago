@@ -7,6 +7,7 @@ import (
 	dopenai "github.com/semistrict/dago/providers/openai"
 
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/oai"
 )
 
 type OpenAIResponsesOptions struct {
@@ -39,5 +40,13 @@ func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client
 	if err != nil {
 		return Unavailable(err)
 	}
-	return service
+	return oai.NewNativeResponsesService(oai.ResponsesService{
+		HTTPC: httpClient, APIKey: apiKey, ModelURL: apiBaseURL,
+		Model: oai.Model{
+			ModelName: modelID, SupportsImages: options.SupportsImages,
+			IsReasoningModel:   options.SupportsReasoning,
+			UseSimplifiedPatch: options.UseSimplifiedPatch,
+		},
+		MaxTokens: options.MaxOutputTokens, ProviderName: options.Provider,
+	}, service)
 }
