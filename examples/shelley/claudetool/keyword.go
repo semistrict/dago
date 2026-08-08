@@ -10,6 +10,10 @@ import (
 	"strings"
 	"time"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+	dtool "github.com/semistrict/dago/tool"
+
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/pathutil"
@@ -44,6 +48,57 @@ func (k *KeywordTool) Tool() *llm.Tool {
 		Description: keywordDescription,
 		InputSchema: llm.MustSchema(keywordInputSchema),
 		Run:         llm.RunJSON(k.keywordRun),
+	}
+}
+
+// NativeTool runs keyword search and relevance filtering through Dago's tool
+// and model contracts. Tool remains the pinned Shelley facade for its tests.
+func (k *KeywordTool) NativeTool() dtool.Tool {
+	return dtool.Func{
+		Spec: dtool.Definition{
+			Name: keywordName, Description: keywordDescription,
+			InputSchema: json.RawMessage(keywordInputSchema),
+		},
+		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var input keywordInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+			}
+			search, err := k.search(ctx, input)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			if search.answer != "" {
+				return dtool.TextResult(search.answer), nil
+			}
+			service, err := k.selectBestLLM(k.llmProvider)
+			if err != nil {
+				return dtool.Result{}, fmt.Errorf("failed to get LLM service: %w", err)
+			}
+			native, ok := service.(interface{ DagoChat() dmodel.Chat })
+			if !ok || native.DagoChat() == nil {
+				return dtool.Result{}, fmt.Errorf("keyword relevance model does not expose a native Dago chat")
+			}
+			response, err := native.DagoChat().Invoke(llmhttp.WithPurpose(ctx, "keyword_search"), dmodel.Request{
+				Messages: []dmessage.Message{
+					dmessage.System(strings.TrimSpace(keywordSystemPrompt)),
+					{Role: dmessage.RoleHuman, Content: []dmessage.ContentBlock{
+						{Type: dmessage.BlockText, Text: "<pwd>\n" + search.wd + "\n</pwd>"},
+						{Type: dmessage.BlockText, Text: "<ripgrep_results>\n" + search.output + "\n</ripgrep_results>"},
+						{Type: dmessage.BlockText, Text: "<query>\n" + input.Query + "\n</query>"},
+					}},
+				},
+			})
+			if err != nil {
+				return dtool.Result{}, fmt.Errorf("failed to send relevance filtering message: %w", err)
+			}
+			filtered, err := nativeKeywordText(response.Message)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			k.logResult(ctx, input.Query, search.output, filtered)
+			return dtool.TextResult(filtered), nil
+		},
 	}
 }
 
@@ -127,43 +182,12 @@ func FindRepoRoot(wd string) (string, error) {
 
 // keywordRun is the main implementation using the LLM provider
 func (k *KeywordTool) keywordRun(ctx context.Context, input keywordInput) llm.ToolOut {
-	wd := k.workingDir.Get()
-	root, err := FindRepoRoot(wd)
-	if err == nil {
-		wd = root
+	search, err := k.search(ctx, input)
+	if err != nil {
+		return llm.ErrorToolOut(err)
 	}
-	slog.InfoContext(ctx, "keyword search input", "query", input.Query, "keywords", input.SearchTerms, "wd", wd)
-
-	// first remove stopwords
-	var keep []string
-	for _, term := range input.SearchTerms {
-		out, err := ripgrep(ctx, wd, []string{term})
-		if err != nil {
-			return llm.ErrorToolOut(err)
-		}
-		if len(out) > 64*1024 {
-			slog.InfoContext(ctx, "keyword search result too large", "term", term, "bytes", len(out))
-			continue
-		}
-		keep = append(keep, term)
-	}
-
-	if len(keep) == 0 {
-		return llm.ToolOut{LLMContent: llm.TextContent("each of those search terms yielded too many results")}
-	}
-
-	// peel off keywords until we get a result that fits in the query window
-	var out string
-	for {
-		var err error
-		out, err = ripgrep(ctx, wd, keep)
-		if err != nil {
-			return llm.ErrorToolOut(err)
-		}
-		if len(out) < 128*1024 {
-			break
-		}
-		keep = keep[:len(keep)-1]
+	if search.answer != "" {
+		return llm.ToolOut{LLMContent: llm.TextContent(search.answer)}
 	}
 
 	// Select the best available LLM service
@@ -180,8 +204,8 @@ func (k *KeywordTool) keywordRun(ctx context.Context, input keywordInput) llm.To
 	initialMessage := llm.Message{
 		Role: llm.MessageRoleUser,
 		Content: []llm.Content{
-			llm.StringContent("<pwd>\n" + wd + "\n</pwd>"),
-			llm.StringContent("<ripgrep_results>\n" + out + "\n</ripgrep_results>"),
+			llm.StringContent("<pwd>\n" + search.wd + "\n</pwd>"),
+			llm.StringContent("<ripgrep_results>\n" + search.output + "\n</ripgrep_results>"),
 			llm.StringContent("<query>\n" + input.Query + "\n</query>"),
 		},
 	}
@@ -218,16 +242,94 @@ func (k *KeywordTool) keywordRun(ctx context.Context, input keywordInput) llm.To
 		return llm.ErrorfToolOut("no text content in relevance filtering response: %v", resp.Content)
 	}
 
+	k.logResult(ctx, input.Query, search.output, filtered)
+	return llm.ToolOut{LLMContent: llm.TextContent(filtered)}
+}
+
+type keywordSearch struct {
+	wd     string
+	output string
+	answer string
+}
+
+func (k *KeywordTool) search(ctx context.Context, input keywordInput) (keywordSearch, error) {
+	wd := k.workingDir.Get()
+	root, err := FindRepoRoot(wd)
+	if err == nil {
+		wd = root
+	}
+	slog.InfoContext(ctx, "keyword search input", "query", input.Query, "keywords", input.SearchTerms, "wd", wd)
+
+	// first remove stopwords
+	var keep []string
+	for _, term := range input.SearchTerms {
+		out, err := ripgrep(ctx, wd, []string{term})
+		if err != nil {
+			return keywordSearch{}, err
+		}
+		if len(out) > 64*1024 {
+			slog.InfoContext(ctx, "keyword search result too large", "term", term, "bytes", len(out))
+			continue
+		}
+		keep = append(keep, term)
+	}
+
+	if len(keep) == 0 {
+		return keywordSearch{answer: "each of those search terms yielded too many results"}, nil
+	}
+
+	// peel off keywords until we get a result that fits in the query window
+	var out string
+	for {
+		var err error
+		out, err = ripgrep(ctx, wd, keep)
+		if err != nil {
+			return keywordSearch{}, err
+		}
+		if len(out) < 128*1024 {
+			break
+		}
+		keep = keep[:len(keep)-1]
+	}
+
+	return keywordSearch{wd: wd, output: out}, nil
+}
+
+func (k *KeywordTool) logResult(ctx context.Context, query, output, filtered string) {
 	slog.InfoContext(
 		ctx, "keyword search results processed",
-		"bytes", len(out),
-		"lines", strings.Count(out, "\n"),
-		"files", strings.Count(out, "\n\n"),
-		"query", input.Query,
+		"bytes", len(output),
+		"lines", strings.Count(output, "\n"),
+		"files", strings.Count(output, "\n\n"),
+		"query", query,
 		"filtered", filtered,
 	)
+}
 
-	return llm.ToolOut{LLMContent: llm.TextContent(filtered)}
+func nativeKeywordText(response dmessage.Message) (string, error) {
+	if len(response.ToolCalls) > 0 {
+		return "", fmt.Errorf("unexpected tool calls in relevance filtering response: %v", response.ToolCalls)
+	}
+	var filtered string
+	var found bool
+	for _, block := range response.Content {
+		switch block.Type {
+		case dmessage.BlockReasoning:
+			continue
+		case dmessage.BlockText:
+			if found {
+				return "", fmt.Errorf("multiple text content blocks in relevance filtering response: %v", response.Content)
+			}
+			filtered = block.Text
+			found = true
+		default:
+			return "", fmt.Errorf("unexpected content type %v in relevance filtering response: %v", block.Type, response.Content)
+		}
+	}
+	if !found {
+		return "", fmt.Errorf("no text content in relevance filtering response: %v", response.Content)
+	}
+	return filtered, nil
 }
 
 func ripgrep(ctx context.Context, wd string, terms []string) (string, error) {

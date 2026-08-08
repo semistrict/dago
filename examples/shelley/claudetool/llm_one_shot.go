@@ -14,6 +14,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+	dtool "github.com/semistrict/dago/tool"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/imageutil"
 	"shelley.exe.dev/llm/llmhttp"
@@ -136,6 +139,67 @@ func (t *LLMOneShotTool) Tool() *llm.Tool {
 	}
 }
 
+// NativeTool executes the one-shot request through Dago's tool and model
+// contracts. Tool remains the pinned Shelley facade for its original tests.
+func (t *LLMOneShotTool) NativeTool() dtool.Tool {
+	return dtool.Func{
+		Spec: dtool.Definition{
+			Name: llmOneShotName, Description: t.llmOneShotDescription(),
+			InputSchema: json.RawMessage(t.llmOneShotInputSchema()),
+		},
+		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var input llmOneShotInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+			}
+			prepared, err := t.prepare(ctx, input)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			native, ok := prepared.service.(interface{ DagoChat() dmodel.Chat })
+			if !ok || native.DagoChat() == nil {
+				return dtool.Result{}, fmt.Errorf("one-shot model %q does not expose a native Dago chat", prepared.modelID)
+			}
+			message := dmessage.Message{Role: dmessage.RoleHuman}
+			if strings.TrimSpace(prepared.prompt) != "" {
+				message.Content = append(message.Content, dmessage.ContentBlock{Type: dmessage.BlockText, Text: prepared.prompt})
+			}
+			for _, image := range prepared.images {
+				message.Content = append(message.Content, dmessage.ContentBlock{
+					Type: dmessage.BlockImage, Data: image.Data, MIMEType: image.MediaType,
+				})
+			}
+			messages := []dmessage.Message{message}
+			if input.SystemPrompt != "" {
+				messages = append([]dmessage.Message{dmessage.System(input.SystemPrompt)}, messages...)
+			}
+			response, err := native.DagoChat().Invoke(llmhttp.WithPurpose(ctx, "llm_one_shot"), dmodel.Request{Messages: messages})
+			if err != nil {
+				return dtool.Result{}, fmt.Errorf("LLM request failed: %w", err)
+			}
+			var inputTokens, outputTokens uint64
+			if response.Message.Usage != nil {
+				inputTokens = uint64(response.Message.Usage.InputTokens)
+				outputTokens = uint64(response.Message.Usage.OutputTokens)
+			}
+			execution, err := finishOneShot(input, prepared, response.Message.TextContent(), inputTokens, outputTokens)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			var artifact json.RawMessage
+			if execution.Display != nil {
+				artifact, err = json.Marshal(execution.Display)
+				if err != nil {
+					return dtool.Result{}, fmt.Errorf("encode one-shot display: %w", err)
+				}
+			}
+			return dtool.Result{
+				Content: []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}}, Artifact: artifact,
+			}, nil
+		},
+	}
+}
+
 // isImageData reports whether data looks like an image file.
 func isImageData(data []byte) bool {
 	return imageutil.IsHEIC(data) || strings.HasPrefix(http.DetectContentType(data), "image/")
@@ -158,10 +222,61 @@ func saveOneShotImage(ctx context.Context, prepared imageutil.Prepared) string {
 	return path
 }
 
+type oneShotPrepared struct {
+	modelID string
+	wd      string
+	service llm.Service
+	prompt  string
+	images  []imageutil.Prepared
+	display any
+}
+
+type oneShotExecution struct {
+	Output  string
+	Display any
+}
+
 func (t *LLMOneShotTool) run(ctx context.Context, req llmOneShotInput) llm.ToolOut {
+	prepared, err := t.prepare(ctx, req)
+	if err != nil {
+		return llm.ErrorToolOut(err)
+	}
+	message := llm.Message{Role: llm.MessageRoleUser}
+	if strings.TrimSpace(prepared.prompt) != "" {
+		message.Content = append(message.Content, llm.StringContent(prepared.prompt))
+	}
+	for _, image := range prepared.images {
+		message.Content = append(message.Content, llm.Content{
+			Type: llm.ContentTypeText, MediaType: image.MediaType,
+			Data:         base64.StdEncoding.EncodeToString(image.Data),
+			DisplayWidth: image.Width, DisplayHeight: image.Height,
+		})
+	}
+	request := &llm.Request{Messages: []llm.Message{message}}
+	if req.SystemPrompt != "" {
+		request.System = []llm.SystemContent{{Type: "text", Text: req.SystemPrompt}}
+	}
+	response, err := prepared.service.Do(llmhttp.WithPurpose(ctx, "llm_one_shot"), request)
+	if err != nil {
+		return llm.ErrorfToolOut("LLM request failed: %w", err)
+	}
+	var text strings.Builder
+	for _, content := range response.Content {
+		if content.Type == llm.ContentTypeText {
+			text.WriteString(content.Text)
+		}
+	}
+	execution, err := finishOneShot(req, prepared, text.String(), response.Usage.InputTokens, response.Usage.OutputTokens)
+	if err != nil {
+		return llm.ErrorToolOut(err)
+	}
+	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
+}
+
+func (t *LLMOneShotTool) prepare(ctx context.Context, req llmOneShotInput) (oneShotPrepared, error) {
 	promptFiles := []string(req.PromptFiles)
 	if len(promptFiles) == 0 {
-		return llm.ErrorfToolOut("prompt_files is required")
+		return oneShotPrepared{}, fmt.Errorf("prompt_files is required")
 	}
 
 	wd := t.WorkingDir.Get()
@@ -182,27 +297,27 @@ func (t *LLMOneShotTool) run(ctx context.Context, req llmOneShotInput) llm.ToolO
 				for _, am := range t.AvailableModels {
 					ids = append(ids, am.ID)
 				}
-				return llm.ErrorfToolOut("unknown model %q; available: %s", req.Model, strings.Join(ids, ", "))
+				return oneShotPrepared{}, fmt.Errorf("unknown model %q; available: %s", req.Model, strings.Join(ids, ", "))
 			}
 		}
 		modelID = req.Model
 	}
 	if modelID == "" {
-		return llm.ErrorfToolOut("no model specified and no default model configured")
+		return oneShotPrepared{}, fmt.Errorf("no model specified and no default model configured")
 	}
 
 	if t.LLMProvider == nil {
-		return llm.ErrorfToolOut("LLM provider not configured")
+		return oneShotPrepared{}, fmt.Errorf("LLM provider not configured")
 	}
 
 	svc, err := t.LLMProvider.GetService(modelID)
 	if err != nil {
-		return llm.ErrorfToolOut("failed to get LLM service for model %q: %w", modelID, err)
+		return oneShotPrepared{}, fmt.Errorf("failed to get LLM service for model %q: %w", modelID, err)
 	}
 
 	// Assemble the prompt: concatenate text files in order, attach images.
 	var promptText strings.Builder
-	var images []llm.Content
+	var images []imageutil.Prepared
 	var displayImages []map[string]any
 	for _, pf := range promptFiles {
 		path := pf
@@ -211,23 +326,17 @@ func (t *LLMOneShotTool) run(ctx context.Context, req llmOneShotInput) llm.ToolO
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return llm.ErrorfToolOut("failed to read prompt file: %w", err)
+			return oneShotPrepared{}, fmt.Errorf("failed to read prompt file: %w", err)
 		}
 		if isImageData(data) {
 			if !svc.SupportsImages() {
-				return llm.ErrorfToolOut("prompt file %q is an image, but model %q does not support image attachments", pf, modelID)
+				return oneShotPrepared{}, fmt.Errorf("prompt file %q is an image, but model %q does not support image attachments", pf, modelID)
 			}
 			prepared, err := imageutil.Prepare(data, path, svc.MaxImageDimension(), svc.MaxImageBytes())
 			if err != nil {
-				return llm.ErrorfToolOut("invalid image %q: %w", pf, err)
+				return oneShotPrepared{}, fmt.Errorf("invalid image %q: %w", pf, err)
 			}
-			images = append(images, llm.Content{
-				Type:          llm.ContentTypeText,
-				MediaType:     prepared.MediaType,
-				Data:          base64.StdEncoding.EncodeToString(prepared.Data),
-				DisplayWidth:  prepared.Width,
-				DisplayHeight: prepared.Height,
-			})
+			images = append(images, prepared)
 			// Save a copy so the UI can render the image via /api/read.
 			// Failures are non-fatal: the request itself is unaffected.
 			if saved := saveOneShotImage(ctx, prepared); saved != "" {
@@ -256,7 +365,7 @@ func (t *LLMOneShotTool) run(ctx context.Context, req llmOneShotInput) llm.ToolO
 			continue
 		}
 		if !utf8.Valid(data) {
-			return llm.ErrorfToolOut("prompt file %q is neither UTF-8 text nor a supported image format", pf)
+			return oneShotPrepared{}, fmt.Errorf("prompt file %q is neither UTF-8 text nor a supported image format", pf)
 		}
 		if promptText.Len() > 0 && len(data) > 0 {
 			promptText.WriteString("\n")
@@ -265,77 +374,47 @@ func (t *LLMOneShotTool) run(ctx context.Context, req llmOneShotInput) llm.ToolO
 	}
 	prompt := promptText.String()
 	if strings.TrimSpace(prompt) == "" && len(images) == 0 {
-		return llm.ErrorfToolOut("prompt is empty")
+		return oneShotPrepared{}, fmt.Errorf("prompt is empty")
 	}
+	var display any
+	if len(displayImages) > 0 {
+		display = map[string]any{"images": displayImages}
+	}
+	return oneShotPrepared{modelID: modelID, wd: wd, service: svc, prompt: prompt, images: images, display: display}, nil
+}
 
-	// Build the request
-	message := llm.Message{Role: llm.MessageRoleUser}
-	if strings.TrimSpace(prompt) != "" {
-		message.Content = append(message.Content, llm.StringContent(prompt))
-	}
-	message.Content = append(message.Content, images...)
-	llmReq := &llm.Request{
-		Messages: []llm.Message{message},
-	}
-	if req.SystemPrompt != "" {
-		llmReq.System = []llm.SystemContent{{Type: "text", Text: req.SystemPrompt}}
-	}
-
-	// Send the request
-	resp, err := svc.Do(llmhttp.WithPurpose(ctx, "llm_one_shot"), llmReq)
-	if err != nil {
-		return llm.ErrorfToolOut("LLM request failed: %w", err)
-	}
-
-	// Extract text from the response
-	var result strings.Builder
-	for _, content := range resp.Content {
-		if content.Type == llm.ContentTypeText {
-			result.WriteString(content.Text)
-		}
-	}
-	resultText := result.String()
-
-	// Determine where to put the result
+func finishOneShot(req llmOneShotInput, prepared oneShotPrepared, resultText string, inputTokens, outputTokens uint64) (oneShotExecution, error) {
 	outputPath := req.OutputFile
 	if !filepath.IsAbs(outputPath) && outputPath != "" {
-		outputPath = filepath.Join(wd, outputPath)
+		outputPath = filepath.Join(prepared.wd, outputPath)
 	}
 
 	// If no explicit output file but result is long, write to temp file
 	if outputPath == "" && len(resultText) > llmOneShotMaxInlineLen {
-		f, err := os.CreateTemp(wd, "llm-result-*.txt")
+		f, err := os.CreateTemp(prepared.wd, "llm-result-*.txt")
 		if err != nil {
 			f, err = os.CreateTemp("", "llm-result-*.txt")
 			if err != nil {
-				return llm.ErrorfToolOut("failed to create temp file: %w", err)
+				return oneShotExecution{}, fmt.Errorf("failed to create temp file: %w", err)
 			}
 		}
 		outputPath = f.Name()
 		f.Close()
 	}
 
-	var display any
-	if len(displayImages) > 0 {
-		display = map[string]any{"images": displayImages}
-	}
-
 	if outputPath != "" {
 		if err := os.WriteFile(outputPath, []byte(resultText), 0o644); err != nil {
-			return llm.ErrorfToolOut("failed to write output file: %w", err)
+			return oneShotExecution{}, fmt.Errorf("failed to write output file: %w", err)
 		}
 		usage := fmt.Sprintf(" (model: %s, input_tokens: %d, output_tokens: %d)",
-			modelID, resp.Usage.InputTokens, resp.Usage.OutputTokens)
-		return llm.ToolOut{
-			LLMContent: llm.TextContent(fmt.Sprintf("Response written to %s (%d bytes)%s", outputPath, len(resultText), usage)),
-			Display:    display,
-		}
+			prepared.modelID, inputTokens, outputTokens)
+		return oneShotExecution{
+			Output:  fmt.Sprintf("Response written to %s (%d bytes)%s", outputPath, len(resultText), usage),
+			Display: prepared.display,
+		}, nil
 	}
 
 	usage := fmt.Sprintf("\n\n---\nmodel: %s, input_tokens: %d, output_tokens: %d",
-		modelID, resp.Usage.InputTokens, resp.Usage.OutputTokens)
-	return llm.ToolOut{
-		LLMContent: llm.TextContent(resultText + usage),
-		Display:    display,
-	}
+		prepared.modelID, inputTokens, outputTokens)
+	return oneShotExecution{Output: resultText + usage, Display: prepared.display}, nil
 }
