@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Shelley — agent workshop</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <div id="app" class="workbench">
+    <aside id="sidebar" class="sidebar" aria-label="Conversations">
+      <header class="brand">
+        <button class="icon-button mobile-only" data-action="close-sidebar" aria-label="Close conversations">×</button>
+        <div>
+          <span class="eyebrow">AGENT WORKSHOP / 01</span>
+          <h1>Shelley<span class="brand-mark">✦</span></h1>
+        </div>
+        <button class="icon-button" data-action="new-conversation" title="New conversation">＋</button>
+      </header>
+      <label class="search-field">
+        <span>⌕</span>
+        <input id="conversation-search" type="search" placeholder="Search expeditions" autocomplete="off">
+        <kbd>⌘K</kbd>
+      </label>
+      <div id="conversation-list" class="conversation-list" aria-live="polite"></div>
+      <footer class="sidebar-footer">
+        <button class="text-button" data-action="open-settings"><span class="status-dot" id="auth-dot"></span><span id="auth-label">Setup required</span></button>
+        <button class="icon-button" data-action="toggle-theme" title="Toggle theme">◐</button>
+      </footer>
+    </aside>
+
+    <main class="stage">
+      <header class="topbar">
+        <button class="icon-button mobile-only" data-action="open-sidebar" aria-label="Open conversations">☰</button>
+        <div class="conversation-heading">
+          <span class="eyebrow" id="conversation-meta">NO ACTIVE EXPEDITION</span>
+          <h2 id="conversation-title">Choose a conversation</h2>
+        </div>
+        <div class="topbar-actions">
+          <span id="run-state" class="run-state">IDLE</span>
+          <button class="tool-tab" data-panel="files">FILES</button>
+          <button class="tool-tab" data-panel="diff">DIFF</button>
+          <button class="tool-tab" data-panel="terminal">TERM</button>
+          <button class="icon-button" data-action="fork" title="Fork conversation">⑂</button>
+          <button class="icon-button" data-action="export" title="Export conversation">⇩</button>
+          <button class="icon-button" data-action="open-settings" title="Settings">⚙</button>
+        </div>
+      </header>
+
+      <section class="chat-shell">
+        <div id="empty-state" class="empty-state">
+          <div class="compass">✦</div>
+          <span class="eyebrow">A WORKSPACE WITH MEMORY</span>
+          <h3>Make a mark worth finding.</h3>
+          <p>Open a conversation, attach a reference, and send Shelley into the code. Every tool action, checkpoint, and interruption stays visible.</p>
+          <div class="suggestion-grid">
+            <button data-prompt="Survey this repository and explain its architecture."><b>Survey</b><span>Map the terrain before changing it</span></button>
+            <button data-prompt="Find the highest-risk bug in this repository and propose a focused fix."><b>Investigate</b><span>Trace a risky edge to its source</span></button>
+            <button data-prompt="Run the test suite, diagnose failures, and fix the root causes."><b>Repair</b><span>Test, diagnose, and mend</span></button>
+          </div>
+        </div>
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <button id="scroll-bottom" class="scroll-bottom" aria-label="Scroll to newest message">↓ Newest</button>
+      </section>
+
+      <section class="composer-wrap">
+        <div id="attachment-strip" class="attachment-strip"></div>
+        <form id="composer" class="composer">
+          <label class="attach-button" title="Attach files">
+            <span>＋</span><input id="attachment-input" type="file" multiple hidden>
+          </label>
+          <textarea id="prompt" rows="1" placeholder="Describe the work…" aria-label="Message Shelley"></textarea>
+          <button type="button" class="stop-button" id="stop-button" title="Stop run">■</button>
+          <button type="submit" class="send-button" id="send-button" aria-label="Send">↗</button>
+        </form>
+        <div class="composer-foot">
+          <span><kbd>↵</kbd> send · <kbd>⇧↵</kbd> newline · <kbd>⌘K</kbd> commands</span>
+          <span id="context-label">0 tokens</span>
+          <span class="context-track"><i id="context-fill"></i></span>
+        </div>
+      </section>
+    </main>
+
+    <aside id="utility-panel" class="utility-panel" aria-label="Workspace utility">
+      <header>
+        <div><span class="eyebrow">WORKSPACE LENS</span><h3 id="panel-title">Files</h3></div>
+        <button class="icon-button" data-action="close-panel">×</button>
+      </header>
+      <section id="files-panel" class="panel-view">
+        <div class="panel-toolbar">
+          <button class="crumb" id="file-path">/</button>
+          <input id="file-search" type="search" placeholder="Find files">
+          <button class="icon-button" data-action="refresh-files">↻</button>
+        </div>
+        <div id="file-list" class="file-list"></div>
+        <div id="editor-shell" class="editor-shell hidden">
+          <div class="editor-head"><span id="editor-path"></span><button class="small-button" data-action="save-file">SAVE</button></div>
+          <textarea id="file-editor" spellcheck="false"></textarea>
+        </div>
+      </section>
+      <section id="diff-panel" class="panel-view hidden">
+        <pre id="git-status" class="git-status"></pre>
+        <pre id="git-diff" class="diff-view"></pre>
+      </section>
+      <section id="terminal-panel" class="panel-view hidden">
+        <div id="terminal-output" class="terminal-output"><span class="terminal-muted">Shell access is explicit and runs in the selected backend.</span></div>
+        <form id="terminal-form" class="terminal-form"><span>$</span><input id="terminal-command" autocomplete="off" spellcheck="false" placeholder="go test ./..."><button>RUN</button></form>
+      </section>
+    </aside>
+  </div>
+
+  <dialog id="settings-dialog" class="modal settings-modal">
+    <form method="dialog" class="modal-card" id="settings-form">
+      <header><div><span class="eyebrow">WORKSHOP CONFIGURATION</span><h3>Connection & workspace</h3></div><button class="icon-button" value="cancel">×</button></header>
+      <div class="settings-grid">
+        <section>
+          <h4>Model connection</h4>
+          <p class="muted">Credentials remain in this process. Subscription tokens are written only to this example’s private data directory.</p>
+          <label>Model ID<input id="settings-model" name="model" placeholder="gpt-5"></label>
+          <div class="segmented" role="tablist">
+            <button type="button" data-auth-tab="api" class="active">API KEY</button>
+            <button type="button" data-auth-tab="oauth">SUBSCRIPTION</button>
+          </div>
+          <div id="auth-api-panel">
+            <label>OpenAI API key<input id="settings-api-key" type="password" autocomplete="off" placeholder="sk-…"></label>
+            <button type="button" class="action-button" data-action="save-api-key">USE API KEY</button>
+          </div>
+          <div id="auth-oauth-panel" class="hidden">
+            <p id="oauth-copy">Sign in through a browser using a local PKCE callback. The server never reads credentials from another application.</p>
+            <button type="button" class="action-button" data-action="start-oauth">START SIGN-IN</button>
+          </div>
+          <button type="button" class="danger-link" data-action="clear-auth">Clear credentials</button>
+        </section>
+        <section>
+          <h4>Execution backend</h4>
+          <label class="radio-card"><input type="radio" name="backend" value="local" checked><span><b>Local workspace</b><small id="workspace-label">Confined virtual root with explicit shell access</small></span></label>
+          <label class="radio-card"><input type="radio" name="backend" value="langsmith"><span><b>LangSmith sandbox</b><small>Connect to an existing sandbox; this example never creates one</small></span></label>
+          <label>Existing sandbox name<input id="settings-sandbox" placeholder="my-sandbox"></label>
+          <div class="security-note"><b>Authority boundary</b><p>This app is single-user and has no built-in HTTP authentication. Keep it on loopback unless you add an access layer.</p></div>
+        </section>
+      </div>
+      <footer><span id="settings-state" class="muted"></span><button value="cancel" class="text-button">CANCEL</button><button value="default" class="action-button">SAVE SETTINGS</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="approval-dialog" class="modal approval-modal">
+    <form method="dialog" class="modal-card" id="approval-form">
+      <header><div><span class="eyebrow">HUMAN CHECKPOINT</span><h3>Review requested actions</h3></div></header>
+      <p>These operations are paused. Inspect arguments before choosing what proceeds.</p>
+      <div id="approval-list"></div>
+      <footer><button value="cancel" class="text-button">DECIDE LATER</button><button value="default" class="action-button">RESUME</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="command-dialog" class="command-dialog">
+    <label><span>›</span><input id="command-input" placeholder="Type a command" autocomplete="off"></label>
+    <div id="command-list"></div>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="assertive"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

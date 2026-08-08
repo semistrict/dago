@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "name": "deepagents-python",
+      "repository": "https://github.com/langchain-ai/deepagents",
+      "revision": "d60560d695e8c436e11dee96965e7a1447409737",
+      "version": "0.7.5",
+      "license": "MIT",
+      "local_path": "/Users/ramon/src/deepagents",
+      "surfaces": ["libs/deepagents/deepagents/graph.py", "libs/deepagents/deepagents/backends", "libs/deepagents/deepagents/middleware", "libs/deepagents/tests"]
+    },
+    {
+      "name": "langgraph-python",
+      "repository": "https://github.com/langchain-ai/langgraph",
+      "revision": "fde3068970679184b68d3d068a92c83c966a4888",
+      "version": "1.2.10",
+      "license": "MIT",
+      "local_path": "/Users/ramon/src/langgraph",
+      "surfaces": ["libs/langgraph/langgraph/channels", "libs/langgraph/langgraph/graph", "libs/langgraph/langgraph/pregel", "libs/checkpoint", "libs/checkpoint-sqlite", "libs/checkpoint-postgres", "libs/checkpoint-conformance"]
+    },
+    {
+      "name": "langchain-python",
+      "repository": "https://github.com/langchain-ai/langchain",
+      "revision": "d048fbe170573b6e7056b5ef5f78d8451e54abaf",
+      "version": "1.3.14",
+      "license": "MIT",
+      "local_path": "/Users/ramon/src/langchain-py",
+      "surfaces": ["libs/langchain_v1/langchain/agents", "libs/langchain_v1/langchain/chat_models/base.py", "libs/core/langchain_core/messages", "libs/core/langchain_core/language_models", "libs/core/langchain_core/tools", "libs/core/langchain_core/runnables/config.py"]
+    },
+    {
+      "name": "deepagents-typescript",
+      "repository": "https://github.com/langchain-ai/deepagentsjs",
+      "revision": "945b362d06d03728d16bc0020cb242a9eeae8451",
+      "license": "MIT",
+      "local_path": "/Users/ramon/src/deepagentsjs",
+      "surfaces": ["libs/deepagents/src", "libs/deepagents/tests"]
+    },
+    {
+      "name": "langchain-typescript",
+      "repository": "https://github.com/langchain-ai/langchainjs",
+      "revision": "62fc484b2a0d1ec5b8bebff4a8a0efe6300ada72",
+      "license": "MIT",
+      "local_path": "/Users/ramon/src/langchain",
+      "surfaces": ["libs/langchain-core/src/messages", "libs/langchain-core/src/tools", "libs/langchain-core/src/language_models"]
+    },
+    {
+      "name": "shelley",
+      "repository": "https://github.com/boldsoftware/shelley",
+      "revision": "1d4cbe79c6be45cc0105d46819cb54844f98eddd",
+      "license": "Apache-2.0",
+      "local_path": "/Users/ramon/src/shelley",
+      "surfaces": ["ui/src", "server", "db", "llm", "loop"]
+    },
+    {
+      "name": "langsmith-go",
+      "repository": "https://github.com/langchain-ai/langsmith-go",
+      "revision": "v0.25.4",
+      "version": "0.25.4",
+      "license": "MIT",
+      "surfaces": ["sandbox.go", "sandbox_resource.go", "sandbox_files.go", "sandbox_commands.go"]
+    }
+  ]
+}

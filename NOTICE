@@ -1,0 +1,7 @@
+Dago includes an independently written example inspired by Shelley.
+
+Shelley is Copyright 2026 Bold Software, Inc. and licensed under the Apache
+License, Version 2.0. The reference revision and copied behavioral surfaces are
+listed in docs/upstream-manifest.json. The example UI and server implementation in
+this repository are original code; no generated or vendored Shelley distribution is
+included.

@@ -1,0 +1,27 @@
+# Security boundaries
+
+Filesystem backends normalize absolute virtual paths and reject traversal and
+symlink escape. Ordered allow, deny, and ask rules are enforced in code before tool
+execution. Delete rules must cover the target and descendants. Prompts and tool names
+cannot grant authority.
+
+`backend.LocalShell` executes trusted host commands and is not a sandbox. Applications
+must opt into it explicitly and should prefer a remote sandbox for untrusted work.
+Command output and duration are bounded, but those limits are not isolation.
+
+The safe checkpoint serializer is an allowlist. It does not implement pickle,
+dynamic imports, arbitrary constructors, or callable execution. OAuth tokens are
+stored only when the caller provides a path, using an atomic private file with mode
+0600. Error bodies are bounded and credentials are not logged.
+
+The subscription OAuth helper uses PKCE, verifies the callback state, binds its
+temporary callback listener to loopback, honors cancellation, refreshes expired
+credentials, and stores tokens only in its own caller-selected file. It does not read
+or reuse another application’s credential store. API-key and OAuth credentials remain
+adapter concerns and are never placed into graph state or checkpoints.
+
+The example web application is single-user software and does not add authentication.
+Bind it to loopback or place it behind an authenticated reverse proxy. Its terminal
+and local-shell paths execute trusted host commands in the selected workspace; they
+are enabled only when that backend is selected and are not a substitute for sandbox
+isolation.
