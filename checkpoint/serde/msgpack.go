@@ -13,6 +13,9 @@ func marshalMessagePack(value any, limits Limits) ([]byte, error) {
 	if err := encoder.write(value, 0); err != nil {
 		return nil, err
 	}
+	if buffer.Len() > limits.MaxBytes {
+		return nil, fmt.Errorf("%w: payload exceeds %d bytes", ErrMalformedPayload, limits.MaxBytes)
+	}
 	return buffer.Bytes(), nil
 }
 
@@ -169,15 +172,34 @@ func (encoder msgpackEncoder) writeUint(value uint64) error {
 }
 
 func (encoder msgpackEncoder) writeString(value string) error {
-	if err := encoder.writeLength(len(value), 0xa0, 31, 0xda, 0xdb); err != nil {
-		if len(value) <= math.MaxUint8 {
-			if writeErr := encoder.buffer.WriteByte(0xd9); writeErr != nil {
-				return writeErr
-			}
-			if writeErr := encoder.buffer.WriteByte(byte(len(value))); writeErr != nil {
-				return writeErr
-			}
-		} else {
+	length := len(value)
+	if length > encoder.limits.MaxBytes {
+		return fmt.Errorf("%w: string exceeds %d bytes", ErrMalformedPayload, encoder.limits.MaxBytes)
+	}
+	switch {
+	case length <= 31:
+		if err := encoder.buffer.WriteByte(0xa0 | byte(length)); err != nil {
+			return err
+		}
+	case length <= math.MaxUint8:
+		if err := encoder.buffer.WriteByte(0xd9); err != nil {
+			return err
+		}
+		if err := encoder.buffer.WriteByte(byte(length)); err != nil {
+			return err
+		}
+	case length <= math.MaxUint16:
+		if err := encoder.buffer.WriteByte(0xda); err != nil {
+			return err
+		}
+		if err := binary.Write(encoder.buffer, binary.BigEndian, uint16(length)); err != nil {
+			return err
+		}
+	default:
+		if err := encoder.buffer.WriteByte(0xdb); err != nil {
+			return err
+		}
+		if err := binary.Write(encoder.buffer, binary.BigEndian, uint32(length)); err != nil {
 			return err
 		}
 	}
@@ -187,6 +209,9 @@ func (encoder msgpackEncoder) writeString(value string) error {
 
 func (encoder msgpackEncoder) writeBytes(value []byte) error {
 	length := len(value)
+	if length > encoder.limits.MaxBytes {
+		return fmt.Errorf("%w: bytes exceed %d bytes", ErrMalformedPayload, encoder.limits.MaxBytes)
+	}
 	switch {
 	case length <= math.MaxUint8:
 		if err := encoder.buffer.WriteByte(0xc4); err != nil {

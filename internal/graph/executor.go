@@ -172,6 +172,49 @@ func (graph *Compiled) Invoke(ctx context.Context, invocation Invocation) (Execu
 	return Execution{}, ErrRecursionLimit
 }
 
+// Cancel applies a final state update and clears all scheduled tasks. It is the
+// durable cancellation transition used after active node work has observed
+// context cancellation.
+func (graph *Compiled) Cancel(ctx context.Context, invocation Invocation) (Execution, error) {
+	if err := invocation.Config.Validate(); err != nil {
+		return Execution{}, err
+	}
+	machine, current, _, metadata, err := graph.restore(ctx, invocation)
+	if err != nil {
+		return Execution{}, err
+	}
+	if _, err := machine.apply([]state.Values{invocation.State}); err != nil {
+		return Execution{}, fmt.Errorf("apply graph cancellation: %w", err)
+	}
+	previous := checkpoint.Checkpoint{}
+	if current.CheckpointID != "" && graph.options.Saver != nil {
+		tuple, err := graph.options.Saver.GetTuple(ctx, current)
+		if err != nil {
+			return Execution{}, err
+		}
+		if tuple != nil {
+			previous = tuple.Checkpoint
+		}
+	}
+	parent := current
+	if parent.ThreadID == "" {
+		parent = checkpoint.Config{ThreadID: invocation.Config.ThreadID, Namespace: invocation.Config.Namespace}
+	}
+	step := metadata.Step + 1
+	if current.CheckpointID == "" {
+		step = -1
+	}
+	current, _, err = graph.persist(ctx, parent, previous, machine, nil, MetadataInput{
+		Source: "cancel", Step: step, Updated: keysOf(invocation.State),
+		ForceDeltaSnapshots: current.CheckpointID == "", PreviousMetadata: metadata,
+	})
+	if err != nil {
+		return Execution{}, err
+	}
+	values, err := machine.values()
+	return Execution{Config: current, State: values}, err
+}
+
 func (graph *Compiled) restore(
 	ctx context.Context,
 	invocation Invocation,

@@ -74,6 +74,65 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 	}
 }
 
+func TestAgentCancelClearsPendingToolsAndPreservesState(t *testing.T) {
+	started := make(chan struct{})
+	blocking := tool.Func{
+		Spec: tool.Definition{Name: "blocking", Description: "Block until cancelled", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(ctx context.Context, _ json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+			close(started)
+			<-ctx.Done()
+			return tool.Result{}, ctx.Err()
+		},
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{
+			ID: "assistant-tool", Role: message.RoleAssistant,
+			ToolCalls: []message.ToolCall{{ID: "call-1", Name: "blocking", Arguments: json.RawMessage(`{}`)}},
+		}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			last := request.Messages[len(request.Messages)-1]
+			if last.Role != message.RoleHuman || last.TextContent() != "after cancel" {
+				return fmt.Errorf("last message = %#v", last)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("resumed")}},
+	)
+	saver := checkpoint.NewMemorySaver()
+	compiled, err := New(Options{Model: script, Tools: []tool.Tool{blocking}, Saver: saver, MaxConcurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := compiled.Invoke(ctx, Input{Config: checkpoint.Config{ThreadID: "cancel"}, Messages: []message.Message{message.Human("start")}})
+		done <- err
+	}()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	cancelled := message.Tool("call-1", "Tool execution cancelled by user")
+	cancelled.Name = "blocking"
+	cancelled.ToolStatus = message.ToolStatusError
+	if _, err := compiled.Cancel(context.Background(), Input{
+		Config:   checkpoint.Config{ThreadID: "cancel"},
+		Messages: []message.Message{cancelled, message.Assistant("[Operation cancelled]")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), Input{
+		Config: checkpoint.Config{ThreadID: "cancel"}, Messages: []message.Message{message.Human("after cancel")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Messages[len(result.Messages)-1].TextContent(); got != "resumed" {
+		t.Fatalf("last response = %q", got)
+	}
+}
+
 func TestMiddlewareLifecycleAndWrapperNesting(t *testing.T) {
 	var mu sync.Mutex
 	var events []string

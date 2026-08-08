@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/semistrict/dago/checkpoint"
@@ -147,6 +148,29 @@ func TestSafeRejectsMalformedAndOversizedPayloads(t *testing.T) {
 	}
 	if _, err := codec.Decode(Typed{Type: "bytes", Data: []byte{1, 2, 3, 4}}); !errors.Is(err, ErrMalformedPayload) {
 		t.Fatalf("oversized Decode() error = %v", err)
+	}
+	if _, err := codec.Encode("four"); !errors.Is(err, ErrMalformedPayload) {
+		t.Fatalf("oversized Encode() error = %v", err)
+	}
+}
+
+func TestSafeCollectionLimitDoesNotRestrictStringBytes(t *testing.T) {
+	codec := New(Limits{MaxBytes: 1 << 20, MaxCollection: 2})
+	want := strings.Repeat("image-data", 100_000)
+
+	encoded, err := codec.Encode(want)
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	decoded, err := codec.Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if decoded != want {
+		t.Fatal("decoded large string differs from input")
+	}
+	if _, err := codec.Encode([]any{1, 2, 3}); !errors.Is(err, ErrMalformedPayload) {
+		t.Fatalf("oversized collection Encode() error = %v", err)
 	}
 }
 

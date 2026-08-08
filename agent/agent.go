@@ -151,6 +151,26 @@ func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
 	return resultFromExecution(execution)
 }
 
+// Cancel durably appends final messages/state and clears pending graph tasks.
+// It must be called after the active invocation has observed cancellation.
+func (agent *Agent) Cancel(ctx context.Context, input Input) (Result, error) {
+	if input.Config.ThreadID == "" {
+		input.Config.ThreadID = "default"
+	}
+	values := input.State.Clone()
+	if values == nil {
+		values = state.Values{}
+	}
+	if len(input.Messages) > 0 {
+		values[MessagesKey] = cloneMessages(input.Messages)
+	}
+	execution, err := agent.graph.Cancel(ctx, graph.Invocation{Config: input.Config, State: values})
+	if err != nil {
+		return Result{}, err
+	}
+	return resultFromExecution(execution)
+}
+
 func resultFromExecution(execution graph.Execution) (Result, error) {
 	messages, err := messagesFrom(execution.State[MessagesKey])
 	if err != nil {
@@ -384,6 +404,25 @@ func mergeModelChunk(response *model.Response, chunk model.Chunk) {
 	}
 	if response.Message.Name == "" {
 		response.Message.Name = delta.Name
+	}
+	if len(delta.Metadata) > 0 {
+		if response.Message.Metadata == nil {
+			response.Message.Metadata = map[string]json.RawMessage{}
+		}
+		for key, value := range delta.Metadata {
+			response.Message.Metadata[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+	if len(delta.ResponseMetadata) > 0 {
+		if response.Message.ResponseMetadata == nil {
+			response.Message.ResponseMetadata = map[string]json.RawMessage{}
+		}
+		for key, value := range delta.ResponseMetadata {
+			response.Message.ResponseMetadata[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+	if len(delta.Artifact) > 0 {
+		response.Message.Artifact = append(json.RawMessage(nil), delta.Artifact...)
 	}
 	for _, block := range delta.Content {
 		if block.Type == message.BlockText && len(response.Message.Content) > 0 && response.Message.Content[len(response.Message.Content)-1].Type == message.BlockText {
