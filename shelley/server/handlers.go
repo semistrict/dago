@@ -2683,28 +2683,33 @@ func (s *Server) handleModelRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.refreshBuiltModels == nil {
-		http.Error(w, "model refresh is not configured", http.StatusNotImplemented)
-		return
-	}
-	refresher, ok := s.llmManager.(builtModelRefresher)
-	if !ok {
-		http.Error(w, "model manager does not support refresh", http.StatusInternalServerError)
-		return
-	}
-	builtModels, err := s.refreshBuiltModels(r.Context())
+	modelList, err := s.refreshModels(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(modelList)
+}
+
+func (s *Server) refreshModels(ctx context.Context) ([]ModelInfo, error) {
+	if s.refreshBuiltModels == nil {
+		return nil, fmt.Errorf("model refresh is not configured")
+	}
+	refresher, ok := s.llmManager.(builtModelRefresher)
+	if !ok {
+		return nil, fmt.Errorf("model manager does not support refresh")
+	}
+	builtModels, err := s.refreshBuiltModels(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if err := refresher.RefreshBuiltModels(builtModels); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	modelList := s.getModelList()
 	markDefaultModel(modelList, s.effectiveDefaultModel(modelList))
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(modelList)
+	return modelList, nil
 }
 
 // markDefaultModel sets IsDefault=true on the entry matching defaultID.

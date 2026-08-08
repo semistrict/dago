@@ -111,4 +111,64 @@ test.describe("Model picker (PrimeVue)", () => {
     await expect(panel).toBeHidden();
     await expect(picker.locator(".model-picker-value-effort")).toHaveText("· high");
   });
+
+  test("subscription sign-in refreshes the catalog and selects Luna", async ({ page }) => {
+    let signInStarted = false;
+    const luna = {
+      id: "gpt-5.6-luna",
+      display_name: "GPT-5.6 Luna",
+      source: "OpenAI subscription",
+      base_url: "https://chatgpt.com",
+      api_type: "responses",
+      ready: true,
+      is_default: true,
+      supports_images: true,
+    };
+
+    await page.route("**/api/auth/openai/status", async (route) => {
+      await route.fulfill({
+        json: signInStarted
+          ? { state: "complete", ready: true, model_id: luna.id }
+          : { state: "", ready: false, model_id: luna.id },
+      });
+    });
+    await page.route("**/api/auth/openai/start", async (route) => {
+      signInStarted = true;
+      await route.fulfill({
+        status: 202,
+        json: { authorization_url: "https://example.test/oauth" },
+      });
+    });
+    await page.route("**/api/models/refresh", async (route) => {
+      await route.fulfill({ json: [luna] });
+    });
+    await page.route("**/api/models", async (route) => {
+      if (signInStarted) {
+        await route.fulfill({ json: [luna] });
+      } else {
+        await route.continue();
+      }
+    });
+    await page.addInitScript(() => {
+      localStorage.removeItem("shelley_selected_model");
+      window.open = () => null;
+    });
+
+    await page.goto("/new");
+    const picker = page.locator(".model-picker.p-select");
+    await expect(picker).toBeVisible();
+    await picker.click();
+    await page
+      .locator(".model-picker-panel")
+      .getByRole("button", { name: "Manage models…" })
+      .click();
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("OpenAI subscription", { exact: true })).toBeVisible();
+    await dialog.getByRole("button", { name: "Sign in with OpenAI" }).click();
+
+    await expect(dialog).toBeHidden();
+    await expect(picker.locator(".model-picker-value-name")).toContainText("Luna");
+    expect(await page.evaluate(() => localStorage.getItem("shelley_selected_model"))).toBe(luna.id);
+  });
 });

@@ -125,6 +125,14 @@ export const ru: TranslationKeys = {
 
   // Models Modal
   manageModels: "Управление моделями",
+  openAISubscription: "Подписка OpenAI",
+  openAISubscriptionDescription: "Войдите, чтобы использовать GPT-5.6 Luna с подпиской OpenAI.",
+  openAIConnected: "Подключено. GPT-5.6 Luna готова к работе.",
+  openAIPending: "Завершите вход в открывшемся окне.",
+  signInWithOpenAI: "Войти через OpenAI",
+  disconnectOpenAI: "Отключить",
+  openingSignIn: "Ожидание входа…",
+  openSignInPage: "Открыть страницу входа",
   addModel: "Добавить модель",
   refreshModels: "Обновить",
   refreshingModels: "Обновление...",

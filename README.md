@@ -20,8 +20,10 @@ Dago requires Go 1.26 or newer.
 
 ## Quick start
 
-Models implement the small `model.Chat` interface. This complete example uses the
-deterministic scripted model included for tests and offline examples:
+Models implement the small `model.Chat` interface. The `model/modeltest` package
+includes both finite scripted responses and Shelley's reusable prompt-driven
+predictable model for tests, demos, and browser suites. This complete example uses
+the finite scripted form:
 
 ```go
 package main
@@ -110,6 +112,7 @@ records are rejected with typed context instead of reconstructed.
 | `dago` | Deep Agent constructor and filesystem, subagent, summary, skill, memory, profile, and rubric middleware |
 | `agent` | Provider-neutral model/tool graph, middleware lifecycle, approval, retry, todo, streaming, and checkpoint operations |
 | `message`, `model`, `tool`, `state` | Stable public contracts and reducers |
+| `model/modeltest` | Scripted and prompt-driven predictable model doubles for offline tests and examples |
 | `backend` | State, memory, host filesystem, namespaced store, composite, and explicit local-shell backends |
 | `backend/langsmith` | Adapter for an existing LangSmith sandbox using `langsmith-go` |
 | `checkpoint` | Saver contract and in-memory implementation |

@@ -125,6 +125,14 @@ export const zhTW: TranslationKeys = {
 
   // Models Modal
   manageModels: "管理模型",
+  openAISubscription: "OpenAI 訂閱",
+  openAISubscriptionDescription: "登入後即可使用 OpenAI 訂閱中的 GPT-5.6 Luna。",
+  openAIConnected: "已連線。GPT-5.6 Luna 可供使用。",
+  openAIPending: "請在已開啟的視窗中完成登入。",
+  signInWithOpenAI: "使用 OpenAI 登入",
+  disconnectOpenAI: "中斷連線",
+  openingSignIn: "正在等待登入…",
+  openSignInPage: "開啟登入頁面",
   addModel: "新增模型",
   refreshModels: "重新整理",
   refreshingModels: "重新整理中...",

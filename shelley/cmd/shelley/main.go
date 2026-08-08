@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -34,6 +35,7 @@ type GlobalConfig struct {
 	DefaultModel          string
 	DisableLLMIntegration bool
 	DisableGateway        bool
+	OpenAIOAuthStore      string
 }
 
 type shelleyConfig struct {
@@ -61,6 +63,7 @@ func registerGlobalFlags(fs *flag.FlagSet, global *GlobalConfig) {
 	fs.StringVar(&global.DefaultModel, "default-model", "", "Default model for web UI (overrides shelley.json default_model; falls back to the first ready model when unset)")
 	fs.BoolVar(&global.DisableLLMIntegration, "disable-llm-integration", false, "Ignore any discovered exe.dev llm integration")
 	fs.BoolVar(&global.DisableGateway, "disable-gateway", false, "Ignore llm_gateway from shelley.json")
+	fs.StringVar(&global.OpenAIOAuthStore, "openai-oauth-store", "", "OpenAI subscription OAuth token file (defaults to the user config directory; set to 'none' to disable)")
 }
 
 func main() {
@@ -183,12 +186,20 @@ func runServe(global GlobalConfig, args []string) {
 
 	database := setupDatabase(global.DBPath, logger)
 	defer database.Close()
+	openAIOAuth, err := setupOpenAIOAuth(global, logger)
+	if err != nil {
+		logger.Error("Failed to configure OpenAI subscription sign-in", "error", err)
+		os.Exit(1)
+	}
+	if openAIOAuth != nil {
+		defer openAIOAuth.Close()
+	}
 
 	// Set the database path for system prompt generation
 	server.DBPath = global.DBPath
 
 	// Build LLM configuration
-	llmConfig, err := buildLLMConfig(global, logger, database)
+	llmConfig, err := buildLLMConfig(global, logger, database, openAIOAuth)
 	if err != nil {
 		logger.Error("Failed to load config", "path", global.ConfigPath, "error", err)
 		os.Exit(1)
@@ -206,6 +217,7 @@ func runServe(global GlobalConfig, args []string) {
 	// Create server
 	svr := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.DefaultModel, *requireHeader)
 	svr.SetModelRefresher(llmConfig.RefreshBuiltModels)
+	svr.SetOpenAIOAuth(openAIOAuth)
 	svr.Banner = *banner
 
 	// Load notification channels from DB.
@@ -418,7 +430,7 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 //  4. Predictable (always available).
 //
 // Custom DB-backed models load on top of the returned set.
-func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (*server.LLMConfig, error) {
+func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB, openAIOAuth *server.OpenAIOAuth) (*server.LLMConfig, error) {
 	config, err := loadConfig(global.ConfigPath)
 	if err != nil {
 		return nil, err
@@ -434,17 +446,56 @@ func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (
 	defaultModel, sources := buildLLMModelSources(context.Background(), global, config, logger)
 
 	httpc := llmhttp.NewClient(nil)
+	builtModels, err := buildModels(modelsources.Build(models.All(), sources, httpc, logger), openAIOAuth)
+	if err != nil {
+		return nil, err
+	}
+	if defaultModel == "" && len(builtModels) > 0 && builtModels[0].ID == server.OpenAISubscriptionModelID {
+		defaultModel = server.OpenAISubscriptionModelID
+	}
 	return &server.LLMConfig{
-		Models:       modelsources.Build(models.All(), sources, httpc, logger),
+		Models:       builtModels,
 		DefaultModel: defaultModel,
 		DB:           database,
 		HTTPC:        httpc,
 		RefreshBuiltModels: func(ctx context.Context) ([]models.Built, error) {
 			_, sources := buildLLMModelSources(ctx, global, config, logger)
-			return modelsources.Build(models.All(), sources, httpc, logger), nil
+			return buildModels(modelsources.Build(models.All(), sources, httpc, logger), openAIOAuth)
 		},
 		Logger: logger,
 	}, nil
+}
+
+func buildModels(base []models.Built, openAIOAuth *server.OpenAIOAuth) ([]models.Built, error) {
+	subscription, err := openAIOAuth.BuiltModels()
+	if err != nil {
+		return nil, err
+	}
+	if len(subscription) == 0 {
+		return base, nil
+	}
+	result := append([]models.Built(nil), subscription...)
+	for _, built := range base {
+		if built.ID != server.OpenAISubscriptionModelID {
+			result = append(result, built)
+		}
+	}
+	return result, nil
+}
+
+func setupOpenAIOAuth(global GlobalConfig, logger *slog.Logger) (*server.OpenAIOAuth, error) {
+	storePath := strings.TrimSpace(global.OpenAIOAuthStore)
+	if storePath == "none" {
+		return nil, nil
+	}
+	if storePath == "" {
+		configDirectory, err := os.UserConfigDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve user config directory: %w", err)
+		}
+		storePath = filepath.Join(configDirectory, "shelley", "openai-oauth.json")
+	}
+	return server.NewOpenAIOAuth(storePath, logger), nil
 }
 
 func loadConfig(path string) (shelleyConfig, error) {
@@ -564,7 +615,15 @@ func runModels(global GlobalConfig, args []string) {
 	}
 
 	logger := setupLogging(global.Debug)
-	llmCfg, err := buildLLMConfig(global, logger, nil)
+	openAIOAuth, err := setupOpenAIOAuth(global, logger)
+	if err != nil {
+		logger.Error("Failed to configure OpenAI subscription sign-in", "error", err)
+		os.Exit(1)
+	}
+	if openAIOAuth != nil {
+		defer openAIOAuth.Close()
+	}
+	llmCfg, err := buildLLMConfig(global, logger, nil, openAIOAuth)
 	if err != nil {
 		logger.Error("Failed to load config", "path", global.ConfigPath, "error", err)
 		os.Exit(1)

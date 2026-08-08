@@ -53,9 +53,10 @@ type Options struct {
 
 // Client is a Responses API-backed chat model.
 type Client struct {
-	options     Options
-	credentials CredentialSource
-	boundTools  []tool.Definition
+	options      Options
+	credentials  CredentialSource
+	boundTools   []tool.Definition
+	subscription bool
 }
 
 // NewAPIKey creates a model authenticated with an API key.
@@ -84,7 +85,12 @@ func NewSubscription(source CredentialSource, options Options) (*Client, error) 
 	}
 	store := false
 	options.Store = &store
-	return newClient(source, options)
+	client, err := newClient(source, options)
+	if err != nil {
+		return nil, err
+	}
+	client.subscription = true
+	return client, nil
 }
 
 func newClient(source CredentialSource, options Options) (*Client, error) {
@@ -130,6 +136,9 @@ func (client *Client) CountTokens(_ context.Context, messages []message.Message)
 }
 
 func (client *Client) Invoke(ctx context.Context, request model.Request) (model.Response, error) {
+	if client.subscription {
+		return client.invokeSubscription(ctx, request)
+	}
 	body, err := client.requestBody(request, false)
 	if err != nil {
 		return model.Response{}, err
@@ -147,6 +156,56 @@ func (client *Client) Invoke(ctx context.Context, request model.Request) (model.
 		return model.Response{}, fmt.Errorf("openai: decode response: %w", err)
 	}
 	return normalizeResponse(payload, request.ResponseFormat)
+}
+
+func (client *Client) invokeSubscription(ctx context.Context, request model.Request) (model.Response, error) {
+	stream, err := client.Stream(ctx, request)
+	if err != nil {
+		return model.Response{}, err
+	}
+	defer stream.Close()
+	response := model.Response{Message: message.Message{Role: message.RoleAssistant}}
+	for {
+		chunk, nextErr := stream.Next(ctx)
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return model.Response{}, nextErr
+		}
+		mergeChunk(&response, chunk)
+	}
+	if request.ResponseFormat != nil && len(response.Message.ToolCalls) == 0 {
+		text := strings.TrimSpace(response.Message.TextContent())
+		if !json.Valid([]byte(text)) {
+			return model.Response{}, fmt.Errorf("openai: structured response is not valid JSON")
+		}
+		response.Structured = json.RawMessage(text)
+	}
+	return response, nil
+}
+
+func mergeChunk(response *model.Response, chunk model.Chunk) {
+	delta := chunk.MessageDelta
+	if response.Message.ID == "" {
+		response.Message.ID = delta.ID
+	}
+	for _, block := range delta.Content {
+		if block.Type == message.BlockText && len(response.Message.Content) > 0 && response.Message.Content[len(response.Message.Content)-1].Type == message.BlockText {
+			response.Message.Content[len(response.Message.Content)-1].Text += block.Text
+			continue
+		}
+		response.Message.Content = append(response.Message.Content, block)
+	}
+	response.Message.ToolCalls = append(response.Message.ToolCalls, delta.ToolCalls...)
+	response.Message.InvalidToolCalls = append(response.Message.InvalidToolCalls, delta.InvalidToolCalls...)
+	if delta.Usage != nil {
+		usage := *delta.Usage
+		response.Message.Usage = &usage
+	}
+	if len(chunk.Structured) > 0 {
+		response.Structured = append(json.RawMessage(nil), chunk.Structured...)
+	}
 }
 
 func (client *Client) Stream(ctx context.Context, request model.Request) (model.Stream, error) {
@@ -256,9 +315,13 @@ func (client *Client) requestBody(request model.Request, stream bool) ([]byte, e
 		}
 		tools = append(tools, responseTool{Type: "function", Name: definition.Name, Description: definition.Description, Parameters: definition.InputSchema, Strict: definition.Strict})
 	}
+	maxOutputTokens := client.options.MaxOutputTokens
+	if client.subscription {
+		maxOutputTokens = 0
+	}
 	payload := responsesRequest{
 		Model: client.options.Model, Input: input, Tools: tools, Stream: stream,
-		MaxOutputTokens: client.options.MaxOutputTokens, ParallelToolCalls: len(tools) > 0,
+		MaxOutputTokens: maxOutputTokens, ParallelToolCalls: len(tools) > 0,
 		Store: client.options.Store,
 	}
 	if request.PromptCache != nil {

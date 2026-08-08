@@ -2802,12 +2802,16 @@ watch(
 watch(
   readyModelIds,
   (ready) => {
-    if (!selectedModel.value) return;
-    if (ready.includes(selectedModel.value)) return;
     // Prefer the server's default (or any ready model) over showing nothing,
     // so a mere catalog reshuffle doesn't strand the composer.
     const fallback = window.__SHELLEY_INIT__?.default_model;
-    applyModel(fallback && ready.includes(fallback) ? fallback : ready[0] || "");
+    const next = fallback && ready.includes(fallback) ? fallback : ready[0] || "";
+    if (!selectedModel.value) {
+      if (next) applyModel(next);
+      return;
+    }
+    if (ready.includes(selectedModel.value)) return;
+    applyModel(next);
   },
   { immediate: true },
 );

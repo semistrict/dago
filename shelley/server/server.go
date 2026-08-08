@@ -357,6 +357,7 @@ type Server struct {
 	defaultModel             string
 	requireHeader            string
 	refreshBuiltModels       func(context.Context) ([]models.Built, error)
+	openAIOAuth              *OpenAIOAuth
 	conversationGroup        singleflight.Group[string, *ConversationManager]
 	versionChecker           *VersionChecker
 	notifDispatcher          *notifications.Dispatcher
@@ -521,6 +522,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Models API (dynamic list refresh)
 	mux.Handle("POST /api/models/refresh", compressionHandler(http.HandlerFunc(s.handleModelRefresh)))
 	mux.Handle("/api/models", compressionHandler(http.HandlerFunc(s.handleModels)))
+	mux.Handle("GET /api/auth/openai/status", compressionHandler(http.HandlerFunc(s.handleOpenAIOAuthStatus)))
+	mux.Handle("POST /api/auth/openai/start", http.HandlerFunc(s.handleOpenAIOAuthStart))
+	mux.Handle("DELETE /api/auth/openai", http.HandlerFunc(s.handleOpenAIOAuthClear))
 	mux.Handle("/api/tools", http.HandlerFunc(s.handleTools))
 
 	// Version endpoints
@@ -1919,6 +1923,9 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 
 	// Signal background routines to stop
 	close(s.shutdownCh)
+	if s.openAIOAuth != nil {
+		s.openAIOAuth.Close()
+	}
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

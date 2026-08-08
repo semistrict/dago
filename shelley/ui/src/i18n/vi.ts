@@ -125,6 +125,14 @@ export const vi: TranslationKeys = {
 
   // Models Modal
   manageModels: "Quản lý models",
+  openAISubscription: "Gói đăng ký OpenAI",
+  openAISubscriptionDescription: "Đăng nhập để dùng GPT-5.6 Luna với gói đăng ký OpenAI của bạn.",
+  openAIConnected: "Đã kết nối. GPT-5.6 Luna đã sẵn sàng.",
+  openAIPending: "Hoàn tất đăng nhập trong cửa sổ vừa mở.",
+  signInWithOpenAI: "Đăng nhập bằng OpenAI",
+  disconnectOpenAI: "Ngắt kết nối",
+  openingSignIn: "Đang chờ đăng nhập…",
+  openSignInPage: "Mở trang đăng nhập",
   addModel: "Thêm model",
   refreshModels: "Làm mới",
   refreshingModels: "Đang làm mới...",

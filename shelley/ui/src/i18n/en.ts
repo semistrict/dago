@@ -125,6 +125,14 @@ export const en: TranslationKeys = {
 
   // Models Modal
   manageModels: "Manage Models",
+  openAISubscription: "OpenAI subscription",
+  openAISubscriptionDescription: "Sign in to use GPT-5.6 Luna with your OpenAI subscription.",
+  openAIConnected: "Connected. GPT-5.6 Luna is ready to use.",
+  openAIPending: "Finish signing in in the window that opened.",
+  signInWithOpenAI: "Sign in with OpenAI",
+  disconnectOpenAI: "Disconnect",
+  openingSignIn: "Waiting for sign-in…",
+  openSignInPage: "Open the sign-in page",
   addModel: "Add Model",
   refreshModels: "Refresh",
   refreshingModels: "Refreshing...",
@@ -190,7 +198,7 @@ export const en: TranslationKeys = {
   apiKeyRequired: "API key is required",
   noModelsConfigured: "No models configured",
   noModelsHint:
-    "Set environment variables like ANTHROPIC_API_KEY, or use the -gateway flag, or add a custom model below.",
+    "Sign in with OpenAI above, set a provider API key, use the -gateway flag, or add a custom model below.",
 
   // Notifications Modal
   notifications: "Notifications",

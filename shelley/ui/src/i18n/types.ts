@@ -125,6 +125,14 @@ export interface TranslationKeys {
 
   // Models Modal
   manageModels: string;
+  openAISubscription: string;
+  openAISubscriptionDescription: string;
+  openAIConnected: string;
+  openAIPending: string;
+  signInWithOpenAI: string;
+  disconnectOpenAI: string;
+  openingSignIn: string;
+  openSignInPage: string;
   addModel: string;
   refreshModels: string;
   refreshingModels: string;

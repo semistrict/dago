@@ -38,6 +38,13 @@ export interface AvailableModel {
   supports_images?: boolean;
 }
 
+export interface OpenAIOAuthStatus {
+  state: "" | "disabled" | "pending" | "complete" | "failed";
+  ready: boolean;
+  model_id: string;
+  error?: string;
+}
+
 class ApiService {
   private baseUrl = "/api";
 
@@ -81,6 +88,32 @@ class ApiService {
       throw await responseError(response, "Failed to refresh models");
     }
     return response.json();
+  }
+
+  async getOpenAIOAuthStatus(): Promise<OpenAIOAuthStatus> {
+    const response = await fetch(`${this.baseUrl}/auth/openai/status`);
+    if (!response.ok) {
+      throw await responseError(response, "Failed to get OpenAI sign-in status");
+    }
+    return response.json();
+  }
+
+  async startOpenAIOAuth(): Promise<{ authorization_url: string }> {
+    const response = await fetch(`${this.baseUrl}/auth/openai/start`, {
+      method: "POST",
+      headers: this.postHeaders,
+    });
+    if (!response.ok) {
+      throw await responseError(response, "Failed to start OpenAI sign-in");
+    }
+    return response.json();
+  }
+
+  async clearOpenAIOAuth(): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/auth/openai`, { method: "DELETE" });
+    if (!response.ok) {
+      throw await responseError(response, "Failed to disconnect OpenAI");
+    }
   }
 
   async getTools(): Promise<{

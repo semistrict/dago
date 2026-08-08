@@ -125,6 +125,15 @@ export const ja: TranslationKeys = {
 
   // Models Modal
   manageModels: "モデルの管理",
+  openAISubscription: "OpenAI サブスクリプション",
+  openAISubscriptionDescription:
+    "OpenAI サブスクリプションで GPT-5.6 Luna を使用するにはサインインしてください。",
+  openAIConnected: "接続済み。GPT-5.6 Luna を使用できます。",
+  openAIPending: "開いたウィンドウでサインインを完了してください。",
+  signInWithOpenAI: "OpenAI でサインイン",
+  disconnectOpenAI: "接続を解除",
+  openingSignIn: "サインインを待っています…",
+  openSignInPage: "サインインページを開く",
   addModel: "モデルの追加",
   refreshModels: "更新",
   refreshingModels: "更新中...",

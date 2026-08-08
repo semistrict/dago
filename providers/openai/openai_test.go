@@ -46,7 +46,7 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewAPIKey("secret", Options{Model: "test-model", BaseURL: server.URL, HTTPClient: server.Client()})
+	client, err := NewAPIKey("secret", Options{Model: "test-model", BaseURL: server.URL, HTTPClient: server.Client(), MaxOutputTokens: 4096})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +66,9 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 	}
 	if got["model"] != "test-model" || got["parallel_tool_calls"] != true {
 		t.Fatalf("request = %#v", got)
+	}
+	if got["max_output_tokens"] != float64(4096) {
+		t.Fatalf("max_output_tokens = %#v", got["max_output_tokens"])
 	}
 	if _, exists := got["store"]; exists {
 		t.Fatalf("API-key request unexpectedly set store: %#v", got["store"])
@@ -265,26 +268,33 @@ func TestOAuthCancellation(t *testing.T) {
 
 func TestSubscriptionAddsAccountHeader(t *testing.T) {
 	var account string
-	var store *bool
+	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		account = request.Header.Get("ChatGPT-Account-ID")
-		var payload struct {
-			Store *bool `json:"store"`
-		}
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		store = payload.Store
-		_, _ = io.WriteString(writer, `{"id":"r","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
 	}))
 	defer server.Close()
-	client, err := NewSubscription(staticCredentials{Credentials{AccessToken: "token", AccountID: "workspace"}}, Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	client, err := NewSubscription(staticCredentials{Credentials{AccessToken: "token", AccountID: "workspace"}}, Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), MaxOutputTokens: 4096})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
-	if err != nil || account != "workspace" || store == nil || *store {
-		t.Fatalf("account = %q, store = %v, error = %v", account, store, err)
+	response, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+	if err != nil || account != "workspace" || payload["store"] != false {
+		t.Fatalf("account = %q, store = %#v, error = %v", account, payload["store"], err)
+	}
+	if payload["stream"] != true {
+		t.Fatalf("stream = %#v", payload["stream"])
+	}
+	if _, exists := payload["max_output_tokens"]; exists {
+		t.Fatalf("subscription request unexpectedly set max_output_tokens: %#v", payload["max_output_tokens"])
+	}
+	if response.Message.TextContent() != "ok" || response.Message.Usage == nil || response.Message.Usage.TotalTokens != 2 {
+		t.Fatalf("response = %#v", response)
 	}
 }
 

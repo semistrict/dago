@@ -7199,6 +7199,84 @@ svg {
   line-height: 1;
 }
 
+.oauth-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 0 1rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg-secondary);
+}
+
+.models-modal-list .oauth-panel {
+  margin: 0.5rem 1rem 1rem;
+}
+
+.oauth-panel-copy {
+  min-width: 0;
+}
+
+.oauth-panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.oauth-panel-copy p {
+  margin: 0.25rem 0 0 1rem;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.oauth-status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  border-radius: 9999px;
+  background: var(--text-tertiary);
+}
+
+.oauth-status-complete {
+  background: var(--green-text, #16a34a);
+}
+
+.oauth-status-pending {
+  background: var(--accent);
+  box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.oauth-status-failed {
+  background: var(--error-text);
+}
+
+.oauth-panel-copy .oauth-panel-error {
+  color: var(--error-text);
+}
+
+.oauth-panel-link {
+  display: inline-block;
+  margin: 0.375rem 0 0 1rem;
+  font-size: 0.8125rem;
+}
+
+.oauth-panel-actions {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 640px) {
+  .oauth-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .oauth-panel-actions .p-button {
+    width: 100%;
+  }
+}
+
 .models-info {
   padding: 0.75rem 1rem;
   background: var(--bg-tertiary);

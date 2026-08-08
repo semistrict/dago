@@ -125,6 +125,14 @@ export const upgoer5: TranslationKeys = {
 
   // Models Modal
   manageModels: "Set Up Brains",
+  openAISubscription: "OpenAI use plan",
+  openAISubscriptionDescription: "Sign in to use GPT-5.6 Luna with your OpenAI use plan.",
+  openAIConnected: "Joined. GPT-5.6 Luna is ready to use.",
+  openAIPending: "Finish signing in in the window that opened.",
+  signInWithOpenAI: "Sign in with OpenAI",
+  disconnectOpenAI: "Stop using",
+  openingSignIn: "Waiting for sign-in…",
+  openSignInPage: "Open the sign-in page",
   addModel: "Add Brain",
   refreshModels: "Get Again",
   refreshingModels: "Getting again...",

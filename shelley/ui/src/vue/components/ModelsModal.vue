@@ -35,6 +35,56 @@
         <button class="models-error-dismiss" @click="error = null">×</button>
       </div>
 
+      <section v-if="oauthStatus?.state !== 'disabled'" class="oauth-panel">
+        <div class="oauth-panel-copy">
+          <div class="oauth-panel-title-row">
+            <span
+              class="oauth-status-dot"
+              :class="`oauth-status-${oauthStatus?.state || 'loading'}`"
+              aria-hidden="true"
+            ></span>
+            <strong>{{ t("openAISubscription") }}</strong>
+          </div>
+          <p v-if="oauthStatus?.state === 'complete'">{{ t("openAIConnected") }}</p>
+          <p v-else-if="oauthStatus?.state === 'pending'">{{ t("openAIPending") }}</p>
+          <p v-else>{{ t("openAISubscriptionDescription") }}</p>
+          <p v-if="oauthStatus?.error" class="oauth-panel-error">{{ oauthStatus.error }}</p>
+          <a
+            v-if="authorizationURL && oauthStatus?.state === 'pending'"
+            class="oauth-panel-link"
+            :href="authorizationURL"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {{ t("openSignInPage") }}
+          </a>
+        </div>
+        <div class="oauth-panel-actions">
+          <Button
+            v-if="oauthStatus?.state === 'complete'"
+            :label="t('disconnectOpenAI')"
+            severity="secondary"
+            size="small"
+            :loading="oauthStarting"
+            @click="disconnectOpenAI"
+          />
+          <Button
+            v-else
+            :label="
+              oauthStatus?.state === 'failed'
+                ? t('retry')
+                : oauthStarting || oauthStatus?.state === 'pending'
+                  ? t('openingSignIn')
+                  : t('signInWithOpenAI')
+            "
+            size="small"
+            :disabled="oauthStarting || oauthStatus?.state === 'pending' || !oauthStatus"
+            :loading="oauthStarting"
+            @click="startOpenAISignIn"
+          />
+        </div>
+      </section>
+
       <div v-if="loading" class="models-loading">
         <div class="spinner"></div>
         <span>{{ t("loadingModels") }}</span>
@@ -174,7 +224,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import DataTable from "primevue/datatable";
 import Column from "primevue/column";
 import Button from "primevue/button";
@@ -184,7 +234,13 @@ import { modelsTableDt } from "./modelsTableDt";
 import { prettyModelLabels } from "../../utils/modelNames";
 import { API_TYPE_LABELS, PROVIDER_LABELS } from "./customModelConstants";
 import { useI18n } from "../composables/i18n";
-import { api, customModelsApi, type AvailableModel, type CustomModel } from "../../services/api";
+import {
+  api,
+  customModelsApi,
+  type AvailableModel,
+  type CustomModel,
+  type OpenAIOAuthStatus,
+} from "../../services/api";
 
 const props = defineProps<{ isOpen: boolean }>();
 const emit = defineEmits<{ (e: "close"): void; (e: "modelsChanged"): void }>();
@@ -196,6 +252,11 @@ const loading = ref(true);
 const refreshing = ref(false);
 const error = ref<string | null>(null);
 const builtInModels = ref<AvailableModel[]>([]);
+const oauthStatus = ref<OpenAIOAuthStatus | null>(null);
+const oauthStarting = ref(false);
+const oauthSyncing = ref(false);
+const authorizationURL = ref("");
+let oauthPollTimer: number | null = null;
 
 // Stacked add/edit dialog state. `editModel` is the custom model being edited,
 // or null when adding a new one.
@@ -335,6 +396,108 @@ function setBuiltInFromModelList(modelList: AvailableModel[]) {
   builtInModels.value = modelList.filter((m) => m.source && m.source !== "custom");
 }
 
+function applyModelCatalog(modelList: AvailableModel[]) {
+  setBuiltInFromModelList(modelList);
+  if (!window.__SHELLEY_INIT__) return;
+  window.__SHELLEY_INIT__.models = modelList;
+  const ready = modelList.filter((model) => model.ready);
+  window.__SHELLEY_INIT__.default_model =
+    ready.find((model) => model.is_default)?.id || ready[0]?.id || "";
+}
+
+function stopOAuthPolling() {
+  if (oauthPollTimer !== null) {
+    window.clearInterval(oauthPollTimer);
+    oauthPollTimer = null;
+  }
+}
+
+async function syncCompletedOpenAI() {
+  if (oauthSyncing.value) return;
+  oauthSyncing.value = true;
+  stopOAuthPolling();
+  try {
+    const refreshedModels = await api.refreshModels();
+    applyModelCatalog(refreshedModels);
+    emit("modelsChanged");
+    emit("close");
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Failed to refresh models";
+  } finally {
+    oauthSyncing.value = false;
+  }
+}
+
+async function loadOpenAIStatus(syncTransition = false) {
+  const previousState = oauthStatus.value?.state;
+  try {
+    const next = await api.getOpenAIOAuthStatus();
+    oauthStatus.value = next;
+    if (next.state === "pending") {
+      startOAuthPolling();
+    } else {
+      stopOAuthPolling();
+    }
+    if (syncTransition && previousState === "pending" && next.state === "complete") {
+      await syncCompletedOpenAI();
+    }
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Failed to get OpenAI sign-in status";
+  }
+}
+
+function startOAuthPolling() {
+  if (oauthPollTimer !== null) return;
+  oauthPollTimer = window.setInterval(() => void loadOpenAIStatus(true), 1000);
+}
+
+async function startOpenAISignIn() {
+  if (oauthStarting.value || oauthStatus.value?.state === "pending") return;
+  oauthStarting.value = true;
+  error.value = null;
+  authorizationURL.value = "";
+  try {
+    const response = await api.startOpenAIOAuth();
+    authorizationURL.value = response.authorization_url;
+    oauthStatus.value = {
+      state: "pending",
+      ready: false,
+      model_id: "gpt-5.6-luna",
+    };
+    window.open(response.authorization_url, "_blank", "noopener,noreferrer");
+    startOAuthPolling();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Failed to start OpenAI sign-in";
+    await loadOpenAIStatus();
+  } finally {
+    oauthStarting.value = false;
+  }
+}
+
+async function disconnectOpenAI() {
+  if (oauthStarting.value) return;
+  oauthStarting.value = true;
+  error.value = null;
+  try {
+    await api.clearOpenAIOAuth();
+    authorizationURL.value = "";
+    oauthStatus.value = await api.getOpenAIOAuthStatus();
+    const refreshedModels = await api.refreshModels();
+    applyModelCatalog(refreshedModels);
+    emit("modelsChanged");
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Failed to disconnect OpenAI";
+  } finally {
+    oauthStarting.value = false;
+  }
+}
+
+function handleWindowFocus() {
+  if (props.isOpen && oauthStatus.value?.state === "pending") {
+    void loadOpenAIStatus(true);
+  }
+}
+
 function handleAddNew() {
   editModel.value = null;
   formOpen.value = true;
@@ -378,10 +541,7 @@ async function handleRefreshModels() {
     refreshing.value = true;
     error.value = null;
     const refreshedModels = await api.refreshModels();
-    if (window.__SHELLEY_INIT__) {
-      window.__SHELLEY_INIT__.models = refreshedModels;
-    }
-    setBuiltInFromModelList(refreshedModels);
+    applyModelCatalog(refreshedModels);
     emit("modelsChanged");
   } catch (err) {
     error.value = err instanceof Error ? err.message : "Failed to refresh models";
@@ -395,12 +555,22 @@ watch(
   (open) => {
     if (open) {
       loadModels();
+      void loadOpenAIStatus();
+      window.addEventListener("focus", handleWindowFocus);
       const initData = window.__SHELLEY_INIT__;
       if (initData?.models) {
         setBuiltInFromModelList(initData.models);
       }
+    } else {
+      stopOAuthPolling();
+      window.removeEventListener("focus", handleWindowFocus);
     }
   },
   { immediate: true },
 );
+
+onBeforeUnmount(() => {
+  stopOAuthPolling();
+  window.removeEventListener("focus", handleWindowFocus);
+});
 </script>

@@ -126,6 +126,15 @@ export const es: TranslationKeys = {
 
   // Models Modal
   manageModels: "Administrar modelos",
+  openAISubscription: "Suscripción de OpenAI",
+  openAISubscriptionDescription:
+    "Inicia sesión para usar GPT-5.6 Luna con tu suscripción de OpenAI.",
+  openAIConnected: "Conectado. GPT-5.6 Luna está listo para usar.",
+  openAIPending: "Termina de iniciar sesión en la ventana que se abrió.",
+  signInWithOpenAI: "Iniciar sesión con OpenAI",
+  disconnectOpenAI: "Desconectar",
+  openingSignIn: "Esperando el inicio de sesión…",
+  openSignInPage: "Abrir la página de inicio de sesión",
   addModel: "Agregar modelo",
   refreshModels: "Actualizar",
   refreshingModels: "Actualizando...",

@@ -125,6 +125,14 @@ export const zhCN: TranslationKeys = {
 
   // Models Modal
   manageModels: "管理模型",
+  openAISubscription: "OpenAI 订阅",
+  openAISubscriptionDescription: "登录后即可使用 OpenAI 订阅中的 GPT-5.6 Luna。",
+  openAIConnected: "已连接。GPT-5.6 Luna 可供使用。",
+  openAIPending: "请在已打开的窗口中完成登录。",
+  signInWithOpenAI: "使用 OpenAI 登录",
+  disconnectOpenAI: "断开连接",
+  openingSignIn: "正在等待登录…",
+  openSignInPage: "打开登录页面",
   addModel: "添加模型",
   refreshModels: "刷新",
   refreshingModels: "刷新中...",
