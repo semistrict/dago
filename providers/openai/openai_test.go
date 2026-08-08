@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -186,10 +187,14 @@ func TestOAuthLoginPKCEPersistenceAndRefresh(t *testing.T) {
 			query.Set("state", parsed.Query().Get("state"))
 			callback.RawQuery = query.Encode()
 			response, err := http.Get(callback.String())
-			if err == nil {
-				response.Body.Close()
+			if err != nil {
+				return err
 			}
-			return err
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				return fmt.Errorf("callback status = %s", response.Status)
+			}
+			return nil
 		},
 	})
 	if err != nil {

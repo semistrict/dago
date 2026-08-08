@@ -97,7 +97,6 @@ func Login(ctx context.Context, options OAuthOptions) (*OAuthSession, error) {
 		err  error
 	}
 	callbackResult := make(chan callback, 1)
-	server := &http.Server{ReadHeaderTimeout: 5 * time.Second}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth/callback", func(writer http.ResponseWriter, request *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(request.URL.Query().Get("state")), []byte(state)) != 1 {
@@ -133,6 +132,7 @@ func Login(ctx context.Context, options OAuthOptions) (*OAuthSession, error) {
 		default:
 		}
 	})
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	serveDone := make(chan error, 1)
 	go func() {
 		err := server.Serve(listener)
