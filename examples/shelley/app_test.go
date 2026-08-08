@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
@@ -114,6 +115,56 @@ func TestLoadedOAuthSessionReportsComplete(t *testing.T) {
 	application.routes().ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/status", nil))
 	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"oauth_state":"complete"`) {
 		t.Fatalf("status = %d %s", status.Code, status.Body.String())
+	}
+}
+
+func TestConversationRestoresPendingApproval(t *testing.T) {
+	application := testApplication(t)
+	application.modelOverride = modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Message{
+		Role: message.RoleAssistant,
+		ToolCalls: []message.ToolCall{{
+			ID: "execute-1", Name: "execute", Arguments: json.RawMessage(`{"command":"pwd"}`),
+		}},
+	}}})
+	handler := application.routes()
+	created := performJSON(t, handler, http.MethodPost, "/api/conversations", map[string]any{"title": "Approval"})
+	var conversation conversation
+	if err := json.Unmarshal(created.Body.Bytes(), &conversation); err != nil {
+		t.Fatal(err)
+	}
+	streamed := performJSON(t, handler, http.MethodPost, "/api/conversations/"+conversation.ID+"/messages", map[string]any{"message": "run pwd"})
+	if streamed.Code != http.StatusOK || !strings.Contains(streamed.Body.String(), `"mode":"interrupt"`) {
+		t.Fatalf("stream = %d %s", streamed.Code, streamed.Body.String())
+	}
+	detail := httptest.NewRecorder()
+	handler.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/conversations/"+conversation.ID, nil))
+	var state struct {
+		Interrupts []struct {
+			ID    string                  `json:"id"`
+			Value []agent.ApprovalRequest `json:"value"`
+		} `json:"interrupts"`
+	}
+	if err := json.Unmarshal(detail.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Code != http.StatusOK || len(state.Interrupts) != 1 || state.Interrupts[0].ID != "human_approval" || len(state.Interrupts[0].Value) != 1 || state.Interrupts[0].Value[0].Call.ID != "execute-1" {
+		t.Fatalf("detail = %d %s", detail.Code, detail.Body.String())
+	}
+}
+
+func TestRecoverApprovalInterruptsFromIncompleteTimeline(t *testing.T) {
+	interrupts := recoverApprovalInterrupts([]message.Message{{
+		Role: message.RoleAssistant,
+		ToolCalls: []message.ToolCall{{
+			ID: "execute-legacy", Name: "execute", Arguments: json.RawMessage(`"{\"command\":\"pwd\"}"`),
+		}},
+	}})
+	data, err := json.Marshal(interrupts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interrupts) != 1 || !strings.Contains(string(data), `"id":"human_approval"`) || !strings.Contains(string(data), `"id":"execute-legacy"`) {
+		t.Fatalf("interrupts = %s", data)
 	}
 }
 

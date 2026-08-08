@@ -83,8 +83,9 @@ kbd { padding: 1px 4px; border: 1px solid var(--line-soft); border-bottom-width:
 .conversation-heading { min-width: 0; flex: 1; }
 .conversation-heading h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 20px; }
 .topbar-actions { display: flex; align-items: center; gap: 3px; }
-.run-state { margin-right: 7px; padding: 4px 7px; border: 1px solid var(--line-soft); color: var(--muted); font: 700 8px var(--mono); letter-spacing: .13em; }
+.run-state { margin-right: 7px; padding: 4px 7px; border: 1px solid var(--line-soft); background: transparent; color: var(--muted); font: 700 8px var(--mono); letter-spacing: .13em; }
 .run-state.running { border-color: var(--amber); color: var(--amber); animation: signal 1.5s ease-in-out infinite; }
+.run-state.waiting { border-color: var(--amber); color: var(--amber); cursor: pointer; }
 @keyframes signal { 50% { opacity: .45; } }
 .tool-tab { padding: 8px 7px; font: 700 9px var(--mono); letter-spacing: .1em; }
 .tool-tab.active { color: var(--amber); }

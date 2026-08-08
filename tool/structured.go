@@ -22,6 +22,13 @@ func Structured[T any](
 	return Func{
 		Spec: definition,
 		Run: func(ctx context.Context, raw json.RawMessage, runtime Runtime) (Result, error) {
+			if len(raw) > 0 && raw[0] == '"' {
+				var encoded string
+				if err := json.Unmarshal(raw, &encoded); err != nil {
+					return Result{}, fmt.Errorf("%w: %v", ErrInvalidArguments, err)
+				}
+				raw = json.RawMessage(encoded)
+			}
 			var input T
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return Result{}, fmt.Errorf("%w: %v", ErrInvalidArguments, err)

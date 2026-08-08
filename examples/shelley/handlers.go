@@ -234,7 +234,15 @@ func (application *application) handleConversationGet(writer http.ResponseWriter
 		writeError(writer, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"conversation": value, "messages": messages})
+	interrupts, err := application.interrupts(request.Context(), id)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, err)
+		return
+	}
+	if len(interrupts) == 0 {
+		interrupts = recoverApprovalInterrupts(messages)
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"conversation": value, "messages": messages, "interrupts": interrupts})
 }
 
 func (application *application) handleConversationDelete(writer http.ResponseWriter, request *http.Request) {

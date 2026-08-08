@@ -58,7 +58,7 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Message.TextContent() != "done" || len(response.Message.ToolCalls) != 1 || response.Message.ToolCalls[0].ID != "call_1" {
+	if response.Message.TextContent() != "done" || len(response.Message.ToolCalls) != 1 || response.Message.ToolCalls[0].ID != "call_1" || string(response.Message.ToolCalls[0].Arguments) != `{"q":"go"}` {
 		t.Fatalf("response = %#v", response)
 	}
 	if response.Message.Usage == nil || response.Message.Usage.TotalTokens != 12 {
@@ -111,7 +111,7 @@ func TestStreamYieldsTextToolCallUsageAndDone(t *testing.T) {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"i\",\"call_id\":\"c\",\"name\":\"lookup\"}}\n\n")
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"i\",\"delta\":\"{\\\"q\\\":\"}\n\n")
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"i\",\"delta\":\"\\\"go\\\"}\"}\n\n")
-		_, _ = io.WriteString(writer, "data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"i\"}\n\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"i\",\"arguments\":\"{\\\"q\\\":\\\"go\\\"}\"}\n\n")
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n")
 	}))
 	defer server.Close()

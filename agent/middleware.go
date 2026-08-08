@@ -150,7 +150,20 @@ func HumanApproval(rules []ApprovalRule) Middleware {
 			return ToolBatchResponse{}, nil
 		}
 		if request.Runtime.Resume == nil {
-			return ToolBatchResponse{Interrupt: &Interrupt{ID: "human_approval", Value: pending}}, nil
+			value := make([]any, 0, len(pending))
+			for _, item := range pending {
+				var arguments any
+				if err := json.Unmarshal(item.Call.Arguments, &arguments); err != nil {
+					return ToolBatchResponse{}, fmt.Errorf("encode human approval call %q: %w", item.Call.ID, err)
+				}
+				call := map[string]any{"id": item.Call.ID, "name": item.Call.Name, "arguments": arguments}
+				record := map[string]any{"call": call}
+				if item.Description != "" {
+					record["description"] = item.Description
+				}
+				value = append(value, record)
+			}
+			return ToolBatchResponse{Interrupt: &Interrupt{ID: "human_approval", Value: value}}, nil
 		}
 		resume, ok := request.Runtime.Resume.(ApprovalResponse)
 		if !ok {

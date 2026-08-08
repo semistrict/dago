@@ -55,6 +55,14 @@ func TestStructuredDecodesAndInjectsRuntime(t *testing.T) {
 	if got := result.Content[0].Text; got != "answer:call-1" {
 		t.Fatalf("result text = %q", got)
 	}
+	legacy, err := created.Execute(
+		context.Background(),
+		json.RawMessage(`"{\"key\":\"legacy\"}"`),
+		Runtime{CallID: "call-2"},
+	)
+	if err != nil || legacy.Content[0].Text != "legacy:call-2" {
+		t.Fatalf("legacy result = %#v, %v", legacy, err)
+	}
 }
 
 func TestFuncRejectsInvalidArgumentsAndWrapsErrors(t *testing.T) {

@@ -46,11 +46,15 @@ function relativeTime(value) {
 
 function setRunning(running) {
   state.running = running;
+  const waiting = !running && Boolean(state.pendingApproval?.length);
+  const blocked = running || waiting;
   document.body.classList.toggle("running", running);
-  $("#run-state").textContent = running ? "RUNNING" : "IDLE";
+  $("#run-state").textContent = running ? "RUNNING" : waiting ? "WAITING" : "IDLE";
   $("#run-state").classList.toggle("running", running);
-  $("#prompt").disabled = running;
-  $("#send-button").disabled = running;
+  $("#run-state").classList.toggle("waiting", waiting);
+  $("#run-state").disabled = !waiting;
+  $("#prompt").disabled = blocked;
+  $("#send-button").disabled = blocked;
 }
 
 async function refreshStatus() {
@@ -119,6 +123,14 @@ async function selectConversation(id) {
   renderMessages();
   renderConversationList();
   $("#sidebar").classList.remove("open");
+  const approval = (value.interrupts || []).find(interrupt => interrupt.id === "human_approval");
+  if (approval) {
+    showApproval(approval);
+  } else {
+    state.pendingApproval = null;
+    if ($("#approval-dialog").open) $("#approval-dialog").close();
+    setRunning(state.running);
+  }
 }
 
 async function deleteConversation(conversation) {
@@ -298,6 +310,7 @@ function showApproval(interrupt) {
   const requests = Array.isArray(interrupt?.value) ? interrupt.value : [];
   if (!requests.length) return;
   state.pendingApproval = requests;
+  setRunning(state.running);
   const root = $("#approval-list");
   root.replaceChildren();
   requests.forEach(request => {
@@ -331,7 +344,7 @@ async function resumeApproval() {
     });
     await selectConversation(state.current.id);
   } catch (error) { toast(error.message, "error"); }
-  finally { setRunning(false); state.pendingApproval = null; }
+  finally { state.pendingApproval = null; setRunning(false); }
 }
 
 async function cancelRun() {
@@ -540,6 +553,7 @@ function wireEvents() {
       "open-sidebar": () => $("#sidebar").classList.add("open"), "close-sidebar": () => $("#sidebar").classList.remove("open"),
       "close-panel": closePanel, "refresh-files": loadFiles, "save-file": saveFile, "save-api-key": saveAPIKey,
       "start-oauth": startOAuth, "clear-auth": clearAuth, "fork": forkConversation, "export": exportConversation,
+      "review-approval": () => state.pendingApproval && showApproval({ value: state.pendingApproval }),
     }[action]?.());
   });
   $$(".tool-tab").forEach(button => button.addEventListener("click", () => state.activePanel === button.dataset.panel ? closePanel() : openPanel(button.dataset.panel)));

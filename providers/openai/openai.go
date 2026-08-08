@@ -400,11 +400,8 @@ func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) 
 				}
 			}
 		case "function_call":
-			arguments := output.Arguments
-			if len(arguments) == 0 {
-				arguments = json.RawMessage(`{}`)
-			}
-			if !json.Valid(arguments) {
+			arguments, err := normalizeToolArguments(output.Arguments)
+			if err != nil {
 				result.InvalidToolCalls = append(result.InvalidToolCalls, message.InvalidToolCall{ID: output.CallID, Name: output.Name, Arguments: arguments, Error: "invalid JSON arguments"})
 				continue
 			}
@@ -555,10 +552,11 @@ func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
 			call.Arguments = envelope.Arguments
 		}
 		delete(stream.calls, envelope.ItemID)
-		if !json.Valid(call.Arguments) {
+		arguments, err := normalizeToolArguments(call.Arguments)
+		if err != nil {
 			return model.Chunk{}, false, fmt.Errorf("openai: streamed tool arguments for %q are invalid JSON", call.CallID)
 		}
-		return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: call.CallID, Name: call.Name, Arguments: call.Arguments}}}}, true, nil
+		return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: call.CallID, Name: call.Name, Arguments: arguments}}}}, true, nil
 	case "response.completed":
 		stream.done = true
 		usage := envelope.Response.Usage
@@ -587,6 +585,23 @@ func cloneDefinitions(values []tool.Definition) []tool.Definition {
 		result[index].InputSchema = append(json.RawMessage(nil), value.InputSchema...)
 	}
 	return result
+}
+
+func normalizeToolArguments(value json.RawMessage) (json.RawMessage, error) {
+	if len(value) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	if value[0] == '"' {
+		var decoded string
+		if err := json.Unmarshal(value, &decoded); err != nil {
+			return value, err
+		}
+		value = json.RawMessage(decoded)
+	}
+	if !json.Valid(value) {
+		return value, fmt.Errorf("invalid JSON")
+	}
+	return append(json.RawMessage(nil), value...), nil
 }
 
 func decodeJSON(reader io.Reader, value any) error {

@@ -184,10 +184,7 @@ func (application *application) buildAgent(ctx context.Context) (*dago.DeepAgent
 	if err != nil {
 		return nil, configured, err
 	}
-	approval := agent.HumanApproval([]agent.ApprovalRule{
-		{Pattern: "execute", Description: "Run a shell command in the selected backend"},
-		{Pattern: "delete", Description: "Recursively delete a file or directory"},
-	})
+	approval := agent.HumanApproval(shelleyApprovalRules())
 	compiled, err := dago.New(dago.Options{
 		Name:         "shelley",
 		Model:        chat,
@@ -197,6 +194,45 @@ func (application *application) buildAgent(ctx context.Context) (*dago.DeepAgent
 		Middleware:   []agent.Middleware{approval},
 	})
 	return compiled, configured, err
+}
+
+func shelleyApprovalRules() []agent.ApprovalRule {
+	return []agent.ApprovalRule{
+		{Pattern: "execute", Description: "Run a shell command in the selected backend"},
+		{Pattern: "delete", Description: "Recursively delete a file or directory"},
+	}
+}
+
+func recoverApprovalInterrupts(messages []message.Message) []any {
+	if len(messages) == 0 {
+		return nil
+	}
+	latest := messages[len(messages)-1]
+	if latest.Role != message.RoleAssistant || len(latest.ToolCalls) == 0 {
+		return nil
+	}
+	requests := make([]any, 0, len(latest.ToolCalls))
+	for _, call := range latest.ToolCalls {
+		for _, rule := range shelleyApprovalRules() {
+			matched, err := path.Match(rule.Pattern, call.Name)
+			if err != nil || !matched {
+				continue
+			}
+			var arguments any
+			if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+				continue
+			}
+			requests = append(requests, map[string]any{
+				"call":        map[string]any{"id": call.ID, "name": call.Name, "arguments": arguments},
+				"description": rule.Description,
+			})
+			break
+		}
+	}
+	if len(requests) == 0 {
+		return nil
+	}
+	return []any{map[string]any{"id": "human_approval", "value": requests}}
 }
 
 func (application *application) messages(ctx context.Context, threadID string) ([]message.Message, error) {
@@ -235,6 +271,22 @@ func (application *application) messages(ctx context.Context, threadID string) (
 		}
 	}
 	return result, nil
+}
+
+func (application *application) interrupts(ctx context.Context, threadID string) ([]any, error) {
+	tuple, err := application.checkpoints.GetTuple(ctx, checkpoint.Config{ThreadID: threadID})
+	if err != nil || tuple == nil {
+		return nil, err
+	}
+	value, exists := tuple.Checkpoint.ChannelValues[checkpoint.ChannelInterrupt]
+	if !exists || value == nil {
+		return nil, nil
+	}
+	interrupts, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("interrupts have checkpoint type %T", value)
+	}
+	return interrupts, nil
 }
 
 func decodeMessageValue(value any) ([]message.Message, error) {
