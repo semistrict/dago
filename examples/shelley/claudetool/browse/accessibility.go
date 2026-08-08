@@ -13,10 +13,9 @@ import (
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
-	"shelley.exe.dev/llm"
 )
 
-func (b *BrowseTools) accessibilityHelp() llm.ToolOut {
+func (b *BrowseTools) accessibilityHelp() (browserExecution, error) {
 	helpText := `Accessibility Tree Inspection — actions on the browser tool.
 
 Actions (pass as the browser tool's "action"):
@@ -46,13 +45,13 @@ Output format:
   query: Flat list of matching nodes with their properties.
   node: Detailed key-value pairs for a single element's accessibility info.`
 
-	return llm.ToolOut{LLMContent: llm.TextContent(helpText)}
+	return browserText(helpText), nil
 }
 
-func (b *BrowseTools) accessibilityTree(depth int) llm.ToolOut {
+func (b *BrowseTools) accessibilityTree(depth int) (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorfToolOut("failed to get browser context: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to get browser context: %w", err)
 	}
 
 	var nodes []*accessibility.Node
@@ -69,11 +68,11 @@ func (b *BrowseTools) accessibilityTree(depth int) llm.ToolOut {
 		return nil
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to get accessibility tree: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to get accessibility tree: %w", err)
 	}
 
 	if len(nodes) == 0 {
-		return llm.ToolOut{LLMContent: llm.TextContent("No accessibility nodes found.")}
+		return browserText("No accessibility nodes found."), nil
 	}
 
 	// Build map from nodeID to node
@@ -151,14 +150,14 @@ func walkTree(sb *strings.Builder, node *accessibility.Node, nodeMap map[accessi
 	}
 }
 
-func (b *BrowseTools) accessibilityQuery(name, role string) llm.ToolOut {
+func (b *BrowseTools) accessibilityQuery(name, role string) (browserExecution, error) {
 	if name == "" && role == "" {
-		return llm.ErrorfToolOut("at least one of 'name' or 'role' must be provided")
+		return browserExecution{}, fmt.Errorf("at least one of 'name' or 'role' must be provided")
 	}
 
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorfToolOut("failed to get browser context: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to get browser context: %w", err)
 	}
 
 	var nodes []*accessibility.Node
@@ -184,11 +183,11 @@ func (b *BrowseTools) accessibilityQuery(name, role string) llm.ToolOut {
 		return nil
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to query accessibility tree: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to query accessibility tree: %w", err)
 	}
 
 	if len(nodes) == 0 {
-		return llm.ToolOut{LLMContent: llm.TextContent("No matching accessibility nodes found.")}
+		return browserText("No matching accessibility nodes found."), nil
 	}
 
 	var sb strings.Builder
@@ -219,14 +218,14 @@ func (b *BrowseTools) accessibilityQuery(name, role string) llm.ToolOut {
 	return b.maybeWriteToFile(result, "ax_query")
 }
 
-func (b *BrowseTools) accessibilityNode(selector string) llm.ToolOut {
+func (b *BrowseTools) accessibilityNode(selector string) (browserExecution, error) {
 	if selector == "" {
-		return llm.ErrorfToolOut("'selector' parameter is required for the node action")
+		return browserExecution{}, fmt.Errorf("'selector' parameter is required for the node action")
 	}
 
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorfToolOut("failed to get browser context: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to get browser context: %w", err)
 	}
 
 	// Find the DOM node and get its AX tree in a single Run call
@@ -253,7 +252,7 @@ func (b *BrowseTools) accessibilityNode(selector string) llm.ToolOut {
 		}),
 	)
 	if err != nil {
-		return llm.ErrorfToolOut("failed to get accessibility info for %q: %w", selector, err)
+		return browserExecution{}, fmt.Errorf("failed to get accessibility info for %q: %w", selector, err)
 	}
 
 	// Find the first non-ignored node
@@ -266,9 +265,9 @@ func (b *BrowseTools) accessibilityNode(selector string) llm.ToolOut {
 	}
 	if target == nil {
 		if len(axNodes) > 0 {
-			return llm.ToolOut{LLMContent: llm.TextContent("Element is ignored for accessibility.")}
+			return browserText("Element is ignored for accessibility."), nil
 		}
-		return llm.ToolOut{LLMContent: llm.TextContent("No accessibility node found for this element.")}
+		return browserText("No accessibility node found for this element."), nil
 	}
 
 	// Format as detailed key-value pairs
@@ -358,15 +357,15 @@ func formatProperties(properties []*accessibility.Property) string {
 
 // maybeWriteToFile returns the text directly if small enough, or writes it to
 // a file and returns the path.
-func (b *BrowseTools) maybeWriteToFile(text, prefix string) llm.ToolOut {
+func (b *BrowseTools) maybeWriteToFile(text, prefix string) (browserExecution, error) {
 	if len(text) <= ConsoleLogSizeThreshold {
-		return llm.ToolOut{LLMContent: llm.TextContent(text)}
+		return browserText(text), nil
 	}
 
 	filename := fmt.Sprintf("%s_%s.txt", prefix, uuid.New().String()[:8])
 	filePath := filepath.Join(ConsoleLogsDir, filename)
 	if err := os.WriteFile(filePath, []byte(text), 0o644); err != nil {
-		return llm.ErrorfToolOut("failed to write result to file: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to write result to file: %w", err)
 	}
-	return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf("Output written to %s (%d bytes)", filePath, len(text)))}
+	return browserText(fmt.Sprintf("Output written to %s (%d bytes)", filePath, len(text))), nil
 }

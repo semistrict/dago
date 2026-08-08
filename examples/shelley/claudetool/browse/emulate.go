@@ -8,7 +8,6 @@ import (
 
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/chromedp"
-	"shelley.exe.dev/llm"
 )
 
 // devicePreset defines the parameters for a known device emulation profile.
@@ -69,7 +68,7 @@ type emulateInput struct {
 	Media             string
 }
 
-func (b *BrowseTools) emulateHelp() llm.ToolOut {
+func (b *BrowseTools) emulateHelp() (browserExecution, error) {
 	var sb strings.Builder
 	sb.WriteString("Device Emulation — actions on the browser tool.\n")
 	sb.WriteString("=======================================\n\n")
@@ -94,12 +93,12 @@ func (b *BrowseTools) emulateHelp() llm.ToolOut {
 		}
 		sb.WriteString(fmt.Sprintf("  %-20s %dx%d @ %.3gx DPR (%s)\n", name, preset.Width, preset.Height, preset.DPR, mobileStr))
 	}
-	return llm.ToolOut{LLMContent: llm.TextContent(sb.String())}
+	return browserText(sb.String()), nil
 }
 
-func (b *BrowseTools) emulateDevice(input emulateInput) llm.ToolOut {
+func (b *BrowseTools) emulateDevice(input emulateInput) (browserExecution, error) {
 	if input.Device == "" {
-		return llm.ErrorfToolOut("device parameter is required")
+		return browserExecution{}, fmt.Errorf("device parameter is required")
 	}
 
 	preset, ok := devicePresets[input.Device]
@@ -109,15 +108,15 @@ func (b *BrowseTools) emulateDevice(input emulateInput) llm.ToolOut {
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		return llm.ErrorfToolOut("unknown device %q; available: %s", input.Device, strings.Join(names, ", "))
+		return browserExecution{}, fmt.Errorf("unknown device %q; available: %s", input.Device, strings.Join(names, ", "))
 	}
 
 	return b.applyEmulation(preset.Width, preset.Height, preset.DPR, preset.Mobile, preset.Touch, preset.UserAgent)
 }
 
-func (b *BrowseTools) emulateCustom(input emulateInput) llm.ToolOut {
+func (b *BrowseTools) emulateCustom(input emulateInput) (browserExecution, error) {
 	if input.Width <= 0 || input.Height <= 0 {
-		return llm.ErrorfToolOut("width and height are required and must be positive")
+		return browserExecution{}, fmt.Errorf("width and height are required and must be positive")
 	}
 	if input.DeviceScaleFactor <= 0 {
 		input.DeviceScaleFactor = 1.0
@@ -129,10 +128,10 @@ func (b *BrowseTools) emulateCustom(input emulateInput) llm.ToolOut {
 	return b.applyEmulation(input.Width, input.Height, input.DeviceScaleFactor, input.Mobile, input.Touch, "")
 }
 
-func (b *BrowseTools) applyEmulation(width, height int64, dpr float64, mobile, touch bool, userAgent string) llm.ToolOut {
+func (b *BrowseTools) applyEmulation(width, height int64, dpr float64, mobile, touch bool, userAgent string) (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	err = chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -154,7 +153,7 @@ func (b *BrowseTools) applyEmulation(width, height int64, dpr float64, mobile, t
 		return nil
 	}))
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	mobileStr := "desktop"
@@ -165,13 +164,13 @@ func (b *BrowseTools) applyEmulation(width, height int64, dpr float64, mobile, t
 	if userAgent != "" {
 		msg += fmt.Sprintf(", UA=%s", userAgent)
 	}
-	return llm.ToolOut{LLMContent: llm.TextContent(msg)}
+	return browserText(msg), nil
 }
 
-func (b *BrowseTools) emulateReset() llm.ToolOut {
+func (b *BrowseTools) emulateReset() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	err = chromedp.Run(
@@ -193,13 +192,13 @@ func (b *BrowseTools) emulateReset() llm.ToolOut {
 		}),
 	)
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent("Emulation reset to default (1280x720)")}
+	return browserText("Emulation reset to default (1280x720)"), nil
 }
 
-func (b *BrowseTools) emulateDarkMode(input emulateInput) llm.ToolOut {
+func (b *BrowseTools) emulateDarkMode(input emulateInput) (browserExecution, error) {
 	enabled := true
 	if input.Enabled != nil {
 		enabled = *input.Enabled
@@ -207,38 +206,38 @@ func (b *BrowseTools) emulateDarkMode(input emulateInput) llm.ToolOut {
 
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	err = chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return emulation.SetAutoDarkModeOverride().WithEnabled(enabled).Do(ctx)
 	}))
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	state := "enabled"
 	if !enabled {
 		state = "disabled"
 	}
-	return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf("Automatic dark mode %s", state))}
+	return browserText(fmt.Sprintf("Automatic dark mode %s", state)), nil
 }
 
-func (b *BrowseTools) emulateMedia(input emulateInput) llm.ToolOut {
+func (b *BrowseTools) emulateMedia(input emulateInput) (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	err = chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return emulation.SetEmulatedMedia().WithMedia(input.Media).Do(ctx)
 	}))
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	if input.Media == "" {
-		return llm.ToolOut{LLMContent: llm.TextContent("Media type emulation cleared")}
+		return browserText("Media type emulation cleared"), nil
 	}
-	return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf("Media type set to %q", input.Media))}
+	return browserText(fmt.Sprintf("Media type set to %q", input.Media)), nil
 }

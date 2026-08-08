@@ -404,14 +404,14 @@ func isPort80(urlStr string) bool {
 	return port == "80" || (port == "" && parsedURL.Scheme == "http")
 }
 
-func (b *BrowseTools) navigateRun(ctx context.Context, input navigateInput) llm.ToolOut {
+func (b *BrowseTools) navigate(ctx context.Context, input navigateInput) (browserExecution, error) {
 	if isPort80(input.URL) {
-		return llm.ErrorToolOut(fmt.Errorf("port 80 is not the port you're looking for--port 80 is the main sketch server"))
+		return browserExecution{}, fmt.Errorf("port 80 is not the port you're looking for--port 80 is the main sketch server")
 	}
 
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	// Create a timeout context for this operation
@@ -440,13 +440,13 @@ func (b *BrowseTools) navigateRun(ctx context.Context, input navigateInput) llm.
 						sb.WriteString(fmt.Sprintf("\n  - %s (from %s) saved to: %s", d.SuggestedFilename, d.URL, d.FinalPath))
 					}
 				}
-				return llm.ToolOut{LLMContent: llm.TextContent(sb.String())}
+				return browserText(sb.String()), nil
 			}
 		}
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
-	return b.toolOutWithDownloads("done")
+	return b.executionWithDownloads("done"), nil
 }
 
 type resizeInput struct {
@@ -455,14 +455,14 @@ type resizeInput struct {
 	Timeout string `json:"timeout,omitempty"`
 }
 
-func (b *BrowseTools) resizeRun(ctx context.Context, input resizeInput) llm.ToolOut {
+func (b *BrowseTools) resize(ctx context.Context, input resizeInput) (browserExecution, error) {
 	if input.Width <= 0 || input.Height <= 0 {
-		return llm.ErrorToolOut(fmt.Errorf("invalid dimensions: width and height must be positive"))
+		return browserExecution{}, fmt.Errorf("invalid dimensions: width and height must be positive")
 	}
 
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(browserCtx, parseTimeout(input.Timeout))
@@ -473,10 +473,10 @@ func (b *BrowseTools) resizeRun(ctx context.Context, input resizeInput) llm.Tool
 		chromedp.EmulateViewport(int64(input.Width), int64(input.Height)),
 	)
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent("done")}
+	return browserText("done"), nil
 }
 
 type evalInput struct {
@@ -485,10 +485,10 @@ type evalInput struct {
 	Await      *bool  `json:"await,omitempty"`
 }
 
-func (b *BrowseTools) evalRun(ctx context.Context, input evalInput) llm.ToolOut {
+func (b *BrowseTools) evaluate(ctx context.Context, input evalInput) (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	// Create a timeout context for this operation
@@ -512,13 +512,13 @@ func (b *BrowseTools) evalRun(ctx context.Context, input evalInput) llm.ToolOut 
 
 	err = chromedp.Run(timeoutCtx, evalAction)
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	// Return the result as JSON
 	response, err := json.Marshal(result)
 	if err != nil {
-		return llm.ErrorfToolOut("failed to marshal response: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to marshal response: %w", err)
 	}
 
 	// If output exceeds threshold, write to file
@@ -526,15 +526,15 @@ func (b *BrowseTools) evalRun(ctx context.Context, input evalInput) llm.ToolOut 
 		filename := fmt.Sprintf("js_result_%s.json", uuid.New().String()[:8])
 		filePath := filepath.Join(ConsoleLogsDir, filename)
 		if err := os.WriteFile(filePath, response, 0o644); err != nil {
-			return llm.ErrorfToolOut("failed to write JS result to file: %w", err)
+			return browserExecution{}, fmt.Errorf("failed to write JS result to file: %w", err)
 		}
-		return b.toolOutWithDownloads(fmt.Sprintf(
+		return b.executionWithDownloads(fmt.Sprintf(
 			"JavaScript result (%d bytes) written to: %s\nUse `cat %s` to view the full content.",
 			len(response), filePath, filePath,
-		))
+		)), nil
 	}
 
-	return b.toolOutWithDownloads("<javascript_result>" + string(response) + "</javascript_result>")
+	return b.executionWithDownloads("<javascript_result>" + string(response) + "</javascript_result>"), nil
 }
 
 type screenshotInput struct {
@@ -543,10 +543,14 @@ type screenshotInput struct {
 }
 
 func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) llm.ToolOut {
+	return legacyBrowserResult(b.screenshot(ctx, input))
+}
+
+func (b *BrowseTools) screenshot(ctx context.Context, input screenshotInput) (browserExecution, error) {
 	// Try to get a browser context; if unavailable, return an error
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	// Create a timeout context for this operation
@@ -570,13 +574,13 @@ func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) 
 
 	err = chromedp.Run(timeoutCtx, actions...)
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	// Save the screenshot and get its ID for potential future reference
 	id := b.SaveScreenshot(buf)
 	if id == "" {
-		return llm.ErrorToolOut(fmt.Errorf("failed to save screenshot"))
+		return browserExecution{}, fmt.Errorf("failed to save screenshot")
 	}
 
 	// Get the full path to the screenshot
@@ -608,12 +612,9 @@ func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) 
 	// a text note with the path. A nil service (tests, ad-hoc callers) is
 	// treated as image-capable.
 	if svc := llm.ServiceFromContext(ctx); svc != nil && !svc.SupportsImages() {
-		return llm.ToolOut{LLMContent: []llm.Content{
-			{
-				Type: llm.ContentTypeText,
-				Text: fmt.Sprintf("Screenshot taken (saved as %s)", screenshotPath),
-			},
-		}, Display: display}
+		execution := browserText(fmt.Sprintf("Screenshot taken (saved as %s)", screenshotPath))
+		execution.Display = display
+		return execution, nil
 	}
 
 	// Fit the screenshot inside the model's per-image limits. The full-size
@@ -624,29 +625,15 @@ func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) 
 	maxDimension, maxBytes := imageLimits(ctx)
 	prepared, err := imageutil.Prepare(buf, screenshotPath, maxDimension, maxBytes)
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
-
-	base64Data := base64.StdEncoding.EncodeToString(prepared.Data)
 
 	description := fmt.Sprintf("Screenshot taken (saved as %s)", screenshotPath)
 	if prepared.Resized {
 		description += " [resized to fit model limits]"
 	}
 
-	return llm.ToolOut{LLMContent: []llm.Content{
-		{
-			Type: llm.ContentTypeText,
-			Text: description,
-		},
-		{
-			Type:          llm.ContentTypeText,
-			MediaType:     prepared.MediaType,
-			Data:          base64Data,
-			DisplayWidth:  prepared.Width,
-			DisplayHeight: prepared.Height,
-		},
-	}, Display: display}
+	return browserImage(description, prepared.Data, prepared.MediaType, prepared.Width, prepared.Height, display), nil
 }
 
 // GetTools returns all browser tools. Emulation, network, accessibility, and
@@ -847,6 +834,29 @@ Performance profiling (profile_* actions):
 	}
 }
 
+// NativeCombinedTool executes every browser action through Dago's tool and
+// multimodal content contracts. CombinedTool remains the pinned test facade.
+func (b *BrowseTools) NativeCombinedTool() dtool.Tool {
+	legacy := b.CombinedTool()
+	return dtool.Func{
+		Spec: dtool.Definition{
+			Name: legacy.Name, Description: legacy.Description,
+			InputSchema: append(json.RawMessage(nil), legacy.InputSchema...),
+		},
+		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var input combinedInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+			}
+			execution, err := b.executeCombined(ctx, input)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			return execution.dagoResult()
+		},
+	}
+}
+
 // ReadImageTool returns a standalone tool for reading image files.
 func (b *BrowseTools) ReadImageTool() *llm.Tool {
 	definition := readImageDefinition()
@@ -944,32 +954,36 @@ type combinedInput struct {
 }
 
 func (b *BrowseTools) runCombined(ctx context.Context, input combinedInput) llm.ToolOut {
+	return legacyBrowserResult(b.executeCombined(ctx, input))
+}
+
+func (b *BrowseTools) executeCombined(ctx context.Context, input combinedInput) (browserExecution, error) {
 	switch input.Action {
 	case "navigate":
-		return b.navigateRun(ctx, navigateInput{URL: input.URL, Timeout: input.Timeout})
+		return b.navigate(ctx, navigateInput{URL: input.URL, Timeout: input.Timeout})
 	case "eval":
-		return b.evalRun(ctx, evalInput{Expression: input.Expression, Timeout: input.Timeout, Await: input.Await})
+		return b.evaluate(ctx, evalInput{Expression: input.Expression, Timeout: input.Timeout, Await: input.Await})
 	case "resize":
-		return b.resizeRun(ctx, resizeInput{Width: input.Width, Height: input.Height, Timeout: input.Timeout})
+		return b.resize(ctx, resizeInput{Width: input.Width, Height: input.Height, Timeout: input.Timeout})
 	case "screenshot":
-		return b.screenshotRun(ctx, screenshotInput{Selector: input.Selector, Timeout: input.Timeout})
+		return b.screenshot(ctx, screenshotInput{Selector: input.Selector, Timeout: input.Timeout})
 	case "console_logs":
-		return b.recentConsoleLogsRun(ctx, recentConsoleLogsInput{Limit: input.Limit})
+		return b.recentConsoleLogs(ctx, recentConsoleLogsInput{Limit: input.Limit})
 	case "clear_console_logs":
-		return b.clearConsoleLogsRun(ctx, clearConsoleLogsInput{})
+		return b.clearConsoleLogs(ctx, clearConsoleLogsInput{})
 	case "screencast_start":
 		sessionID, err := b.screencastStart(input.Format, input.Quality, input.MaxWidth, input.MaxHeight, input.EveryNthFrame)
 		if err != nil {
-			return llm.ErrorToolOut(err)
+			return browserExecution{}, err
 		}
-		return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf(
+		return browserText(fmt.Sprintf(
 			"Screencast recording to %s (session %s).\nAuto-stops after %v or %d frames. Use screencast_stop to finish.",
 			filepath.Join(ScreencastDir, sessionID+".mp4"), sessionID, ScreencastMaxDuration, ScreencastMaxFrames,
-		))}
+		)), nil
 	case "screencast_stop":
 		sessionID, outputPath, frameCount, duration, err := b.screencastStop()
 		if err != nil {
-			return llm.ErrorToolOut(err)
+			return browserExecution{}, err
 		}
 		display := map[string]any{
 			"type":        "screencast",
@@ -979,22 +993,21 @@ func (b *BrowseTools) runCombined(ctx context.Context, input combinedInput) llm.
 			"frame_count": frameCount,
 			"duration":    duration.Round(time.Millisecond).String(),
 		}
-		return llm.ToolOut{
-			LLMContent: llm.TextContent(fmt.Sprintf(
-				"Screencast stopped (session %s). %d frames captured over %v.\nMP4 saved to: %s",
-				sessionID, frameCount, duration.Round(time.Millisecond), outputPath,
-			)),
-			Display: display,
-		}
+		execution := browserText(fmt.Sprintf(
+			"Screencast stopped (session %s). %d frames captured over %v.\nMP4 saved to: %s",
+			sessionID, frameCount, duration.Round(time.Millisecond), outputPath,
+		))
+		execution.Display = display
+		return execution, nil
 	case "screencast_status":
 		active, sessionID, frameCount, elapsed := b.screencastStatus()
 		if !active {
-			return llm.ToolOut{LLMContent: llm.TextContent("No active screencast.")}
+			return browserText("No active screencast."), nil
 		}
-		return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf(
+		return browserText(fmt.Sprintf(
 			"Screencast active (session %s): %d frames captured, running for %v",
 			sessionID, frameCount, elapsed.Round(time.Millisecond),
-		))}
+		)), nil
 
 	// Emulation actions.
 	case "emulate_help":
@@ -1012,19 +1025,19 @@ func (b *BrowseTools) runCombined(ctx context.Context, input combinedInput) llm.
 
 	// Network actions.
 	case "network_help":
-		return b.networkHelpRun()
+		return b.networkHelp()
 	case "network_enable":
-		return b.networkEnableRun()
+		return b.networkEnable()
 	case "network_disable":
-		return b.networkDisableRun()
+		return b.networkDisable()
 	case "network_get_log":
-		return b.networkGetLogRun(input.Limit, input.Filter)
+		return b.networkGetLog(input.Limit, input.Filter)
 	case "network_clear":
-		return b.networkClearRun()
+		return b.networkClear()
 	case "network_cookies":
-		return b.networkCookiesRun()
+		return b.networkCookies()
 	case "network_clear_cache":
-		return b.networkClearCacheRun()
+		return b.networkClearCache()
 
 	// Accessibility actions.
 	case "accessibility_help":
@@ -1055,7 +1068,7 @@ func (b *BrowseTools) runCombined(ctx context.Context, input combinedInput) llm.
 		return b.profileCoverageStop()
 
 	default:
-		return llm.ErrorfToolOut("unknown action: %q", input.Action)
+		return browserExecution{}, fmt.Errorf("unknown action: %q", input.Action)
 	}
 }
 
@@ -1290,9 +1303,13 @@ func (b *BrowseTools) GetRecentDownloads() []*DownloadInfo {
 
 // toolOutWithDownloads creates a tool output that includes any completed downloads
 func (b *BrowseTools) toolOutWithDownloads(message string) llm.ToolOut {
+	return b.executionWithDownloads(message).legacyResult()
+}
+
+func (b *BrowseTools) executionWithDownloads(message string) browserExecution {
 	downloads := b.GetRecentDownloads()
 	if len(downloads) == 0 {
-		return llm.ToolOut{LLMContent: llm.TextContent(message)}
+		return browserText(message)
 	}
 
 	var sb strings.Builder
@@ -1305,18 +1322,18 @@ func (b *BrowseTools) toolOutWithDownloads(message string) llm.ToolOut {
 			sb.WriteString(fmt.Sprintf("\n  - %s (from %s) saved to: %s", d.SuggestedFilename, d.URL, d.FinalPath))
 		}
 	}
-	return llm.ToolOut{LLMContent: llm.TextContent(sb.String())}
+	return browserText(sb.String())
 }
 
 type recentConsoleLogsInput struct {
 	Limit int `json:"limit,omitempty"`
 }
 
-func (b *BrowseTools) recentConsoleLogsRun(ctx context.Context, input recentConsoleLogsInput) llm.ToolOut {
+func (b *BrowseTools) recentConsoleLogs(ctx context.Context, input recentConsoleLogsInput) (browserExecution, error) {
 	// Ensure browser is initialized
 	_, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	// Apply limit (default to 100 if not specified)
@@ -1338,7 +1355,7 @@ func (b *BrowseTools) recentConsoleLogsRun(ctx context.Context, input recentCons
 	// Format the logs as JSON
 	logData, err := json.MarshalIndent(logs, "", "  ")
 	if err != nil {
-		return llm.ErrorfToolOut("failed to serialize logs: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to serialize logs: %w", err)
 	}
 
 	// If output exceeds threshold, write to file
@@ -1346,12 +1363,12 @@ func (b *BrowseTools) recentConsoleLogsRun(ctx context.Context, input recentCons
 		filename := fmt.Sprintf("console_logs_%s.json", uuid.New().String()[:8])
 		filePath := filepath.Join(ConsoleLogsDir, filename)
 		if err := os.WriteFile(filePath, logData, 0o644); err != nil {
-			return llm.ErrorfToolOut("failed to write console logs to file: %w", err)
+			return browserExecution{}, fmt.Errorf("failed to write console logs to file: %w", err)
 		}
-		return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf(
+		return browserText(fmt.Sprintf(
 			"Retrieved %d console log entries (%d bytes).\nOutput written to: %s\nUse `cat %s` to view the full content.",
 			len(logs), len(logData), filePath, filePath,
-		))}
+		)), nil
 	}
 
 	// Format the logs
@@ -1365,16 +1382,16 @@ func (b *BrowseTools) recentConsoleLogsRun(ctx context.Context, input recentCons
 		sb.WriteString(string(logData))
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent(sb.String())}
+	return browserText(sb.String()), nil
 }
 
 type clearConsoleLogsInput struct{}
 
-func (b *BrowseTools) clearConsoleLogsRun(ctx context.Context, input clearConsoleLogsInput) llm.ToolOut {
+func (b *BrowseTools) clearConsoleLogs(ctx context.Context, input clearConsoleLogsInput) (browserExecution, error) {
 	// Ensure browser is initialized
 	_, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	// Clear console logs with mutex protection
@@ -1383,5 +1400,5 @@ func (b *BrowseTools) clearConsoleLogsRun(ctx context.Context, input clearConsol
 	b.consoleLogs = make([]*runtime.EventConsoleAPICalled, 0)
 	b.consoleLogsMutex.Unlock()
 
-	return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf("Cleared %d console log entries.", logCount))}
+	return browserText(fmt.Sprintf("Cleared %d console log entries.", logCount)), nil
 }

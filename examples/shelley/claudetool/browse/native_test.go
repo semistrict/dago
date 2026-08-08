@@ -41,3 +41,17 @@ func TestNativeReadImageToolUsesDagoMultimodalContract(t *testing.T) {
 		t.Fatalf("display = %#v", display)
 	}
 }
+
+func TestNativeCombinedBrowserToolDispatchesWithoutLegacyToolRun(t *testing.T) {
+	browser := NewBrowseTools(context.Background(), 0)
+	defer browser.Close()
+	result, err := browser.NativeCombinedTool().Execute(
+		context.Background(), json.RawMessage(`{"action":"emulate_help"}`), dtool.Runtime{CallID: "call-1"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Content) != 1 || result.Content[0].Text == "" {
+		t.Fatalf("content = %#v", result.Content)
+	}
+}

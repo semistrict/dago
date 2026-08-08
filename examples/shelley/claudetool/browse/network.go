@@ -12,7 +12,6 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
-	"shelley.exe.dev/llm"
 )
 
 // NetworkRequest represents a captured network request with its response metadata.
@@ -89,7 +88,7 @@ func (b *BrowseTools) captureNetworkFinished(e *network.EventLoadingFinished) {
 	}
 }
 
-func (b *BrowseTools) networkHelpRun() llm.ToolOut {
+func (b *BrowseTools) networkHelp() (browserExecution, error) {
 	help := `browser network monitoring — actions on the browser tool.
 
 Actions (pass as the browser tool's "action"):
@@ -121,13 +120,13 @@ Typical workflow:
   3. network_get_log to inspect requests
   4. network_disable when done`
 
-	return llm.ToolOut{LLMContent: llm.TextContent(help)}
+	return browserText(help), nil
 }
 
-func (b *BrowseTools) networkEnableRun() llm.ToolOut {
+func (b *BrowseTools) networkEnable() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	b.networkMutex.Lock()
@@ -135,24 +134,24 @@ func (b *BrowseTools) networkEnableRun() llm.ToolOut {
 	b.networkMutex.Unlock()
 
 	if alreadyEnabled {
-		return llm.ToolOut{LLMContent: llm.TextContent("Network monitoring is already enabled.")}
+		return browserText("Network monitoring is already enabled."), nil
 	}
 
 	if err := chromedp.Run(browserCtx, network.Enable()); err != nil {
-		return llm.ErrorfToolOut("failed to enable network monitoring: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to enable network monitoring: %w", err)
 	}
 
 	b.networkMutex.Lock()
 	b.networkEnabled = true
 	b.networkMutex.Unlock()
 
-	return llm.ToolOut{LLMContent: llm.TextContent("Network monitoring enabled. Requests will be captured.")}
+	return browserText("Network monitoring enabled. Requests will be captured."), nil
 }
 
-func (b *BrowseTools) networkDisableRun() llm.ToolOut {
+func (b *BrowseTools) networkDisable() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	b.networkMutex.Lock()
@@ -160,25 +159,25 @@ func (b *BrowseTools) networkDisableRun() llm.ToolOut {
 	b.networkMutex.Unlock()
 
 	if !wasEnabled {
-		return llm.ToolOut{LLMContent: llm.TextContent("Network monitoring is already disabled.")}
+		return browserText("Network monitoring is already disabled."), nil
 	}
 
 	if err := chromedp.Run(browserCtx, network.Disable()); err != nil {
-		return llm.ErrorfToolOut("failed to disable network monitoring: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to disable network monitoring: %w", err)
 	}
 
 	b.networkMutex.Lock()
 	b.networkEnabled = false
 	b.networkMutex.Unlock()
 
-	return llm.ToolOut{LLMContent: llm.TextContent("Network monitoring disabled.")}
+	return browserText("Network monitoring disabled."), nil
 }
 
-func (b *BrowseTools) networkGetLogRun(limit int, filter string) llm.ToolOut {
+func (b *BrowseTools) networkGetLog(limit int, filter string) (browserExecution, error) {
 	// Ensure browser is initialized
 	_, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	if limit <= 0 {
@@ -203,7 +202,7 @@ func (b *BrowseTools) networkGetLogRun(limit int, filter string) llm.ToolOut {
 
 	logData, err := json.MarshalIndent(filtered, "", "  ")
 	if err != nil {
-		return llm.ErrorfToolOut("failed to serialize network requests: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to serialize network requests: %w", err)
 	}
 
 	// If output exceeds threshold, write to file
@@ -211,12 +210,12 @@ func (b *BrowseTools) networkGetLogRun(limit int, filter string) llm.ToolOut {
 		filename := fmt.Sprintf("network_log_%s.json", uuid.New().String()[:8])
 		filePath := filepath.Join(ConsoleLogsDir, filename)
 		if err := os.WriteFile(filePath, logData, 0o644); err != nil {
-			return llm.ErrorfToolOut("failed to write network log to file: %w", err)
+			return browserExecution{}, fmt.Errorf("failed to write network log to file: %w", err)
 		}
-		return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf(
+		return browserText(fmt.Sprintf(
 			"Retrieved %d network requests (%d bytes).\nOutput written to: %s\nUse `cat %s` to view the full content.",
 			len(filtered), len(logData), filePath, filePath,
-		))}
+		)), nil
 	}
 
 	var sb strings.Builder
@@ -233,14 +232,14 @@ func (b *BrowseTools) networkGetLogRun(limit int, filter string) llm.ToolOut {
 		sb.Write(logData)
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent(sb.String())}
+	return browserText(sb.String()), nil
 }
 
-func (b *BrowseTools) networkClearRun() llm.ToolOut {
+func (b *BrowseTools) networkClear() (browserExecution, error) {
 	// Ensure browser is initialized
 	_, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	b.networkMutex.Lock()
@@ -248,13 +247,13 @@ func (b *BrowseTools) networkClearRun() llm.ToolOut {
 	b.networkRequests = nil
 	b.networkMutex.Unlock()
 
-	return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf("Cleared %d network requests.", count))}
+	return browserText(fmt.Sprintf("Cleared %d network requests.", count)), nil
 }
 
-func (b *BrowseTools) networkCookiesRun() llm.ToolOut {
+func (b *BrowseTools) networkCookies() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	var cookies []*network.Cookie
@@ -264,12 +263,12 @@ func (b *BrowseTools) networkCookiesRun() llm.ToolOut {
 		return err
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to get cookies: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to get cookies: %w", err)
 	}
 
 	cookieData, err := json.MarshalIndent(cookies, "", "  ")
 	if err != nil {
-		return llm.ErrorfToolOut("failed to serialize cookies: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to serialize cookies: %w", err)
 	}
 
 	// If output exceeds threshold, write to file
@@ -277,12 +276,12 @@ func (b *BrowseTools) networkCookiesRun() llm.ToolOut {
 		filename := fmt.Sprintf("cookies_%s.json", uuid.New().String()[:8])
 		filePath := filepath.Join(ConsoleLogsDir, filename)
 		if err := os.WriteFile(filePath, cookieData, 0o644); err != nil {
-			return llm.ErrorfToolOut("failed to write cookies to file: %w", err)
+			return browserExecution{}, fmt.Errorf("failed to write cookies to file: %w", err)
 		}
-		return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf(
+		return browserText(fmt.Sprintf(
 			"Retrieved %d cookies (%d bytes).\nOutput written to: %s\nUse `cat %s` to view the full content.",
 			len(cookies), len(cookieData), filePath, filePath,
-		))}
+		)), nil
 	}
 
 	var sb strings.Builder
@@ -293,18 +292,18 @@ func (b *BrowseTools) networkCookiesRun() llm.ToolOut {
 		sb.Write(cookieData)
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent(sb.String())}
+	return browserText(sb.String()), nil
 }
 
-func (b *BrowseTools) networkClearCacheRun() llm.ToolOut {
+func (b *BrowseTools) networkClearCache() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	if err := chromedp.Run(browserCtx, network.ClearBrowserCache()); err != nil {
-		return llm.ErrorfToolOut("failed to clear browser cache: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to clear browser cache: %w", err)
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent("Browser cache cleared.")}
+	return browserText("Browser cache cleared."), nil
 }

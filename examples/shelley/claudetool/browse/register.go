@@ -23,7 +23,7 @@ func RegisterBrowserTools(ctx context.Context) ([]*llm.Tool, func()) {
 func RegisterBrowserToolSet(ctx context.Context) ([]*llm.Tool, []dtool.Tool, func()) {
 	browserTools := NewBrowseTools(ctx, 0)
 
-	return browserTools.GetTools(), []dtool.Tool{browserTools.NativeReadImageTool()}, func() {
+	return browserTools.GetTools(), []dtool.Tool{browserTools.NativeCombinedTool(), browserTools.NativeReadImageTool()}, func() {
 		browserTools.Close()
 	}
 }

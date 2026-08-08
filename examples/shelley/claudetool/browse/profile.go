@@ -14,10 +14,9 @@ import (
 	"github.com/chromedp/cdproto/tracing"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
-	"shelley.exe.dev/llm"
 )
 
-func (b *BrowseTools) profileHelp() llm.ToolOut {
+func (b *BrowseTools) profileHelp() (browserExecution, error) {
 	help := `browser performance profiling — actions on the browser tool.
 
 Actions (pass as the browser tool's "action"):
@@ -55,13 +54,13 @@ Typical workflows:
   Tracing:        profile_trace_start → interact → profile_trace_stop
   Coverage:       profile_coverage_start → interact → profile_coverage_stop`
 
-	return llm.ToolOut{LLMContent: llm.TextContent(help)}
+	return browserText(help), nil
 }
 
-func (b *BrowseTools) profileMetrics() llm.ToolOut {
+func (b *BrowseTools) profileMetrics() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	var metrics []*performance.Metric
@@ -74,11 +73,11 @@ func (b *BrowseTools) profileMetrics() llm.ToolOut {
 		return e
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to get performance metrics: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to get performance metrics: %w", err)
 	}
 
 	if len(metrics) == 0 {
-		return llm.ToolOut{LLMContent: llm.TextContent("No performance metrics available.")}
+		return browserText("No performance metrics available."), nil
 	}
 
 	// Find max name length for alignment
@@ -95,19 +94,19 @@ func (b *BrowseTools) profileMetrics() llm.ToolOut {
 		out += fmt.Sprintf("  %-*s  %g\n", maxLen, m.Name, m.Value)
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent(out)}
+	return browserText(out), nil
 }
 
-func (b *BrowseTools) profileCPUStart() llm.ToolOut {
+func (b *BrowseTools) profileCPUStart() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	b.traceMutex.Lock()
 	if b.profilingActive {
 		b.traceMutex.Unlock()
-		return llm.ToolOut{LLMContent: llm.TextContent("CPU profiling is already active.")}
+		return browserText("CPU profiling is already active."), nil
 	}
 	b.traceMutex.Unlock()
 
@@ -118,25 +117,25 @@ func (b *BrowseTools) profileCPUStart() llm.ToolOut {
 		return profiler.Start().Do(ctx)
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to start CPU profiling: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to start CPU profiling: %w", err)
 	}
 
 	b.traceMutex.Lock()
 	b.profilingActive = true
 	b.traceMutex.Unlock()
-	return llm.ToolOut{LLMContent: llm.TextContent("CPU profiling started.")}
+	return browserText("CPU profiling started."), nil
 }
 
-func (b *BrowseTools) profileCPUStop() llm.ToolOut {
+func (b *BrowseTools) profileCPUStop() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	b.traceMutex.Lock()
 	if !b.profilingActive {
 		b.traceMutex.Unlock()
-		return llm.ErrorfToolOut("CPU profiling is not active — call cpu_start first")
+		return browserExecution{}, fmt.Errorf("CPU profiling is not active — call cpu_start first")
 	}
 	b.traceMutex.Unlock()
 
@@ -150,7 +149,7 @@ func (b *BrowseTools) profileCPUStop() llm.ToolOut {
 		return profiler.Disable().Do(ctx)
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to stop CPU profiling: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to stop CPU profiling: %w", err)
 	}
 
 	b.traceMutex.Lock()
@@ -159,28 +158,28 @@ func (b *BrowseTools) profileCPUStop() llm.ToolOut {
 
 	data, err := json.Marshal(profile)
 	if err != nil {
-		return llm.ErrorfToolOut("failed to marshal CPU profile: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to marshal CPU profile: %w", err)
 	}
 
 	filename := fmt.Sprintf("cpu_profile_%s.json", uuid.New().String()[:8])
 	filePath := filepath.Join(ConsoleLogsDir, filename)
 	if err := os.WriteFile(filePath, data, 0o644); err != nil {
-		return llm.ErrorfToolOut("failed to write CPU profile: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to write CPU profile: %w", err)
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf("CPU profile saved to: %s", filePath))}
+	return browserText(fmt.Sprintf("CPU profile saved to: %s", filePath)), nil
 }
 
-func (b *BrowseTools) profileTraceStart(categories string) llm.ToolOut {
+func (b *BrowseTools) profileTraceStart(categories string) (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	b.traceMutex.Lock()
 	if b.tracingActive {
 		b.traceMutex.Unlock()
-		return llm.ToolOut{LLMContent: llm.TextContent("Tracing is already active.")}
+		return browserText("Tracing is already active."), nil
 	}
 	// Clear previous trace data and set up completion channel
 	b.traceEvents = nil
@@ -201,7 +200,7 @@ func (b *BrowseTools) profileTraceStart(categories string) llm.ToolOut {
 		return params.Do(ctx)
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to start tracing: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to start tracing: %w", err)
 	}
 
 	b.traceMutex.Lock()
@@ -212,19 +211,19 @@ func (b *BrowseTools) profileTraceStart(categories string) llm.ToolOut {
 	if categories != "" {
 		msg = fmt.Sprintf("Tracing started with categories: %s", categories)
 	}
-	return llm.ToolOut{LLMContent: llm.TextContent(msg)}
+	return browserText(msg), nil
 }
 
-func (b *BrowseTools) profileTraceStop() llm.ToolOut {
+func (b *BrowseTools) profileTraceStop() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	b.traceMutex.Lock()
 	if !b.tracingActive {
 		b.traceMutex.Unlock()
-		return llm.ErrorfToolOut("tracing is not active — call trace_start first")
+		return browserExecution{}, fmt.Errorf("tracing is not active — call trace_start first")
 	}
 	doneCh := b.traceCompleteCh
 	b.traceMutex.Unlock()
@@ -233,16 +232,16 @@ func (b *BrowseTools) profileTraceStop() llm.ToolOut {
 		return tracing.End().Do(ctx)
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to stop tracing: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to stop tracing: %w", err)
 	}
 
 	// Wait with timeout, respecting context cancellation
 	select {
 	case <-doneCh:
 	case <-browserCtx.Done():
-		return llm.ErrorfToolOut("browser context cancelled while waiting for trace data")
+		return browserExecution{}, fmt.Errorf("browser context cancelled while waiting for trace data")
 	case <-time.After(30 * time.Second):
-		return llm.ErrorfToolOut("timeout waiting for trace data")
+		return browserExecution{}, fmt.Errorf("timeout waiting for trace data")
 	}
 
 	// Collect trace events
@@ -261,24 +260,24 @@ func (b *BrowseTools) profileTraceStop() llm.ToolOut {
 
 	data, err := json.Marshal(wrapper)
 	if err != nil {
-		return llm.ErrorfToolOut("failed to marshal trace data: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to marshal trace data: %w", err)
 	}
 
 	filename := fmt.Sprintf("trace_%s.json", uuid.New().String()[:8])
 	filePath := filepath.Join(ConsoleLogsDir, filename)
 	if err := os.WriteFile(filePath, data, 0o644); err != nil {
-		return llm.ErrorfToolOut("failed to write trace data: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to write trace data: %w", err)
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf(
+	return browserText(fmt.Sprintf(
 		"Trace saved to: %s (%d events)", filePath, len(events),
-	))}
+	)), nil
 }
 
-func (b *BrowseTools) profileCoverageStart() llm.ToolOut {
+func (b *BrowseTools) profileCoverageStart() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	err = chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -289,16 +288,16 @@ func (b *BrowseTools) profileCoverageStart() llm.ToolOut {
 		return err
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to start coverage: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to start coverage: %w", err)
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent("JavaScript coverage collection started.")}
+	return browserText("JavaScript coverage collection started."), nil
 }
 
-func (b *BrowseTools) profileCoverageStop() llm.ToolOut {
+func (b *BrowseTools) profileCoverageStop() (browserExecution, error) {
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return browserExecution{}, err
 	}
 
 	var coverage []*profiler.ScriptCoverage
@@ -314,21 +313,21 @@ func (b *BrowseTools) profileCoverageStop() llm.ToolOut {
 		return profiler.Disable().Do(ctx)
 	}))
 	if err != nil {
-		return llm.ErrorfToolOut("failed to stop coverage: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to stop coverage: %w", err)
 	}
 
 	data, err := json.Marshal(coverage)
 	if err != nil {
-		return llm.ErrorfToolOut("failed to marshal coverage data: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to marshal coverage data: %w", err)
 	}
 
 	filename := fmt.Sprintf("coverage_%s.json", uuid.New().String()[:8])
 	filePath := filepath.Join(ConsoleLogsDir, filename)
 	if err := os.WriteFile(filePath, data, 0o644); err != nil {
-		return llm.ErrorfToolOut("failed to write coverage data: %w", err)
+		return browserExecution{}, fmt.Errorf("failed to write coverage data: %w", err)
 	}
 
-	return llm.ToolOut{LLMContent: llm.TextContent(fmt.Sprintf(
+	return browserText(fmt.Sprintf(
 		"Coverage data saved to: %s (%d scripts)", filePath, len(coverage),
-	))}
+	)), nil
 }
