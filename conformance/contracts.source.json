@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "deepagents": "libs/deepagents/tests/unit_tests/test_deepagents.py",
+    "langchain": "libs/langchain_v1/tests/unit_tests/agents/test_factory.py",
+    "langgraph": "libs/langgraph/tests/test_pregel.py"
+  },
+  "message": {
+    "id": "assistant-1",
+    "role": "assistant",
+    "content": [{"type": "text", "text": "Looking it up."}],
+    "tool_calls": [{"id": "call-1", "name": "lookup", "arguments": {"query": "delta channels"}}]
+  },
+  "tool": {
+    "name": "lookup",
+    "description": "Look up a topic.",
+    "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": false}
+  },
+  "model_response": {
+    "message": {"id": "assistant-2", "role": "assistant", "content": [{"type": "text", "text": "Complete."}]}
+  },
+  "state_update": {"messages": [{"role": "human", "content": [{"type": "text", "text": "Continue"}]}]},
+  "command": {"update": {"status": "ready"}, "goto": ["model"]},
+  "checkpoint": {
+    "v": 4,
+    "id": "00000000-0000-6000-8000-000000000001",
+    "ts": "2026-01-01T00:00:00Z",
+    "channel_values": {"status": "ready"},
+    "channel_versions": {"status": "00000000000000000000000000000001.0.0"},
+    "versions_seen": {}
+  },
+  "stream_event": {"version": 1, "mode": "update", "step": 0, "node": "model", "update": {"status": "ready"}}
+}

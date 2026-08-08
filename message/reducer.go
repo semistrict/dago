@@ -1,0 +1,162 @@
+package message
+
+import (
+	"crypto/rand"
+	"errors"
+	"fmt"
+)
+
+const RemoveAllMessages = "__remove_all__"
+
+var ErrRemoveUnknownMessage = errors.New("cannot remove unknown message")
+
+// IDGenerator supplies missing message identifiers. It is injectable for deterministic
+// tests and fixture generation.
+type IDGenerator func() (string, error)
+
+// Reducer implements append, replacement, removal, and reset semantics.
+type Reducer struct {
+	IDs IDGenerator
+}
+
+// Merge returns a new message list. Missing IDs are assigned, existing IDs are
+// replaced in place, tombstones remove known IDs, and the last reset tombstone drops
+// all preceding messages and changes.
+func (reducer Reducer) Merge(left, right []Message) ([]Message, error) {
+	ids := reducer.IDs
+	if ids == nil {
+		ids = randomUUID
+	}
+
+	base := cloneMessages(left)
+	changes := cloneMessages(right)
+	for index := range base {
+		if base[index].ID == "" {
+			id, err := ids()
+			if err != nil {
+				return nil, fmt.Errorf("assign existing message id: %w", err)
+			}
+			base[index].ID = id
+		}
+	}
+	resetIndex := -1
+	for index := range changes {
+		if changes[index].ID == "" {
+			id, err := ids()
+			if err != nil {
+				return nil, fmt.Errorf("assign new message id: %w", err)
+			}
+			changes[index].ID = id
+		}
+		if changes[index].Role == RoleRemove && changes[index].ID == RemoveAllMessages {
+			resetIndex = index
+		}
+	}
+	if resetIndex >= 0 {
+		return cloneMessages(changes[resetIndex+1:]), nil
+	}
+
+	byID := make(map[string]int, len(base))
+	for index, existing := range base {
+		byID[existing.ID] = index
+	}
+	removed := make(map[string]struct{})
+	for _, change := range changes {
+		index, exists := byID[change.ID]
+		if change.Role == RoleRemove {
+			if !exists {
+				return nil, fmt.Errorf("%w %q", ErrRemoveUnknownMessage, change.ID)
+			}
+			removed[change.ID] = struct{}{}
+			continue
+		}
+		if exists {
+			delete(removed, change.ID)
+			base[index] = change
+			continue
+		}
+		byID[change.ID] = len(base)
+		base = append(base, change)
+	}
+
+	result := make([]Message, 0, len(base)-len(removed))
+	for _, item := range base {
+		if _, drop := removed[item.ID]; !drop {
+			result = append(result, item)
+		}
+	}
+	return result, nil
+}
+
+// DeltaReduce is the batching-invariant reducer used by a delta channel. Unlike
+// Merge, it leaves missing IDs untouched, ignores tombstones for unknown IDs, and
+// treats a reset tombstone as an ordinary unknown tombstone.
+func DeltaReduce(state []Message, writes [][]Message) ([]Message, error) {
+	result := cloneMessages(state)
+	byID := make(map[string]int, len(result))
+	for index, existing := range result {
+		if existing.ID != "" {
+			byID[existing.ID] = index
+		}
+	}
+
+	for _, write := range writes {
+		for _, raw := range write {
+			change := raw.Clone()
+			if change.ID == "" {
+				result = append(result, change)
+				continue
+			}
+			index, exists := byID[change.ID]
+			if change.Role == RoleRemove {
+				if exists {
+					result[index] = Message{Role: RoleRemove, ID: change.ID}
+					delete(byID, change.ID)
+				}
+				continue
+			}
+			if exists {
+				result[index] = change
+				continue
+			}
+			byID[change.ID] = len(result)
+			result = append(result, change)
+		}
+	}
+
+	compacted := result[:0]
+	for _, item := range result {
+		if item.Role != RoleRemove {
+			compacted = append(compacted, item)
+		}
+	}
+	return compacted, nil
+}
+
+func cloneMessages(messages []Message) []Message {
+	if messages == nil {
+		return nil
+	}
+	result := make([]Message, len(messages))
+	for index, item := range messages {
+		result[index] = item.Clone()
+	}
+	return result
+}
+
+func randomUUID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	return fmt.Sprintf(
+		"%08x-%04x-%04x-%04x-%012x",
+		value[0:4],
+		value[4:6],
+		value[6:8],
+		value[8:10],
+		value[10:16],
+	), nil
+}

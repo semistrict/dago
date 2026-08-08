@@ -1,0 +1,101 @@
+{
+  "generated": true,
+  "source_sha256": "1c069df28a18165b9ec6d0463a2d2cbebfaf83b485a6dad5531b9debeca375c2",
+  "contract": {
+    "checkpoint": {
+      "channel_values": {
+        "status": "ready"
+      },
+      "channel_versions": {
+        "status": "00000000000000000000000000000001.0.0"
+      },
+      "id": "00000000-0000-6000-8000-000000000001",
+      "ts": "2026-01-01T00:00:00Z",
+      "v": 4,
+      "versions_seen": {}
+    },
+    "command": {
+      "goto": [
+        "model"
+      ],
+      "update": {
+        "status": "ready"
+      }
+    },
+    "message": {
+      "content": [
+        {
+          "text": "Looking it up.",
+          "type": "text"
+        }
+      ],
+      "id": "assistant-1",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "query": "delta channels"
+          },
+          "id": "call-1",
+          "name": "lookup"
+        }
+      ]
+    },
+    "model_response": {
+      "message": {
+        "content": [
+          {
+            "text": "Complete.",
+            "type": "text"
+          }
+        ],
+        "id": "assistant-2",
+        "role": "assistant"
+      }
+    },
+    "provenance": {
+      "deepagents": "libs/deepagents/tests/unit_tests/test_deepagents.py",
+      "langchain": "libs/langchain_v1/tests/unit_tests/agents/test_factory.py",
+      "langgraph": "libs/langgraph/tests/test_pregel.py"
+    },
+    "schema_version": 1,
+    "state_update": {
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "Continue",
+              "type": "text"
+            }
+          ],
+          "role": "human"
+        }
+      ]
+    },
+    "stream_event": {
+      "mode": "update",
+      "node": "model",
+      "step": 0,
+      "update": {
+        "status": "ready"
+      },
+      "version": 1
+    },
+    "tool": {
+      "description": "Look up a topic.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "lookup"
+    }
+  }
+}
