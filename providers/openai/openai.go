@@ -52,6 +52,10 @@ type Options struct {
 	DefaultReasoning *model.Reasoning
 	// Store controls server-side response retention when explicitly set.
 	Store *bool
+	// WebSearch enables the provider-hosted web search tool. Provider-hosted
+	// calls are returned as content blocks and are never dispatched through the
+	// local Dago tool executor.
+	WebSearch bool
 }
 
 // Client is a Responses API-backed chat model.
@@ -135,6 +139,7 @@ func (client *Client) Profile() model.Profile {
 		ContextWindow: client.options.ContextWindow, MaxOutputTokens: client.options.MaxOutputTokens,
 		ToolCalling: true, ParallelToolCalls: true, StructuredOutput: true,
 		NativeStreaming: true, SupportsPromptCaching: true, SupportsReasoning: true,
+		SupportsImages: true, SupportsWebSearch: client.options.WebSearch,
 	}
 }
 
@@ -317,9 +322,9 @@ type reasoning struct {
 
 type responseTool struct {
 	Type        string          `json:"type"`
-	Name        string          `json:"name"`
+	Name        string          `json:"name,omitempty"`
 	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
 	Strict      bool            `json:"strict,omitempty"`
 }
 
@@ -354,6 +359,9 @@ func (client *Client) requestBody(request model.Request, stream bool) ([]byte, e
 			return nil, err
 		}
 		tools = append(tools, responseTool{Type: "function", Name: definition.Name, Description: definition.Description, Parameters: definition.InputSchema, Strict: definition.Strict})
+	}
+	if client.options.WebSearch {
+		tools = append(tools, responseTool{Type: "web_search"})
 	}
 	maxOutputTokens := client.options.MaxOutputTokens
 	if client.subscription {
@@ -424,8 +432,25 @@ func inputItems(value message.Message) ([]any, error) {
 	}
 	items := make([]any, 0, 1+len(value.ToolCalls))
 	if value.Role == message.RoleTool {
-		output := value.TextContent()
-		if len(value.Artifact) > 0 && output == "" {
+		var output any = value.TextContent()
+		hasRichContent := false
+		contents := make([]any, 0, len(value.Content))
+		for _, block := range value.Content {
+			switch block.Type {
+			case message.BlockText:
+				contents = append(contents, map[string]any{"type": "input_text", "text": block.Text})
+			case message.BlockImage:
+				hasRichContent = true
+				imageURL := block.URL
+				if imageURL == "" && len(block.Data) > 0 {
+					imageURL = "data:" + block.MIMEType + ";base64," + encodeBase64(block.Data)
+				}
+				contents = append(contents, map[string]any{"type": "input_image", "image_url": imageURL})
+			}
+		}
+		if hasRichContent {
+			output = contents
+		} else if len(value.Artifact) > 0 && output == "" {
 			output = string(value.Artifact)
 		}
 		return []any{map[string]any{"type": "function_call_output", "call_id": value.ToolCallID, "output": output}}, nil
@@ -509,6 +534,12 @@ type responseOutput struct {
 	Content          []responseContent `json:"content"`
 	Summary          []responseSummary `json:"summary,omitempty"`
 	EncryptedContent string            `json:"encrypted_content,omitempty"`
+	Action           *responseAction   `json:"action,omitempty"`
+}
+
+type responseAction struct {
+	Type    string   `json:"type,omitempty"`
+	Queries []string `json:"queries,omitempty"`
 }
 
 type responseSummary struct {
@@ -517,10 +548,19 @@ type responseSummary struct {
 }
 
 type responseContent struct {
-	Type        string `json:"type"`
-	Text        string `json:"text"`
-	Refusal     string `json:"refusal"`
-	Annotations []any  `json:"annotations"`
+	Type        string               `json:"type"`
+	Text        string               `json:"text"`
+	Refusal     string               `json:"refusal"`
+	Annotations []responseAnnotation `json:"annotations"`
+}
+
+type responseAnnotation struct {
+	Type       string `json:"type"`
+	URL        string `json:"url,omitempty"`
+	Title      string `json:"title,omitempty"`
+	StartIndex *int   `json:"start_index,omitempty"`
+	EndIndex   *int   `json:"end_index,omitempty"`
+	CitedText  string `json:"cited_text,omitempty"`
 }
 
 type responseUsage struct {
@@ -545,7 +585,13 @@ func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) 
 			for _, content := range output.Content {
 				switch content.Type {
 				case "output_text":
-					result.Content = append(result.Content, message.ContentBlock{Type: message.BlockText, Text: content.Text})
+					block := message.ContentBlock{Type: message.BlockText, Text: content.Text}
+					for _, annotation := range content.Annotations {
+						if annotation.Type == "url_citation" {
+							block.Citations = append(block.Citations, message.Citation{URL: annotation.URL, Title: annotation.Title, StartIndex: annotation.StartIndex, EndIndex: annotation.EndIndex, CitedText: annotation.CitedText})
+						}
+					}
+					result.Content = append(result.Content, block)
 				case "refusal":
 					result.Content = append(result.Content, message.ContentBlock{Type: message.BlockNonStandard, NonStandard: mustJSON(map[string]any{"type": "refusal", "refusal": content.Refusal})})
 				}
@@ -557,6 +603,19 @@ func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) 
 				continue
 			}
 			result.ToolCalls = append(result.ToolCalls, message.ToolCall{ID: output.CallID, Name: output.Name, Arguments: arguments})
+		case "web_search_call":
+			arguments := map[string]any{}
+			if output.Action != nil {
+				switch len(output.Action.Queries) {
+				case 1:
+					arguments["query"] = output.Action.Queries[0]
+				default:
+					if len(output.Action.Queries) > 1 {
+						arguments["queries"] = output.Action.Queries
+					}
+				}
+			}
+			result.Content = append(result.Content, message.ContentBlock{Type: message.BlockServerTool, ID: output.ID, Name: "web_search", Extra: map[string]json.RawMessage{"arguments": mustJSON(arguments)}})
 		}
 	}
 	if payload.Usage.TotalTokens != 0 || payload.Usage.InputTokens != 0 || payload.Usage.OutputTokens != 0 {
@@ -725,6 +784,20 @@ func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
 			return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, Content: []message.ContentBlock{
 				reasoningContentBlockWithText(envelope.Item, false),
 			}}}, true, nil
+		}
+		if envelope.Item.Type == "web_search_call" {
+			arguments := map[string]any{}
+			if envelope.Item.Action != nil {
+				if len(envelope.Item.Action.Queries) == 1 {
+					arguments["query"] = envelope.Item.Action.Queries[0]
+				} else if len(envelope.Item.Action.Queries) > 1 {
+					arguments["queries"] = envelope.Item.Action.Queries
+				}
+			}
+			return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, Content: []message.ContentBlock{{
+				Type: message.BlockServerTool, ID: envelope.Item.ID, Name: "web_search",
+				Extra: map[string]json.RawMessage{"arguments": mustJSON(arguments)},
+			}}}}, true, nil
 		}
 	case "response.function_call_arguments.delta":
 		call := stream.calls[envelope.ItemID]

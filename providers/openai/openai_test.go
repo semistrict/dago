@@ -91,6 +91,46 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 	}
 }
 
+func TestInvokeMapsProviderWebSearch(t *testing.T) {
+	var got map[string]any
+	start, end := 0, 6
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(writer, `{
+          "id":"resp_search","status":"completed",
+          "output":[
+            {"type":"web_search_call","id":"search_1","action":{"type":"search","queries":["dago docs"]}},
+            {"type":"message","content":[{"type":"output_text","text":"result","annotations":[{"type":"url_citation","url":"https://example.test","title":"Example","start_index":0,"end_index":6}]}]}
+          ]
+        }`)
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), WebSearch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("search")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := got["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["type"] != "web_search" {
+		t.Fatalf("tools = %#v", tools)
+	}
+	if len(response.Message.Content) != 2 || response.Message.Content[0].Type != message.BlockServerTool {
+		t.Fatalf("content = %#v", response.Message.Content)
+	}
+	if got := response.Message.Content[0].Extra["arguments"]; string(got) != `{"query":"dago docs"}` {
+		t.Fatalf("arguments = %s", got)
+	}
+	citations := response.Message.Content[1].Citations
+	if len(citations) != 1 || citations[0].URL != "https://example.test" || citations[0].StartIndex == nil || *citations[0].StartIndex != start || citations[0].EndIndex == nil || *citations[0].EndIndex != end {
+		t.Fatalf("citations = %#v", citations)
+	}
+}
+
 func TestInvokeMapsToolHistoryAndStructuredOutput(t *testing.T) {
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

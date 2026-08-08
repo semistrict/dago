@@ -101,16 +101,23 @@ type TokenCounter interface {
 
 // Profile records capabilities used for agent routing and middleware decisions.
 type Profile struct {
-	Provider              string `json:"provider,omitempty"`
-	Model                 string `json:"model,omitempty"`
-	ContextWindow         int    `json:"context_window,omitempty"`
-	MaxOutputTokens       int    `json:"max_output_tokens,omitempty"`
-	ToolCalling           bool   `json:"tool_calling,omitempty"`
-	ParallelToolCalls     bool   `json:"parallel_tool_calls,omitempty"`
-	StructuredOutput      bool   `json:"structured_output,omitempty"`
-	NativeStreaming       bool   `json:"native_streaming,omitempty"`
-	SupportsPromptCaching bool   `json:"supports_prompt_caching,omitempty"`
-	SupportsReasoning     bool   `json:"supports_reasoning,omitempty"`
+	Provider              string   `json:"provider,omitempty"`
+	Model                 string   `json:"model,omitempty"`
+	ContextWindow         int      `json:"context_window,omitempty"`
+	MaxOutputTokens       int      `json:"max_output_tokens,omitempty"`
+	ToolCalling           bool     `json:"tool_calling,omitempty"`
+	ParallelToolCalls     bool     `json:"parallel_tool_calls,omitempty"`
+	StructuredOutput      bool     `json:"structured_output,omitempty"`
+	NativeStreaming       bool     `json:"native_streaming,omitempty"`
+	SupportsPromptCaching bool     `json:"supports_prompt_caching,omitempty"`
+	SupportsReasoning     bool     `json:"supports_reasoning,omitempty"`
+	ReasoningLevels       []string `json:"reasoning_levels,omitempty"`
+	DefaultReasoningLevel string   `json:"default_reasoning_level,omitempty"`
+	SupportsImages        bool     `json:"supports_images,omitempty"`
+	SupportsWebSearch     bool     `json:"supports_web_search,omitempty"`
+	UseSimplifiedPatch    bool     `json:"use_simplified_patch,omitempty"`
+	MaxImageDimension     int      `json:"max_image_dimension,omitempty"`
+	MaxImageBytes         int      `json:"max_image_bytes,omitempty"`
 }
 
 // EmptyStream is a stream that immediately terminates.

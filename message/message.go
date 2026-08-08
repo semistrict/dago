@@ -22,14 +22,16 @@ const (
 type BlockType string
 
 const (
-	BlockText        BlockType = "text"
-	BlockReasoning   BlockType = "reasoning"
-	BlockImage       BlockType = "image"
-	BlockFile        BlockType = "file"
-	BlockAudio       BlockType = "audio"
-	BlockVideo       BlockType = "video"
-	BlockCitation    BlockType = "citation"
-	BlockNonStandard BlockType = "non_standard"
+	BlockText         BlockType = "text"
+	BlockReasoning    BlockType = "reasoning"
+	BlockImage        BlockType = "image"
+	BlockFile         BlockType = "file"
+	BlockAudio        BlockType = "audio"
+	BlockVideo        BlockType = "video"
+	BlockCitation     BlockType = "citation"
+	BlockServerTool   BlockType = "server_tool_use"
+	BlockSearchResult BlockType = "web_search_result"
+	BlockNonStandard  BlockType = "non_standard"
 )
 
 // ContentBlock is a language-neutral standard content record. Extra values must be
