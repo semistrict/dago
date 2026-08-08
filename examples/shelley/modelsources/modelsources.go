@@ -320,14 +320,10 @@ func buildIntegrationService(catalog []models.Model, model IntegrationModel, bas
 	supportsImages := model.supportsImages()
 	switch apiType {
 	case models.APITypeAnthropicMessages:
-		return apiType, &ant.Service{
-			APIKey:          "implicit",
-			URL:             baseURL + "/v1/messages",
-			Model:           modelName,
-			HTTPC:           httpc,
-			ThinkingLevel:   llm.ThinkingLevelMedium,
-			SupportsImages_: supportsImages,
-		}, true
+		return apiType, ant.NewNative("implicit", modelName, baseURL, httpc, ant.NativeOptions{
+			SupportsImages: supportsImages, SupportsReasoning: true,
+			ThinkingLevel: llm.ThinkingLevelMedium,
+		}), true
 	case models.APITypeOpenAIResponses:
 		return apiType, oai.NewNativeResponses("implicit", modelName, baseURL, httpc, oai.NativeResponsesOptions{
 			Provider: model.Provider, ContextWindow: 128000, MaxOutputTokens: oai.DefaultMaxTokens,
@@ -335,13 +331,11 @@ func buildIntegrationService(catalog []models.Model, model IntegrationModel, bas
 			ThinkingLevel: llm.ThinkingLevelMedium,
 		}), true
 	case models.APITypeOpenAIChat:
-		return apiType, &oai.Service{
-			APIKey:       "implicit",
-			ModelURL:     baseURL + "/v1",
-			Model:        oai.Model{ModelName: modelName, SupportsImages: supportsImages},
-			HTTPC:        httpc,
-			ProviderName: model.Provider,
-		}, true
+		return apiType, oai.NewNativeChat("implicit", modelName, baseURL+"/v1", httpc, oai.NativeChatOptions{
+			Provider: model.Provider, ContextWindow: 128000, MaxOutputTokens: oai.DefaultMaxTokens,
+			SupportsImages: supportsImages, SupportsReasoning: true,
+			ThinkingLevel: llm.ThinkingLevelMedium,
+		}), true
 	default:
 		return "", nil, false
 	}
