@@ -270,12 +270,32 @@ type toolArtifactEnvelope struct {
 	OtherUsage []llm.PurposedUsage `json:"other_usage,omitempty"`
 }
 
-// nativeTools converts Shelley tools into Dago-native executables. Dago validates,
-// schedules, cancels, and checkpoints these executions.
-func nativeTools(items []*llm.Tool, options nativeToolOptions) ([]dtool.Tool, error) {
+// resolveNativeTools selects production-native executables by name and adapts
+// only the remaining pinned Shelley test facades. Dago validates, schedules,
+// cancels, and checkpoints every returned tool.
+func resolveNativeTools(items []*llm.Tool, overrides []dtool.Tool, options nativeToolOptions) ([]dtool.Tool, error) {
+	nativeByName := make(map[string]dtool.Tool, len(overrides))
+	for _, item := range overrides {
+		if item == nil {
+			return nil, fmt.Errorf("native tool is nil")
+		}
+		definition := item.Definition()
+		if err := definition.Validate(); err != nil {
+			return nil, fmt.Errorf("native tool %q: %w", definition.Name, err)
+		}
+		if nativeByName[definition.Name] != nil {
+			return nil, fmt.Errorf("duplicate native tool %q", definition.Name)
+		}
+		nativeByName[definition.Name] = item
+	}
 	result := make([]dtool.Tool, 0, len(items))
 	for _, item := range items {
 		if item == nil || item.ServerSide {
+			continue
+		}
+		if native := nativeByName[item.Name]; native != nil {
+			result = append(result, native)
+			delete(nativeByName, item.Name)
 			continue
 		}
 		if item.Run == nil {
@@ -330,7 +350,17 @@ func nativeTools(items []*llm.Tool, options nativeToolOptions) ([]dtool.Tool, er
 			return dtool.Result{Content: blocks, Artifact: artifact}, nil
 		}})
 	}
+	if len(nativeByName) > 0 {
+		return nil, fmt.Errorf("native tool %q has no Shelley facade", firstToolName(nativeByName))
+	}
 	return result, nil
+}
+
+func firstToolName(items map[string]dtool.Tool) string {
+	for name := range items {
+		return name
+	}
+	return ""
 }
 
 // messagesToDago converts persisted Shelley context into Dago checkpoint state.

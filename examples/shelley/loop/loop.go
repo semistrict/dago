@@ -17,6 +17,7 @@ import (
 	dmessage "github.com/semistrict/dago/message"
 	dmodel "github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/state"
+	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm"
@@ -47,9 +48,13 @@ type GitStateChangeFunc func(ctx context.Context, state *gitstate.GitState)
 
 // Config contains all configuration needed to create a Loop.
 type Config struct {
-	LLM              llm.Service
-	History          []llm.Message
-	Tools            []*llm.Tool
+	LLM     llm.Service
+	History []llm.Message
+	Tools   []*llm.Tool
+	// NativeTools are production Dago executables keyed by definition name.
+	// Legacy Tools remain the pinned test/provider facade and supply fallbacks
+	// only when a native implementation has not been provided.
+	NativeTools      []dtool.Tool
 	RecordMessage    MessageRecordFunc
 	RecordWarning    WarningRecordFunc
 	Logger           *slog.Logger
@@ -96,6 +101,7 @@ type Config struct {
 type Loop struct {
 	llm              llm.Service
 	tools            []*llm.Tool
+	nativeTools      []dtool.Tool
 	recordMessage    MessageRecordFunc
 	recordWarning    WarningRecordFunc
 	history          []llm.Message
@@ -146,6 +152,7 @@ func NewLoop(config Config) *Loop {
 		llm:              config.LLM,
 		history:          config.History,
 		tools:            config.Tools,
+		nativeTools:      append([]dtool.Tool(nil), config.NativeTools...),
 		recordMessage:    config.RecordMessage,
 		recordWarning:    config.RecordWarning,
 		messageQueue:     make([]llm.Message, 0),
@@ -336,11 +343,12 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 
 	l.mu.Lock()
 	tools := append([]*llm.Tool(nil), l.tools...)
+	nativeOverrides := append([]dtool.Tool(nil), l.nativeTools...)
 	service := l.llm
 	system := append([]llm.SystemContent(nil), l.system...)
 	l.mu.Unlock()
 
-	dagoTools, err := nativeTools(tools, nativeToolOptions{
+	dagoTools, err := resolveNativeTools(tools, nativeOverrides, nativeToolOptions{
 		WorkingDir: l.currentWorkingDir,
 		Progress:   l.onToolProgress,
 		Service:    service,
@@ -565,6 +573,33 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 				return dagent.ToolBatchResponse{}, nil
 			}
 			return dagent.ToolBatchResponse{Calls: calls, Messages: missing}, nil
+		},
+		WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
+			started := time.Now()
+			response, err := next(ctx, request)
+			finished := time.Now()
+			if err != nil {
+				return response, err
+			}
+			var existing toolArtifactEnvelope
+			if len(response.Result.Artifact) > 0 && json.Unmarshal(response.Result.Artifact, &existing) == nil && existing.Kind == shelleyToolArtifact {
+				return response, nil
+			}
+			var display any
+			if len(response.Result.Artifact) > 0 {
+				display = append(json.RawMessage(nil), response.Result.Artifact...)
+			}
+			exact := llm.Content{
+				Type: llm.ContentTypeToolResult, ToolUseID: request.Call.ID,
+				ToolResult:       contentFromDago(response.Result.Content),
+				ToolUseStartTime: &started, ToolUseEndTime: &finished, Display: display,
+			}
+			artifact, encodeErr := json.Marshal(toolArtifactEnvelope{Version: 1, Kind: shelleyToolArtifact, Content: exact})
+			if encodeErr != nil {
+				return dagent.ToolCallResponse{}, encodeErr
+			}
+			response.Result.Artifact = artifact
+			return response, nil
 		},
 	}
 }

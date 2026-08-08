@@ -1851,6 +1851,7 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 		LLM:           service,
 		History:       history,
 		Tools:         toolSet.Tools(),
+		NativeTools:   toolSet.NativeTools(),
 		ThinkingLevel: llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),
 		RecordMessage: recordMessage,
 		RecordWarning: func(ctx context.Context, text string) error {

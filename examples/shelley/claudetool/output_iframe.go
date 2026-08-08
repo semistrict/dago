@@ -2,9 +2,14 @@ package claudetool
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	dmessage "github.com/semistrict/dago/message"
+	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/llm"
 )
@@ -21,6 +26,33 @@ func (t *OutputIframeTool) Tool() *llm.Tool {
 		Description: outputIframeDescription,
 		InputSchema: llm.MustSchema(outputIframeInputSchema),
 		Run:         llm.RunJSON(t.run),
+	}
+}
+
+func (t *OutputIframeTool) NativeTool() dtool.Tool {
+	return dtool.Func{
+		Spec: dtool.Definition{
+			Name: outputIframeName, Description: outputIframeDescription,
+			InputSchema: json.RawMessage(outputIframeInputSchema),
+		},
+		Run: func(_ context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var input outputIframeInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+			}
+			display, err := t.execute(input)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			artifact, err := json.Marshal(display)
+			if err != nil {
+				return dtool.Result{}, fmt.Errorf("encode output iframe display: %w", err)
+			}
+			return dtool.Result{
+				Content:  []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: "displayed"}},
+				Artifact: artifact,
+			}, nil
+		},
 	}
 }
 
@@ -268,9 +300,17 @@ type outputIframeInput struct {
 	Libraries []string          `json:"libraries"`
 }
 
-func (t *OutputIframeTool) run(ctx context.Context, input outputIframeInput) llm.ToolOut {
+func (t *OutputIframeTool) run(_ context.Context, input outputIframeInput) llm.ToolOut {
+	display, err := t.execute(input)
+	if err != nil {
+		return llm.ErrorToolOut(err)
+	}
+	return llm.ToolOut{LLMContent: llm.TextContent("displayed"), Display: display}
+}
+
+func (t *OutputIframeTool) execute(input outputIframeInput) (OutputIframeDisplay, error) {
 	if input.Path == "" {
-		return llm.ErrorfToolOut("path is required")
+		return OutputIframeDisplay{}, fmt.Errorf("path is required")
 	}
 
 	// Resolve the path relative to working directory
@@ -282,7 +322,7 @@ func (t *OutputIframeTool) run(ctx context.Context, input outputIframeInput) llm
 	// Read the main HTML file
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return llm.ErrorfToolOut("failed to read file: %v", err)
+		return OutputIframeDisplay{}, fmt.Errorf("failed to read file: %v", err)
 	}
 
 	// Read additional files
@@ -294,7 +334,7 @@ func (t *OutputIframeTool) run(ctx context.Context, input outputIframeInput) llm
 		}
 		content, err := os.ReadFile(filePath)
 		if err != nil {
-			return llm.ErrorfToolOut("failed to read file %q: %v", name, err)
+			return OutputIframeDisplay{}, fmt.Errorf("failed to read file %q: %v", name, err)
 		}
 		embeddedFiles = append(embeddedFiles, EmbeddedFile{
 			Name:    name,
@@ -312,7 +352,7 @@ func (t *OutputIframeTool) run(ctx context.Context, input outputIframeInput) llm
 	seen := map[string]bool{}
 	for _, name := range input.Libraries {
 		if _, ok := allowedLibraries[name]; !ok {
-			return llm.ErrorfToolOut("unknown library %q (allowed: see tool description)", name)
+			return OutputIframeDisplay{}, fmt.Errorf("unknown library %q (allowed: see tool description)", name)
 		}
 		if !seen[name] {
 			seen[name] = true
@@ -320,17 +360,12 @@ func (t *OutputIframeTool) run(ctx context.Context, input outputIframeInput) llm
 		}
 	}
 
-	display := OutputIframeDisplay{
+	return OutputIframeDisplay{
 		Type:      "output_iframe",
 		HTML:      html,
 		Title:     input.Title,
 		Filename:  filepath.Base(input.Path),
 		Files:     embeddedFiles,
 		Libraries: libs,
-	}
-
-	return llm.ToolOut{
-		LLMContent: llm.TextContent("displayed"),
-		Display:    display,
-	}
+	}, nil
 }

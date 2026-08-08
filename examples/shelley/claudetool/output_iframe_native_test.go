@@ -1,0 +1,30 @@
+package claudetool
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	dtool "github.com/semistrict/dago/tool"
+)
+
+func TestOutputIframeNativeToolReturnsDisplayArtifact(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "view.html"), []byte("<h1>hello</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	executable := (&OutputIframeTool{WorkingDir: NewMutableWorkingDir(root)}).NativeTool()
+	result, err := executable.Execute(context.Background(), json.RawMessage(`{"path":"view.html","title":"View"}`), dtool.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var display OutputIframeDisplay
+	if err := json.Unmarshal(result.Artifact, &display); err != nil {
+		t.Fatal(err)
+	}
+	if display.Type != "output_iframe" || display.Title != "View" || display.HTML != "<h1>hello</h1>" {
+		t.Fatalf("display = %#v", display)
+	}
+}

@@ -3,8 +3,11 @@ package claudetool
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"sync"
+
+	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/claudetool/browse"
 	"shelley.exe.dev/llm"
@@ -96,14 +99,21 @@ type ToolSetConfig struct {
 // ToolSet holds a set of tools for a single conversation.
 // Each conversation should have its own ToolSet.
 type ToolSet struct {
-	tools   []*llm.Tool
-	cleanup func()
-	wd      *MutableWorkingDir
+	tools       []*llm.Tool
+	nativeTools []dtool.Tool
+	cleanup     func()
+	wd          *MutableWorkingDir
 }
 
 // Tools returns the tools in this set.
 func (ts *ToolSet) Tools() []*llm.Tool {
 	return ts.tools
+}
+
+// NativeTools returns production Dago executables. A fresh slice prevents
+// callers from changing the tool set after construction.
+func (ts *ToolSet) NativeTools() []dtool.Tool {
+	return append([]dtool.Tool(nil), ts.nativeTools...)
 }
 
 // Cleanup releases resources held by the tools (e.g., browser).
@@ -219,6 +229,7 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		changeDirTool.Tool(),
 		outputIframeTool.Tool(),
 	}
+	nativeTools := []dtool.Tool{changeDirTool.NativeTool(), outputIframeTool.NativeTool()}
 
 	// Build the available models list (shared by subagent and llm_one_shot tools).
 	// Resolved fresh on each ToolSet construction so new conversations see
@@ -300,9 +311,17 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	}
 
 	tools = FilterTools(tools, cfg.ToolOverrides, cfg.DisableAllTools)
+	enabled := make(map[string]bool, len(tools))
+	for _, item := range tools {
+		enabled[item.Name] = true
+	}
+	nativeTools = slices.DeleteFunc(nativeTools, func(item dtool.Tool) bool {
+		return !enabled[item.Definition().Name]
+	})
 	return &ToolSet{
-		tools:   tools,
-		cleanup: cleanup,
-		wd:      wd,
+		tools:       tools,
+		nativeTools: nativeTools,
+		cleanup:     cleanup,
+		wd:          wd,
 	}
 }

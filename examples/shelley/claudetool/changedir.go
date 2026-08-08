@@ -2,10 +2,13 @@ package claudetool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm"
@@ -65,10 +68,40 @@ func (c *ChangeDirTool) Tool() *llm.Tool {
 	}
 }
 
+// NativeTool returns the production Dago implementation. Tool remains the
+// unchanged Shelley facade exercised by the pinned upstream tests.
+func (c *ChangeDirTool) NativeTool() dtool.Tool {
+	return dtool.Func{
+		Spec: dtool.Definition{
+			Name: changeDirName, Description: changeDirDescription,
+			InputSchema: json.RawMessage(changeDirInputSchema),
+		},
+		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var input changeDirInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+			}
+			text, err := c.execute(ctx, input)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			return dtool.TextResult(text), nil
+		},
+	}
+}
+
 // run executes the change_dir tool.
 func (c *ChangeDirTool) run(ctx context.Context, req changeDirInput) llm.ToolOut {
+	text, err := c.execute(ctx, req)
+	if err != nil {
+		return llm.ErrorToolOut(err)
+	}
+	return llm.ToolOut{LLMContent: llm.TextContent(text)}
+}
+
+func (c *ChangeDirTool) execute(_ context.Context, req changeDirInput) (string, error) {
 	if req.Path == "" {
-		return llm.ErrorfToolOut("path is required")
+		return "", fmt.Errorf("path is required")
 	}
 
 	// Get current working directory
@@ -85,12 +118,12 @@ func (c *ChangeDirTool) run(ctx context.Context, req changeDirInput) llm.ToolOut
 	info, err := os.Stat(targetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return llm.ErrorfToolOut("directory does not exist: %s", targetPath)
+			return "", fmt.Errorf("directory does not exist: %s", targetPath)
 		}
-		return llm.ErrorfToolOut("failed to stat path: %w", err)
+		return "", fmt.Errorf("failed to stat path: %w", err)
 	}
 	if !info.IsDir() {
-		return llm.ErrorfToolOut("path is not a directory: %s", targetPath)
+		return "", fmt.Errorf("path is not a directory: %s", targetPath)
 	}
 
 	// Update the working directory
@@ -113,7 +146,5 @@ func (c *ChangeDirTool) run(ctx context.Context, req changeDirInput) llm.ToolOut
 		resultText = fmt.Sprintf("Changed working directory to: %s\n\nNot in a git repository.", targetPath)
 	}
 
-	return llm.ToolOut{
-		LLMContent: llm.TextContent(resultText),
-	}
+	return resultText, nil
 }
