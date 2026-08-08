@@ -124,6 +124,17 @@ kbd { padding: 1px 4px; border: 1px solid var(--line-soft); border-bottom-width:
 .scroll-bottom.visible { display: block; }
 
 .composer-wrap { z-index: 2; padding: 0 max(22px, calc((100% - 860px) / 2)) calc(15px + env(safe-area-inset-bottom)); background: linear-gradient(transparent, var(--paper) 18%); }
+.approval-notice {
+  display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  margin-bottom: 8px; padding: 11px 12px; border: 1px solid var(--amber);
+  background: color-mix(in srgb, var(--amber) 8%, var(--paper-raised)); box-shadow: 0 8px 28px rgba(0,0,0,.09);
+}
+.approval-notice-mark { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid var(--amber); color: var(--amber); font: 700 14px var(--mono); }
+.approval-notice-copy { display: grid; min-width: 0; gap: 2px; }
+.approval-notice-copy strong { font: 600 13px var(--sans); }
+.approval-notice-copy code { overflow: hidden; color: var(--muted); font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.approval-notice-action { padding: 9px 11px; border: 0; background: var(--amber); color: #17130b; font: 700 9px var(--mono); letter-spacing: .08em; white-space: nowrap; }
+.approval-notice-action:hover { background: var(--amber-bright); }
 .composer { display: flex; align-items: flex-end; gap: 9px; padding: 8px; border: 1px solid var(--line); background: var(--paper-raised); box-shadow: 0 8px 28px rgba(0,0,0,.09); }
 .composer textarea { min-height: 35px; max-height: 180px; flex: 1; resize: none; border: 0; outline: 0; background: transparent; padding: 8px 2px; font: 15px/1.5 var(--serif); }
 .attach-button, .send-button, .stop-button { display: grid; width: 36px; height: 36px; place-items: center; flex: 0 0 auto; border: 0; }
@@ -216,6 +227,8 @@ dialog::backdrop { background: rgba(4, 5, 4, .72); backdrop-filter: blur(4px); }
 
 @media (max-width: 720px) {
   .mobile-only { display: grid !important; }
+  .approval-notice { grid-template-columns: 28px minmax(0, 1fr); }
+  .approval-notice-action { grid-column: 1 / -1; width: 100%; }
   .workbench, .workbench.panel-open { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: fixed; z-index: 15; inset: 0 12% 0 0; transform: translateX(-105%); transition: transform .2s ease; box-shadow: var(--shadow); }
   .sidebar.open { transform: translateX(0); }

@@ -55,6 +55,27 @@ function setRunning(running) {
   $("#run-state").disabled = !waiting;
   $("#prompt").disabled = blocked;
   $("#send-button").disabled = blocked;
+  renderApprovalNotice(waiting ? state.pendingApproval : []);
+}
+
+function approvalSummary(request) {
+  const call = request?.call || {};
+  const args = call.arguments;
+  if (call.name === "execute" && args && typeof args === "object" && args.command) return args.command;
+  const encoded = typeof args === "string" ? args : JSON.stringify(args || {});
+  return `${call.name || "action"} ${encoded}`.trim();
+}
+
+function renderApprovalNotice(requests = []) {
+  const notice = $("#approval-notice");
+  const visible = requests.length > 0;
+  notice.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  const count = requests.length;
+  $("#approval-notice-title").textContent = count === 1
+    ? `${requests[0].call?.name || "An action"} is waiting for your approval`
+    : `${count} actions are waiting for your approval`;
+  $("#approval-notice-summary").textContent = requests.map(approvalSummary).join(" · ");
 }
 
 async function refreshStatus() {
