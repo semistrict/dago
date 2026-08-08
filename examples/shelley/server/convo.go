@@ -1848,12 +1848,13 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 	sf := newStreamFlusher(cm, 50*time.Millisecond)
 
 	loopInstance := loop.NewLoop(loop.Config{
-		LLM:           service,
-		History:       history,
-		Tools:         toolSet.Tools(),
-		NativeTools:   toolSet.NativeTools(),
-		ThinkingLevel: llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),
-		RecordMessage: recordMessage,
+		LLM:                service,
+		History:            history,
+		Tools:              toolSet.Tools(),
+		NativeTools:        toolSet.NativeTools(),
+		RequireNativeTools: true,
+		ThinkingLevel:      llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),
+		RecordMessage:      recordMessage,
 		RecordWarning: func(ctx context.Context, text string) error {
 			return cm.recordWarning(ctx, text)
 		},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -55,6 +56,18 @@ func TestLoopPrefersNativeToolOverLegacyFacade(t *testing.T) {
 	if len(recorded) != 3 || recorded[1].Content[0].ToolResult[0].Text != "native result" ||
 		recorded[1].Content[0].ToolUseStartTime == nil || recorded[1].Content[0].ToolUseEndTime == nil {
 		t.Fatalf("recorded native tool projection = %#v", recorded)
+	}
+}
+
+func TestResolveNativeToolsCanRequireCompleteNativeCoverage(t *testing.T) {
+	legacy := &llm.Tool{
+		Name: "missing", Description: "missing native implementation",
+		InputSchema: llm.MustSchema(`{"type":"object","properties":{}}`),
+		Run:         func(context.Context, json.RawMessage) llm.ToolOut { return llm.ToolOut{} },
+	}
+	_, err := resolveNativeTools([]*llm.Tool{legacy}, nil, nativeToolOptions{RequireNative: true})
+	if err == nil || !strings.Contains(err.Error(), "no native implementation") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

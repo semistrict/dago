@@ -54,13 +54,17 @@ type Config struct {
 	// NativeTools are production Dago executables keyed by definition name.
 	// Legacy Tools remain the pinned test/provider facade and supply fallbacks
 	// only when a native implementation has not been provided.
-	NativeTools      []dtool.Tool
-	RecordMessage    MessageRecordFunc
-	RecordWarning    WarningRecordFunc
-	Logger           *slog.Logger
-	System           []llm.SystemContent
-	WorkingDir       string // working directory for tools
-	OnGitStateChange GitStateChangeFunc
+	NativeTools []dtool.Tool
+	// RequireNativeTools rejects any executable client-side tool without a
+	// matching Dago implementation. The server enables this; pinned unit
+	// fixtures may leave it false when exercising Shelley facade types.
+	RequireNativeTools bool
+	RecordMessage      MessageRecordFunc
+	RecordWarning      WarningRecordFunc
+	Logger             *slog.Logger
+	System             []llm.SystemContent
+	WorkingDir         string // working directory for tools
+	OnGitStateChange   GitStateChangeFunc
 	// ThinkingLevel, when non-default, is sent on every llm.Request the loop
 	// issues. Per-conversation override; ThinkingLevelDefault means "use the
 	// service default".
@@ -102,6 +106,7 @@ type Loop struct {
 	llm              llm.Service
 	tools            []*llm.Tool
 	nativeTools      []dtool.Tool
+	requireNative    bool
 	recordMessage    MessageRecordFunc
 	recordWarning    WarningRecordFunc
 	history          []llm.Message
@@ -153,6 +158,7 @@ func NewLoop(config Config) *Loop {
 		history:          config.History,
 		tools:            config.Tools,
 		nativeTools:      append([]dtool.Tool(nil), config.NativeTools...),
+		requireNative:    config.RequireNativeTools,
 		recordMessage:    config.RecordMessage,
 		recordWarning:    config.RecordWarning,
 		messageQueue:     make([]llm.Message, 0),
@@ -349,9 +355,10 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	l.mu.Unlock()
 
 	dagoTools, err := resolveNativeTools(tools, nativeOverrides, nativeToolOptions{
-		WorkingDir: l.currentWorkingDir,
-		Progress:   l.onToolProgress,
-		Service:    service,
+		WorkingDir:    l.currentWorkingDir,
+		Progress:      l.onToolProgress,
+		Service:       service,
+		RequireNative: l.requireNative,
 	})
 	if err != nil {
 		return err

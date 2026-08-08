@@ -258,9 +258,10 @@ func (stream *shelleyStream) Close() error {
 
 // nativeToolOptions supplies the Shelley context values expected by existing tools.
 type nativeToolOptions struct {
-	WorkingDir func() string
-	Progress   llm.ToolProgressFunc
-	Service    llm.Service
+	WorkingDir    func() string
+	Progress      llm.ToolProgressFunc
+	Service       llm.Service
+	RequireNative bool
 }
 
 type toolArtifactEnvelope struct {
@@ -297,6 +298,9 @@ func resolveNativeTools(items []*llm.Tool, overrides []dtool.Tool, options nativ
 			result = append(result, native)
 			delete(nativeByName, item.Name)
 			continue
+		}
+		if options.RequireNative {
+			return nil, fmt.Errorf("dago runtime: tool %q has no native implementation", item.Name)
 		}
 		if item.Run == nil {
 			return nil, fmt.Errorf("dago runtime: tool %q has no implementation", item.Name)
