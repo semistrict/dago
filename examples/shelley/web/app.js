@@ -14,6 +14,8 @@ const state = {
   pendingApproval: null,
 };
 
+let oauthPollTimer = null;
+
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   if (response.status === 204) return null;
@@ -454,15 +456,34 @@ async function saveAPIKey() {
   catch (error) { toast(error.message, "error"); }
 }
 
+async function pollOAuthStatus() {
+  oauthPollTimer = null;
+  try {
+    await refreshStatus();
+  } catch {
+    oauthPollTimer = setTimeout(pollOAuthStatus, 1200);
+    return;
+  }
+  if (state.status.oauth_state === "pending") {
+    oauthPollTimer = setTimeout(pollOAuthStatus, 1200);
+    return;
+  }
+  if (state.status.oauth_state === "complete") {
+    if ($("#settings-dialog").open) $("#settings-dialog").close();
+    toast("Subscription sign-in complete");
+    $("#prompt").focus();
+  } else if (state.status.oauth_state === "failed") {
+    toast(state.status.oauth_error || "Subscription sign-in failed", "error");
+  }
+}
+
 async function startOAuth() {
   try {
     const value = await api("/api/auth/oauth/start", { method: "POST" });
     window.open(value.authorization_url, "shelley-auth", "popup,width=620,height=760");
     $("#oauth-copy").textContent = "Waiting for browser sign-in…";
-    const poll = setInterval(async () => {
-      await refreshStatus();
-      if (state.status.oauth_state !== "pending") { clearInterval(poll); if (state.status.oauth_state === "complete") toast("Subscription sign-in complete"); }
-    }, 1200);
+    clearTimeout(oauthPollTimer);
+    oauthPollTimer = setTimeout(pollOAuthStatus, 0);
   } catch (error) { toast(error.message, "error"); }
 }
 
@@ -538,6 +559,11 @@ function wireEvents() {
   $("#command-input").addEventListener("input", event => showCommands(event.target.value));
   $("#messages").addEventListener("scroll", event => { const element = event.target; $("#scroll-bottom").classList.toggle("visible", element.scrollHeight - element.scrollTop - element.clientHeight > 180); });
   $("#scroll-bottom").addEventListener("click", () => { const messages = $("#messages"); messages.scrollTop = messages.scrollHeight; });
+  window.addEventListener("focus", () => {
+    if (state.status?.oauth_state !== "pending") return;
+    clearTimeout(oauthPollTimer);
+    oauthPollTimer = setTimeout(pollOAuthStatus, 0);
+  });
   document.addEventListener("keydown", event => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openCommands(); }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") { event.preventDefault(); newConversation(); }

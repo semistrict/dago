@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -63,6 +65,54 @@ func TestFileEditorAndStatusRoutes(t *testing.T) {
 	status := httptest.NewRecorder()
 	handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/status", nil))
 	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"backend":"local"`) {
+		t.Fatalf("status = %d %s", status.Code, status.Body.String())
+	}
+}
+
+func TestDefaultModelIsSubscriptionCompatible(t *testing.T) {
+	t.Setenv("OPENAI_MODEL", "")
+	application := testApplication(t)
+	if application.settings.Model != defaultModel {
+		t.Fatalf("model = %q, want %q", application.settings.Model, defaultModel)
+	}
+	status := httptest.NewRecorder()
+	application.routes().ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"model":"`+defaultModel+`"`) {
+		t.Fatalf("status = %d %s", status.Code, status.Body.String())
+	}
+}
+
+func TestOAuthCompletionUpdatesMainWindow(t *testing.T) {
+	script, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, behavior := range []string{
+		`oauthPollTimer = setTimeout(pollOAuthStatus, 0)`,
+		`if ($("#settings-dialog").open) $("#settings-dialog").close()`,
+		`window.addEventListener("focus"`,
+	} {
+		if !bytes.Contains(script, []byte(behavior)) {
+			t.Fatalf("app.js does not encode OAuth completion behavior %q", behavior)
+		}
+	}
+}
+
+func TestLoadedOAuthSessionReportsComplete(t *testing.T) {
+	workspace := t.TempDir()
+	dataDirectory := t.TempDir()
+	tokenPath := filepath.Join(dataDirectory, "openai-oauth.json")
+	if err := os.WriteFile(tokenPath, []byte(`{"access_token":"access","refresh_token":"refresh"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application, err := newApplication(workspace, dataDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(application.close)
+	status := httptest.NewRecorder()
+	application.routes().ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"oauth_state":"complete"`) {
 		t.Fatalf("status = %d %s", status.Code, status.Body.String())
 	}
 }

@@ -67,6 +67,9 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 	if got["model"] != "test-model" || got["parallel_tool_calls"] != true {
 		t.Fatalf("request = %#v", got)
 	}
+	if _, exists := got["store"]; exists {
+		t.Fatalf("API-key request unexpectedly set store: %#v", got["store"])
+	}
 	if got["prompt_cache_key"] != "thread-key" || got["prompt_cache_retention"] != "24h" {
 		t.Fatalf("prompt cache = %#v", got)
 	}
@@ -262,8 +265,16 @@ func TestOAuthCancellation(t *testing.T) {
 
 func TestSubscriptionAddsAccountHeader(t *testing.T) {
 	var account string
+	var store *bool
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		account = request.Header.Get("ChatGPT-Account-ID")
+		var payload struct {
+			Store *bool `json:"store"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		store = payload.Store
 		_, _ = io.WriteString(writer, `{"id":"r","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
@@ -272,8 +283,8 @@ func TestSubscriptionAddsAccountHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
-	if err != nil || account != "workspace" {
-		t.Fatalf("account = %q, error = %v", account, err)
+	if err != nil || account != "workspace" || store == nil || *store {
+		t.Fatalf("account = %q, store = %v, error = %v", account, store, err)
 	}
 }
 

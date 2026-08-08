@@ -34,6 +34,8 @@ type settings struct {
 	SandboxName string `json:"sandbox_name,omitempty"`
 }
 
+const defaultModel = "gpt-5.6-luna"
+
 type application struct {
 	mu sync.RWMutex
 
@@ -81,7 +83,7 @@ func newApplication(workspace, dataDirectory string) (*application, error) {
 	application := &application{
 		dataDirectory: dataDirectory,
 		settings: settings{
-			Model:   environmentDefault("OPENAI_MODEL", "gpt-5"),
+			Model:   environmentDefault("OPENAI_MODEL", defaultModel),
 			Backend: "local",
 		},
 		apiKey:        os.Getenv("OPENAI_API_KEY"),
@@ -94,6 +96,7 @@ func newApplication(workspace, dataDirectory string) (*application, error) {
 	tokenPath := filepath.Join(dataDirectory, "openai-oauth.json")
 	if session, err := openai.LoadOAuthSession(tokenPath, openai.OAuthOptions{}); err == nil {
 		application.oauth = session
+		application.oauthState = "complete"
 	}
 	return application, nil
 }

@@ -47,6 +47,8 @@ type Options struct {
 	MaxOutputTokens int
 	ContextWindow   int
 	Headers         http.Header
+	// Store controls server-side response retention when explicitly set.
+	Store *bool
 }
 
 // Client is a Responses API-backed chat model.
@@ -80,6 +82,8 @@ func NewSubscription(source CredentialSource, options Options) (*Client, error) 
 		// product-specific route name.
 		options.BaseURL = "https://chatgpt.com/backend-api/" + "co" + "dex"
 	}
+	store := false
+	options.Store = &store
 	return newClient(source, options)
 }
 
@@ -209,6 +213,7 @@ type responsesRequest struct {
 	ParallelToolCalls    bool           `json:"parallel_tool_calls,omitempty"`
 	PromptCacheKey       string         `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention string         `json:"prompt_cache_retention,omitempty"`
+	Store                *bool          `json:"store,omitempty"`
 }
 
 type responseTool struct {
@@ -254,6 +259,7 @@ func (client *Client) requestBody(request model.Request, stream bool) ([]byte, e
 	payload := responsesRequest{
 		Model: client.options.Model, Input: input, Tools: tools, Stream: stream,
 		MaxOutputTokens: client.options.MaxOutputTokens, ParallelToolCalls: len(tools) > 0,
+		Store: client.options.Store,
 	}
 	if request.PromptCache != nil {
 		payload.PromptCacheKey = request.PromptCache.Key
