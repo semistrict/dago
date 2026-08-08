@@ -200,7 +200,7 @@ func (s *ShellTool) NativeTool() dtool.Tool {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
 			}
-			execution, err := s.execute(ctx, input)
+			execution, err := s.execute(ctx, input, true)
 			if err != nil {
 				return dtool.Result{}, err
 			}
@@ -217,14 +217,14 @@ func (s *ShellTool) NativeTool() dtool.Tool {
 }
 
 func (s *ShellTool) run(ctx context.Context, req shellInput) llm.ToolOut {
-	execution, err := s.execute(ctx, req)
+	execution, err := s.execute(ctx, req, false)
 	if err != nil {
 		return llm.ErrorToolOut(err)
 	}
 	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
 }
 
-func (s *ShellTool) execute(ctx context.Context, req shellInput) (shellExecution, error) {
+func (s *ShellTool) execute(ctx context.Context, req shellInput, nativeModelCalls bool) (shellExecution, error) {
 	wd := s.WorkingDir.Get()
 	if _, err := os.Stat(wd); err != nil {
 		if os.IsNotExist(err) {
@@ -246,8 +246,14 @@ func (s *ShellTool) execute(ctx context.Context, req shellInput) (shellExecution
 		// Reuse the bash JIT installer; it operates per-command and is
 		// independent of the BashTool struct beyond the LLM provider.
 		bt := &BashTool{LLMProvider: s.LLMProvider}
-		if err := bt.checkAndInstallMissingTools(ctx, req.Command); err != nil {
-			slog.DebugContext(ctx, "failed to auto-install missing tools", "error", err)
+		var installErr error
+		if nativeModelCalls {
+			installErr = bt.checkAndInstallMissingToolsNative(ctx, req.Command)
+		} else {
+			installErr = bt.checkAndInstallMissingTools(ctx, req.Command)
+		}
+		if installErr != nil {
+			slog.DebugContext(ctx, "failed to auto-install missing tools", "error", installErr)
 		}
 	}
 

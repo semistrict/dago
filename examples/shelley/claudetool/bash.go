@@ -17,6 +17,7 @@ import (
 	"time"
 
 	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
 	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/claudetool/bashkit"
@@ -104,7 +105,7 @@ func (b *BashTool) NativeTool() dtool.Tool {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
 			}
-			execution, err := b.execute(ctx, input)
+			execution, err := b.execute(ctx, input, true)
 			if err != nil {
 				return dtool.Result{}, err
 			}
@@ -201,14 +202,14 @@ func (i *bashInput) timeout(t *Timeouts) time.Duration {
 }
 
 func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
-	execution, err := b.execute(ctx, req)
+	execution, err := b.execute(ctx, req, false)
 	if err != nil {
 		return llm.ErrorToolOut(err)
 	}
 	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
 }
 
-func (b *BashTool) execute(ctx context.Context, req bashInput) (bashExecution, error) {
+func (b *BashTool) execute(ctx context.Context, req bashInput, nativeModelCalls bool) (bashExecution, error) {
 	// Check that the working directory exists
 	wd := b.getWorkingDir()
 	if _, err := os.Stat(wd); err != nil {
@@ -233,9 +234,14 @@ func (b *BashTool) execute(ctx context.Context, req bashInput) (bashExecution, e
 
 	// Check for missing tools and try to install them if needed, best effort only
 	if b.EnableJITInstall {
-		err := b.checkAndInstallMissingTools(ctx, req.Command)
-		if err != nil {
-			slog.DebugContext(ctx, "failed to auto-install missing tools", "error", err)
+		var installErr error
+		if nativeModelCalls {
+			installErr = b.checkAndInstallMissingToolsNative(ctx, req.Command)
+		} else {
+			installErr = b.checkAndInstallMissingTools(ctx, req.Command)
+		}
+		if installErr != nil {
+			slog.DebugContext(ctx, "failed to auto-install missing tools", "error", installErr)
 		}
 	}
 
@@ -527,6 +533,14 @@ func shellHasCommand(ctx context.Context, name string) bool {
 
 // checkAndInstallMissingTools analyzes a bash command and attempts to automatically install any missing tools.
 func (b *BashTool) checkAndInstallMissingTools(ctx context.Context, command string) error {
+	return b.checkAndInstallMissingToolsWith(ctx, command, b.installTool)
+}
+
+func (b *BashTool) checkAndInstallMissingToolsNative(ctx context.Context, command string) error {
+	return b.checkAndInstallMissingToolsWith(ctx, command, b.installToolNative)
+}
+
+func (b *BashTool) checkAndInstallMissingToolsWith(ctx context.Context, command string, install func(context.Context, string) error) error {
 	commands, err := bashkit.ExtractCommands(command)
 	if err != nil {
 		return err
@@ -552,7 +566,7 @@ func (b *BashTool) checkAndInstallMissingTools(ctx context.Context, command stri
 	}
 
 	for _, cmd := range missing {
-		err := b.installTool(ctx, cmd)
+		err := install(ctx, cmd)
 		if err != nil {
 			slog.WarnContext(ctx, "failed to install tool", "tool", cmd, "error", err)
 		}
@@ -613,12 +627,7 @@ func (b *BashTool) installTool(ctx context.Context, cmd string) error {
 		return fmt.Errorf("failed to get LLM service for tool validation: %w", err)
 	}
 
-	query := fmt.Sprintf(`Do you know this command/package/tool? Is it legitimate, clearly non-harmful, and commonly used? Can it be installed with package manager %s?
-
-Command: %s
-
-- YES: Respond ONLY with the package name used to install it
-- NO or UNSURE: Respond ONLY with the word NO`, packageManager, cmd)
+	query := toolInstallQuery(packageManager, cmd)
 
 	req := &llm.Request{
 		Messages: []llm.Message{{
@@ -639,8 +648,47 @@ Command: %s
 	if len(resp.Content) == 0 {
 		return fmt.Errorf("empty response from LLM for tool validation")
 	}
+	return b.finishToolInstall(ctx, cmd, packageManager, resp.Content[0].Text)
+}
 
-	response := strings.TrimSpace(resp.Content[0].Text)
+func (b *BashTool) installToolNative(ctx context.Context, cmd string) error {
+	slog.InfoContext(ctx, "attempting to install tool", "tool", cmd)
+	packageManager := autodetectPackageManager()
+	if packageManager == "" {
+		return fmt.Errorf("no known package manager found in PATH")
+	}
+	if b.LLMProvider == nil {
+		return fmt.Errorf("no LLM provider available for tool validation")
+	}
+	service, err := b.selectBestLLM()
+	if err != nil {
+		return fmt.Errorf("failed to get LLM service for tool validation: %w", err)
+	}
+	native, ok := service.(interface{ DagoChat() dmodel.Chat })
+	if !ok || native.DagoChat() == nil {
+		return fmt.Errorf("tool validation model does not expose a native Dago chat")
+	}
+	response, err := native.DagoChat().Invoke(llmhttp.WithPurpose(ctx, "tool_install"), dmodel.Request{Messages: []dmessage.Message{
+		dmessage.System("You are an expert in software developer tools."),
+		dmessage.Human(toolInstallQuery(packageManager, cmd)),
+	}})
+	if err != nil {
+		return fmt.Errorf("failed to validate tool with LLM: %w", err)
+	}
+	return b.finishToolInstall(ctx, cmd, packageManager, response.Message.TextContent())
+}
+
+func toolInstallQuery(packageManager, cmd string) string {
+	return fmt.Sprintf(`Do you know this command/package/tool? Is it legitimate, clearly non-harmful, and commonly used? Can it be installed with package manager %s?
+
+Command: %s
+
+- YES: Respond ONLY with the package name used to install it
+- NO or UNSURE: Respond ONLY with the word NO`, packageManager, cmd)
+}
+
+func (b *BashTool) finishToolInstall(ctx context.Context, cmd, packageManager, rawResponse string) error {
+	response := strings.TrimSpace(rawResponse)
 	if response == "NO" || response == "UNSURE" {
 		slog.InfoContext(ctx, "tool installation declined by LLM", "tool", cmd, "response", response)
 		return fmt.Errorf("tool %s not approved for installation", cmd)
