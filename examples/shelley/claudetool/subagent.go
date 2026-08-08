@@ -2,9 +2,13 @@ package claudetool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	dmessage "github.com/semistrict/dago/message"
+	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/llm"
 )
@@ -185,18 +189,59 @@ func (s *SubagentTool) Tool() *llm.Tool {
 	}
 }
 
+// NativeTool dispatches subagent work through Dago's tool contract. The
+// server-supplied runner owns the child conversation's native agent runtime.
+func (s *SubagentTool) NativeTool() dtool.Tool {
+	return dtool.Func{
+		Spec: dtool.Definition{
+			Name: subagentName, Description: s.subagentDescription(),
+			InputSchema: json.RawMessage(s.subagentInputSchema()),
+		},
+		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var input subagentInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+			}
+			execution, err := s.execute(ctx, input)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			artifact, err := json.Marshal(execution.Display)
+			if err != nil {
+				return dtool.Result{}, fmt.Errorf("encode subagent display: %w", err)
+			}
+			return dtool.Result{
+				Content: []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}}, Artifact: artifact,
+			}, nil
+		},
+	}
+}
+
 func (s *SubagentTool) run(ctx context.Context, req subagentInput) llm.ToolOut {
+	execution, err := s.execute(ctx, req)
+	if err != nil {
+		return llm.ErrorToolOut(err)
+	}
+	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
+}
+
+type subagentExecution struct {
+	Output  string
+	Display SubagentDisplayData
+}
+
+func (s *SubagentTool) execute(ctx context.Context, req subagentInput) (subagentExecution, error) {
 	// Validate slug
 	if req.Slug == "" {
-		return llm.ErrorfToolOut("slug is required")
+		return subagentExecution{}, fmt.Errorf("slug is required")
 	}
 	req.Slug = sanitizeSlug(req.Slug)
 	if req.Slug == "" {
-		return llm.ErrorfToolOut("slug must contain alphanumeric characters")
+		return subagentExecution{}, fmt.Errorf("slug must contain alphanumeric characters")
 	}
 
 	if req.Prompt == "" {
-		return llm.ErrorfToolOut("prompt is required")
+		return subagentExecution{}, fmt.Errorf("prompt is required")
 	}
 
 	// Set defaults. The default wait is generous (15 min) because subagents
@@ -231,7 +276,7 @@ func (s *SubagentTool) run(ctx context.Context, req subagentInput) llm.ToolOut {
 				for _, m := range s.AvailableModels {
 					ids = append(ids, m.ID)
 				}
-				return llm.ErrorfToolOut("unknown model %q; available: %s", req.Model, strings.Join(ids, ", "))
+				return subagentExecution{}, fmt.Errorf("unknown model %q; available: %s", req.Model, strings.Join(ids, ", "))
 			}
 		}
 		modelID = req.Model
@@ -241,7 +286,7 @@ func (s *SubagentTool) run(ctx context.Context, req subagentInput) llm.ToolOut {
 	reasoning := s.ParentReasoning
 	if req.Reasoning != "" {
 		if !isValidReasoningLevel(req.Reasoning) {
-			return llm.ErrorfToolOut("unknown reasoning level %q; available: %s", req.Reasoning, strings.Join(subagentReasoningLevels, ", "))
+			return subagentExecution{}, fmt.Errorf("unknown reasoning level %q; available: %s", req.Reasoning, strings.Join(subagentReasoningLevels, ", "))
 		}
 		reasoning = req.Reasoning
 	}
@@ -249,13 +294,13 @@ func (s *SubagentTool) run(ctx context.Context, req subagentInput) llm.ToolOut {
 	// Get or create the subagent conversation
 	conversationID, actualSlug, err := s.DB.GetOrCreateSubagentConversation(ctx, req.Slug, s.ParentConversationID, s.WorkingDir.Get())
 	if err != nil {
-		return llm.ErrorfToolOut("failed to get/create subagent conversation: %w", err)
+		return subagentExecution{}, fmt.Errorf("failed to get/create subagent conversation: %w", err)
 	}
 
 	// Use the runner to execute the subagent
 	response, err := s.Runner.RunSubagent(ctx, conversationID, req.Prompt, wait, timeout, modelID, reasoning)
 	if err != nil {
-		return llm.ErrorfToolOut("subagent error: %w", err)
+		return subagentExecution{}, fmt.Errorf("subagent error: %w", err)
 	}
 
 	// Include actual slug in response if it differs from requested
@@ -264,13 +309,13 @@ func (s *SubagentTool) run(ctx context.Context, req subagentInput) llm.ToolOut {
 		slugNote = fmt.Sprintf(" (Note: slug was changed to '%s' for uniqueness. Use '%s' for future messages to this subagent.)", actualSlug, actualSlug)
 	}
 
-	return llm.ToolOut{
-		LLMContent: llm.TextContent(fmt.Sprintf("Subagent '%s' response:%s\n%s", actualSlug, slugNote, response)),
+	return subagentExecution{
+		Output: fmt.Sprintf("Subagent '%s' response:%s\n%s", actualSlug, slugNote, response),
 		Display: SubagentDisplayData{
 			Slug:           actualSlug,
 			ConversationID: conversationID,
 		},
-	}
+	}, nil
 }
 
 // SubagentDisplayData is the display data sent to the UI for subagent tool results.

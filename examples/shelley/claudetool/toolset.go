@@ -260,6 +260,7 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			ParentReasoning:      cfg.ReasoningLevel,
 		}
 		tools = append(tools, subagentTool.Tool())
+		nativeTools = append(nativeTools, subagentTool.NativeTool())
 	}
 
 	// Add LLM one-shot tool if LLM provider is configured
@@ -283,7 +284,7 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		}
 	}
 	if cfg.EnableBrowser && anyBrowserToolEnabled {
-		browserTools, browserCleanup := browse.RegisterBrowserTools(ctx)
+		browserTools, nativeBrowserTools, browserCleanup := browse.RegisterBrowserToolSet(ctx)
 		if len(browserTools) > 0 {
 			// If the model doesn't support image inputs, drop read_image — it
 			// returns image content the model cannot consume. The `browser`
@@ -301,6 +302,12 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 					continue
 				}
 				tools = append(tools, bt)
+			}
+			for _, bt := range nativeBrowserTools {
+				if bt.Definition().Name == "read_image" && !modelSupportsImages {
+					continue
+				}
+				nativeTools = append(nativeTools, bt)
 			}
 		}
 		cleanup = browserCleanup

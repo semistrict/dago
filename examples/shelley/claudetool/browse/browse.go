@@ -23,6 +23,8 @@ import (
 	"github.com/chromedp/cdproto/tracing"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
+	dmessage "github.com/semistrict/dago/message"
+	dtool "github.com/semistrict/dago/tool"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/imageutil"
 )
@@ -847,9 +849,17 @@ Performance profiling (profile_* actions):
 
 // ReadImageTool returns a standalone tool for reading image files.
 func (b *BrowseTools) ReadImageTool() *llm.Tool {
+	definition := readImageDefinition()
 	return &llm.Tool{
-		Name:        "read_image",
-		Description: "Read an image file (such as a screenshot) and encode it for sending to the LLM",
+		Name: definition.Name, Description: definition.Description,
+		InputSchema: append(json.RawMessage(nil), definition.InputSchema...),
+		Run:         llm.RunJSON(b.readImageRun),
+	}
+}
+
+func readImageDefinition() dtool.Definition {
+	return dtool.Definition{
+		Name: "read_image", Description: "Read an image file (such as a screenshot) and encode it for sending to the LLM",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -864,7 +874,35 @@ func (b *BrowseTools) ReadImageTool() *llm.Tool {
 			},
 			"required": ["path"]
 		}`),
-		Run: llm.RunJSON(b.readImageRun),
+	}
+}
+
+// NativeReadImageTool returns image content through Dago's multimodal tool
+// contract while preserving the established Shelley display artifact.
+func (b *BrowseTools) NativeReadImageTool() dtool.Tool {
+	return dtool.Func{
+		Spec: readImageDefinition(),
+		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var input readImageInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+			}
+			execution, err := b.readImage(ctx, input)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			artifact, err := json.Marshal(execution.Display)
+			if err != nil {
+				return dtool.Result{}, fmt.Errorf("encode read_image display: %w", err)
+			}
+			return dtool.Result{
+				Content: []dmessage.ContentBlock{
+					{Type: dmessage.BlockText, Text: execution.Description},
+					{Type: dmessage.BlockImage, Data: execution.Image.Data, MIMEType: execution.Image.MediaType},
+				},
+				Artifact: artifact,
+			}, nil
+		},
 	}
 }
 
@@ -1052,24 +1090,43 @@ type readImageInput struct {
 }
 
 func (b *BrowseTools) readImageRun(ctx context.Context, input readImageInput) llm.ToolOut {
+	execution, err := b.readImage(ctx, input)
+	if err != nil {
+		return llm.ErrorToolOut(err)
+	}
+	return llm.ToolOut{LLMContent: []llm.Content{
+		{Type: llm.ContentTypeText, Text: execution.Description},
+		{
+			Type: llm.ContentTypeText, MediaType: execution.Image.MediaType,
+			Data:         base64.StdEncoding.EncodeToString(execution.Image.Data),
+			DisplayWidth: execution.Image.Width, DisplayHeight: execution.Image.Height,
+		},
+	}, Display: execution.Display}
+}
+
+type readImageExecution struct {
+	Description string
+	Image       imageutil.Prepared
+	Display     map[string]any
+}
+
+func (b *BrowseTools) readImage(ctx context.Context, input readImageInput) (readImageExecution, error) {
 	// Check if the path exists
 	if _, err := os.Stat(input.Path); os.IsNotExist(err) {
-		return llm.ErrorfToolOut("image file not found: %s", input.Path)
+		return readImageExecution{}, fmt.Errorf("image file not found: %s", input.Path)
 	}
 
 	// Read the file
 	imageData, err := os.ReadFile(input.Path)
 	if err != nil {
-		return llm.ErrorfToolOut("failed to read image file: %w", err)
+		return readImageExecution{}, fmt.Errorf("failed to read image file: %w", err)
 	}
 
 	maxDimension, maxBytes := imageLimits(ctx)
 	prepared, err := imageutil.Prepare(imageData, input.Path, maxDimension, maxBytes)
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return readImageExecution{}, err
 	}
-
-	base64Data := base64.StdEncoding.EncodeToString(prepared.Data)
 
 	description := fmt.Sprintf("Image from %s (type: %s)", input.Path, prepared.MediaType)
 	if prepared.Converted {
@@ -1081,22 +1138,10 @@ func (b *BrowseTools) readImageRun(ctx context.Context, input readImageInput) ll
 
 	display, err := readImageDisplay(input.Path, prepared)
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return readImageExecution{}, err
 	}
 
-	return llm.ToolOut{LLMContent: []llm.Content{
-		{
-			Type: llm.ContentTypeText,
-			Text: description,
-		},
-		{
-			Type:          llm.ContentTypeText,
-			MediaType:     prepared.MediaType,
-			Data:          base64Data,
-			DisplayWidth:  prepared.Width,
-			DisplayHeight: prepared.Height,
-		},
-	}, Display: display}
+	return readImageExecution{Description: description, Image: prepared, Display: display}, nil
 }
 
 // readImageDisplay describes the file the tool read for the UI. The path is

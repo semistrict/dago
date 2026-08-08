@@ -3,6 +3,8 @@ package browse
 import (
 	"context"
 
+	dtool "github.com/semistrict/dago/tool"
+
 	"shelley.exe.dev/llm"
 )
 
@@ -12,9 +14,16 @@ import (
 // Per-image size limits are looked up from the llm.Service in the tool call
 // context at run time, not configured here.
 func RegisterBrowserTools(ctx context.Context) ([]*llm.Tool, func()) {
+	tools, _, cleanup := RegisterBrowserToolSet(ctx)
+	return tools, cleanup
+}
+
+// RegisterBrowserToolSet returns the pinned Shelley facades together with
+// native Dago implementations that share the same lazy browser session.
+func RegisterBrowserToolSet(ctx context.Context) ([]*llm.Tool, []dtool.Tool, func()) {
 	browserTools := NewBrowseTools(ctx, 0)
 
-	return browserTools.GetTools(), func() {
+	return browserTools.GetTools(), []dtool.Tool{browserTools.NativeReadImageTool()}, func() {
 		browserTools.Close()
 	}
 }
