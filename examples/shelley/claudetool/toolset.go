@@ -229,7 +229,7 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		changeDirTool.Tool(),
 		outputIframeTool.Tool(),
 	}
-	nativeTools := []dtool.Tool{changeDirTool.NativeTool(), outputIframeTool.NativeTool()}
+	nativeTools := []dtool.Tool{bashTool.NativeTool(), shellTool.NativeTool(), changeDirTool.NativeTool(), outputIframeTool.NativeTool()}
 
 	// Build the available models list (shared by subagent and llm_one_shot tools).
 	// Resolved fresh on each ToolSet construction so new conversations see

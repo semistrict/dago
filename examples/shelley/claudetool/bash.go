@@ -3,6 +3,7 @@ package claudetool
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	dmessage "github.com/semistrict/dago/message"
+	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/claudetool/bashkit"
 	"shelley.exe.dev/llm"
@@ -87,6 +91,35 @@ func (b *BashTool) Tool() *llm.Tool {
 	}
 }
 
+// NativeTool executes bash through Dago's tool contract. Tool remains the
+// pinned Shelley facade for its original package tests.
+func (b *BashTool) NativeTool() dtool.Tool {
+	return dtool.Func{
+		Spec: dtool.Definition{
+			Name: bashName, Description: strings.TrimSpace(bashDescription),
+			InputSchema: json.RawMessage(bashInputSchema),
+		},
+		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var input bashInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+			}
+			execution, err := b.execute(ctx, input)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			artifact, err := json.Marshal(execution.Display)
+			if err != nil {
+				return dtool.Result{}, fmt.Errorf("encode bash display: %w", err)
+			}
+			return dtool.Result{
+				Content:  []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}},
+				Artifact: artifact,
+			}, nil
+		},
+	}
+}
+
 // getWorkingDir returns the current working directory.
 func (b *BashTool) getWorkingDir() string {
 	return b.WorkingDir.Get()
@@ -155,6 +188,11 @@ type BashDisplayData struct {
 	WorkingDir string `json:"workingDir"`
 }
 
+type bashExecution struct {
+	Output  string
+	Display BashDisplayData
+}
+
 func (i *bashInput) timeout(t *Timeouts) time.Duration {
 	if i.SlowOK {
 		return t.slow()
@@ -163,25 +201,33 @@ func (i *bashInput) timeout(t *Timeouts) time.Duration {
 }
 
 func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
+	execution, err := b.execute(ctx, req)
+	if err != nil {
+		return llm.ErrorToolOut(err)
+	}
+	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
+}
+
+func (b *BashTool) execute(ctx context.Context, req bashInput) (bashExecution, error) {
 	// Check that the working directory exists
 	wd := b.getWorkingDir()
 	if _, err := os.Stat(wd); err != nil {
 		if os.IsNotExist(err) {
-			return llm.ErrorfToolOut("working directory does not exist: %s (use change_dir to switch to a valid directory)", wd)
+			return bashExecution{}, fmt.Errorf("working directory does not exist: %s (use change_dir to switch to a valid directory)", wd)
 		}
-		return llm.ErrorfToolOut("cannot access working directory %s: %w", wd, err)
+		return bashExecution{}, fmt.Errorf("cannot access working directory %s: %w", wd, err)
 	}
 
 	// do a quick permissions check (NOT a security barrier)
 	err := bashkit.Check(req.Command)
 	if err != nil {
-		return llm.ErrorToolOut(err)
+		return bashExecution{}, err
 	}
 
 	// Custom permission callback if set
 	if b.CheckPermission != nil {
 		if err := b.CheckPermission(req.Command); err != nil {
-			return llm.ErrorToolOut(err)
+			return bashExecution{}, err
 		}
 	}
 
@@ -204,13 +250,13 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 
 	out, execErr := b.executeBash(ctx, req, timeout)
 	if execErr != nil {
-		return llm.ErrorToolOut(execErr)
+		return bashExecution{}, execErr
 	}
 	if bashkit.ChainsCdWithCommand(req.Command) {
 		hint := "[shelley hint: this command chained `cd <path>` with another command. `cd` inside a bash invocation does not persist across tool calls. Prefer calling the change_dir tool once, then running subsequent commands directly.]"
 		out = hint + "\n\n" + out
 	}
-	return llm.ToolOut{LLMContent: llm.TextContent(out), Display: display}
+	return bashExecution{Output: out, Display: display}, nil
 }
 
 const (

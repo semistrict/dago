@@ -575,8 +575,17 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 			return dagent.ToolBatchResponse{Calls: calls, Messages: missing}, nil
 		},
 		WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
+			toolCtx := llm.WithToolUseID(ctx, request.Call.ID)
+			if l.onToolProgress != nil {
+				toolCtx = llm.WithToolProgress(toolCtx, l.onToolProgress)
+			}
+			if l.llm != nil {
+				toolCtx = llm.WithLLMService(toolCtx, l.llm)
+			}
+			var usage llmhttp.UsageAccumulator
+			toolCtx = llmhttp.WithUsageCollector(toolCtx, usage.Collect)
 			started := time.Now()
-			response, err := next(ctx, request)
+			response, err := next(toolCtx, request)
 			finished := time.Now()
 			if err != nil {
 				return response, err
@@ -594,7 +603,9 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 				ToolResult:       contentFromDago(response.Result.Content),
 				ToolUseStartTime: &started, ToolUseEndTime: &finished, Display: display,
 			}
-			artifact, encodeErr := json.Marshal(toolArtifactEnvelope{Version: 1, Kind: shelleyToolArtifact, Content: exact})
+			artifact, encodeErr := json.Marshal(toolArtifactEnvelope{
+				Version: 1, Kind: shelleyToolArtifact, Content: exact, OtherUsage: usage.Take(),
+			})
 			if encodeErr != nil {
 				return dagent.ToolCallResponse{}, encodeErr
 			}

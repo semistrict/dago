@@ -2,6 +2,7 @@ package claudetool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	dmessage "github.com/semistrict/dago/message"
+	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/claudetool/bashkit"
 	"shelley.exe.dev/llm"
@@ -121,6 +125,11 @@ type ShellDisplayData struct {
 	Yielded    bool   `json:"yielded,omitempty"`
 }
 
+type shellExecution struct {
+	Output  string
+	Display ShellDisplayData
+}
+
 // secondsCeil rounds a duration up to whole seconds.
 func secondsCeil(d time.Duration) int {
 	return int((d + time.Second - 1) / time.Second)
@@ -178,21 +187,58 @@ func (s *ShellTool) Tool() *llm.Tool {
 	}
 }
 
+// NativeTool executes shell commands through Dago's tool contract. Tool
+// remains the pinned Shelley facade used by the original package tests.
+func (s *ShellTool) NativeTool() dtool.Tool {
+	return dtool.Func{
+		Spec: dtool.Definition{
+			Name: shellName, Description: strings.TrimSpace(shellDescription),
+			InputSchema: json.RawMessage(s.inputSchema()),
+		},
+		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var input shellInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+			}
+			execution, err := s.execute(ctx, input)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			artifact, err := json.Marshal(execution.Display)
+			if err != nil {
+				return dtool.Result{}, fmt.Errorf("encode shell display: %w", err)
+			}
+			return dtool.Result{
+				Content:  []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}},
+				Artifact: artifact,
+			}, nil
+		},
+	}
+}
+
 func (s *ShellTool) run(ctx context.Context, req shellInput) llm.ToolOut {
+	execution, err := s.execute(ctx, req)
+	if err != nil {
+		return llm.ErrorToolOut(err)
+	}
+	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
+}
+
+func (s *ShellTool) execute(ctx context.Context, req shellInput) (shellExecution, error) {
 	wd := s.WorkingDir.Get()
 	if _, err := os.Stat(wd); err != nil {
 		if os.IsNotExist(err) {
-			return llm.ErrorfToolOut("working directory does not exist: %s (use change_dir to switch to a valid directory)", wd)
+			return shellExecution{}, fmt.Errorf("working directory does not exist: %s (use change_dir to switch to a valid directory)", wd)
 		}
-		return llm.ErrorfToolOut("cannot access working directory %s: %w", wd, err)
+		return shellExecution{}, fmt.Errorf("cannot access working directory %s: %w", wd, err)
 	}
 
 	if err := bashkit.Check(req.Command); err != nil {
-		return llm.ErrorToolOut(err)
+		return shellExecution{}, err
 	}
 	if s.CheckPermission != nil {
 		if err := s.CheckPermission(req.Command); err != nil {
-			return llm.ErrorToolOut(err)
+			return shellExecution{}, err
 		}
 	}
 
@@ -216,7 +262,7 @@ func (s *ShellTool) run(ctx context.Context, req shellInput) llm.ToolOut {
 	// we don't race for a name, then rename to a pid-based path after Start.
 	tmpFile, err := os.CreateTemp(s.tempDir(), "shelley-shell-*.log")
 	if err != nil {
-		return llm.ErrorfToolOut("failed to create log file: %w", err)
+		return shellExecution{}, fmt.Errorf("failed to create log file: %w", err)
 	}
 	logPath := tmpFile.Name()
 
@@ -247,7 +293,7 @@ func (s *ShellTool) run(ctx context.Context, req shellInput) llm.ToolOut {
 	if err := cmd.Start(); err != nil {
 		tmpFile.Close()
 		os.Remove(logPath)
-		return llm.ErrorfToolOut("command failed to start: %w", err)
+		return shellExecution{}, fmt.Errorf("command failed to start: %w", err)
 	}
 	pid := cmd.Process.Pid
 	pgid := pid // Setpgid: true => pgid == pid
@@ -295,12 +341,12 @@ func (s *ShellTool) run(ctx context.Context, req shellInput) llm.ToolOut {
 		stopProgress()
 		out, ferr := readAndFormatShellOutput(logPath)
 		if ferr != nil {
-			return llm.ErrorfToolOut("failed to read shell output: %w", ferr)
+			return shellExecution{}, fmt.Errorf("failed to read shell output: %w", ferr)
 		}
 		if waitErr != nil {
-			return llm.ErrorToolOut(fmt.Errorf("[command failed: %w]\n%s", waitErr, out))
+			return shellExecution{}, fmt.Errorf("[command failed: %w]\n%s", waitErr, out)
 		}
-		return llm.ToolOut{LLMContent: llm.TextContent(out), Display: display}
+		return shellExecution{Output: out, Display: display}, nil
 
 	case <-ctx.Done():
 		// Per-call cancel: kill the pgroup and wait briefly for cleanup.
@@ -311,7 +357,7 @@ func (s *ShellTool) run(ctx context.Context, req shellInput) llm.ToolOut {
 		}
 		stopProgress()
 		out, _ := readAndFormatShellOutput(logPath)
-		return llm.ErrorToolOut(fmt.Errorf("[command cancelled: %w]\n%s", ctx.Err(), out))
+		return shellExecution{}, fmt.Errorf("[command cancelled: %w]\n%s", ctx.Err(), out)
 
 	case <-timer.C:
 		stopProgress()
@@ -330,7 +376,7 @@ func (s *ShellTool) run(ctx context.Context, req shellInput) llm.ToolOut {
 			}
 			_ = os.Remove(logPath)
 		}()
-		return llm.ToolOut{LLMContent: llm.TextContent(payload), Display: display}
+		return shellExecution{Output: payload, Display: display}, nil
 	}
 }
 
