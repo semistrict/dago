@@ -633,8 +633,16 @@ func inputItems(value message.Message) ([]any, error) {
 			if state.EncryptedContent == "" {
 				continue
 			}
+			summary := state.Summary
+			if summary == nil {
+				// Responses requires reasoning-item summaries to be arrays. Older
+				// persisted turns (and valid responses with no visible summary)
+				// decode to a nil slice; encoding that value as null makes replay
+				// fail with invalid_type.
+				summary = []responseSummary{}
+			}
 			items = append(items, map[string]any{
-				"type": "reasoning", "id": state.ID, "summary": state.Summary,
+				"type": "reasoning", "id": state.ID, "summary": summary,
 				"encrypted_content": state.EncryptedContent,
 			})
 		default:

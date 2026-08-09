@@ -308,6 +308,42 @@ func TestInvokePreservesAndReplaysEncryptedReasoning(t *testing.T) {
 	}
 }
 
+func TestReplayReasoningWithoutSummaryUsesEmptyArray(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, body)
+		if len(requests) == 1 {
+			_, _ = io.WriteString(writer, `{
+                  "id":"r1","output":[
+                    {"type":"reasoning","id":"rs_1","encrypted_content":"opaque-state"},
+                    {"type":"message","id":"m1","role":"assistant","content":[{"type":"output_text","text":"first"}]}
+                  ]}`)
+			return
+		}
+		_, _ = io.WriteString(writer, `{"id":"r2","output":[{"type":"message","id":"m2","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+	}))
+	defer server.Close()
+
+	client, _ := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	first, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("think")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{first.Message}}); err != nil {
+		t.Fatal(err)
+	}
+	input := requests[1]["input"].([]any)
+	reasoning := input[0].(map[string]any)
+	summary, ok := reasoning["summary"].([]any)
+	if !ok || summary == nil || len(summary) != 0 {
+		t.Fatalf("replayed reasoning summary = %#v, want []", reasoning["summary"])
+	}
+}
+
 func TestStreamPreservesReasoningSummaryAndOpaqueState(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
