@@ -48,17 +48,20 @@ and any affected intentional differences.
 ### Shelley
 
 The original Shelley tests and their fixtures are the behavioral contract for the
-Dago-native example. Their hashes are recorded in
-`docs/shelley-upstream-tests.sha256`; `make drift` fails if any pinned artifact is
-missing or modified. To intentionally update the pinned corpus after advancing the
-manifest revision, run:
+Dago-native example. Original hashes remain recorded in
+`docs/shelley-upstream-tests.sha256` for provenance. The active migration inventory
+is `docs/shelley-upstream-test-contracts.tsv`; `make drift` fails if an artifact or
+named Go case disappears, or if a UI test file loses test calls. Tests may otherwise
+be migrated to native Dago APIs. To regenerate both baselines after intentionally
+advancing the pinned upstream revision, run:
 
 ```sh
 sh scripts/sync-shelley-upstream-tests.sh /Users/ramon/src/shelley
+sh scripts/generate-shelley-test-contracts.sh /Users/ramon/src/shelley
 ```
 
-Additional Dago-specific tests may be added, but upstream tests must not be edited to
-accommodate the implementation.
+Additional Dago-specific tests may be added. Existing cases may change only to follow
+the native API replacement while preserving their behavioral assertion.
 
 ## Provenance rules
 
