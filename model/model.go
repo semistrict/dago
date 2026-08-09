@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/tool"
@@ -13,10 +14,82 @@ import (
 
 var ErrContextOverflow = errors.New("model context window exceeded")
 
+// RetryEvent is provider-neutral metadata for a transient model failure.
+// Applications may project it into logs or user-visible retry notices.
+type RetryEvent struct {
+	Attempt   int
+	Delay     time.Duration
+	Retryable bool
+	Err       string
+	Status    int
+	Provider  string
+	Model     string
+}
+
+// RetryReporter is implemented by model errors that carry structured retry
+// metadata. It does not decide retry policy; the invoking runtime owns that.
+type RetryReporter interface {
+	RetryEvent(attempt int, delay time.Duration) RetryEvent
+}
+
 // ResponseMetadataKey marks assistant messages that were produced by a model
 // invocation. Agent middleware and projections use it to distinguish model
 // output from caller-supplied assistant history.
 const ResponseMetadataKey = "dago.model.response.v1"
+
+const (
+	FinishReasonMetadataKey = "dago.model.finish_reason.v1"
+	RefusalMetadataKey      = "dago.model.refusal.v1"
+)
+
+// FinishReason is the provider-neutral terminal condition for a model turn.
+type FinishReason string
+
+const (
+	FinishReasonStop      FinishReason = "stop"
+	FinishReasonToolCalls FinishReason = "tool_calls"
+	FinishReasonMaxTokens FinishReason = "max_tokens"
+	FinishReasonRefusal   FinishReason = "refusal"
+)
+
+// Refusal carries provider-supplied refusal details without coupling callers
+// to a provider response schema.
+type Refusal struct {
+	Category    string `json:"category,omitempty"`
+	Explanation string `json:"explanation,omitempty"`
+}
+
+// SetOutcome writes a normalized model outcome onto an assistant message so
+// it survives streaming, checkpoints, and application projections.
+func SetOutcome(value *message.Message, reason FinishReason, refusal *Refusal) {
+	if value.ResponseMetadata == nil {
+		value.ResponseMetadata = map[string]json.RawMessage{}
+	}
+	if reason != "" {
+		raw, _ := json.Marshal(reason)
+		value.ResponseMetadata[FinishReasonMetadataKey] = raw
+	}
+	if refusal != nil {
+		raw, _ := json.Marshal(refusal)
+		value.ResponseMetadata[RefusalMetadataKey] = raw
+	}
+}
+
+// Outcome reads normalized model outcome metadata from a message.
+func Outcome(value message.Message) (FinishReason, *Refusal) {
+	var reason FinishReason
+	if raw := value.ResponseMetadata[FinishReasonMetadataKey]; len(raw) > 0 {
+		_ = json.Unmarshal(raw, &reason)
+	}
+	var refusal *Refusal
+	if raw := value.ResponseMetadata[RefusalMetadataKey]; len(raw) > 0 {
+		var decoded Refusal
+		if json.Unmarshal(raw, &decoded) == nil {
+			refusal = &decoded
+		}
+	}
+	return reason, refusal
+}
 
 // ToolChoice controls whether and how a model may call tools.
 type ToolChoice struct {

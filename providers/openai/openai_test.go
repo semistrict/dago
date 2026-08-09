@@ -71,8 +71,8 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 	if got["max_output_tokens"] != float64(4096) {
 		t.Fatalf("max_output_tokens = %#v", got["max_output_tokens"])
 	}
-	if _, exists := got["store"]; exists {
-		t.Fatalf("API-key request unexpectedly set store: %#v", got["store"])
+	if got["store"] != false {
+		t.Fatalf("store = %#v, want false", got["store"])
 	}
 	if got["prompt_cache_key"] != "thread-key" || got["prompt_cache_retention"] != "24h" {
 		t.Fatalf("prompt cache = %#v", got)
@@ -88,6 +88,111 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 	tools, ok := got["tools"].([]any)
 	if !ok || len(tools) != 1 || tools[0].(map[string]any)["strict"] != true {
 		t.Fatalf("tools = %#v", got["tools"])
+	}
+}
+
+func TestRequestUsesInstructionsAndOmitsEmptySystemMessages(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(writer, `{"id":"r","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Invoke(context.Background(), model.Request{Messages: []message.Message{
+		message.System("first"), message.System("  "), message.System("second"), message.Human("hello"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["instructions"] != "first\n\nsecond" {
+		t.Fatalf("instructions = %#v", got["instructions"])
+	}
+	input, ok := got["input"].([]any)
+	if !ok || len(input) != 1 || input[0].(map[string]any)["role"] != "user" {
+		t.Fatalf("input = %#v", got["input"])
+	}
+}
+
+func TestProfileReportsReasoningLevelsAndDefault(t *testing.T) {
+	client, err := NewAPIKey("secret", Options{Model: "m", DefaultReasoning: &model.Reasoning{Effort: "medium", Summary: "auto"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := client.Profile()
+	if profile.DefaultReasoningLevel != "medium" || len(profile.ReasoningLevels) != 5 || profile.ReasoningLevels[4] != "xhigh" {
+		t.Fatalf("profile = %#v", profile)
+	}
+}
+
+func TestErrorReportsNativeRetryMetadataAndRetryAfter(t *testing.T) {
+	response := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"2"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"slow down","type":"rate_limit"}}`)),
+	}
+	err := responseError(response)
+	var providerErr *Error
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error type = %T", err)
+	}
+	providerErr.Provider = "openai"
+	providerErr.Model = "gpt-native"
+	event := providerErr.RetryEvent(1, time.Second)
+	if !event.Retryable || event.Status != http.StatusTooManyRequests || event.Delay != 2*time.Second || event.Provider != "openai" || event.Model != "gpt-native" || event.Err != "slow down" {
+		t.Fatalf("retry event = %#v", event)
+	}
+	clientErr := (&Error{Status: http.StatusForbidden}).RetryEvent(1, 0)
+	if clientErr.Retryable {
+		t.Fatalf("client error marked retryable: %#v", clientErr)
+	}
+}
+
+func TestInvokeMapsIncompleteAndRefusalOutcomes(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantReason  model.FinishReason
+		wantRefusal string
+	}{
+		{
+			name:       "max output tokens",
+			body:       `{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}`,
+			wantReason: model.FinishReasonMaxTokens,
+		},
+		{
+			name:       "refusal",
+			body:       `{"id":"r","status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"not allowed"}]}]}`,
+			wantReason: model.FinishReasonRefusal, wantRefusal: "not allowed",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				_, _ = io.WriteString(writer, test.body)
+			}))
+			defer server.Close()
+			client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reason, refusal := model.Outcome(response.Message)
+			if reason != test.wantReason {
+				t.Fatalf("finish reason = %q, want %q", reason, test.wantReason)
+			}
+			if test.wantRefusal != "" && (refusal == nil || refusal.Explanation != test.wantRefusal) {
+				t.Fatalf("refusal = %#v", refusal)
+			}
+		})
 	}
 }
 
@@ -444,5 +549,209 @@ func TestExpiredOAuthRefreshHonorsContext(t *testing.T) {
 	_, err := session.Credentials(ctx)
 	if err == nil {
 		t.Fatal("expected cancellation error")
+	}
+}
+
+func TestInvokeRetriesTransientResponsesFailures(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		attempts++
+		if attempts < 3 {
+			http.Error(writer, "gateway trace abc123", http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(writer, `{"id":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`)
+	}))
+	defer server.Close()
+
+	client, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(),
+		RetryBackoff: []time.Duration{0, 0},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 || response.Message.TextContent() != "done" {
+		t.Fatalf("attempts = %d, response = %#v", attempts, response)
+	}
+}
+
+func TestInvokeRetriesEmptyOrTruncatedJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty", body: ""},
+		{name: "truncated", body: `{"id":"unfinished"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			attempts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				attempts++
+				if attempts == 1 {
+					_, _ = io.WriteString(writer, test.body)
+					return
+				}
+				_, _ = io.WriteString(writer, `{"id":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`)
+			}))
+			defer server.Close()
+			client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{0}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attempts != 2 || response.Message.TextContent() != "done" {
+				t.Fatalf("attempts = %d, response = %#v", attempts, response)
+			}
+		})
+	}
+}
+
+func TestInvokeDoesNotRetryClientErrorsAndBoundsBody(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		attempts++
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(writer, "useful prefix: "+strings.Repeat("x", 64<<10))
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{0, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+	if err == nil || !strings.Contains(err.Error(), "useful prefix") {
+		t.Fatalf("error = %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	if len(err.Error()) > 8<<10 {
+		t.Fatalf("error length = %d, want bounded body", len(err.Error()))
+	}
+}
+
+func TestInvokeMapsCachedAndReasoningUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = io.WriteString(writer, `{
+			"id":"usage","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],
+			"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":80},"output_tokens":50,"output_tokens_details":{"reasoning_tokens":20},"total_tokens":150}
+		}`)
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := response.Message.Usage
+	if usage == nil || usage.InputTokens != 20 || usage.InputDetails["cache_read"] != 80 || usage.OutputTokens != 50 || usage.OutputDetails["reasoning"] != 20 || usage.TotalTokens != 150 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestStreamParsesMultilineSSEAndNoTrailingNewline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(writer, ": keepalive\n")
+		_, _ = io.WriteString(writer, "event: response.output_text.delta\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\n")
+		_, _ = io.WriteString(writer, "data: \"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{}}")
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	textChunk, err := stream.Next(context.Background())
+	if err != nil || textChunk.MessageDelta.TextContent() != "hi" {
+		t.Fatalf("text chunk = %#v, error = %v", textChunk, err)
+	}
+	done, err := stream.Next(context.Background())
+	if err != nil || !done.Done {
+		t.Fatalf("done chunk = %#v, error = %v", done, err)
+	}
+}
+
+func TestStreamRejectsTruncatedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Next(context.Background()); !errors.Is(err, ErrIncompleteStream) {
+		t.Fatalf("error = %v, want ErrIncompleteStream", err)
+	}
+}
+
+func TestStreamCompletedResponseRestoresCitationsAndReasoningState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs_1\",\"output_index\":0,\"delta\":\"think\"}\n\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"think\"}],\"encrypted_content\":\"opaque\"}}\n\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n")
+		_, _ = io.WriteString(writer, `data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"think"}],"encrypted_content":"opaque"},{"type":"web_search_call","id":"search_1","action":{"queries":["Go"]}},{"type":"message","content":[{"type":"output_text","text":"answer","annotations":[{"type":"url_citation","url":"https://example.test","title":"Example","start_index":0,"end_index":6}]}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`+"\n\n")
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), model.Request{Messages: []message.Message{message.Human("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	merged := model.Response{Message: message.Message{Role: message.RoleAssistant}}
+	for {
+		chunk, nextErr := stream.Next(context.Background())
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		mergeChunk(&merged, chunk)
+	}
+	if merged.Message.TextContent() != "answer" {
+		t.Fatalf("text = %q", merged.Message.TextContent())
+	}
+	if len(merged.Message.Content) != 3 || merged.Message.Content[0].Reasoning != "think" || len(merged.Message.Content[0].Extra[reasoningStateKey]) == 0 {
+		t.Fatalf("content = %#v", merged.Message.Content)
+	}
+	if len(merged.Message.Content[1].Citations) != 1 || merged.Message.Content[1].Citations[0].URL != "https://example.test" || merged.Message.Content[2].Type != message.BlockServerTool {
+		t.Fatalf("completed content = %#v", merged.Message.Content)
+	}
+	if merged.Message.Usage == nil || merged.Message.Usage.TotalTokens != 3 {
+		t.Fatalf("usage = %#v", merged.Message.Usage)
 	}
 }

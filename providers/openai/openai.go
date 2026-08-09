@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
@@ -19,6 +20,8 @@ import (
 )
 
 const defaultAPIBaseURL = "https://api.openai.com/v1"
+
+var ErrIncompleteStream = errors.New("openai: response stream ended before completion")
 
 // Credentials are the authorization values attached to one API request.
 type Credentials struct {
@@ -56,6 +59,10 @@ type Options struct {
 	// calls are returned as content blocks and are never dispatched through the
 	// local Dago tool executor.
 	WebSearch bool
+	// RetryBackoff controls retries for transport failures, rate limits,
+	// server errors, and incomplete JSON responses. Nil selects conservative
+	// defaults; an explicitly empty slice disables provider-level retries.
+	RetryBackoff []time.Duration
 }
 
 // Client is a Responses API-backed chat model.
@@ -114,9 +121,18 @@ func newClient(source CredentialSource, options Options) (*Client, error) {
 	if options.HTTPClient == nil {
 		options.HTTPClient = http.DefaultClient
 	}
+	if options.Store == nil {
+		store := false
+		options.Store = &store
+	}
 	if options.DefaultReasoning != nil {
 		reasoning := *options.DefaultReasoning
 		options.DefaultReasoning = &reasoning
+	}
+	if options.RetryBackoff == nil {
+		options.RetryBackoff = []time.Duration{time.Second, 2 * time.Second, 5 * time.Second}
+	} else {
+		options.RetryBackoff = append([]time.Duration(nil), options.RetryBackoff...)
 	}
 	return &Client{options: options, credentials: source}, nil
 }
@@ -134,11 +150,16 @@ func (client *Client) BindTools(definitions []tool.Definition) (model.Chat, erro
 }
 
 func (client *Client) Profile() model.Profile {
+	defaultReasoning := ""
+	if client.options.DefaultReasoning != nil {
+		defaultReasoning = client.options.DefaultReasoning.Effort
+	}
 	return model.Profile{
 		Provider: "openai", Model: client.options.Model,
 		ContextWindow: client.options.ContextWindow, MaxOutputTokens: client.options.MaxOutputTokens,
 		ToolCalling: true, ParallelToolCalls: true, StructuredOutput: true,
 		NativeStreaming: true, SupportsPromptCaching: true, SupportsReasoning: true,
+		ReasoningLevels: []string{"none", "low", "medium", "high", "xhigh"}, DefaultReasoningLevel: defaultReasoning,
 		SupportsImages: true, SupportsWebSearch: client.options.WebSearch,
 	}
 }
@@ -155,19 +176,41 @@ func (client *Client) Invoke(ctx context.Context, request model.Request) (model.
 	if err != nil {
 		return model.Response{}, err
 	}
-	response, err := client.do(ctx, body)
-	if err != nil {
-		return model.Response{}, err
+	for attempt := 0; ; attempt++ {
+		response, err := client.do(ctx, body)
+		if err != nil {
+			if !client.canRetry(ctx, attempt, err) {
+				return model.Response{}, err
+			}
+			if err := client.waitRetry(ctx, attempt, err); err != nil {
+				return model.Response{}, err
+			}
+			continue
+		}
+		if err := client.decorateError(responseError(response)); err != nil {
+			if !client.canRetry(ctx, attempt, err) {
+				return model.Response{}, err
+			}
+			if err := client.waitRetry(ctx, attempt, err); err != nil {
+				return model.Response{}, err
+			}
+			continue
+		}
+		var payload responsesResponse
+		decodeErr := decodeJSON(response.Body, &payload)
+		response.Body.Close()
+		if decodeErr != nil {
+			wrapped := fmt.Errorf("openai: decode response: %w", decodeErr)
+			if !isRetryableDecodeError(decodeErr) || !client.canRetry(ctx, attempt, wrapped) {
+				return model.Response{}, wrapped
+			}
+			if err := client.waitRetry(ctx, attempt, wrapped); err != nil {
+				return model.Response{}, err
+			}
+			continue
+		}
+		return normalizeResponse(payload, request.ResponseFormat)
 	}
-	defer response.Body.Close()
-	if err := responseError(response); err != nil {
-		return model.Response{}, err
-	}
-	var payload responsesResponse
-	if err := decodeJSON(response.Body, &payload); err != nil {
-		return model.Response{}, fmt.Errorf("openai: decode response: %w", err)
-	}
-	return normalizeResponse(payload, request.ResponseFormat)
 }
 
 func (client *Client) invokeSubscription(ctx context.Context, request model.Request) (model.Response, error) {
@@ -203,8 +246,34 @@ func mergeChunk(response *model.Response, chunk model.Chunk) {
 		response.Message.ID = delta.ID
 	}
 	for _, block := range delta.Content {
-		if block.Type == message.BlockText && len(response.Message.Content) > 0 && response.Message.Content[len(response.Message.Content)-1].Type == message.BlockText {
-			response.Message.Content[len(response.Message.Content)-1].Text += block.Text
+		textTarget := -1
+		if block.Type == message.BlockText && len(response.Message.Content) > 0 {
+			if response.Message.Content[len(response.Message.Content)-1].Type == message.BlockText {
+				textTarget = len(response.Message.Content) - 1
+			} else if block.Text == "" && (len(block.Citations) > 0 || len(block.Extra) > 0) {
+				for index := len(response.Message.Content) - 1; index >= 0; index-- {
+					if response.Message.Content[index].Type == message.BlockText {
+						textTarget = index
+						break
+					}
+				}
+			}
+		}
+		if textTarget >= 0 {
+			current := &response.Message.Content[textTarget]
+			current.Text += block.Text
+			current.Citations = append(current.Citations, block.Citations...)
+			if current.ID == "" {
+				current.ID = block.ID
+			}
+			if len(block.Extra) > 0 {
+				if current.Extra == nil {
+					current.Extra = map[string]json.RawMessage{}
+				}
+				for key, value := range block.Extra {
+					current.Extra[key] = append(json.RawMessage(nil), value...)
+				}
+			}
 			continue
 		}
 		if block.Type == message.BlockReasoning {
@@ -251,15 +320,72 @@ func (client *Client) Stream(ctx context.Context, request model.Request) (model.
 	if err != nil {
 		return nil, err
 	}
-	response, err := client.do(ctx, body)
-	if err != nil {
-		return nil, err
+	for attempt := 0; ; attempt++ {
+		response, err := client.do(ctx, body)
+		if err != nil {
+			if !client.canRetry(ctx, attempt, err) {
+				return nil, err
+			}
+			if err := client.waitRetry(ctx, attempt, err); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if err := client.decorateError(responseError(response)); err != nil {
+			if !client.canRetry(ctx, attempt, err) {
+				return nil, err
+			}
+			if err := client.waitRetry(ctx, attempt, err); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		return newResponseStream(response.Body), nil
 	}
-	if err := responseError(response); err != nil {
-		response.Body.Close()
-		return nil, err
+}
+
+func (client *Client) canRetry(ctx context.Context, attempt int, err error) bool {
+	if ctx.Err() != nil || attempt >= len(client.options.RetryBackoff) {
+		return false
 	}
-	return newResponseStream(response.Body), nil
+	var providerErr *Error
+	if errors.As(err, &providerErr) {
+		return providerErr.Status == http.StatusTooManyRequests || providerErr.Status >= 500
+	}
+	return true
+}
+
+func (client *Client) waitRetry(ctx context.Context, attempt int, retryErr error) error {
+	delay := client.options.RetryBackoff[attempt]
+	var providerErr *Error
+	if errors.As(retryErr, &providerErr) && providerErr.RetryAfter > delay {
+		delay = providerErr.RetryAfter
+	}
+	if delay <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (client *Client) decorateError(err error) error {
+	var providerErr *Error
+	if errors.As(err, &providerErr) {
+		providerErr.Provider = "openai"
+		providerErr.Model = client.options.Model
+		providerErr.URL = client.options.BaseURL + "/responses"
+	}
+	return err
+}
+
+func isRetryableDecodeError(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func (client *Client) do(ctx context.Context, payload []byte) (*http.Response, error) {
@@ -300,6 +426,7 @@ func (client *Client) do(ctx context.Context, payload []byte) (*http.Response, e
 
 type responsesRequest struct {
 	Model                string         `json:"model"`
+	Instructions         string         `json:"instructions,omitempty"`
 	Input                []any          `json:"input"`
 	Tools                []responseTool `json:"tools,omitempty"`
 	ToolChoice           any            `json:"tool_choice,omitempty"`
@@ -342,7 +469,14 @@ type responseFormat struct {
 
 func (client *Client) requestBody(request model.Request, stream bool) ([]byte, error) {
 	input := make([]any, 0, len(request.Messages)*2)
+	var instructions []string
 	for _, item := range request.Messages {
+		if item.Role == message.RoleSystem {
+			if text := strings.TrimSpace(item.TextContent()); text != "" {
+				instructions = append(instructions, text)
+			}
+			continue
+		}
 		converted, err := inputItems(item)
 		if err != nil {
 			return nil, err
@@ -368,7 +502,7 @@ func (client *Client) requestBody(request model.Request, stream bool) ([]byte, e
 		maxOutputTokens = 0
 	}
 	payload := responsesRequest{
-		Model: client.options.Model, Input: input, Tools: tools, Stream: stream,
+		Model: client.options.Model, Instructions: strings.Join(instructions, "\n\n"), Input: input, Tools: tools, Stream: stream,
 		MaxOutputTokens: maxOutputTokens, ParallelToolCalls: len(tools) > 0,
 		Store: client.options.Store,
 	}
@@ -517,11 +651,16 @@ func inputItems(value message.Message) ([]any, error) {
 }
 
 type responsesResponse struct {
-	ID     string           `json:"id"`
-	Status string           `json:"status"`
-	Output []responseOutput `json:"output"`
-	Usage  responseUsage    `json:"usage"`
-	Error  *apiError        `json:"error,omitempty"`
+	ID                string                     `json:"id"`
+	Status            string                     `json:"status"`
+	IncompleteDetails *responseIncompleteDetails `json:"incomplete_details,omitempty"`
+	Output            []responseOutput           `json:"output"`
+	Usage             responseUsage              `json:"usage"`
+	Error             *apiError                  `json:"error,omitempty"`
+}
+
+type responseIncompleteDetails struct {
+	Reason string `json:"reason"`
 }
 
 type responseOutput struct {
@@ -564,9 +703,19 @@ type responseAnnotation struct {
 }
 
 type responseUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens         int                         `json:"input_tokens"`
+	InputTokensDetails  *responseInputTokenDetails  `json:"input_tokens_details,omitempty"`
+	OutputTokens        int                         `json:"output_tokens"`
+	OutputTokensDetails *responseOutputTokenDetails `json:"output_tokens_details,omitempty"`
+	TotalTokens         int                         `json:"total_tokens"`
+}
+
+type responseInputTokenDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+type responseOutputTokenDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) (model.Response, error) {
@@ -574,6 +723,7 @@ func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) 
 		return model.Response{}, apiErrorValue(payload.Error, http.StatusOK)
 	}
 	result := message.Message{ID: payload.ID, Role: message.RoleAssistant}
+	var refusalText string
 	for _, output := range payload.Output {
 		switch output.Type {
 		case "reasoning":
@@ -593,6 +743,7 @@ func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) 
 					}
 					result.Content = append(result.Content, block)
 				case "refusal":
+					refusalText = content.Refusal
 					result.Content = append(result.Content, message.ContentBlock{Type: message.BlockNonStandard, NonStandard: mustJSON(map[string]any{"type": "refusal", "refusal": content.Refusal})})
 				}
 			}
@@ -618,8 +769,36 @@ func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) 
 			result.Content = append(result.Content, message.ContentBlock{Type: message.BlockServerTool, ID: output.ID, Name: "web_search", Extra: map[string]json.RawMessage{"arguments": mustJSON(arguments)}})
 		}
 	}
+	finishReason := model.FinishReasonStop
+	switch {
+	case refusalText != "":
+		model.SetOutcome(&result, model.FinishReasonRefusal, &model.Refusal{Explanation: refusalText})
+	case payload.Status == "incomplete" && payload.IncompleteDetails != nil && payload.IncompleteDetails.Reason == "max_output_tokens":
+		model.SetOutcome(&result, model.FinishReasonMaxTokens, nil)
+	case len(result.ToolCalls) > 0:
+		model.SetOutcome(&result, model.FinishReasonToolCalls, nil)
+	default:
+		model.SetOutcome(&result, finishReason, nil)
+	}
 	if payload.Usage.TotalTokens != 0 || payload.Usage.InputTokens != 0 || payload.Usage.OutputTokens != 0 {
-		result.Usage = &message.Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens, TotalTokens: payload.Usage.TotalTokens}
+		cached := 0
+		if payload.Usage.InputTokensDetails != nil {
+			cached = payload.Usage.InputTokensDetails.CachedTokens
+		}
+		reasoning := 0
+		if payload.Usage.OutputTokensDetails != nil {
+			reasoning = payload.Usage.OutputTokensDetails.ReasoningTokens
+		}
+		result.Usage = &message.Usage{
+			InputTokens: max(0, payload.Usage.InputTokens-cached), OutputTokens: payload.Usage.OutputTokens,
+			TotalTokens: payload.Usage.TotalTokens,
+		}
+		if cached > 0 {
+			result.Usage.InputDetails = map[string]int{"cache_read": cached}
+		}
+		if reasoning > 0 {
+			result.Usage.OutputDetails = map[string]int{"reasoning": reasoning}
+		}
 	}
 	response := model.Response{Message: result}
 	if format != nil && len(result.ToolCalls) == 0 {
@@ -660,10 +839,14 @@ type apiError struct {
 }
 
 type Error struct {
-	Status  int
-	Code    string
-	Type    string
-	Message string
+	Status     int
+	Code       string
+	Type       string
+	Message    string
+	Provider   string
+	Model      string
+	URL        string
+	RetryAfter time.Duration
 }
 
 func (err *Error) Error() string {
@@ -673,12 +856,23 @@ func (err *Error) Error() string {
 	return fmt.Sprintf("openai: status %d: %s", err.Status, err.Message)
 }
 
+func (err *Error) RetryEvent(attempt int, delay time.Duration) model.RetryEvent {
+	if err.RetryAfter > delay {
+		delay = err.RetryAfter
+	}
+	return model.RetryEvent{
+		Attempt: attempt, Delay: delay, Retryable: err.Status == http.StatusTooManyRequests || err.Status >= 500,
+		Err: err.Message, Status: err.Status,
+		Provider: err.Provider, Model: err.Model,
+	}
+}
+
 func responseError(response *http.Response) error {
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		return nil
 	}
 	defer response.Body.Close()
-	limited, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	limited, err := io.ReadAll(io.LimitReader(response.Body, 4<<10))
 	if err != nil {
 		return fmt.Errorf("openai: read error response: %w", err)
 	}
@@ -688,7 +882,26 @@ func responseError(response *http.Response) error {
 	if json.Unmarshal(limited, &envelope) != nil || envelope.Error == nil {
 		envelope.Error = &apiError{Message: strings.TrimSpace(string(limited))}
 	}
-	return apiErrorValue(envelope.Error, response.StatusCode)
+	err = apiErrorValue(envelope.Error, response.StatusCode)
+	var providerErr *Error
+	if errors.As(err, &providerErr) {
+		providerErr.RetryAfter = parseRetryAfter(response.Header.Get("Retry-After"), time.Now())
+	}
+	return err
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := time.ParseDuration(value + "s"); err == nil && seconds > 0 {
+		return seconds
+	}
+	if at, err := http.ParseTime(value); err == nil && at.After(now) {
+		return at.Sub(now)
+	}
+	return 0
 }
 
 func apiErrorValue(value *apiError, status int) error {
@@ -700,17 +913,25 @@ func apiErrorValue(value *apiError, status int) error {
 }
 
 type responseStream struct {
-	body    io.ReadCloser
-	scanner *bufio.Scanner
-	queued  []model.Chunk
-	calls   map[string]responseOutput
-	done    bool
+	body             io.ReadCloser
+	scanner          *bufio.Scanner
+	queued           []model.Chunk
+	calls            map[string]responseOutput
+	done             bool
+	data             []string
+	emittedText      strings.Builder
+	emittedCalls     map[string]struct{}
+	emittedReasoning map[string]string
+	emittedServer    map[string]struct{}
 }
 
 func newResponseStream(body io.ReadCloser) *responseStream {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 2<<20)
-	return &responseStream{body: body, scanner: scanner, calls: map[string]responseOutput{}}
+	return &responseStream{
+		body: body, scanner: scanner, calls: map[string]responseOutput{},
+		emittedCalls: map[string]struct{}{}, emittedReasoning: map[string]string{}, emittedServer: map[string]struct{}{},
+	}
 }
 
 func (stream *responseStream) Next(ctx context.Context) (model.Chunk, error) {
@@ -728,29 +949,48 @@ func (stream *responseStream) Next(ctx context.Context) (model.Chunk, error) {
 			return model.Chunk{}, err
 		}
 		line := stream.scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
+		if line == "" {
+			chunk, emit, err := stream.flushEvent()
+			if err != nil {
+				stream.Close()
+				return model.Chunk{}, err
+			}
+			if emit {
+				return chunk, nil
+			}
 			continue
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			stream.done = true
-			return model.Chunk{Done: true}, nil
-		}
-		chunk, emit, err := stream.event([]byte(data))
-		if err != nil {
-			stream.Close()
-			return model.Chunk{}, err
-		}
-		if emit {
-			return chunk, nil
+		if strings.HasPrefix(line, "data:") {
+			stream.data = append(stream.data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
 		}
 	}
 	if err := stream.scanner.Err(); err != nil {
 		stream.Close()
 		return model.Chunk{}, fmt.Errorf("openai: read stream: %w", err)
 	}
-	stream.done = true
-	return model.Chunk{}, io.EOF
+	chunk, emit, err := stream.flushEvent()
+	if err != nil {
+		stream.Close()
+		return model.Chunk{}, err
+	}
+	if emit {
+		return chunk, nil
+	}
+	stream.Close()
+	return model.Chunk{}, ErrIncompleteStream
+}
+
+func (stream *responseStream) flushEvent() (model.Chunk, bool, error) {
+	if len(stream.data) == 0 {
+		return model.Chunk{}, false, nil
+	}
+	data := strings.Join(stream.data, "\n")
+	stream.data = nil
+	if strings.TrimSpace(data) == "[DONE]" {
+		stream.done = true
+		return model.Chunk{Done: true}, true, nil
+	}
+	return stream.event([]byte(data))
 }
 
 func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
@@ -769,8 +1009,10 @@ func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
 	}
 	switch envelope.Type {
 	case "response.output_text.delta":
+		stream.emittedText.WriteString(envelope.Delta)
 		return model.Chunk{MessageDelta: message.Assistant(envelope.Delta)}, true, nil
 	case "response.reasoning_summary_text.delta":
+		stream.emittedReasoning[envelope.ItemID] += envelope.Delta
 		index := envelope.OutputIndex
 		return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, Content: []message.ContentBlock{{
 			Type: message.BlockReasoning, ID: envelope.ItemID, Reasoning: envelope.Delta, Index: &index,
@@ -781,11 +1023,13 @@ func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
 		}
 	case "response.output_item.done":
 		if envelope.Item.Type == "reasoning" {
+			stream.emittedReasoning[envelope.Item.ID] = reasoningText(envelope.Item.Summary)
 			return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, Content: []message.ContentBlock{
 				reasoningContentBlockWithText(envelope.Item, false),
 			}}}, true, nil
 		}
 		if envelope.Item.Type == "web_search_call" {
+			stream.emittedServer[envelope.Item.ID] = struct{}{}
 			arguments := map[string]any{}
 			if envelope.Item.Action != nil {
 				if len(envelope.Item.Action.Queries) == 1 {
@@ -813,11 +1057,11 @@ func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
 		if err != nil {
 			return model.Chunk{}, false, fmt.Errorf("openai: streamed tool arguments for %q are invalid JSON", call.CallID)
 		}
+		stream.emittedCalls[call.CallID] = struct{}{}
 		return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: call.CallID, Name: call.Name, Arguments: arguments}}}}, true, nil
 	case "response.completed":
 		stream.done = true
-		usage := envelope.Response.Usage
-		return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, Usage: &message.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens}}, Done: true}, true, nil
+		return stream.completedChunk(envelope.Response)
 	case "response.failed", "error":
 		if envelope.Error == nil {
 			envelope.Error = envelope.Response.Error
@@ -828,6 +1072,55 @@ func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
 		return model.Chunk{}, false, apiErrorValue(envelope.Error, http.StatusOK)
 	}
 	return model.Chunk{}, false, nil
+}
+
+func (stream *responseStream) completedChunk(payload responsesResponse) (model.Chunk, bool, error) {
+	response, err := normalizeResponse(payload, nil)
+	if err != nil {
+		return model.Chunk{}, false, err
+	}
+	delta := response.Message
+	delta.Content = nil
+	for _, block := range response.Message.Content {
+		switch block.Type {
+		case message.BlockText:
+			prefix := stream.emittedText.String()
+			if strings.HasPrefix(block.Text, prefix) {
+				block.Text = strings.TrimPrefix(block.Text, prefix)
+			}
+			if block.Text != "" || len(block.Citations) > 0 || len(block.Extra) > 0 {
+				delta.Content = append(delta.Content, block)
+			}
+		case message.BlockReasoning:
+			if prior := stream.emittedReasoning[block.ID]; prior != "" && strings.HasPrefix(block.Reasoning, prior) {
+				block.Reasoning = strings.TrimPrefix(block.Reasoning, prior)
+			}
+			delta.Content = append(delta.Content, block)
+		case message.BlockServerTool:
+			if _, emitted := stream.emittedServer[block.ID]; !emitted {
+				delta.Content = append(delta.Content, block)
+			}
+		default:
+			delta.Content = append(delta.Content, block)
+		}
+	}
+	delta.ToolCalls = nil
+	for _, call := range response.Message.ToolCalls {
+		if _, emitted := stream.emittedCalls[call.ID]; !emitted {
+			delta.ToolCalls = append(delta.ToolCalls, call)
+		}
+	}
+	return model.Chunk{MessageDelta: delta, Done: true}, true, nil
+}
+
+func reasoningText(items []responseSummary) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Text != "" {
+			parts = append(parts, item.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (stream *responseStream) Close() error {

@@ -430,8 +430,34 @@ func mergeModelChunk(response *model.Response, chunk model.Chunk) {
 		response.Message.Artifact = append(json.RawMessage(nil), delta.Artifact...)
 	}
 	for _, block := range delta.Content {
-		if block.Type == message.BlockText && len(response.Message.Content) > 0 && response.Message.Content[len(response.Message.Content)-1].Type == message.BlockText {
-			response.Message.Content[len(response.Message.Content)-1].Text += block.Text
+		textTarget := -1
+		if block.Type == message.BlockText && len(response.Message.Content) > 0 {
+			if response.Message.Content[len(response.Message.Content)-1].Type == message.BlockText {
+				textTarget = len(response.Message.Content) - 1
+			} else if block.Text == "" && (len(block.Citations) > 0 || len(block.Extra) > 0) {
+				for index := len(response.Message.Content) - 1; index >= 0; index-- {
+					if response.Message.Content[index].Type == message.BlockText {
+						textTarget = index
+						break
+					}
+				}
+			}
+		}
+		if textTarget >= 0 {
+			current := &response.Message.Content[textTarget]
+			current.Text += block.Text
+			current.Citations = append(current.Citations, block.Citations...)
+			if current.ID == "" {
+				current.ID = block.ID
+			}
+			if len(block.Extra) > 0 {
+				if current.Extra == nil {
+					current.Extra = map[string]json.RawMessage{}
+				}
+				for key, value := range block.Extra {
+					current.Extra[key] = append(json.RawMessage(nil), value...)
+				}
+			}
 			continue
 		}
 		if block.Type == message.BlockReasoning {

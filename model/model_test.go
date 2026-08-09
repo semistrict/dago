@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"testing"
+
+	"github.com/semistrict/dago/message"
 )
 
 func TestEmptyStream(t *testing.T) {
@@ -14,5 +16,14 @@ func TestEmptyStream(t *testing.T) {
 	}
 	if err := stream.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestOutcomeRoundTrip(t *testing.T) {
+	item := message.Assistant("")
+	SetOutcome(&item, FinishReasonRefusal, &Refusal{Category: "policy", Explanation: "not allowed"})
+	reason, refusal := Outcome(item)
+	if reason != FinishReasonRefusal || refusal == nil || refusal.Category != "policy" || refusal.Explanation != "not allowed" {
+		t.Fatalf("outcome = %q, %#v", reason, refusal)
 	}
 }

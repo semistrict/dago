@@ -570,3 +570,19 @@ func TestAgentRestartsFromSQLiteDeltaMessages(t *testing.T) {
 		t.Fatalf("restored messages = %#v", result.Messages)
 	}
 }
+
+func TestMergeModelChunkPreservesTextAnnotations(t *testing.T) {
+	response := model.Response{Message: message.Assistant("answer")}
+	mergeModelChunk(&response, model.Chunk{MessageDelta: message.Message{
+		Role: message.RoleAssistant,
+		Content: []message.ContentBlock{{
+			Type:      message.BlockText,
+			Citations: []message.Citation{{URL: "https://example.test"}},
+			Extra:     map[string]json.RawMessage{"provider": json.RawMessage(`true`)},
+		}},
+	}})
+	block := response.Message.Content[0]
+	if block.Text != "answer" || len(block.Citations) != 1 || block.Citations[0].URL != "https://example.test" || string(block.Extra["provider"]) != "true" {
+		t.Fatalf("merged text block = %#v", block)
+	}
+}
