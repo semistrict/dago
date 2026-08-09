@@ -21,6 +21,7 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/go-json-experiment/json/jsontext"
+	dmodel "github.com/semistrict/dago/model"
 	"shelley.exe.dev/llm"
 )
 
@@ -30,7 +31,7 @@ func TestCombinedTool(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	if tool.Name != "browser" {
 		t.Errorf("expected name %q, got %q", "browser", tool.Name)
 	}
@@ -79,7 +80,7 @@ func TestCombinedToolFoldedActions(t *testing.T) {
 	tools := NewBrowseTools(context.Background(), 0)
 	t.Cleanup(func() { tools.Close() })
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	for _, action := range []string{"emulate_help", "network_help", "accessibility_help", "profile_help"} {
 		out := tool.Run(context.Background(), []byte(fmt.Sprintf(`{"action": %q}`, action)))
 		if out.Error != nil {
@@ -97,7 +98,7 @@ func TestCombinedToolUnknownAction(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	toolOut := tool.Run(context.Background(), []byte(`{"action": "bogus"}`))
 	if toolOut.Error == nil {
 		t.Error("Expected error for unknown action")
@@ -110,7 +111,7 @@ func TestGetTools(t *testing.T) {
 		tools.Close()
 	})
 
-	result := tools.GetTools()
+	result := probeBrowserTools(tools)
 	if len(result) != 2 {
 		t.Fatalf("GetTools: expected 2 tools, got %d", len(result))
 	}
@@ -175,7 +176,7 @@ func TestNavigateTool(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 
 	inputJSON := []byte(`{"action": "navigate", "url": "https://example.com"}`)
 	toolOut := tool.Run(ctx, inputJSON)
@@ -275,14 +276,14 @@ func TestScreenshotRunGatesOnImageSupport(t *testing.T) {
 	t.Cleanup(func() { tools.Close() })
 
 	// Navigate somewhere so a screenshot can be captured.
-	nav := tools.CombinedTool().Run(baseCtx, []byte(`{"action": "navigate", "url": "https://example.com"}`))
+	nav := probeNativeTool(tools.NativeCombinedTool()).Run(baseCtx, []byte(`{"action": "navigate", "url": "https://example.com"}`))
 	if nav.Error != nil || (len(nav.LLMContent) > 0 && strings.Contains(nav.LLMContent[0].Text, "browser automation not available")) {
 		t.Skip("Browser automation not available in this environment")
 	}
 
 	t.Run("image-capable model includes image", func(t *testing.T) {
-		ctx := llm.WithLLMService(baseCtx, limitedService{})
-		out := tools.screenshotRun(ctx, screenshotInput{})
+		ctx := llm.WithModelProfile(baseCtx, dmodel.Profile{SupportsImages: true})
+		out := probeNativeTool(tools.NativeCombinedTool()).Run(ctx, json.RawMessage(`{"action":"screenshot"}`))
 		if out.Error != nil {
 			t.Fatalf("screenshotRun: %v", out.Error)
 		}
@@ -292,8 +293,8 @@ func TestScreenshotRunGatesOnImageSupport(t *testing.T) {
 	})
 
 	t.Run("non-image model omits image", func(t *testing.T) {
-		ctx := llm.WithLLMService(baseCtx, noImageService{})
-		out := tools.screenshotRun(ctx, screenshotInput{})
+		ctx := llm.WithModelProfile(baseCtx, dmodel.Profile{SupportsImages: false})
+		out := probeNativeTool(tools.NativeCombinedTool()).Run(ctx, json.RawMessage(`{"action":"screenshot"}`))
 		if out.Error != nil {
 			t.Fatalf("screenshotRun: %v", out.Error)
 		}
@@ -347,7 +348,7 @@ func TestReadImageTool(t *testing.T) {
 		t.Fatalf("Failed to create test image: %v", err)
 	}
 
-	tool := browseTools.ReadImageTool()
+	tool := probeNativeTool(browseTools.NativeReadImageTool())
 	input := fmt.Sprintf(`{"path": "%s"}`, testImagePath)
 
 	toolOut := tool.Run(ctx, []byte(input))
@@ -381,7 +382,7 @@ func TestDefaultViewportSize(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 
 	// Navigate
 	toolOut := tool.Run(ctx, []byte(`{"action": "navigate", "url": "about:blank"}`))
@@ -459,7 +460,7 @@ func TestBrowserIdleShutdownAndRestart(t *testing.T) {
 	}
 
 	// Verify the new browser actually works via combined tool
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	toolOut := tool.Run(ctx, []byte(`{"action": "navigate", "url": "about:blank"}`))
 	if toolOut.Error != nil {
 		t.Fatalf("Navigate failed after restart: %v", toolOut.Error)
@@ -512,34 +513,12 @@ func TestBrowserCrashRecovery(t *testing.T) {
 	}
 
 	// Verify the new browser actually works
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	toolOut := tool.Run(ctx, []byte(`{"action": "navigate", "url": "about:blank"}`))
 	if toolOut.Error != nil {
 		t.Fatalf("Navigate failed after crash recovery: %v", toolOut.Error)
 	}
 }
-
-// limitedService is a minimal llm.Service used by tests to drive the
-// image-limit checks via the tool call context.
-type limitedService struct {
-	maxDim   int
-	maxBytes int
-}
-
-// noImageService reports that it does not support image inputs (like GLM 5.2).
-// It embeds limitedService and overrides SupportsImages.
-type noImageService struct{ limitedService }
-
-func (s noImageService) SupportsImages() bool { return false }
-
-func (s limitedService) Do(context.Context, *llm.Request) (*llm.Response, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-func (s limitedService) TokenContextWindow() int { return 0 }
-func (s limitedService) MaxImageDimension() int  { return s.maxDim }
-func (s limitedService) MaxImageBytes() int      { return s.maxBytes }
-func (s limitedService) Provider() string        { return "test" }
-func (s limitedService) SupportsImages() bool    { return true }
 
 func TestReadImageToolResizesOversizedImage(t *testing.T) {
 	browseTools := NewBrowseTools(context.Background(), 0)
@@ -547,7 +526,7 @@ func TestReadImageToolResizesOversizedImage(t *testing.T) {
 		browseTools.Close()
 	})
 	// Model limit: 200px on a side. Oversized images are silently downscaled.
-	ctx := llm.WithLLMService(context.Background(), limitedService{maxDim: 200})
+	ctx := llm.WithModelProfile(context.Background(), dmodel.Profile{SupportsImages: true, MaxImageDimension: 200})
 
 	testDir := t.TempDir()
 	testImagePath := filepath.Join(testDir, "large_image.png")
@@ -562,7 +541,7 @@ func TestReadImageToolResizesOversizedImage(t *testing.T) {
 	}
 	f.Close()
 
-	tool := browseTools.ReadImageTool()
+	tool := probeNativeTool(browseTools.NativeReadImageTool())
 	input := fmt.Sprintf(`{"path": "%s"}`, testImagePath)
 
 	toolOut := tool.Run(ctx, []byte(input))
@@ -608,7 +587,7 @@ func TestReadImageToolRejectsOversizedBytes(t *testing.T) {
 		browseTools.Close()
 	})
 	// Pick a byte limit so small that any encoded PNG will exceed it.
-	ctx := llm.WithLLMService(context.Background(), limitedService{maxBytes: 16})
+	ctx := llm.WithModelProfile(context.Background(), dmodel.Profile{SupportsImages: true, MaxImageBytes: 16})
 
 	testDir := t.TempDir()
 	testImagePath := filepath.Join(testDir, "big_bytes.png")
@@ -622,7 +601,7 @@ func TestReadImageToolRejectsOversizedBytes(t *testing.T) {
 	}
 	f.Close()
 
-	tool := browseTools.ReadImageTool()
+	tool := probeNativeTool(browseTools.NativeReadImageTool())
 	input := fmt.Sprintf(`{"path": "%s"}`, testImagePath)
 	toolOut := tool.Run(ctx, []byte(input))
 	if toolOut.Error == nil {
@@ -653,7 +632,7 @@ func TestReadImageToolNoServicePassesThrough(t *testing.T) {
 	}
 	f.Close()
 
-	tool := browseTools.ReadImageTool()
+	tool := probeNativeTool(browseTools.NativeReadImageTool())
 	input := fmt.Sprintf(`{"path": "%s"}`, testImagePath)
 	toolOut := tool.Run(context.Background(), []byte(input))
 	if toolOut.Error != nil {
@@ -696,7 +675,7 @@ func TestResizeRunErrorPaths(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 
 	// Test with invalid JSON input
 	toolOut := tool.Run(ctx, []byte(`{"action": "resize", "width": "not-a-number"}`))
@@ -725,7 +704,7 @@ func TestScreenshotRunErrorPaths(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 
 	// Test with invalid JSON input
 	toolOut := tool.Run(ctx, []byte(`{"action": "screenshot", "selector": 123}`))
@@ -741,7 +720,7 @@ func TestRecentConsoleLogsRunErrorPaths(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 
 	// Test with invalid JSON input
 	toolOut := tool.Run(ctx, []byte(`{"action": "console_logs", "limit": "not-a-number"}`))
@@ -786,8 +765,8 @@ func TestRegisterBrowserTools(t *testing.T) {
 	}
 	expectedNames := []string{"browser", "read_image"}
 	for i, name := range expectedNames {
-		if tools[i].Name != name {
-			t.Errorf("expected tool %d name %q, got %q", i, name, tools[i].Name)
+		if got := tools[i].Definition().Name; got != name {
+			t.Errorf("expected tool %d name %q, got %q", i, name, got)
 		}
 	}
 	cleanup()
@@ -847,7 +826,7 @@ func TestConsoleLogsWriteToFile(t *testing.T) {
 	tools.browserCtx = ctx
 	tools.mux.Unlock()
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	toolOut := tool.Run(ctx, []byte(`{"action": "console_logs"}`))
 	if toolOut.Error != nil {
 		t.Fatalf("Unexpected error: %v", toolOut.Error)
@@ -977,9 +956,12 @@ func TestToolOutWithDownloads(t *testing.T) {
 	})
 
 	// Test with no downloads
-	out := tools.toolOutWithDownloads("test message")
-	if out.LLMContent[0].Text != "test message" {
-		t.Errorf("Expected %q, got %q", "test message", out.LLMContent[0].Text)
+	out, err := tools.executionWithDownloads("test message").dagoResult()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Content[0].Text != "test message" {
+		t.Errorf("Expected %q, got %q", "test message", out.Content[0].Text)
 	}
 
 	// Add a completed download
@@ -994,8 +976,11 @@ func TestToolOutWithDownloads(t *testing.T) {
 	tools.downloadsMutex.Unlock()
 
 	// Test with downloads
-	out = tools.toolOutWithDownloads("done")
-	result := out.LLMContent[0].Text
+	out, err = tools.executionWithDownloads("done").dagoResult()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := out.Content[0].Text
 	if !strings.Contains(result, "Downloads completed:") {
 		t.Errorf("Expected downloads section, got: %s", result)
 	}
@@ -1064,7 +1049,7 @@ func TestBrowserDownload(t *testing.T) {
 	})
 
 	// Navigate to the test page
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	navInput := []byte(fmt.Sprintf(`{"action": "navigate", "url": "http://127.0.0.1:%d/"}`, port))
 	toolOut := tool.Run(ctx, navInput)
 	if toolOut.Error != nil {
@@ -1152,7 +1137,7 @@ func TestBrowserDownloadReported(t *testing.T) {
 	})
 
 	// Navigate directly to the download URL - should succeed with download info
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	navInput := []byte(fmt.Sprintf(`{"action": "navigate", "url": "http://127.0.0.1:%d/download"}`, port))
 	toolOut := tool.Run(ctx, navInput)
 	if toolOut.Error != nil {
@@ -1199,7 +1184,7 @@ func TestLargeJSOutputWriteToFile(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 
 	toolOut := tool.Run(ctx, []byte(`{"action": "navigate", "url": "about:blank"}`))
 	if toolOut.Error != nil {
@@ -1263,7 +1248,7 @@ func TestSmallJSOutputInline(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 
 	toolOut := tool.Run(ctx, []byte(`{"action": "navigate", "url": "about:blank"}`))
 	if toolOut.Error != nil {

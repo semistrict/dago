@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
@@ -30,14 +33,20 @@ func setupTestDB(t *testing.T) (*db.DB, func()) {
 // waitFor polls a condition until it returns true or the timeout is reached.
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		if condition() {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatal("timed out waiting for condition")
+		}
 	}
-	t.Fatal("timed out waiting for condition")
 }
 
 // newTestServer creates a Server with a PredictableService for testing.
@@ -379,10 +388,10 @@ func TestCancelDuringTextGeneration(t *testing.T) {
 
 // testLLMManager is a simple test implementation of LLMProvider
 type testLLMManager struct {
-	service llm.Service
+	service dmodel.Chat
 }
 
-func (m *testLLMManager) GetService(modelID string) (llm.Service, error) {
+func (m *testLLMManager) GetChat(string) (dmodel.Chat, error) {
 	return m.service, nil
 }
 
@@ -402,26 +411,32 @@ func (m *testLLMManager) RefreshCustomModels() error {
 	return nil
 }
 
-// switchableTestLLM wraps a llm.Service and can be toggled to return errors.
+// switchableTestLLM wraps a native chat model and can be toggled to return errors.
 type switchableTestLLM struct {
-	inner llm.Service
+	inner dmodel.Chat
 	mu    sync.Mutex
 	err   error
 }
 
-func (s *switchableTestLLM) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (s *switchableTestLLM) Profile() dmodel.Profile { return s.inner.Profile() }
+func (s *switchableTestLLM) Invoke(ctx context.Context, req dmodel.Request) (dmodel.Response, error) {
+	s.mu.Lock()
+	err := s.err
+	s.mu.Unlock()
+	if err != nil {
+		return dmodel.Response{}, err
+	}
+	return s.inner.Invoke(ctx, req)
+}
+func (s *switchableTestLLM) Stream(ctx context.Context, req dmodel.Request) (dmodel.Stream, error) {
 	s.mu.Lock()
 	err := s.err
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	return s.inner.Do(ctx, req)
+	return s.inner.Stream(ctx, req)
 }
-func (s *switchableTestLLM) Provider() string        { return s.inner.Provider() }
-func (s *switchableTestLLM) TokenContextWindow() int { return s.inner.TokenContextWindow() }
-func (s *switchableTestLLM) MaxImageDimension() int  { return s.inner.MaxImageDimension() }
-func (s *switchableTestLLM) MaxImageBytes() int      { return s.inner.MaxImageBytes() }
 func (s *switchableTestLLM) setErr(err error) {
 	s.mu.Lock()
 	s.err = err
@@ -550,14 +565,11 @@ func TestRetryAfterLLMFailure(t *testing.T) {
 	last := reqs[len(reqs)-1]
 	sawUser := false
 	for _, m := range last.Messages {
-		if m.ErrorType != llm.ErrorTypeNone {
-			t.Errorf("retry request leaked error message into LLM context")
-		}
 		for _, c := range m.Content {
 			if strings.Contains(c.Text, "LLM request failed") {
 				t.Errorf("retry request contained error text in LLM context: %q", c.Text)
 			}
-			if m.Role == llm.MessageRoleUser && strings.TrimSpace(c.Text) == "hello" {
+			if m.Role == dmessage.RoleHuman && strings.TrimSpace(c.Text) == "hello" {
 				sawUser = true
 			}
 		}
@@ -566,5 +578,3 @@ func TestRetryAfterLLMFailure(t *testing.T) {
 		t.Errorf("retry request did not include the original user message")
 	}
 }
-
-func (s *switchableTestLLM) SupportsImages() bool { return s.inner.SupportsImages() }

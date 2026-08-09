@@ -13,6 +13,8 @@ import (
 	"shelley.exe.dev/llm"
 )
 
+import dmessage "github.com/semistrict/dago/message"
+
 // TestOrphanToolResultAfterCancellation reproduces the bug where a tool_result
 // is written after CancelConversation has already written an end-turn message.
 //
@@ -183,27 +185,16 @@ func TestOrphanToolResultAfterCancellation(t *testing.T) {
 
 	var previousAssistantToolUses map[string]bool
 	for i, msg := range lastRequest.Messages {
-		if msg.Role == llm.MessageRoleAssistant {
+		if msg.Role == dmessage.RoleAssistant {
 			// Track all tool_use IDs in this assistant message
 			previousAssistantToolUses = make(map[string]bool)
-			for _, content := range msg.Content {
-				if content.Type == llm.ContentTypeToolUse {
-					previousAssistantToolUses[content.ID] = true
-				}
+			for _, call := range msg.ToolCalls {
+				previousAssistantToolUses[call.ID] = true
 			}
-		} else if msg.Role == llm.MessageRoleUser {
-			// Check if any tool_results reference IDs not in previous assistant message
-			for _, content := range msg.Content {
-				if content.Type == llm.ContentTypeToolResult {
-					if previousAssistantToolUses != nil && !previousAssistantToolUses[content.ToolUseID] {
-						t.Errorf("BUG: Found orphan tool_result at message index %d with ToolUseID=%s that doesn't match any tool_use in the previous assistant message. "+
-							"This would cause Anthropic API error: 'Each tool_result block must have a corresponding tool_use block in the previous message'",
-							i, content.ToolUseID)
-					}
-				}
+		} else if msg.Role == dmessage.RoleTool {
+			if previousAssistantToolUses != nil && !previousAssistantToolUses[msg.ToolCallID] {
+				t.Errorf("BUG: Found orphan tool result at message index %d with tool call ID %s", i, msg.ToolCallID)
 			}
-			// Clear previousAssistantToolUses since user messages reset the expectation
-			previousAssistantToolUses = nil
 		}
 	}
 
@@ -301,22 +292,15 @@ func TestOrphanToolResultFiltering(t *testing.T) {
 	// Verify no orphan tool_results in the request
 	var prevToolUses map[string]bool
 	for i, msg := range lastRequest.Messages {
-		if msg.Role == llm.MessageRoleAssistant {
+		if msg.Role == dmessage.RoleAssistant {
 			prevToolUses = make(map[string]bool)
-			for _, content := range msg.Content {
-				if content.Type == llm.ContentTypeToolUse {
-					prevToolUses[content.ID] = true
-				}
+			for _, call := range msg.ToolCalls {
+				prevToolUses[call.ID] = true
 			}
-		} else if msg.Role == llm.MessageRoleUser {
-			for _, content := range msg.Content {
-				if content.Type == llm.ContentTypeToolResult {
-					if prevToolUses != nil && !prevToolUses[content.ToolUseID] {
-						t.Errorf("BUG: Found orphan tool_result at message index %d", i)
-					}
-				}
+		} else if msg.Role == dmessage.RoleTool {
+			if prevToolUses != nil && !prevToolUses[msg.ToolCallID] {
+				t.Errorf("BUG: Found orphan tool result at message index %d", i)
 			}
-			prevToolUses = nil
 		}
 	}
 }

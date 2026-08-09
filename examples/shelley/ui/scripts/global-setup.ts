@@ -23,14 +23,14 @@ export default async function globalSetup() {
     return;
   }
 
-  // Build shelley binary if it doesn't exist.
-  if (!existsSync(binPath)) {
-    console.log('Building shelley binary…');
-    execSync('go build -o bin/shelley ./cmd/shelley', {
-      cwd: shelleyDir,
-      stdio: 'inherit',
-    });
-  }
+  // Always rebuild after the UI build performed by test:e2e. Reusing an older
+  // binary would reuse the UI files embedded in that binary even though dist/
+  // now contains the current build.
+  console.log('Building shelley binary…');
+  execSync('go build -o bin/shelley ./cmd/shelley', {
+    cwd: shelleyDir,
+    stdio: 'inherit',
+  });
 
   // Create temp dir for database and port file.
   tempDir = mkdtempSync(path.join(tmpdir(), 'shelley-e2e-'));

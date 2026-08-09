@@ -177,18 +177,7 @@ func (s *ShellTool) yieldDuration(req shellInput) time.Duration {
 	return d
 }
 
-// Tool returns an llm.Tool based on s.
-func (s *ShellTool) Tool() *llm.Tool {
-	return &llm.Tool{
-		Name:        shellName,
-		Description: strings.TrimSpace(shellDescription),
-		InputSchema: llm.MustSchema(s.inputSchema()),
-		Run:         llm.RunJSON(s.run),
-	}
-}
-
-// NativeTool executes shell commands through Dago's tool contract. Tool
-// remains the pinned Shelley facade used by the original package tests.
+// NativeTool executes shell commands through Dago's tool contract.
 func (s *ShellTool) NativeTool() dtool.Tool {
 	return dtool.Func{
 		Spec: dtool.Definition{
@@ -214,14 +203,6 @@ func (s *ShellTool) NativeTool() dtool.Tool {
 			}, nil
 		},
 	}
-}
-
-func (s *ShellTool) run(ctx context.Context, req shellInput) llm.ToolOut {
-	execution, err := s.execute(ctx, req, false)
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
 }
 
 func (s *ShellTool) execute(ctx context.Context, req shellInput, nativeModelCalls bool) (shellExecution, error) {

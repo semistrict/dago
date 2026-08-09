@@ -1078,7 +1078,7 @@ body {
   opacity: 0.5;
   line-height: 1.2;
   user-select: none;
-  pointer-events: auto;
+  pointer-events: none;
   transition: opacity 0.15s ease;
   letter-spacing: 0.02em;
 }
@@ -12568,6 +12568,7 @@ kbd {
   position: sticky;
   top: 0;
   background: rgba(15, 17, 21, 0.97);
+  pointer-events: auto;
 }
 
 .perf-hud.collapsed .perf-hud-header {

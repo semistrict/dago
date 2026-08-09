@@ -13,10 +13,11 @@ import (
 	"testing"
 	"time"
 
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
 	"shelley.exe.dev/loop"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/server"
@@ -48,9 +49,7 @@ type fakeLLMManager struct {
 	service *loop.PredictableService
 }
 
-func (m *fakeLLMManager) GetService(modelID string) (llm.Service, error) {
-	return m.service, nil
-}
+func (m *fakeLLMManager) GetChat(string) (dmodel.Chat, error) { return m.service, nil }
 
 func (m *fakeLLMManager) GetAvailableModels() []string {
 	return []string{"predictable"}

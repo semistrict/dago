@@ -87,9 +87,7 @@ func load() map[string]providerEntry {
 // provider keys. models.dev does not record an "api" URL for these, so they
 // are seeded into the host index manually.
 var knownHosts = map[string]string{
-	"api.anthropic.com":                 "anthropic",
-	"api.openai.com":                    "openai",
-	"generativelanguage.googleapis.com": "google",
+	"api.openai.com": "openai",
 }
 
 // hostOf extracts a normalized host from a URL or bare host string. It strips
@@ -131,7 +129,6 @@ func hostOf(raw string) string {
 //
 // Lookup strategy, in order:
 //  1. the best-path-matching provider whose host matches the endpoint host
-//  2. the "openrouter" catalog (full "vendor/model" slugs), as a last resort
 func LookupImageSupport(endpoint, modelName string) (supported, found bool) {
 	m, found := lookup(endpoint, modelName)
 	return entryHasImage(m), found
@@ -153,7 +150,9 @@ func LookupReasoningSupport(endpoint, modelName string) (supported, found bool) 
 // of, and providers snapshot model names with date suffixes (e.g.
 // "gpt-5.5-2026-04-23") that models.dev omits. Each strategy — endpoint host,
 // then first-party catalogs by name, then the OpenRouter catalog — is tried
-// with the full name and with a trailing -YYYY-MM-DD stripped.
+// with the full name and with a trailing -YYYY-MM-DD stripped. Only the
+// OpenAI catalog is consulted by bare model name; other vendors are relevant
+// only when a custom Responses-compatible endpoint explicitly names their host.
 func LookupCost(endpoint, modelName string) (Cost, bool) {
 	data := load()
 	names := []string{modelName}
@@ -184,33 +183,22 @@ func LookupCost(endpoint, modelName string) (Cost, bool) {
 			}
 		}
 	}
-	for _, n := range names {
-		if p, ok := data["openrouter"]; ok {
-			if c, ok := tryProvider(p, n); ok {
-				return c, true
-			}
-		}
-	}
 	return Cost{}, false
 }
 
 // firstPartyProviders are the models.dev catalogs scanned by bare model name
 // for cost lookups, in preference order.
-var firstPartyProviders = []string{"anthropic", "openai", "google", "fireworks-ai", "xai"}
+var firstPartyProviders = []string{"openai"}
 
 // dateSuffixRe matches provider snapshot date suffixes like "-2026-04-23".
 var dateSuffixRe = regexp.MustCompile(`-\d{4}-\d{2}-\d{2}$`)
 
 func lookup(endpoint, modelName string) (modelEntry, bool) {
-	data := load()
+	load()
 	if host := hostOf(endpoint); host != "" {
 		if p, ok := bestProviderForPath(hostIndex[host], pathSegments(endpoint), modelName); ok {
 			return lookupInProvider(p, modelName)
 		}
-	}
-	// Last-resort: OpenRouter keeps a full slug catalog.
-	if p, ok := data["openrouter"]; ok {
-		return lookupInProvider(p, modelName)
 	}
 	return modelEntry{}, false
 }

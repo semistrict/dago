@@ -95,7 +95,7 @@ func TestTransportAddsSessionAffinityForFireworks(t *testing.T) {
 
 	client := NewClient(nil)
 
-	// Make a request with conversation ID and provider=fireworks in context
+	// Legacy provider metadata must not re-enable unsupported wire headers.
 	ctx := context.Background()
 	ctx = WithConversationID(ctx, "test-conv-id")
 	ctx = WithProvider(ctx, "fireworks")
@@ -107,9 +107,8 @@ func TestTransportAddsSessionAffinityForFireworks(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// Verify x-session-affinity header was added for fireworks
-	if got := receivedHeaders.Get("x-session-affinity"); got != "test-conv-id" {
-		t.Errorf("x-session-affinity = %q, want %q", got, "test-conv-id")
+	if got := receivedHeaders.Get("x-session-affinity"); got != "" {
+		t.Errorf("x-session-affinity = %q, want empty", got)
 	}
 
 	// Verify Shelley-Conversation-Id header was also added

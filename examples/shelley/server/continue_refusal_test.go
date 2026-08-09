@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
 
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
@@ -37,57 +41,27 @@ type refuseThenOKService struct {
 	calls int
 }
 
-func isSlugRequest(req *llm.Request) bool {
-	for _, m := range req.Messages {
-		for _, c := range m.Content {
-			if strings.Contains(c.Text, slug.PromptPreamble) {
-				return true
-			}
+func (s *refuseThenOKService) Profile() dmodel.Profile { return s.inner.Profile() }
+func (s *refuseThenOKService) Invoke(ctx context.Context, req dmodel.Request) (dmodel.Response, error) {
+	for _, message := range req.Messages {
+		if strings.Contains(message.TextContent(), slug.PromptPreamble) {
+			return s.inner.Invoke(ctx, req)
 		}
-	}
-	return false
-}
-
-func (s *refuseThenOKService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-	// Slug generation shares this service; never let it consume the refusal slot.
-	if isSlugRequest(req) {
-		return s.inner.Do(ctx, req)
 	}
 	s.mu.Lock()
 	n := s.calls
 	s.calls++
 	s.mu.Unlock()
 	if n == 0 {
-		return &llm.Response{
-			ID:         "refuse-1",
-			Type:       "message",
-			Role:       llm.MessageRoleAssistant,
-			Model:      "predictable-v1",
-			Content:    []llm.Content{{Type: llm.ContentTypeThinking, Thinking: "", Signature: "sig"}},
-			StopReason: llm.StopReasonRefusal,
-			RefusalDetails: &llm.RefusalDetails{
-				Category:    "cyber",
-				Explanation: "Blocked under policy.",
-			},
-			Usage: llm.Usage{InputTokens: 1, OutputTokens: 1},
-		}, nil
+		return s.inner.Invoke(ctx, dmodel.Request{Messages: []dmessage.Message{dmessage.Human("refusal")}})
 	}
-	return &llm.Response{
-		ID:         "ok-1",
-		Type:       "message",
-		Role:       llm.MessageRoleAssistant,
-		Model:      "predictable-v1",
-		Content:    []llm.Content{{Type: llm.ContentTypeText, Text: "Continuing after the switch."}},
-		StopReason: llm.StopReasonEndTurn,
-		Usage:      llm.Usage{InputTokens: 1, OutputTokens: 1},
-	}, nil
+	message := dmessage.Assistant("Continuing after the switch.")
+	message.Usage = &dmessage.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2, Provider: "builtin", Model: "predictable-v1"}
+	return dmodel.Response{Message: message}, nil
 }
-
-func (s *refuseThenOKService) Provider() string        { return s.inner.Provider() }
-func (s *refuseThenOKService) TokenContextWindow() int { return s.inner.TokenContextWindow() }
-func (s *refuseThenOKService) MaxImageDimension() int  { return s.inner.MaxImageDimension() }
-func (s *refuseThenOKService) MaxImageBytes() int      { return s.inner.MaxImageBytes() }
-func (s *refuseThenOKService) SupportsImages() bool    { return s.inner.SupportsImages() }
+func (*refuseThenOKService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+	return nil, fmt.Errorf("refusal test model does not stream")
+}
 
 // TestContinueAfterRefusalSwitchesModelAndResumes verifies the refusal
 // affordance: after a refusal error, POST /continue with a target model
@@ -99,7 +73,7 @@ func TestContinueAfterRefusalSwitchesModelAndResumes(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	svc := &refuseThenOKService{inner: loop.NewPredictableService()}
-	svr := NewServer(database, &twoModelLLMManager{service: svc},
+	svr := NewServer(database, &twoModelLLMManager{chat: svc},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		false, "model-a", "")

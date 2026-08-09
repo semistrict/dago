@@ -36,37 +36,10 @@ type shadowPair struct {
 // (e.g. a not-yet-launched release) are harmless: they simply never match an
 // available model.
 var shadowPairs = []shadowPair{
-	// Clear supersessions within a family.
-	{Better: "claude-opus-5", Worse: "claude-opus-4.8"},
-	{Better: "claude-opus-5", Worse: "claude-opus-4.7"},
-	{Better: "claude-opus-4.8", Worse: "claude-opus-4.7"},
-	{Better: "claude-opus-4.6", Worse: "claude-opus-4.5"},
-	{Better: "claude-sonnet-5", Worse: "claude-sonnet-4.6"},
-	{Better: "claude-sonnet-5", Worse: "claude-sonnet-4.5"},
 	{Better: "gpt-5.6-sol", Worse: "gpt-5.5"},
 	{Better: "gpt-5.6-sol", Worse: "gpt-5.4"},
 	{Better: "gpt-5.6-terra", Worse: "gpt-5.4-mini"},
 	{Better: "gpt-5.6-luna", Worse: "gpt-5.4-nano"},
-	{Better: "kimi-k2.7-code-fireworks", Worse: "kimi-k2.6-fireworks"},
-	{Better: "kimi-k3-fireworks", Worse: "kimi-k2.7-code-fireworks"},
-	{Better: "kimi-k3-fireworks", Worse: "kimi-k2.6-fireworks"},
-
-	// Arguable / cross-family supersessions. We still encode them so the
-	// default list stays lean; the reasoning is noted inline.
-	{Better: "claude-opus-4.8", Worse: "claude-opus-4.6"}, // 4.6 is cheaper (older tokenizer) but 4.8 is stronger
-	{Better: "claude-opus-5", Worse: "claude-opus-4.6"},   // same reasoning as 4.8 vs 4.6
-	// Sonnet 5 is cheap per token but not per task: it takes many more turns
-	// and emits far more output than its siblings, which puts its cost per
-	// finished task above opus-4.8's. Its one genuine strength is grinding
-	// autonomously toward an objective finish line, which is not what a
-	// subagent dispatched on a scoped task is doing — and the subagent tool
-	// has no way to hand it a turn budget or a stopping criterion.
-	{Better: "claude-opus-4.8", Worse: "claude-sonnet-5"},
-	{Better: "claude-opus-5", Worse: "claude-sonnet-5"},              // in case opus-4.8 isn't served
-	{Better: "gpt-5.6-terra", Worse: "claude-sonnet-5"},              // cheaper and stronger, and it doesn't run away with fan-out work
-	{Better: "glm-5.2-fireworks", Worse: "kimi-k2.7-code-fireworks"}, // different families; glm costs a bit more; kimi-k3 costs far more, so it doesn't shadow glm
-	{Better: "glm-5.2-fireworks", Worse: "deepseek-v4-flash-fireworks"},
-	{Better: "gpt-5.6-luna", Worse: "claude-haiku-4.5"},
 	{Better: "gpt-5.6-luna", Worse: "gpt-5.3-codex"},
 }
 

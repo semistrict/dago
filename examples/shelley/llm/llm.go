@@ -1,8 +1,7 @@
-// Package llm provides a unified interface for interacting with LLMs.
+// Package llm contains Shelley's persisted and UI-facing message records.
 package llm
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,86 +12,6 @@ import (
 	"strings"
 	"time"
 )
-
-type Service interface {
-	// Do sends a request to an LLM.
-	Do(context.Context, *Request) (*Response, error)
-	// Provider returns the provider name (e.g., "anthropic", "openai", "fireworks", "gemini").
-	Provider() string
-	// TokenContextWindow returns the maximum token context window size for this service
-	TokenContextWindow() int
-	// MaxImageDimension returns the maximum allowed dimension (width or height) for images.
-	// For multi-image requests, some providers enforce stricter limits.
-	// Returns 0 if there is no limit.
-	MaxImageDimension() int
-	// MaxImageBytes returns the maximum allowed encoded size in bytes for a single image.
-	// Returns 0 if there is no known limit.
-	MaxImageBytes() int
-	// SupportsImages reports whether the service accepts image inputs.
-	SupportsImages() bool
-}
-
-// ReasoningSupporter reports whether a service accepts reasoning controls and
-// which generic levels it exposes to callers. An empty level list means all
-// standard levels are supported.
-type ReasoningSupporter interface {
-	SupportsReasoning() bool
-	SupportedReasoningLevels() []ThinkingLevel
-}
-
-func SupportsReasoning(svc Service) bool {
-	if rs, ok := svc.(ReasoningSupporter); ok {
-		return rs.SupportsReasoning()
-	}
-	return true
-}
-
-func SupportedReasoningLevels(svc Service) []ThinkingLevel {
-	if rs, ok := svc.(ReasoningSupporter); ok {
-		return rs.SupportedReasoningLevels()
-	}
-	return nil
-}
-
-type SimplifiedPatcher interface {
-	// UseSimplifiedPatch reports whether the service should use the simplified patch input schema.
-	UseSimplifiedPatch() bool
-}
-
-func UseSimplifiedPatch(svc Service) bool {
-	if sp, ok := svc.(SimplifiedPatcher); ok {
-		return sp.UseSimplifiedPatch()
-	}
-	return false
-}
-
-// DefaultReasoner is implemented by services that can report the reasoning
-// level they apply when a request carries no per-conversation override (i.e.
-// ThinkingLevelDefault). This is the level actually sent to the model, so the
-// UI can label conversations honestly instead of leaving the badge blank.
-type DefaultReasoner interface {
-	// DefaultReasoningLevel returns the user-facing name of the reasoning
-	// level applied to un-overridden requests ("off", "minimal", "low",
-	// "medium", "high", "xhigh", or a provider-verbatim effort string).
-	// Empty string means the provider is left to pick its own default and
-	// Shelley cannot know the concrete level up front.
-	//
-	// This reports the configured/effective level by name; it does NOT
-	// replicate the per-model effort clamping some request builders apply
-	// (e.g. chat backends downgrading "xhigh"->"high"). That only diverges
-	// when a service-level default is itself set to a clamped level, which
-	// does not happen for the shipped defaults (all "medium").
-	DefaultReasoningLevel() string
-}
-
-// ServiceDefaultReasoningLevel returns the service's default reasoning level
-// name, or "" when the service doesn't implement DefaultReasoner.
-func ServiceDefaultReasoningLevel(svc Service) string {
-	if dr, ok := svc.(DefaultReasoner); ok {
-		return dr.DefaultReasoningLevel()
-	}
-	return ""
-}
 
 // MustSchema validates that schema is a valid JSON schema and returns it as a json.RawMessage.
 // It panics if the schema is invalid.
@@ -140,25 +59,6 @@ type StreamDelta struct {
 	// detect dropped or out-of-order deltas. It is assigned by the server
 	// when broadcasting (see server.streamFlusher), not by LLM providers.
 	Seq int64 `json:"seq"`
-}
-
-type Request struct {
-	Messages   []Message
-	ToolChoice *ToolChoice
-	Tools      []*Tool
-	System     []SystemContent
-	// ThinkingLevel, when non-zero (i.e. not ThinkingLevelDefault), overrides
-	// the per-service default thinking level for this request. Use
-	// ThinkingLevelOff to explicitly disable reasoning for this turn.
-	ThinkingLevel ThinkingLevel
-	// ReasoningEffort is an optional provider-verbatim request override used by
-	// custom-model level mappings (for example mapping off to "none").
-	ReasoningEffort string
-	// OnStream is called with each streaming delta as the LLM generates content.
-	// If nil, no streaming callbacks are made. The full response is still returned from Do.
-	OnStream func(StreamDelta) `json:"-"`
-	// OnRetry is called before sleeping for a retryable LLM request failure.
-	OnRetry func(RetryEvent) `json:"-"`
 }
 
 type RetryEvent struct {
@@ -226,54 +126,10 @@ type ToolUse struct {
 	Name string
 }
 
-type ToolChoice struct {
-	Type ToolChoiceType
-	Name string
-}
-
 type SystemContent struct {
 	Text  string
 	Type  string
 	Cache bool
-}
-
-// Tool represents a tool available to an LLM.
-type Tool struct {
-	Name string
-	// Type is used by the text editor tool; see
-	// https://docs.anthropic.com/en/docs/build-with-claude/tool-use/text-editor-tool
-	Type        string
-	Description string
-	InputSchema json.RawMessage
-	// EndsTurn indicates that this tool should cause the model to end its turn when used
-	EndsTurn bool
-	// Cache indicates whether to use prompt caching for this tool
-	Cache bool
-
-	// ServerSide marks tools that are executed server-side by the LLM provider
-	// (e.g., Anthropic web search). These tools are provider-specific and must
-	// be filtered out when sending requests to other providers.
-	ServerSide bool
-
-	// The Run function is automatically called when the tool is used.
-	// Run functions may be called concurrently with each other and themselves.
-	// The input to Run function is the input to the tool, as provided by Claude, in compliance with the input schema.
-	// The outputs from Run will be sent back to Claude.
-	// If you do not want to respond to the tool call request from Claude, return ErrDoNotRespond.
-	// ctx contains extra (rarely used) tool call information; retrieve it with ToolCallInfoFromContext.
-	Run func(ctx context.Context, input json.RawMessage) ToolOut `json:"-"`
-}
-
-// RunJSON adapts a typed tool handler to Tool.Run by unmarshalling the raw
-// JSON tool input before calling run.
-func RunJSON[T any](run func(context.Context, T) ToolOut) func(context.Context, json.RawMessage) ToolOut {
-	return func(ctx context.Context, raw json.RawMessage) ToolOut {
-		var input T
-		if err := json.Unmarshal(raw, &input); err != nil {
-			return ErrorfToolOut("invalid tool input: %w", err)
-		}
-		return run(ctx, input)
-	}
 }
 
 // ToolProgress represents a progress update from a running tool.
@@ -288,21 +144,6 @@ type ToolProgress struct {
 
 // ToolProgressFunc is called by tools to report progress during execution.
 type ToolProgressFunc func(ToolProgress)
-
-// ToolOut represents the output of a tool run.
-type ToolOut struct {
-	// LLMContent is the output of the tool to be sent back to the LLM.
-	// May be nil on error.
-	LLMContent []Content
-	// Display is content to be displayed to the user.
-	// The type of content is set by the tool and coordinated with the UIs.
-	// It should be JSON-serializable.
-	Display any
-	// Error is the error (if any) that occurred during the tool run.
-	// The text contents of the error will be sent back to the LLM.
-	// If non-nil, LLMContent will be ignored.
-	Error error
-}
 
 // OpenAIResponsesReasoningSummary preserves one Responses API reasoning
 // summary part for stateless replay. It is intentionally provider-specific:
@@ -350,7 +191,7 @@ type Content struct {
 	ToolUseStartTime *time.Time
 	ToolUseEndTime   *time.Time
 
-	// Display is content to be displayed to the user, copied from ToolOut
+	// Display is content to be displayed to the user, copied from the native tool artifact.
 	Display any
 
 	// DisplayImageURL is set by the API layer when serving conversation data.
@@ -417,14 +258,13 @@ func ContentsAttr(contents []Content) slog.Attr {
 }
 
 type (
-	MessageRole    int
-	ContentType    int
-	ToolChoiceType int
-	StopReason     int
-	ThinkingLevel  int
+	MessageRole   int
+	ContentType   int
+	StopReason    int
+	ThinkingLevel int
 )
 
-//go:generate go tool golang.org/x/tools/cmd/stringer -type=MessageRole,ContentType,ToolChoiceType,StopReason,ThinkingLevel -output=llm_string.go
+//go:generate go tool golang.org/x/tools/cmd/stringer -type=MessageRole,ContentType,StopReason,ThinkingLevel -output=llm_string.go llm.go
 
 const (
 	MessageRoleUser MessageRole = iota
@@ -439,12 +279,9 @@ const (
 	ContentTypeWebSearchToolResult
 	ContentTypeWebSearchResult // individual search result inside web_search_tool_result
 
-	ToolChoiceTypeAuto ToolChoiceType = iota // default
-	ToolChoiceTypeAny                        // any tool, but must use one
-	ToolChoiceTypeNone                       // no tools allowed
-	ToolChoiceTypeTool                       // must use the tool specified in the Name field
-
-	StopReasonStopSequence StopReason = iota
+	// Keep the persisted values used before the removed ToolChoiceType occupied
+	// 10–13. Existing Shelley databases encode these enums as integers.
+	StopReasonStopSequence StopReason = 14 + iota
 	StopReasonMaxTokens
 	StopReasonEndTurn
 	StopReasonToolUse
@@ -631,10 +468,8 @@ func CostUSDFromResponse(headers http.Header) float64 {
 	return cost
 }
 
-// Usage represents the billing and rate-limit usage.
-// Most LLM structs do not have JSON tags, to avoid accidental direct use in specific providers.
-// However, the front-end uses this struct, and it relies on its JSON serialization.
-// Do NOT use this struct directly when implementing an llm.Service.
+// Usage is Shelley's persisted billing projection. Native model and agent code
+// uses message.Usage and converts only at the database/UI boundary.
 type Usage struct {
 	InputTokens              uint64  `json:"input_tokens"`
 	CacheCreationInputTokens uint64  `json:"cache_creation_input_tokens"`
@@ -716,19 +551,6 @@ func TextContent(text string) []Content {
 		Type: ContentTypeText,
 		Text: text,
 	}}
-}
-
-func ErrorToolOut(err error) ToolOut {
-	if err == nil {
-		panic("ErrorToolOut called with nil error")
-	}
-	return ToolOut{
-		Error: err,
-	}
-}
-
-func ErrorfToolOut(format string, args ...any) ToolOut {
-	return ErrorToolOut(fmt.Errorf(format, args...))
 }
 
 // DumpToFile writes LLM communication content to a timestamped file in ~/.cache/sketch/.

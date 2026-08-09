@@ -1,18 +1,22 @@
 package lazycue
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/semistrict/dago/agent"
+	"github.com/semistrict/dago/message"
+	"github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/providers/openai"
+	"github.com/semistrict/dago/tool"
 )
 
 // AgentMode specifies whether the agent should generate new steps or fix existing ones.
@@ -25,18 +29,19 @@ const (
 
 // AgentConfig configures an agent run.
 type AgentConfig struct {
-	Mode             AgentMode
-	Description      string
-	PreviousSteps    []byte // JSON of previous steps (fix mode)
-	PreviousError    string // Error from previous run (fix mode)
-	CacheFilePath    string // Path to the cached steps JSON for this test (fix mode); lets the agent inspect its git history for prior flakiness
-	Browser          *Browser
-	BaseURL          string
-	Model            string
-	AnthropicBaseURL string
-	AnthropicAPIKey  string
-	RepoRoot         string
-	Verbose          bool
+	Mode          AgentMode
+	Description   string
+	PreviousSteps []byte // JSON of previous steps (fix mode)
+	PreviousError string // Error from previous run (fix mode)
+	CacheFilePath string // Path to the cached steps JSON for this test (fix mode); lets the agent inspect its git history for prior flakiness
+	Browser       *Browser
+	BaseURL       string
+	Model         string
+	OpenAIBaseURL string
+	OpenAIAPIKey  string
+	HTTPClient    *http.Client
+	RepoRoot      string
+	Verbose       bool
 }
 
 // AgentResult is the result of an agent run.
@@ -50,8 +55,6 @@ type AgentResult struct {
 	OutputTokens   int
 }
 
-const maxAgentTurns = 25
-
 // agentBudget bounds the total wall-clock time a single heal/generate agent run
 // may consume. It is kept well under the `go test` package timeout (10m by
 // default) so that a slow or stuck heal fails its one test gracefully (via a
@@ -60,79 +63,11 @@ const maxAgentTurns = 25
 // other test in the package too.
 const agentBudget = 5 * time.Minute
 
-// anthropicCallTimeout bounds a single LLM HTTP request. http.DefaultClient has
-// no timeout, so without this a hung request could block a heal indefinitely
-// (until agentBudget, or formerly the package deadline).
-const anthropicCallTimeout = 90 * time.Second
+const modelMaxAttempts = 3
+const maxAgentTurns = 25
+const modelCallTimeout = 90 * time.Second
 
-// anthropicMaxAttempts is the number of times callAnthropic will try a single
-// LLM request before giving up. Transient failures (network errors, per-request
-// timeouts, 429s, and 5xx responses) are common against the live Anthropic API
-// in CI and would otherwise fail an entire heal — and thus a queue build — on a
-// single hiccup. Retries are bounded by the surrounding agentBudget context.
-const anthropicMaxAttempts = 3
-
-// anthropicRetryBackoff is the base delay between retry attempts; it grows
-// linearly with the attempt number (attempt*base) and is capped well under
-// agentBudget so a retry chain can never exhaust it on sleeping alone. It is a
-// var (not a const) so tests can shrink it to avoid real sleeps.
-var anthropicRetryBackoff = 2 * time.Second
-
-// --- Anthropic API types ---
-
-type apiRequest struct {
-	Model     string       `json:"model"`
-	MaxTokens int          `json:"max_tokens"`
-	System    string       `json:"system"`
-	Messages  []apiMessage `json:"messages"`
-	Tools     []apiTool    `json:"tools"`
-}
-
-type apiMessage struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"` // string or []apiContentBlock
-}
-
-type apiContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   interface{}     `json:"content,omitempty"` // string or []apiContentBlock for tool_result
-	Source    *apiImageSource `json:"source,omitempty"`
-}
-
-type apiImageSource struct {
-	Type      string `json:"type"`
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
-}
-
-type apiTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
-}
-
-type apiUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-}
-
-type apiResponse struct {
-	ID         string            `json:"id"`
-	Content    []apiContentBlock `json:"content"`
-	StopReason string            `json:"stop_reason"`
-	Error      *apiError         `json:"error,omitempty"`
-	Usage      apiUsage          `json:"usage"`
-}
-
-type apiError struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
+var modelRetryBackoff = 2 * time.Second
 
 // --- Tool input types ---
 
@@ -274,375 +209,201 @@ INSTRUCTIONS:
 - Use screenshots to verify the current state, then decide.`, description, string(previousSteps), previousError, historyHint)
 }
 
-func buildTools() []apiTool {
-	return []apiTool{
-		{
-			Name:        "run_steps",
-			Description: "Execute an array of DSL test steps against the browser. Returns structured results showing which step passed/failed and why. The browser is reset to a clean state before execution. Use this to test your generated DSL. When you have the COMPLETE test that exercises everything in the description and it passes, call run_steps one last time with \"final\": true to submit it for caching.",
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"properties": {
-					"steps": {
-						"type": "array",
-						"description": "Array of DSL step objects to execute",
-						"items": { "type": "object" }
-					},
-					"final": {
-						"type": "boolean",
-						"description": "Set true only when these steps are the complete, final test to save. Do not set on exploratory probes."
-					}
-				},
-				"required": ["steps"]
-			}`),
-		},
-		{
-			Name:        "screenshot",
-			Description: "Take a screenshot of the current page state. Returns the screenshot as a base64-encoded PNG image. Use this to see what the page looks like.",
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"properties": {},
-				"required": []
-			}`),
-		},
-		{
-			Name:        "git_command",
-			Description: "Run a read-only git command in the repository root. Use for: git grep, git ls-files, git show, git log, git diff. Helps you understand the codebase to write better tests.",
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"properties": {
-					"command": {
-						"type": "string",
-						"description": "The git command to run (e.g., 'git grep data-testid', 'git ls-files src/')"
-					}
-				},
-				"required": ["command"]
-			}`),
-		},
+type agentRunState struct {
+	mu          sync.Mutex
+	lastSteps   []byte
+	lastResults []StepResult
+	finalSteps  []byte
+	finalResult []StepResult
+	lastError   string
+}
+
+func (state *agentRunState) record(input runStepsInput, results []StepResult, err error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.lastSteps = append([]byte(nil), input.Steps...)
+	state.lastResults = append([]StepResult(nil), results...)
+	if input.Final {
+		state.finalSteps = append([]byte(nil), input.Steps...)
+		state.finalResult = append([]StepResult(nil), results...)
+	}
+	if err != nil {
+		state.lastError = err.Error()
 	}
 }
 
-// RunAgent executes the LLM agent loop to generate or fix DSL test steps.
+func (state *agentRunState) snapshot() (lastSteps []byte, lastResults []StepResult, finalSteps []byte, finalResults []StepResult, lastError string) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return append([]byte(nil), state.lastSteps...), append([]StepResult(nil), state.lastResults...), append([]byte(nil), state.finalSteps...), append([]StepResult(nil), state.finalResult...), state.lastError
+}
+
+func buildTools(cfg *AgentConfig, state *agentRunState, logf func(string, ...any)) []tool.Tool {
+	runSteps := tool.Func{
+		Spec: tool.Definition{
+			Name:        "run_steps",
+			Description: "Execute an array of DSL test steps against the browser. When the complete test passes, call this tool with final=true so those exact steps can be cached.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"steps":{"type":"array","description":"Array of DSL step objects to execute","items":{"type":"object"}},"final":{"type":"boolean","description":"True only for the complete final test"}},"required":["steps"]}`),
+		},
+		Run: func(ctx context.Context, arguments json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+			var input runStepsInput
+			if err := json.Unmarshal(arguments, &input); err != nil {
+				return tool.Result{}, fmt.Errorf("parse input: %w", err)
+			}
+			steps, err := ParseSteps(input.Steps)
+			if err != nil {
+				return tool.Result{}, fmt.Errorf("parse steps: %w", err)
+			}
+			logf("tool: run_steps (%d steps, final=%t)", len(steps), input.Final)
+			for index, step := range steps {
+				logf("  [%d] %s", index, StepSummary(step))
+			}
+			results, executeErr := cfg.Browser.ExecuteSteps(ctx, cfg.BaseURL, steps)
+			state.record(input, results, executeErr)
+			var summary strings.Builder
+			for index, result := range results {
+				status := "PASS"
+				if !result.Pass {
+					status = "FAIL"
+				}
+				fmt.Fprintf(&summary, "Step %d [%s] %s (%s)", index, result.Action, status, result.Duration.Round(time.Millisecond))
+				if result.Error != "" {
+					summary.WriteString(": " + result.Error)
+				}
+				if result.Output != "" {
+					summary.WriteString(" => " + truncateArg(result.Output, 200))
+				}
+				summary.WriteByte('\n')
+			}
+			if executeErr != nil {
+				summary.WriteString("\nOverall: FAILED - " + executeErr.Error())
+			} else {
+				summary.WriteString("\nOverall: ALL STEPS PASSED")
+			}
+			return tool.TextResult(summary.String()), nil
+		},
+	}
+	screenshot := tool.Func{
+		Spec: tool.Definition{
+			Name:        "screenshot",
+			Description: "Take a screenshot of the current browser page and return it as a PNG image.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		},
+		Run: func(ctx context.Context, _ json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+			logf("tool: screenshot")
+			png, err := cfg.Browser.Screenshot(ctx)
+			if err != nil {
+				return tool.Result{}, fmt.Errorf("screenshot: %w", err)
+			}
+			return tool.Result{Content: []message.ContentBlock{{Type: message.BlockImage, MIMEType: "image/png", Data: png}}}, nil
+		},
+	}
+	gitCommand := tool.Func{
+		Spec: tool.Definition{
+			Name:        "git_command",
+			Description: "Run one read-only git command in the repository root to inspect tracked source and history.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"A read-only git command"}},"required":["command"]}`),
+		},
+		Run: func(_ context.Context, arguments json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+			var input gitCommandInput
+			if err := json.Unmarshal(arguments, &input); err != nil {
+				return tool.Result{}, fmt.Errorf("parse input: %w", err)
+			}
+			logf("tool: git_command %s", input.Command)
+			return tool.TextResult(executeGitCommand(cfg.RepoRoot, input.Command)), nil
+		},
+	}
+	return []tool.Tool{runSteps, screenshot, gitCommand}
+}
+
+// RunAgent generates or heals one browser test through Dago's native agent
+// graph. Model messages and tool results remain provider-neutral throughout;
+// only the OpenAI Responses adapter knows the wire protocol.
 func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("agent config is required")
+	}
+	if cfg.Browser == nil {
+		return nil, fmt.Errorf("browser is required")
+	}
 	logf := func(format string, args ...any) {
 		if cfg.Verbose {
 			log.Printf("[agent] "+format, args...)
 		}
 	}
-
-	// Bound the whole agent run so a stuck heal can't run until the package
-	// test deadline and panic (taking the rest of the package down with it).
 	ctx, cancel := context.WithTimeout(ctx, agentBudget)
 	defer cancel()
 
-	systemPrompt := buildSystemPrompt()
-	var userPrompt string
+	chat, err := openai.NewAPIKey(cfg.OpenAIAPIKey, openai.Options{
+		Model: cfg.Model, BaseURL: cfg.OpenAIBaseURL, HTTPClient: cfg.HTTPClient,
+		MaxOutputTokens: 8192,
+		// LazyCue owns the user-visible retry budget below. Disable the
+		// transport adapter's retry loop so three logical attempts cannot
+		// multiply into twelve HTTP requests.
+		RetryBackoff: []time.Duration{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	retrying := &retryingChat{inner: chat, attempts: modelMaxAttempts, backoff: modelRetryBackoff, verbose: cfg.Verbose}
+	state := &agentRunState{}
+	compiled, err := agent.New(agent.Options{
+		Name: "lazycue", Model: retrying, SystemPrompt: buildSystemPrompt(),
+		Tools: buildTools(cfg, state, logf), RecursionLimit: maxAgentTurns*2 + 3,
+		MaxConcurrency: 1,
+	})
+	if err != nil {
+		return nil, err
+	}
+	userPrompt := buildGenerateUserPrompt(cfg.Description)
 	if cfg.Mode == AgentModeFix {
 		userPrompt = buildFixUserPrompt(cfg.Description, cfg.PreviousSteps, cfg.PreviousError, cfg.CacheFilePath)
-	} else {
-		userPrompt = buildGenerateUserPrompt(cfg.Description)
+	}
+	result, err := compiled.Invoke(ctx, agent.Input{Messages: []message.Message{message.Human(userPrompt)}})
+	if err != nil {
+		return nil, fmt.Errorf("run native agent: %w", err)
 	}
 
-	messages := []apiMessage{
-		{Role: "user", Content: userPrompt},
-	}
-
-	tools := buildTools()
-
-	var lastStepsJSON []byte
-	var lastStepResults []StepResult
-	// finalStepsJSON / finalStepResults hold the run_steps call the agent
-	// explicitly marked as its complete test ("// FINAL"). Exploratory probes
-	// must not be cached, so we only accept these as the saved test.
-	var finalStepsJSON []byte
-	var finalStepResults []StepResult
-	var nudgedForFinal bool
-	var lastError string
-	var genuineFailure bool // set when agent determines the APP is broken, not the test
-	var totalInputTokens, totalOutputTokens int
-
-	for turn := 0; turn < maxAgentTurns; turn++ {
-		logf("turn %d", turn)
-
-		resp, err := callAnthropic(ctx, cfg, systemPrompt, messages, tools)
+	if _, _, finalSteps, finalResults, _ := state.snapshot(); finalSteps == nil || !allPassed(finalResults) {
+		result, err = compiled.Invoke(ctx, agent.Input{Messages: append(result.Messages, message.Human("You have not produced a complete passing test. Call run_steps with the full test and final=true. If the application is genuinely broken, state that explicitly."))})
 		if err != nil {
-			return nil, fmt.Errorf("anthropic API call: %w", err)
-		}
-
-		if resp.Error != nil {
-			return nil, fmt.Errorf("anthropic error: %s: %s", resp.Error.Type, resp.Error.Message)
-		}
-
-		totalInputTokens += resp.Usage.InputTokens
-		totalOutputTokens += resp.Usage.OutputTokens
-
-		// Check for tool_use blocks. Track whether this assistant turn declared
-		// its run_steps as the FINAL, complete test (vs. an exploratory probe).
-		var toolUses []apiContentBlock
-		var turnIsFinal bool
-		for _, block := range resp.Content {
-			if block.Type == "tool_use" {
-				toolUses = append(toolUses, block)
-			}
-			if block.Type == "text" {
-				logf("assistant: %s", truncate(block.Text, 200))
-				if strings.Contains(block.Text, "// FINAL") {
-					turnIsFinal = true
-				}
-			}
-		}
-
-		// Check text blocks for genuine failure signals.
-		for _, block := range resp.Content {
-			if block.Type == "text" && isGenuineFailureSignal(block.Text) {
-				logf("agent detected genuine application failure")
-				genuineFailure = true
-				if lastError == "" {
-					lastError = block.Text
-				}
-			}
-		}
-
-		if len(toolUses) == 0 {
-			// No tool calls — agent is done.
-			if genuineFailure {
-				errMsg := lastError
-				if errMsg == "" {
-					errMsg = "agent determined the application is broken"
-				}
-				return &AgentResult{
-					Success:      false,
-					Error:        errMsg,
-					StepsJSON:    lastStepsJSON,
-					StepResults:  lastStepResults,
-					InputTokens:  totalInputTokens,
-					OutputTokens: totalOutputTokens,
-				}, nil
-			}
-			// Only accept a run_steps call the agent explicitly marked "// FINAL"
-			// as the saved test. This prevents caching an exploratory probe that
-			// happened to be the agent's last run_steps but doesn't actually test
-			// the described behavior.
-			if finalStepsJSON != nil && allPassed(finalStepResults) {
-				return &AgentResult{
-					Success:      true,
-					StepsJSON:    finalStepsJSON,
-					StepResults:  finalStepResults,
-					InputTokens:  totalInputTokens,
-					OutputTokens: totalOutputTokens,
-				}, nil
-			}
-			// The agent stopped without a passing FINAL test. Nudge it once to
-			// produce one (it may have only run exploratory probes), then fail.
-			if !nudgedForFinal {
-				nudgedForFinal = true
-				messages = append(messages, apiMessage{
-					Role: "user",
-					Content: []apiContentBlock{{
-						Type: "text",
-						Text: "You have not yet produced a complete, passing test. Do NOT stop on an exploratory probe. Write the FULL test that exercises everything in the description (including every assertion), output the text \"// FINAL\" on its own, and call run_steps with the complete step list. If you believe the application is genuinely broken, say so explicitly instead.",
-					}},
-				})
-				continue
-			}
-			errMsg := lastError
-			if errMsg == "" {
-				for _, block := range resp.Content {
-					if block.Type == "text" {
-						errMsg = block.Text
-						break
-					}
-				}
-			}
-			if errMsg == "" {
-				errMsg = "agent stopped without producing passing test"
-			}
-			return &AgentResult{
-				Success:      false,
-				Error:        errMsg,
-				StepsJSON:    lastStepsJSON,
-				StepResults:  lastStepResults,
-				InputTokens:  totalInputTokens,
-				OutputTokens: totalOutputTokens,
-			}, nil
-		}
-
-		// Append assistant response to messages.
-		messages = append(messages, apiMessage{
-			Role:    "assistant",
-			Content: resp.Content,
-		})
-
-		// Process tool calls.
-		var toolResults []apiContentBlock
-		var finalSubmittedThisTurn bool
-		for _, tu := range toolUses {
-			switch tu.Name {
-			case "run_steps":
-				var input runStepsInput
-				if err := json.Unmarshal(tu.Input, &input); err != nil {
-					toolResults = append(toolResults, makeToolResult(tu.ID, fmt.Sprintf("Error parsing input: %v", err)))
-					continue
-				}
-
-				steps, err := ParseSteps(input.Steps)
-				if err != nil {
-					toolResults = append(toolResults, makeToolResult(tu.ID, fmt.Sprintf("Error parsing steps: %v", err)))
-					continue
-				}
-
-				logf("tool: run_steps (%d steps)", len(steps))
-				for si, s := range steps {
-					logf("  [%d] %s", si, StepSummary(s))
-				}
-
-				results, execErr := cfg.Browser.ExecuteSteps(ctx, cfg.BaseURL, steps)
-				lastStepResults = results
-				lastStepsJSON = input.Steps
-				// A call is the final test if the agent set the explicit `final`
-				// flag on the tool call OR wrote the legacy "// FINAL" marker.
-				if input.Final || turnIsFinal {
-					finalStepResults = results
-					finalStepsJSON = input.Steps
-					finalSubmittedThisTurn = true
-				}
-
-				// Build result summary.
-				var sb strings.Builder
-				for i, r := range results {
-					status := "PASS"
-					if !r.Pass {
-						status = "FAIL"
-					}
-					sb.WriteString(fmt.Sprintf("Step %d [%s] %s (%s)", i, r.Action, status, r.Duration.Round(time.Millisecond)))
-					if r.Error != "" {
-						sb.WriteString(": " + r.Error)
-					}
-					if r.Output != "" {
-						// Surface eval results so the agent can read the value it
-						// probed for. Truncate to keep tool results compact.
-						sb.WriteString(" => " + truncateArg(r.Output, 200))
-					}
-					sb.WriteString("\n")
-				}
-
-				if execErr != nil {
-					lastError = execErr.Error()
-					sb.WriteString("\nOverall: FAILED - " + execErr.Error())
-				} else {
-					sb.WriteString("\nOverall: ALL STEPS PASSED")
-				}
-
-				toolResults = append(toolResults, makeToolResult(tu.ID, sb.String()))
-
-			case "screenshot":
-				logf("tool: screenshot")
-				png, err := cfg.Browser.Screenshot(ctx)
-				if err != nil {
-					toolResults = append(toolResults, makeToolResult(tu.ID, fmt.Sprintf("Screenshot failed: %v", err)))
-					continue
-				}
-				b64 := base64.StdEncoding.EncodeToString(png)
-				toolResults = append(toolResults, apiContentBlock{
-					Type:      "tool_result",
-					ToolUseID: tu.ID,
-					Content: []apiContentBlock{
-						{
-							Type: "image",
-							Source: &apiImageSource{
-								Type:      "base64",
-								MediaType: "image/png",
-								Data:      b64,
-							},
-						},
-					},
-				})
-
-			case "git_command":
-				var input gitCommandInput
-				if err := json.Unmarshal(tu.Input, &input); err != nil {
-					toolResults = append(toolResults, makeToolResult(tu.ID, fmt.Sprintf("Error parsing input: %v", err)))
-					continue
-				}
-
-				logf("tool: git_command %s", input.Command)
-				result := executeGitCommand(cfg.RepoRoot, input.Command)
-				toolResults = append(toolResults, makeToolResult(tu.ID, result))
-
-			default:
-				logf("tool: %s (unknown)", tu.Name)
-				toolResults = append(toolResults, makeToolResult(tu.ID, fmt.Sprintf("Unknown tool: %s", tu.Name)))
-			}
-		}
-
-		messages = append(messages, apiMessage{
-			Role:    "user",
-			Content: toolResults,
-		})
-
-		// The agent submitted a final test (via the run_steps `final` flag or
-		// "// FINAL") this turn and every step passed: accept it immediately
-		// without burning another round trip waiting for an end-of-turn message.
-		if (turnIsFinal || finalSubmittedThisTurn) && finalStepsJSON != nil && allPassed(finalStepResults) {
-			return &AgentResult{
-				Success:      true,
-				StepsJSON:    finalStepsJSON,
-				StepResults:  finalStepResults,
-				InputTokens:  totalInputTokens,
-				OutputTokens: totalOutputTokens,
-			}, nil
-		}
-
-		// If genuine failure was detected, stop immediately.
-		if genuineFailure {
-			errMsg := lastError
-			if errMsg == "" {
-				errMsg = "agent determined the application is broken"
-			}
-			return &AgentResult{
-				Success:      false,
-				Error:        errMsg,
-				StepsJSON:    lastStepsJSON,
-				StepResults:  lastStepResults,
-				InputTokens:  totalInputTokens,
-				OutputTokens: totalOutputTokens,
-			}, nil
-		}
-
-		// If the agent marked a complete (FINAL) test that passed all steps,
-		// we're done. Exploratory probes are never accepted as the saved test.
-		if finalStepsJSON != nil && allPassed(finalStepResults) {
-			if resp.StopReason == "end_turn" {
-				return &AgentResult{
-					Success:      true,
-					StepsJSON:    finalStepsJSON,
-					StepResults:  finalStepResults,
-					InputTokens:  totalInputTokens,
-					OutputTokens: totalOutputTokens,
-				}, nil
-			}
-			// Continue to let agent confirm/finalize.
+			return nil, fmt.Errorf("finalize native agent: %w", err)
 		}
 	}
 
-	// Exhausted turns: only accept a passing FINAL test.
-	if finalStepsJSON != nil && allPassed(finalStepResults) {
-		return &AgentResult{
-			Success:      true,
-			StepsJSON:    finalStepsJSON,
-			StepResults:  finalStepResults,
-			InputTokens:  totalInputTokens,
-			OutputTokens: totalOutputTokens,
-		}, nil
+	lastSteps, lastResults, finalSteps, finalResults, lastError := state.snapshot()
+	inputTokens, outputTokens := usageFromMessages(result.Messages)
+	for _, item := range result.Messages {
+		if item.Role != message.RoleAssistant {
+			continue
+		}
+		text := item.TextContent()
+		logf("assistant: %s", truncate(text, 200))
+		if isGenuineFailureSignal(text) {
+			if lastError == "" {
+				lastError = text
+			}
+			return &AgentResult{Success: false, Error: lastError, StepsJSON: lastSteps, StepResults: lastResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
+		}
 	}
+	if finalSteps != nil && allPassed(finalResults) {
+		return &AgentResult{Success: true, StepsJSON: finalSteps, StepResults: finalResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
+	}
+	if lastError == "" {
+		lastError = "agent stopped without producing a complete passing test"
+	}
+	return &AgentResult{Success: false, Error: lastError, StepsJSON: lastSteps, StepResults: lastResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
+}
 
-	return &AgentResult{
-		Success:      false,
-		Error:        "agent exhausted maximum turns",
-		StepsJSON:    lastStepsJSON,
-		StepResults:  lastStepResults,
-		InputTokens:  totalInputTokens,
-		OutputTokens: totalOutputTokens,
-	}, nil
+func usageFromMessages(messages []message.Message) (inputTokens, outputTokens int) {
+	for _, item := range messages {
+		if item.Usage == nil {
+			continue
+		}
+		inputTokens += item.Usage.InputTokens
+		outputTokens += item.Usage.OutputTokens
+	}
+	return inputTokens, outputTokens
 }
 
 func allPassed(results []StepResult) bool {
@@ -655,14 +416,6 @@ func allPassed(results []StepResult) bool {
 		}
 	}
 	return true
-}
-
-func makeToolResult(id, text string) apiContentBlock {
-	return apiContentBlock{
-		Type:      "tool_result",
-		ToolUseID: id,
-		Content:   text,
-	}
 }
 
 // gitExec runs a git command in the given directory and returns trimmed stdout.
@@ -723,124 +476,84 @@ func executeGitCommand(repoRoot, command string) string {
 	return out
 }
 
-// callAnthropic issues an LLM request, retrying transient failures (network
-// errors, per-request timeouts, 429, and 5xx) up to anthropicMaxAttempts times
-// with a linear backoff. Non-retryable failures (e.g. 4xx other than 429, or a
-// cancelled parent context) return immediately. All sleeping respects ctx so
-// the surrounding agent budget and test cancellation still win.
-func callAnthropic(ctx context.Context, cfg *AgentConfig, systemPrompt string, messages []apiMessage, tools []apiTool) (*apiResponse, error) {
+type retryingChat struct {
+	inner    model.Chat
+	attempts int
+	backoff  time.Duration
+	verbose  bool
+}
+
+func (chat *retryingChat) Profile() model.Profile { return chat.inner.Profile() }
+
+func (chat *retryingChat) Invoke(ctx context.Context, request model.Request) (model.Response, error) {
 	var lastErr error
-	for attempt := 1; attempt <= anthropicMaxAttempts; attempt++ {
-		resp, err := callAnthropicOnce(ctx, cfg, systemPrompt, messages, tools)
+	for attempt := 1; attempt <= chat.attempts; attempt++ {
+		callCtx, cancel := context.WithTimeout(ctx, modelCallTimeout)
+		response, err := chat.inner.Invoke(callCtx, request)
+		cancel()
 		if err == nil {
-			return resp, nil
+			return response, nil
 		}
 		lastErr = err
-		// Stop early if the parent context is done (agent budget exhausted or
-		// the test was cancelled) or the error isn't worth retrying.
-		if ctx.Err() != nil || !isRetryableAnthropicErr(err) || attempt == anthropicMaxAttempts {
+		if !isRetryableModelError(ctx, err) || attempt == chat.attempts {
 			break
 		}
-		sleep := time.Duration(attempt) * anthropicRetryBackoff
-		if cfg.Verbose {
-			log.Printf("[agent] anthropic request failed (attempt %d/%d), retrying in %s: %v", attempt, anthropicMaxAttempts, sleep, err)
+		if err := chat.wait(ctx, attempt, lastErr); err != nil {
+			return model.Response{}, err
 		}
-		select {
-		case <-time.After(sleep):
-		case <-ctx.Done():
-			return nil, fmt.Errorf("anthropic API call: %w (last error: %v)", ctx.Err(), lastErr)
+	}
+	return model.Response{}, lastErr
+}
+
+func (chat *retryingChat) Stream(ctx context.Context, request model.Request) (model.Stream, error) {
+	var lastErr error
+	for attempt := 1; attempt <= chat.attempts; attempt++ {
+		stream, err := chat.inner.Stream(ctx, request)
+		if err == nil {
+			return stream, nil
+		}
+		lastErr = err
+		if !isRetryableModelError(ctx, err) || attempt == chat.attempts {
+			break
+		}
+		if err := chat.wait(ctx, attempt, lastErr); err != nil {
+			return nil, err
 		}
 	}
 	return nil, lastErr
 }
 
-// isRetryableAnthropicErr reports whether an error from callAnthropicOnce is
-// worth retrying. Transport errors (DNS, connection reset, EOF) and per-request
-// deadline timeouts are transient, as are HTTP 429 and 5xx responses. A
-// cancelled parent context is never retryable.
-func isRetryableAnthropicErr(err error) bool {
-	if err == nil {
-		return false
+func (chat *retryingChat) wait(ctx context.Context, attempt int, lastErr error) error {
+	delay := time.Duration(attempt) * chat.backoff
+	if chat.verbose {
+		log.Printf("[agent] model request failed (attempt %d/%d), retrying in %s: %v", attempt, chat.attempts, delay, lastErr)
 	}
-	// A cancelled or expired parent context should not be retried; only the
-	// per-request timeout (a fresh deadline.Exceeded with the parent still live)
-	// is handled by the ctx.Err() check in the caller.
-	if errors.Is(err, context.Canceled) {
+	if delay <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("model request: %w (last error: %v)", ctx.Err(), lastErr)
+	}
+}
+
+func isRetryableModelError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	var apiErr *anthropicStatusError
+	var apiErr *openai.Error
 	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500
+		return apiErr.Status == http.StatusRequestTimeout || apiErr.Status == http.StatusConflict || apiErr.Status == http.StatusTooManyRequests || apiErr.Status >= 500
 	}
-	// Default: treat unknown errors (transport-level) as retryable, since the
-	// dominant CI failure mode is a flaky network to api.anthropic.com.
-	return true
-}
-
-// anthropicStatusError carries a non-200 HTTP status so the retry logic can
-// distinguish retryable (429, 5xx) from terminal (other 4xx) responses.
-type anthropicStatusError struct {
-	StatusCode int
-	Body       string
-}
-
-func (e *anthropicStatusError) Error() string {
-	return fmt.Sprintf("API returned %d: %s", e.StatusCode, e.Body)
-}
-
-func callAnthropicOnce(ctx context.Context, cfg *AgentConfig, systemPrompt string, messages []apiMessage, tools []apiTool) (*apiResponse, error) {
-	reqBody := apiRequest{
-		Model:     cfg.Model,
-		MaxTokens: 8192,
-		System:    systemPrompt,
-		Messages:  messages,
-		Tools:     tools,
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	// Bound each request so a hung connection can't stall the whole agent.
-	// Derived from ctx so the agent budget (and test cancellation) still win.
-	ctx, cancel := context.WithTimeout(ctx, anthropicCallTimeout)
-	defer cancel()
-
-	url := strings.TrimRight(cfg.AnthropicBaseURL, "/") + "/v1/messages"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", cfg.AnthropicAPIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	httpResp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP request: %w", err)
-	}
-	defer httpResp.Body.Close()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if httpResp.StatusCode != 200 {
-		return nil, &anthropicStatusError{StatusCode: httpResp.StatusCode, Body: string(respBody)}
-	}
-
-	var resp apiResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
-	}
-
-	return &resp, nil
+	text := err.Error()
+	return strings.Contains(text, "openai: request:") || strings.Contains(text, "openai: decode response:")
 }
 
 // isGenuineFailureSignal checks if the agent's text output indicates the

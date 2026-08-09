@@ -16,18 +16,12 @@ func TestLoopWithClaudeTools(t *testing.T) {
 		return nil
 	}
 
-	// Use some actual claudetools
-	tools := []*llm.Tool{
-		// TODO: Add actual tools when needed
-	}
-
 	service := NewPredictableService()
 
 	// Create loop with the configured service
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         tools,
 		RecordMessage: recordFunc,
 	})
 
@@ -86,9 +80,8 @@ func TestLoopWithClaudeTools(t *testing.T) {
 func TestLoopContextCancellation(t *testing.T) {
 	service := NewPredictableService()
 	loop := NewLoop(Config{
-		LLM:     service,
+		Model:   service,
 		History: []llm.Message{},
-		Tools:   []*llm.Tool{},
 		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return nil
 		},
@@ -111,9 +104,8 @@ func TestLoopSystemMessages(t *testing.T) {
 	}
 
 	loop := NewLoop(Config{
-		LLM:     NewPredictableService(),
+		Model:   NewPredictableService(),
 		History: []llm.Message{},
-		Tools:   []*llm.Tool{},
 		System:  system,
 		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return nil

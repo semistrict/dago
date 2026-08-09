@@ -31,6 +31,9 @@ The lazy is self-congratulatory.
 ## Prerequisites
 
 LazyCue uses the chromedp package to talk to a Chromium-based browser.
+Its generation and healing agent is a Dago-native tool-calling graph backed by
+the OpenAI Responses API. Set `OPENAI_API_KEY` before asking it to generate or
+heal a cached test.
 On Linux, [Headless Shell](https://hub.docker.com/r/chromedp/headless-shell/) is good, and you
 can extract it like so.
 
@@ -112,9 +115,9 @@ and the app shows "Y", that's a genuine failure.
 | `--cache-dir` | `.lazycue` | Directory holding cache JSON files |
 | `--artifact-dir` | | Write per-step screenshots + an HTML report (`index.html`) here |
 | `--json` | | Write a machine-readable JSON cache-stats summary here |
-| `--model` | `claude-sonnet-4-6` | LLM model |
-| `--api-url` | `ANTHROPIC_BASE_URL` or `https://api.anthropic.com` | Anthropic API base URL |
-| `--api-key` | `ANTHROPIC_API_KEY` | Anthropic API key |
+| `--model` | `gpt-5.6-luna` | OpenAI Responses model |
+| `--api-url` | `OPENAI_BASE_URL` or `https://api.openai.com/v1` | OpenAI API base URL |
+| `--api-key` | `OPENAI_API_KEY` | OpenAI API key |
 | `--verbose` | false | Verbose output |
 
 ## How the Cache Works

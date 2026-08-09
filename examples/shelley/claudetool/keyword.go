@@ -14,14 +14,12 @@ import (
 	dmodel "github.com/semistrict/dago/model"
 	dtool "github.com/semistrict/dago/tool"
 
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/pathutil"
 )
 
-// LLMServiceProvider defines the interface for getting LLM services
+// LLMServiceProvider resolves native chat models for model-backed tools.
 type LLMServiceProvider interface {
-	GetService(modelID string) (llm.Service, error)
+	GetChat(modelID string) (dmodel.Chat, error)
 	GetAvailableModels() []string
 }
 
@@ -41,18 +39,7 @@ func NewKeywordToolWithWorkingDir(provider LLMServiceProvider, wd *MutableWorkin
 	return &KeywordTool{llmProvider: provider, workingDir: wd}
 }
 
-// Tool returns the LLM tool definition
-func (k *KeywordTool) Tool() *llm.Tool {
-	return &llm.Tool{
-		Name:        keywordName,
-		Description: keywordDescription,
-		InputSchema: llm.MustSchema(keywordInputSchema),
-		Run:         llm.RunJSON(k.keywordRun),
-	}
-}
-
-// NativeTool runs keyword search and relevance filtering through Dago's tool
-// and model contracts. Tool remains the pinned Shelley facade for its tests.
+// NativeTool runs keyword search and relevance filtering through Dago's tool and model contracts.
 func (k *KeywordTool) NativeTool() dtool.Tool {
 	return dtool.Func{
 		Spec: dtool.Definition{
@@ -71,15 +58,10 @@ func (k *KeywordTool) NativeTool() dtool.Tool {
 			if search.answer != "" {
 				return dtool.TextResult(search.answer), nil
 			}
-			service, err := k.selectBestLLM(k.llmProvider)
+			chat, err := k.selectBestChat(k.llmProvider)
 			if err != nil {
-				return dtool.Result{}, fmt.Errorf("failed to get LLM service: %w", err)
+				return dtool.Result{}, fmt.Errorf("failed to get chat model: %w", err)
 			}
-			native, ok := service.(interface{ DagoChat() dmodel.Chat })
-			if !ok || native.DagoChat() == nil {
-				return dtool.Result{}, fmt.Errorf("keyword relevance model does not expose a native Dago chat")
-			}
-			chat := native.DagoChat()
 			started := time.Now()
 			response, err := chat.Invoke(ctx, dmodel.Request{
 				Messages: []dmessage.Message{
@@ -105,6 +87,20 @@ func (k *KeywordTool) NativeTool() dtool.Tool {
 			return result, nil
 		},
 	}
+}
+
+func (k *KeywordTool) selectBestChat(provider LLMServiceProvider) (dmodel.Chat, error) {
+	for _, model := range PreferredToolModels {
+		chat, err := provider.GetChat(model)
+		if err == nil {
+			return chat, nil
+		}
+	}
+	available := provider.GetAvailableModels()
+	if len(available) > 0 {
+		return provider.GetChat(available[0])
+	}
+	return nil, fmt.Errorf("no chat models available")
 }
 
 const (
@@ -183,72 +179,6 @@ func FindRepoRoot(wd string) (string, error) {
 		return "", fmt.Errorf("failed to find git repository root: %w", err)
 	}
 	return pathutil.Logical(strings.TrimSpace(string(out)), wd), nil
-}
-
-// keywordRun is the main implementation using the LLM provider
-func (k *KeywordTool) keywordRun(ctx context.Context, input keywordInput) llm.ToolOut {
-	search, err := k.search(ctx, input)
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	if search.answer != "" {
-		return llm.ToolOut{LLMContent: llm.TextContent(search.answer)}
-	}
-
-	// Select the best available LLM service
-	llmService, err := k.selectBestLLM(k.llmProvider)
-	if err != nil {
-		return llm.ErrorfToolOut("failed to get LLM service: %w", err)
-	}
-
-	// Create the filtering request
-	system := []llm.SystemContent{
-		{Type: "text", Text: strings.TrimSpace(keywordSystemPrompt)},
-	}
-
-	initialMessage := llm.Message{
-		Role: llm.MessageRoleUser,
-		Content: []llm.Content{
-			llm.StringContent("<pwd>\n" + search.wd + "\n</pwd>"),
-			llm.StringContent("<ripgrep_results>\n" + search.output + "\n</ripgrep_results>"),
-			llm.StringContent("<query>\n" + input.Query + "\n</query>"),
-		},
-	}
-
-	req := &llm.Request{
-		Messages: []llm.Message{initialMessage},
-		System:   system,
-	}
-
-	resp, err := llmService.Do(llmhttp.WithPurpose(ctx, "keyword_search"), req)
-	if err != nil {
-		return llm.ErrorfToolOut("failed to send relevance filtering message: %w", err)
-	}
-	// Find the single text content block. Reasoning models may emit Thinking
-	// blocks alongside the answer; those are fine to discard. Anything else
-	// (or multiple text blocks) is unexpected.
-	var filtered string
-	var found bool
-	for _, c := range resp.Content {
-		switch c.Type {
-		case llm.ContentTypeThinking, llm.ContentTypeRedactedThinking:
-			continue
-		case llm.ContentTypeText:
-			if found {
-				return llm.ErrorfToolOut("multiple text content blocks in relevance filtering response: %v", resp.Content)
-			}
-			filtered = c.Text
-			found = true
-		default:
-			return llm.ErrorfToolOut("unexpected content type %v in relevance filtering response: %v", c.Type, resp.Content)
-		}
-	}
-	if !found {
-		return llm.ErrorfToolOut("no text content in relevance filtering response: %v", resp.Content)
-	}
-
-	k.logResult(ctx, input.Query, search.output, filtered)
-	return llm.ToolOut{LLMContent: llm.TextContent(filtered)}
 }
 
 type keywordSearch struct {
@@ -364,22 +294,4 @@ func ripgrep(ctx context.Context, wd string, terms []string) (string, error) {
 	}
 	outStr := string(out)
 	return outStr, nil
-}
-
-// selectBestLLM selects the best available LLM service for keyword search
-func (k *KeywordTool) selectBestLLM(provider LLMServiceProvider) (llm.Service, error) {
-	for _, model := range PreferredToolModels {
-		svc, err := provider.GetService(model)
-		if err == nil {
-			return svc, nil
-		}
-	}
-
-	// If no preferred model is available, try any available model
-	available := provider.GetAvailableModels()
-	if len(available) > 0 {
-		return provider.GetService(available[0])
-	}
-
-	return nil, fmt.Errorf("no LLM services available")
 }

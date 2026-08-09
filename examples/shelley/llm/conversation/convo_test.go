@@ -1,1127 +1,555 @@
-package conversation
+package conversation_test
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
-	"net/http"
-	"os"
-	"slices"
+	"errors"
+	"fmt"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/ant"
-	"shelley.exe.dev/loop"
-	"sketch.dev/httprr"
+	dago "github.com/semistrict/dago"
+	"github.com/semistrict/dago/agent"
+	"github.com/semistrict/dago/checkpoint"
+	"github.com/semistrict/dago/message"
+	"github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/model/modeltest"
+	"github.com/semistrict/dago/state"
+	"github.com/semistrict/dago/tool"
 )
 
+var emptyObjectSchema = json.RawMessage(`{"type":"object"}`)
+
+func compileAgent(t *testing.T, chat model.Chat, tools []tool.Tool, saver checkpoint.Saver, middleware ...agent.Middleware) *agent.Agent {
+	t.Helper()
+	compiled, err := agent.New(agent.Options{Model: chat, Tools: tools, Saver: saver, Middleware: middleware})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compiled
+}
+
+func namedTool(name string, run func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error)) tool.Tool {
+	return tool.Func{Spec: tool.Definition{Name: name, Description: name, InputSchema: emptyObjectSchema}, Run: run}
+}
+
+func toolCall(id, name string) message.ToolCall {
+	return message.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(`{}`)}
+}
+
+func overBudget(messages []message.Message, maximum float64) error {
+	if maximum > 0 && message.AggregateUsage(messages).CostUSD >= maximum {
+		return fmt.Errorf("usage exceeded $%.2f budget", maximum)
+	}
+	return nil
+}
+
+func resetBudget(maximum float64, messages []message.Message) float64 {
+	if maximum <= 0 {
+		return maximum
+	}
+	return maximum + message.AggregateUsage(messages).CostUSD
+}
+
 func TestBasicConvo(t *testing.T) {
-	ctx := context.Background()
-	rr, err := httprr.Open("testdata/basic_convo.httprr", http.DefaultTransport)
+	script := modeltest.New(model.Profile{},
+		modeltest.Step{Check: func(request model.Request) error {
+			if len(request.Messages) != 1 || !strings.Contains(request.Messages[0].TextContent(), "Cornelius") {
+				return fmt.Errorf("first request = %#v", request.Messages)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("Hello, Cornelius.")}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if len(request.Messages) != 3 || request.Messages[1].TextContent() != "Hello, Cornelius." {
+				return fmt.Errorf("history = %#v", request.Messages)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("Your name is Cornelius.")}},
+	)
+	compiled := compileAgent(t, script, nil, checkpoint.NewMemorySaver())
+	config := checkpoint.Config{ThreadID: "basic"}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("Hi, my name is Cornelius")}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("What is my name?")}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rr.ScrubReq(func(req *http.Request) error {
-		req.Header.Del("x-api-key")
-		req.Header.Del("User-Agent")
-		req.Header.Del("Shelley-Conversation-Id")
-		return nil
-	})
-
-	apiKey := cmp.Or(os.Getenv("OUTER_SKETCH_MODEL_API_KEY"), os.Getenv("ANTHROPIC_API_KEY"))
-	srv := &ant.Service{
-		APIKey: apiKey,
-		Model:  ant.Claude46Sonnet, // Use specific model to match cached responses
-		HTTPC:  rr.Client(),
-	}
-	convo := New(ctx, srv, nil)
-
-	const name = "Cornelius"
-	res, err := convo.SendUserTextMessage("Hi, my name is " + name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, part := range res.Content {
-		t.Logf("%s", part.Text)
-	}
-	res, err = convo.SendUserTextMessage("What is my name?")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := ""
-	for _, part := range res.Content {
-		got += part.Text
-	}
-	if !strings.Contains(got, name) {
-		t.Errorf("model does not know the given name %s: %q", name, got)
+	if got := result.Messages[len(result.Messages)-1].TextContent(); !strings.Contains(got, "Cornelius") {
+		t.Fatalf("response = %q", got)
 	}
 }
 
-// TestCancelToolUse tests the CancelToolUse function of the Convo struct
 func TestCancelToolUse(t *testing.T) {
-	tests := []struct {
-		name         string
-		setupToolUse bool
-		toolUseID    string
-		cancelErr    error
-		expectError  bool
-		expectCancel bool
-	}{
-		{
-			name:         "Cancel existing tool use",
-			setupToolUse: true,
-			toolUseID:    "tool123",
-			cancelErr:    nil,
-			expectError:  false,
-			expectCancel: true,
-		},
-		{
-			name:         "Cancel existing tool use with error",
-			setupToolUse: true,
-			toolUseID:    "tool456",
-			cancelErr:    context.Canceled,
-			expectError:  false,
-			expectCancel: true,
-		},
-		{
-			name:         "Cancel non-existent tool use",
-			setupToolUse: false,
-			toolUseID:    "tool789",
-			cancelErr:    nil,
-			expectError:  true,
-			expectCancel: false,
-		},
-	}
-
-	srv := &ant.Service{}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			convo := New(context.Background(), srv, nil)
-
-			var cancelCalled bool
-			var cancelledWithErr error
-
-			if tt.setupToolUse {
-				// Setup a mock cancel function to track calls
-				mockCancel := func(err error) {
-					cancelCalled = true
-					cancelledWithErr = err
-				}
-
-				convo.toolUseCancelMu.Lock()
-				convo.toolUseCancel[tt.toolUseID] = mockCancel
-				convo.toolUseCancelMu.Unlock()
-			}
-
-			err := convo.CancelToolUse(tt.toolUseID, tt.cancelErr)
-
-			// Check if we got the expected error state
-			if (err != nil) != tt.expectError {
-				t.Errorf("CancelToolUse() error = %v, expectError %v", err, tt.expectError)
-			}
-
-			// Check if the cancel function was called as expected
-			if cancelCalled != tt.expectCancel {
-				t.Errorf("Cancel function called = %v, expectCancel %v", cancelCalled, tt.expectCancel)
-			}
-
-			// If we expected the cancel to be called, verify it was called with the right error
-			if tt.expectCancel && cancelledWithErr != tt.cancelErr {
-				t.Errorf("Cancel function called with error = %v, expected %v", cancelledWithErr, tt.cancelErr)
-			}
-
-			// Verify the toolUseID was removed from the map if it was initially added
-			if tt.setupToolUse {
-				convo.toolUseCancelMu.Lock()
-				_, exists := convo.toolUseCancel[tt.toolUseID]
-				convo.toolUseCancelMu.Unlock()
-
-				if exists {
-					t.Errorf("toolUseID %s still exists in the map after cancellation", tt.toolUseID)
-				}
-			}
-		})
-	}
-}
-
-// TestInsertMissingToolResults tests the insertMissingToolResults function
-// to ensure it doesn't create duplicate tool results when multiple tool uses are missing results.
-func TestInsertMissingToolResults(t *testing.T) {
-	tests := []struct {
-		name            string
-		messages        []llm.Message
-		currentMsg      llm.Message
-		expectedCount   int
-		expectedToolIDs []string
-	}{
-		{
-			name: "Single missing tool result",
-			messages: []llm.Message{
-				{
-					Role: llm.MessageRoleAssistant,
-					Content: []llm.Content{
-						{
-							Type: llm.ContentTypeToolUse,
-							ID:   "tool1",
-						},
-					},
-				},
-			},
-			currentMsg: llm.Message{
-				Role:    llm.MessageRoleUser,
-				Content: []llm.Content{},
-			},
-			expectedCount:   1,
-			expectedToolIDs: []string{"tool1"},
-		},
-		{
-			name: "Multiple missing tool results",
-			messages: []llm.Message{
-				{
-					Role: llm.MessageRoleAssistant,
-					Content: []llm.Content{
-						{
-							Type: llm.ContentTypeToolUse,
-							ID:   "tool1",
-						},
-						{
-							Type: llm.ContentTypeToolUse,
-							ID:   "tool2",
-						},
-						{
-							Type: llm.ContentTypeToolUse,
-							ID:   "tool3",
-						},
-					},
-				},
-			},
-			currentMsg: llm.Message{
-				Role:    llm.MessageRoleUser,
-				Content: []llm.Content{},
-			},
-			expectedCount:   3,
-			expectedToolIDs: []string{"tool1", "tool2", "tool3"},
-		},
-		{
-			name: "No missing tool results when results already present",
-			messages: []llm.Message{
-				{
-					Role: llm.MessageRoleAssistant,
-					Content: []llm.Content{
-						{
-							Type: llm.ContentTypeToolUse,
-							ID:   "tool1",
-						},
-					},
-				},
-			},
-			currentMsg: llm.Message{
-				Role: llm.MessageRoleUser,
-				Content: []llm.Content{
-					{
-						Type:      llm.ContentTypeToolResult,
-						ToolUseID: "tool1",
-					},
-				},
-			},
-			expectedCount:   1, // Only the existing one
-			expectedToolIDs: []string{"tool1"},
-		},
-		{
-			name: "No tool uses in previous message",
-			messages: []llm.Message{
-				{
-					Role: llm.MessageRoleAssistant,
-					Content: []llm.Content{
-						{
-							Type: llm.ContentTypeText,
-							Text: "Just some text",
-						},
-					},
-				},
-			},
-			currentMsg: llm.Message{
-				Role:    llm.MessageRoleUser,
-				Content: []llm.Content{},
-			},
-			expectedCount:   0,
-			expectedToolIDs: []string{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := &ant.Service{}
-			convo := New(context.Background(), srv, nil)
-
-			// Create request with messages
-			req := &llm.Request{
-				Messages: append(tt.messages, tt.currentMsg),
-			}
-
-			// Call insertMissingToolResults
-			msg := tt.currentMsg
-			convo.insertMissingToolResults(req, &msg)
-
-			// Count tool results in the message
-			toolResultCount := 0
-			toolIDs := []string{}
-			for _, content := range msg.Content {
-				if content.Type == llm.ContentTypeToolResult {
-					toolResultCount++
-					toolIDs = append(toolIDs, content.ToolUseID)
-				}
-			}
-
-			// Verify count
-			if toolResultCount != tt.expectedCount {
-				t.Errorf("Expected %d tool results, got %d", tt.expectedCount, toolResultCount)
-			}
-
-			// Verify no duplicates by checking unique tool IDs
-			seenIDs := make(map[string]int)
-			for _, id := range toolIDs {
-				seenIDs[id]++
-			}
-
-			// Check for duplicates
-			for id, count := range seenIDs {
-				if count > 1 {
-					t.Errorf("Duplicate tool result for ID %s: found %d times", id, count)
-				}
-			}
-
-			// Verify all expected tool IDs are present
-			for _, expectedID := range tt.expectedToolIDs {
-				if !slices.Contains(toolIDs, expectedID) {
-					t.Errorf("Expected tool ID %s not found in results", expectedID)
-				}
-			}
-		})
-	}
-}
-
-// TestSubConvo tests the SubConvo function
-func TestSubConvo(t *testing.T) {
-	ctx := context.Background()
-	srv := &ant.Service{}
-	parentConvo := New(ctx, srv, nil)
-
-	// Test that SubConvo creates a new conversation with the correct parent relationship
-	subConvo := parentConvo.SubConvo()
-
-	if subConvo == nil {
-		t.Fatal("SubConvo returned nil")
-	}
-
-	if subConvo.Parent != parentConvo {
-		t.Error("SubConvo did not set the correct parent")
-	}
-
-	if subConvo.Service != parentConvo.Service {
-		t.Error("SubConvo did not inherit the service")
-	}
-
-	if subConvo.PromptCaching != parentConvo.PromptCaching {
-		t.Error("SubConvo did not inherit PromptCaching setting")
-	}
-
-	// Check that the sub-convo has a different ID
-	if subConvo.ID == parentConvo.ID {
-		t.Error("SubConvo should have a different ID from parent")
-	}
-
-	// Check that the sub-convo shares tool uses with parent
-	if &subConvo.usage.ToolUses == &parentConvo.usage.ToolUses {
-		t.Error("SubConvo should share tool uses map with parent")
-	}
-
-	// Check that the sub-convo has its own usage instance
-	if subConvo.usage == parentConvo.usage {
-		t.Error("SubConvo should have its own usage instance (but sharing ToolUses)")
-	}
-}
-
-// TestSubConvoWithHistory tests the SubConvoWithHistory function
-
-// TestDepth tests the Depth function
-
-// TestFindTool tests the findTool function
-func TestFindTool(t *testing.T) {
-	ctx := context.Background()
-	srv := &ant.Service{}
-	convo := New(ctx, srv, nil)
-
-	// Add some tools to the conversation
-	tool1 := &llm.Tool{Name: "tool1"}
-	tool2 := &llm.Tool{Name: "tool2"}
-	convo.Tools = append(convo.Tools, tool1, tool2)
-
-	// Test finding an existing tool
-	foundTool, err := convo.findTool("tool1")
-	if err != nil {
-		t.Errorf("findTool returned error for existing tool: %v", err)
-	}
-	if foundTool != tool1 {
-		t.Error("findTool did not return the correct tool")
-	}
-
-	// Test finding another existing tool
-	foundTool, err = convo.findTool("tool2")
-	if err != nil {
-		t.Errorf("findTool returned error for existing tool: %v", err)
-	}
-	if foundTool != tool2 {
-		t.Error("findTool did not return the correct tool")
-	}
-
-	// Test finding a non-existent tool
-	_, err = convo.findTool("nonexistent")
-	if err == nil {
-		t.Error("findTool should return error for non-existent tool")
-	}
-	expectedErr := `tool "nonexistent" not found`
-	if err.Error() != expectedErr {
-		t.Errorf("Expected error %q, got %q", expectedErr, err.Error())
-	}
-}
-
-// TestToolCallInfoFromContext tests the ToolCallInfoFromContext function
-func TestToolCallInfoFromContext(t *testing.T) {
-	// Test with no tool call info in context
-	ctx := context.Background()
-	info := ToolCallInfoFromContext(ctx)
-	if info.ToolUseID != "" {
-		t.Error("ToolCallInfoFromContext should return empty info when no tool call info is in context")
-	}
-
-	// Test with tool call info in context
-	toolInfo := ToolCallInfo{
-		ToolUseID: "testID",
-	}
-	ctxWithInfo := context.WithValue(ctx, toolCallInfoKey, toolInfo)
-	info = ToolCallInfoFromContext(ctxWithInfo)
-	if info.ToolUseID != "testID" {
-		t.Errorf("Expected ToolUseID 'testID', got %q", info.ToolUseID)
-	}
-}
-
-// TestCumulativeUsageMethods tests CumulativeUsage methods
-func TestCumulativeUsageMethods(t *testing.T) {
-	// Test Clone method
-	original := &CumulativeUsage{
-		StartTime:                time.Now(),
-		Responses:                5,
-		InputTokens:              100,
-		OutputTokens:             200,
-		CacheReadInputTokens:     50,
-		CacheCreationInputTokens: 30,
-		TotalCostUSD:             1.23,
-		ToolUses: map[string]int{
-			"tool1": 3,
-			"tool2": 2,
-		},
-	}
-
-	clone := original.Clone()
-
-	// Check that values are copied correctly
-	if clone.StartTime != original.StartTime {
-		t.Error("Clone did not copy StartTime correctly")
-	}
-	if clone.Responses != original.Responses {
-		t.Error("Clone did not copy Responses correctly")
-	}
-	if clone.InputTokens != original.InputTokens {
-		t.Error("Clone did not copy InputTokens correctly")
-	}
-	if clone.OutputTokens != original.OutputTokens {
-		t.Error("Clone did not copy OutputTokens correctly")
-	}
-	if clone.CacheReadInputTokens != original.CacheReadInputTokens {
-		t.Error("Clone did not copy CacheReadInputTokens correctly")
-	}
-	if clone.CacheCreationInputTokens != original.CacheCreationInputTokens {
-		t.Error("Clone did not copy CacheCreationInputTokens correctly")
-	}
-	if clone.TotalCostUSD != original.TotalCostUSD {
-		t.Error("Clone did not copy TotalCostUSD correctly")
-	}
-	if len(clone.ToolUses) != len(original.ToolUses) {
-		t.Error("Clone did not copy ToolUses correctly")
-	}
-	for k, v := range original.ToolUses {
-		if clone.ToolUses[k] != v {
-			t.Errorf("Clone did not copy ToolUses correctly for key %s", k)
-		}
-	}
-
-	// Check that maps are separate instances
-	clone.ToolUses["tool3"] = 1
-	if _, exists := original.ToolUses["tool3"]; exists {
-		t.Error("Clone should have separate ToolUses map")
-	}
-}
-
-// TestUsageMethods tests various usage calculation methods
-func TestUsageMethods(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Test CumulativeUsage on empty conversation
-	usage := convo.CumulativeUsage()
-	if usage.Responses != 0 {
-		t.Error("CumulativeUsage should be empty for new conversation")
-	}
-
-	// Test WallTime method
-	wallTime := usage.WallTime()
-	if wallTime <= 0 {
-		t.Error("WallTime should be positive")
-	}
-
-	// Test DollarsPerHour method
-	dollarsPerHour := usage.DollarsPerHour()
-	if dollarsPerHour != 0 {
-		t.Error("DollarsPerHour should be 0 for empty usage")
-	}
-
-	// Test TotalInputTokens method
-	totalInputTokens := usage.TotalInputTokens()
-	if totalInputTokens != 0 {
-		t.Error("TotalInputTokens should be 0 for empty usage")
-	}
-
-	// Test Attr method
-	attr := usage.Attr()
-	if attr.Key != "usage" {
-		t.Error("Attr should have key 'usage'")
-	}
-}
-
-// TestLastUsage tests the LastUsage function
-func TestLastUsage(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Test LastUsage on empty conversation
-	lastUsage := convo.LastUsage()
-	if lastUsage.InputTokens != 0 {
-		t.Error("LastUsage should be empty for new conversation")
-	}
-
-	// Send a message to generate some usage
-	_, err := convo.SendUserTextMessage("echo: hello")
-	if err != nil {
-		t.Fatalf("SendUserTextMessage failed: %v", err)
-	}
-
-	// Test LastUsage after sending a message
-	lastUsage = convo.LastUsage()
-	if lastUsage.InputTokens == 0 {
-		t.Error("LastUsage should have input tokens after sending a message")
-	}
-}
-
-// TestOverBudget tests the OverBudget function
-func TestOverBudget(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Test OverBudget with no budget set
-	err := convo.OverBudget()
-	if err != nil {
-		t.Errorf("OverBudget should return nil when no budget is set, got %v", err)
-	}
-
-	// Set a budget
-	convo.Budget.MaxDollars = 10.0
-
-	// Test OverBudget with budget not exceeded
-	err = convo.OverBudget()
-	if err != nil {
-		t.Errorf("OverBudget should return nil when budget is not exceeded, got %v", err)
-	}
-
-	// Test with sub-conversation
-	subConvo := convo.SubConvo()
-	err = subConvo.OverBudget()
-	if err != nil {
-		t.Errorf("OverBudget should return nil for sub-conversation when budget is not exceeded, got %v", err)
-	}
-}
-
-// TestResetBudget tests the ResetBudget function
-func TestResetBudget(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Set initial budget
-	initialBudget := Budget{MaxDollars: 5.0}
-	convo.ResetBudget(initialBudget)
-
-	// Check that budget was set
-	if convo.Budget.MaxDollars != 5.0 {
-		t.Errorf("Expected budget MaxDollars to be 5.0, got %f", convo.Budget.MaxDollars)
-	}
-
-	// Send a message to accumulate some usage
-	_, err := convo.SendUserTextMessage("echo: hello")
-	if err != nil {
-		t.Fatalf("SendUserTextMessage failed: %v", err)
-	}
-
-	// Get current usage
-	usage := convo.CumulativeUsage()
-	usedAmount := usage.TotalCostUSD
-
-	// Reset budget again
-	newBudget := Budget{MaxDollars: 10.0}
-	convo.ResetBudget(newBudget)
-
-	// Check that budget was adjusted by usage
-	expectedBudget := 10.0 + usedAmount
-	if convo.Budget.MaxDollars != expectedBudget {
-		t.Errorf("Expected adjusted budget MaxDollars to be %f, got %f", expectedBudget, convo.Budget.MaxDollars)
-	}
-}
-
-// TestOverBudgetFunction tests the overBudget function
-func TestOverBudgetFunction(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Test overBudget with no budget set
-	err := convo.overBudget()
-	if err != nil {
-		t.Errorf("overBudget should return nil when no budget is set, got %v", err)
-	}
-
-	// Set a budget
-	convo.Budget.MaxDollars = 5.0
-
-	// Test overBudget with budget not exceeded
-	err = convo.overBudget()
-	if err != nil {
-		t.Errorf("overBudget should return nil when budget is not exceeded, got %v", err)
-	}
-}
-
-// TestGetID tests the GetID function
-
-// TestListenerMethods tests the listener methods
-func TestListenerMethods(t *testing.T) {
-	listener := &NoopListener{}
-	ctx := context.Background()
-	convo := &Convo{}
-
-	// Test that noop listener methods don't panic
-	listener.OnToolCall(ctx, convo, "id", "toolName", json.RawMessage(`{"key":"value"}`), llm.Content{})
-	listener.OnToolResult(ctx, convo, "id", "toolName", json.RawMessage(`{"key":"value"}`), llm.Content{}, nil, nil)
-	listener.OnResponse(ctx, convo, "id", &llm.Response{})
-	listener.OnRequest(ctx, convo, "id", &llm.Message{})
-
-	t.Log("NoopListener methods executed without panic")
-}
-
-// TestIncrementToolUse tests the incrementToolUse function
-func TestIncrementToolUse(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Check initial state
-	usage := convo.CumulativeUsage()
-	if usage.ToolUses["testTool"] != 0 {
-		t.Errorf("Expected 0 uses of testTool, got %d", usage.ToolUses["testTool"])
-	}
-
-	// Increment tool use
-	convo.incrementToolUse("testTool")
-
-	// Check that tool use was incremented
-	usage = convo.CumulativeUsage()
-	if usage.ToolUses["testTool"] != 1 {
-		t.Errorf("Expected 1 use of testTool, got %d", usage.ToolUses["testTool"])
-	}
-
-	// Increment again
-	convo.incrementToolUse("testTool")
-
-	// Check that tool use was incremented again
-	usage = convo.CumulativeUsage()
-	if usage.ToolUses["testTool"] != 2 {
-		t.Errorf("Expected 2 uses of testTool, got %d", usage.ToolUses["testTool"])
-	}
-
-	// Test with different tool
-	convo.incrementToolUse("anotherTool")
-	usage = convo.CumulativeUsage()
-	if usage.ToolUses["anotherTool"] != 1 {
-		t.Errorf("Expected 1 use of anotherTool, got %d", usage.ToolUses["anotherTool"])
-	}
-}
-
-// TestDebugJSON tests the DebugJSON function
-// TestToolResultCancelContents tests the ToolResultCancelContents function
-func TestToolResultCancelContents(t *testing.T) {
-	ctx := context.Background()
-	srv := &ant.Service{}
-	convo := New(ctx, srv, nil)
-
-	// Test with response that doesn't have tool use stop reason
-	resp := &llm.Response{
-		StopReason: llm.StopReasonEndTurn,
-	}
-	contents, err := convo.ToolResultCancelContents(resp)
-	if err != nil {
-		t.Errorf("ToolResultCancelContents should not error with non-tool-use response: %v", err)
-	}
-	if contents != nil {
-		t.Error("ToolResultCancelContents should return nil with non-tool-use response")
-	}
-
-	// Test with response that has tool use stop reason but no tool use content
-	resp = &llm.Response{
-		StopReason: llm.StopReasonToolUse,
-		Content: []llm.Content{
-			{Type: llm.ContentTypeText, Text: "Hello"},
-		},
-	}
-	contents, err = convo.ToolResultCancelContents(resp)
-	if err != nil {
-		t.Errorf("ToolResultCancelContents should not error with tool use response but no tool content: %v", err)
-	}
-	// Check if contents is nil (this is expected when no tool uses are found)
-	if contents != nil && len(contents) != 0 {
-		t.Errorf("ToolResultCancelContents should return nil or empty slice with tool use response but no tool content, got length %d", len(contents))
-	}
-
-	// Test with response that has tool use stop reason and actual tool use content
-	resp = &llm.Response{
-		StopReason: llm.StopReasonToolUse,
-		Content: []llm.Content{
-			{Type: llm.ContentTypeToolUse, ID: "tool1", ToolName: "testTool"},
-		},
-	}
-	contents, err = convo.ToolResultCancelContents(resp)
-	if err != nil {
-		t.Errorf("ToolResultCancelContents should not error with tool use response and tool content: %v", err)
-	}
-	if contents == nil {
-		t.Error("ToolResultCancelContents should return non-nil slice with tool use response and tool content")
-	} else if len(contents) != 1 {
-		t.Errorf("ToolResultCancelContents should return slice with one element with tool use response and tool content, got length %d", len(contents))
-	} else {
-		// Check that the returned content has the correct properties
-		if contents[0].Type != llm.ContentTypeToolResult {
-			t.Errorf("ToolResultCancelContents should return tool result content, got type %v", contents[0].Type)
-		}
-		if contents[0].ToolUseID != "tool1" {
-			t.Errorf("ToolResultCancelContents should return content with correct ToolUseID, got %v", contents[0].ToolUseID)
-		}
-		if !contents[0].ToolError {
-			t.Error("ToolResultCancelContents should return content with ToolError set to true")
-		}
-	}
-}
-
-// TestNewToolUseContext tests the newToolUseContext function
-func TestNewToolUseContext(t *testing.T) {
-	ctx := context.Background()
-	srv := &ant.Service{}
-	convo := New(ctx, srv, nil)
-
-	// Test creating a new tool use context
-	toolUseID := "test-tool-use-id"
-	toolCtx, cancel := convo.newToolUseContext(ctx, toolUseID)
-
-	if toolCtx == nil {
-		t.Error("newToolUseContext should return a valid context")
-	}
-
-	if cancel == nil {
-		t.Error("newToolUseContext should return a valid cancel function")
-	}
-
-	// Check that the tool use was registered
-	convo.toolUseCancelMu.Lock()
-	_, exists := convo.toolUseCancel[toolUseID]
-	convo.toolUseCancelMu.Unlock()
-
-	if !exists {
-		t.Error("newToolUseContext should register the tool use cancel function")
-	}
-
-	// Test that cancel function works
-	cancel()
-
-	// Check that the tool use was unregistered
-	convo.toolUseCancelMu.Lock()
-	_, exists = convo.toolUseCancel[toolUseID]
-	convo.toolUseCancelMu.Unlock()
-
-	if exists {
-		t.Error("Cancel function should unregister the tool use")
-	}
-}
-
-// TestToolResultContents tests the ToolResultContents function
-func TestToolResultContents(t *testing.T) {
-	ctx := context.Background()
-	srv := &ant.Service{}
-	convo := New(ctx, srv, nil)
-
-	// Skip nil response test as the function doesn't handle nil properly
-	// This would cause a nil pointer dereference in the actual function
-
-	// Test with response that doesn't have tool use stop reason
-	resp := &llm.Response{
-		StopReason: llm.StopReasonEndTurn,
-	}
-	contents, endsTurn, err := convo.ToolResultContents(ctx, resp)
-	if err != nil {
-		t.Errorf("ToolResultContents should not error with non-tool-use response: %v", err)
-	}
-	if contents != nil {
-		t.Error("ToolResultContents should return nil with non-tool-use response")
-	}
-	if endsTurn {
-		t.Error("ToolResultContents should return false for endsTurn with non-tool-use response")
-	}
-}
-
-// testListener is a custom listener implementation for testing
-type testListener struct {
-	events []string
-}
-
-func (tl *testListener) OnToolCall(ctx context.Context, convo *Convo, id, toolName string, toolInput json.RawMessage, content llm.Content) {
-	tl.events = append(tl.events, "OnToolCall")
-}
-
-func (tl *testListener) OnToolResult(ctx context.Context, convo *Convo, id, toolName string, toolInput json.RawMessage, content llm.Content, result *string, err error) {
-	tl.events = append(tl.events, "OnToolResult")
-}
-
-func (tl *testListener) OnResponse(ctx context.Context, convo *Convo, id string, resp *llm.Response) {
-	tl.events = append(tl.events, "OnResponse")
-}
-
-func (tl *testListener) OnRequest(ctx context.Context, convo *Convo, id string, msg *llm.Message) {
-	tl.events = append(tl.events, "OnRequest")
-}
-
-// TestListenerInterface tests that the Listener interface methods are called
-func TestListenerInterface(t *testing.T) {
-	listener := &testListener{}
-	ctx := context.Background()
-	convo := &Convo{}
-
-	// Test that all listener methods can be called without panicking
-	listener.OnToolCall(ctx, convo, "id", "toolName", json.RawMessage(`{"key":"value"}`), llm.Content{})
-	listener.OnToolResult(ctx, convo, "id", "toolName", json.RawMessage(`{"key":"value"}`), llm.Content{}, nil, nil)
-	listener.OnResponse(ctx, convo, "id", &llm.Response{})
-	listener.OnRequest(ctx, convo, "id", &llm.Message{})
-
-	// Check that events were recorded
-	if len(listener.events) != 4 {
-		t.Errorf("Expected 4 events, got %d", len(listener.events))
-	}
-
-	expectedEvents := []string{"OnToolCall", "OnToolResult", "OnResponse", "OnRequest"}
-	for i, expected := range expectedEvents {
-		if listener.events[i] != expected {
-			t.Errorf("Expected event %s, got %s", expected, listener.events[i])
-		}
-	}
-}
-
-// TestToolResultContentsWithToolUse tests ToolResultContents with actual tool use
-func TestToolResultContentsWithToolUse(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Add a simple echo tool
-	convo.Tools = append(convo.Tools, &llm.Tool{
-		Name:        "echo",
-		Description: "Echo tool for testing",
-		InputSchema: json.RawMessage(`{"type": "object", "properties": {"message": {"type": "string"}}}`),
-		Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
-			return llm.ToolOut{
-				LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "echo response"}},
-			}
-		},
+	started := make(chan struct{})
+	blocking := namedTool("blocking", func(ctx context.Context, _ json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+		close(started)
+		<-ctx.Done()
+		return tool.Result{}, ctx.Err()
 	})
+	script := modeltest.New(model.Profile{ToolCalling: true}, modeltest.Step{Response: model.Response{Message: message.Message{
+		Role: message.RoleAssistant, ToolCalls: []message.ToolCall{toolCall("cancel-me", "blocking")},
+	}}})
+	compiled := compileAgent(t, script, []tool.Tool{blocking}, checkpoint.NewMemorySaver())
+	config := checkpoint.Config{ThreadID: "cancel"}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := compiled.Invoke(ctx, agent.Input{Config: config, Messages: []message.Message{message.Human("start")}})
+		done <- err
+	}()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	cancelled := message.Tool("cancel-me", "Tool execution cancelled by user")
+	cancelled.Name = "blocking"
+	cancelled.ToolStatus = message.ToolStatusError
+	result, err := compiled.Cancel(context.Background(), agent.Input{Config: config, Messages: []message.Message{cancelled}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := result.Messages[len(result.Messages)-1]
+	if last.ToolCallID != "cancel-me" || last.ToolStatus != message.ToolStatusError {
+		t.Fatalf("cancel result = %#v", last)
+	}
+}
 
-	// Create a response with tool use stop reason
-	resp := &llm.Response{
-		StopReason: llm.StopReasonToolUse,
-		Content: []llm.Content{
-			{
-				Type:      llm.ContentTypeToolUse,
-				ID:        "test-tool-call",
-				ToolName:  "echo",
-				ToolInput: json.RawMessage(`{"message": "test"}`),
-			},
+func TestInsertMissingToolResults(t *testing.T) {
+	tools := []tool.Tool{}
+	for _, name := range []string{"one", "two", "three"} {
+		name := name
+		tools = append(tools, namedTool(name, func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+			return tool.TextResult(name), nil
+		}))
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+			toolCall("1", "one"), toolCall("2", "two"), toolCall("3", "three"),
+		}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if len(request.Messages) != 5 {
+				return fmt.Errorf("messages = %#v", request.Messages)
+			}
+			for index, id := range []string{"1", "2", "3"} {
+				result := request.Messages[index+2]
+				if result.Role != message.RoleTool || result.ToolCallID != id {
+					return fmt.Errorf("tool result %d = %#v", index, result)
+				}
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("done")}},
+	)
+	result, err := compileAgent(t, script, tools, nil).Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("run all")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "done" {
+		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
+func TestSubConvo(t *testing.T) {
+	script := modeltest.New(model.Profile{},
+		modeltest.Step{Check: onlyHuman("parent"), Response: model.Response{Message: message.Assistant("parent reply")}},
+		modeltest.Step{Check: onlyHuman("child"), Response: model.Response{Message: message.Assistant("child reply")}},
+	)
+	compiled := compileAgent(t, script, nil, checkpoint.NewMemorySaver())
+	parent, err := compiled.Invoke(context.Background(), agent.Input{Config: checkpoint.Config{ThreadID: "parent"}, Messages: []message.Message{message.Human("parent")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := compiled.Invoke(context.Background(), agent.Input{Config: checkpoint.Config{ThreadID: "child"}, Messages: []message.Message{message.Human("child")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parent.Messages) != 2 || len(child.Messages) != 2 || child.Messages[0].TextContent() != "child" {
+		t.Fatalf("parent = %#v, child = %#v", parent.Messages, child.Messages)
+	}
+}
+
+func onlyHuman(text string) func(model.Request) error {
+	return func(request model.Request) error {
+		if len(request.Messages) != 1 || request.Messages[0].Role != message.RoleHuman || request.Messages[0].TextContent() != text {
+			return fmt.Errorf("request = %#v", request.Messages)
+		}
+		return nil
+	}
+}
+
+func TestFindTool(t *testing.T) {
+	duplicate := namedTool("same", func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		return tool.TextResult("ok"), nil
+	})
+	if _, err := agent.New(agent.Options{Model: modeltest.New(model.Profile{}), Tools: []tool.Tool{duplicate, duplicate}}); !errors.Is(err, agent.ErrDuplicateTool) {
+		t.Fatalf("duplicate tool error = %v", err)
+	}
+	unknown := modeltest.New(model.Profile{ToolCalling: true}, modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{toolCall("x", "missing")}}}})
+	_, err := compileAgent(t, unknown, nil, nil).Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}})
+	if !errors.Is(err, agent.ErrUnknownTool) {
+		t.Fatalf("unknown tool error = %v", err)
+	}
+}
+
+func TestToolCallInfoFromContext(t *testing.T) {
+	var got tool.Runtime
+	inspect := namedTool("inspect", func(_ context.Context, _ json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
+		got = runtime
+		return tool.TextResult("inspected"), nil
+	})
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{toolCall("call-17", "inspect")}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := agent.New(agent.Options{Model: script, Tools: []tool.Tool{inspect}, Context: "trusted", Saver: checkpoint.NewMemorySaver()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Config: checkpoint.Config{ThreadID: "runtime"}, Messages: []message.Message{message.Human("inspect")}}); err != nil {
+		t.Fatal(err)
+	}
+	if got.CallID != "call-17" || got.ThreadID != "runtime" || got.Context != "trusted" {
+		t.Fatalf("tool runtime = %#v", got)
+	}
+}
+
+func TestCumulativeUsageMethods(t *testing.T) {
+	first := message.Usage{InputTokens: 4, OutputTokens: 2, TotalTokens: 6, CostUSD: 0.1, InputDetails: map[string]int{"cached": 1}}
+	second := message.Usage{InputTokens: 6, OutputTokens: 3, TotalTokens: 9, CostUSD: 0.2, InputDetails: map[string]int{"cached": 2}}
+	messages := []message.Message{{Role: message.RoleAssistant, Usage: &first}, {Role: message.RoleAssistant, Usage: &second}}
+	usage := message.AggregateUsage(messages)
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 || usage.TotalTokens != 15 || usage.CostUSD < 0.299 || usage.CostUSD > 0.301 || usage.InputDetails["cached"] != 3 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	usage.InputDetails["cached"] = 99
+	if first.InputDetails["cached"] != 1 {
+		t.Fatal("aggregate usage aliased source data")
+	}
+}
+
+func TestUsageMethods(t *testing.T) {
+	usage := &message.Usage{InputTokens: 8, OutputTokens: 3, TotalTokens: 11, CostUSD: 0.25}
+	script := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, Content: message.Assistant("ok").Content, Usage: usage}}})
+	result, err := compileAgent(t, script, nil, nil).Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := message.AggregateUsage(result.Messages); got.TotalTokens != 11 || got.CostUSD != 0.25 {
+		t.Fatalf("usage = %#v", got)
+	}
+}
+
+func TestLastUsage(t *testing.T) {
+	first := message.Assistant("first")
+	first.Usage = &message.Usage{TotalTokens: 2}
+	last := message.Assistant("last")
+	last.Usage = &message.Usage{TotalTokens: 9}
+	usage, ok := message.LastUsage([]message.Message{message.Human("hi"), first, last})
+	if !ok || usage.TotalTokens != 9 {
+		t.Fatalf("last usage = %#v, %v", usage, ok)
+	}
+}
+
+func TestOverBudget(t *testing.T) {
+	response := message.Assistant("ok")
+	response.Usage = &message.Usage{CostUSD: 0.25}
+	messages := []message.Message{response}
+	if err := overBudget(messages, 0); err != nil {
+		t.Fatalf("unlimited budget = %v", err)
+	}
+	if err := overBudget(messages, 1); err != nil {
+		t.Fatalf("remaining budget = %v", err)
+	}
+}
+
+func TestResetBudget(t *testing.T) {
+	response := message.Assistant("ok")
+	response.Usage = &message.Usage{CostUSD: 1.25}
+	if got := resetBudget(5, []message.Message{response}); got != 6.25 {
+		t.Fatalf("reset budget = %v", got)
+	}
+}
+
+func TestOverBudgetFunction(t *testing.T) {
+	response := message.Assistant("ok")
+	response.OtherUsage = []message.PurposedUsage{{Purpose: "subagent", Usage: message.Usage{CostUSD: 0.4}}}
+	if err := overBudget([]message.Message{response}, 0.5); err != nil {
+		t.Fatal(err)
+	}
+	if err := overBudget([]message.Message{response}, 0.4); err == nil {
+		t.Fatal("nested model usage did not count toward budget")
+	}
+}
+
+func TestListenerMethods(t *testing.T) {
+	var events []string
+	listener := agent.Middleware{
+		Name: "listener",
+		BeforeModel: func(context.Context, state.Values, agent.Runtime) (state.Values, error) {
+			events = append(events, "request")
+			return nil, nil
+		},
+		AfterModel: func(context.Context, state.Values, agent.Runtime) (state.Values, error) {
+			events = append(events, "response")
+			return nil, nil
 		},
 	}
-
-	// Test ToolResultContents with tool use
-	contents, endsTurn, err := convo.ToolResultContents(ctx, resp)
-	if err != nil {
-		t.Fatalf("ToolResultContents failed: %v", err)
+	script := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}})
+	if _, err := compileAgent(t, script, nil, nil, listener).Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("hi")}}); err != nil {
+		t.Fatal(err)
 	}
-
-	// Should return tool results
-	if len(contents) == 0 {
-		t.Error("ToolResultContents should return tool results")
-	}
-
-	// Check the content type
-	if contents[0].Type != llm.ContentTypeToolResult {
-		t.Errorf("Expected ContentTypeToolResult, got %s", contents[0].Type)
-	}
-
-	// For our echo tool, endsTurn should be false
-	if endsTurn {
-		t.Error("Expected endsTurn to be false for echo tool")
+	if !reflect.DeepEqual(events, []string{"request", "response"}) {
+		t.Fatalf("events = %v", events)
 	}
 }
 
-// TestOverBudgetWithExceeded tests OverBudget when budget is exceeded
+func TestIncrementToolUse(t *testing.T) {
+	messages := []message.Message{{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+		toolCall("1", "bash"), toolCall("2", "bash"), toolCall("3", "read_file"),
+	}}}
+	counts := message.ToolUseCounts(messages)
+	if counts["bash"] != 2 || counts["read_file"] != 1 {
+		t.Fatalf("counts = %#v", counts)
+	}
+}
+
+func TestToolResultCancelContents(t *testing.T) {
+	result := message.Tool("call-1", "cancelled by user")
+	result.Name = "bash"
+	result.ToolStatus = message.ToolStatusError
+	result.Artifact = json.RawMessage(`{"cause":"context canceled"}`)
+	if err := result.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if result.Role != message.RoleTool || result.ToolCallID != "call-1" || result.ToolStatus != message.ToolStatusError || !json.Valid(result.Artifact) {
+		t.Fatalf("cancelled tool result = %#v", result)
+	}
+}
+
+func TestNewToolUseContext(t *testing.T) {
+	var got tool.Runtime
+	inspect := namedTool("inspect", func(_ context.Context, _ json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
+		got = runtime
+		return tool.TextResult("ok"), nil
+	})
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{toolCall("ctx-call", "inspect")}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := agent.New(agent.Options{Model: script, Tools: []tool.Tool{inspect}, Context: map[string]string{"scope": "conversation"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Config: checkpoint.Config{ThreadID: "ctx-thread"}, Messages: []message.Message{message.Human("go")}, State: state.Values{"extra": "value"}}); err != nil {
+		t.Fatal(err)
+	}
+	extra, _ := got.State.Get("extra")
+	if got.CallID != "ctx-call" || got.ThreadID != "ctx-thread" || extra != "value" {
+		t.Fatalf("runtime = %#v", got)
+	}
+}
+
+func TestToolResultContents(t *testing.T) {
+	artifact := json.RawMessage(`{"path":"/tmp/out"}`)
+	produce := namedTool("produce", func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: "created"}}, Artifact: artifact, OtherUsage: []message.PurposedUsage{{Purpose: "helper", Usage: message.Usage{TotalTokens: 3}}}}, nil
+	})
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{toolCall("produce-1", "produce")}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			result := request.Messages[len(request.Messages)-1]
+			if result.Role != message.RoleTool || result.TextContent() != "created" || string(result.Artifact) != string(artifact) || len(result.OtherUsage) != 1 {
+				return fmt.Errorf("tool result = %#v", result)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("done")}},
+	)
+	if _, err := compileAgent(t, script, []tool.Tool{produce}, nil).Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("produce")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListenerInterface(t *testing.T) {
+	var requests, responses, calls, results int
+	listener := agent.Middleware{
+		Name: "listener",
+		WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+			requests++
+			response, err := next(ctx, request)
+			responses++
+			return response, err
+		},
+		WrapToolCall: func(ctx context.Context, request agent.ToolCallRequest, next agent.ToolHandler) (agent.ToolCallResponse, error) {
+			calls++
+			response, err := next(ctx, request)
+			results++
+			return response, err
+		},
+	}
+	ping := namedTool("ping", func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		return tool.TextResult("pong"), nil
+	})
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{toolCall("ping-1", "ping")}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	)
+	if _, err := compileAgent(t, script, []tool.Tool{ping}, nil, listener).Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("ping")}}); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || responses != 2 || calls != 1 || results != 1 {
+		t.Fatalf("listener counts = %d %d %d %d", requests, responses, calls, results)
+	}
+}
+
+func TestToolResultContentsWithToolUse(t *testing.T) {
+	ping := namedTool("ping", func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		return tool.TextResult("pong"), nil
+	})
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{toolCall("ping-1", "ping")}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			call := request.Messages[len(request.Messages)-2]
+			result := request.Messages[len(request.Messages)-1]
+			if len(call.ToolCalls) != 1 || call.ToolCalls[0].ID != result.ToolCallID || result.TextContent() != "pong" {
+				return fmt.Errorf("call/result = %#v / %#v", call, result)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("done")}},
+	)
+	if _, err := compileAgent(t, script, []tool.Tool{ping}, nil).Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("ping")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOverBudgetWithExceeded(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Set a tiny budget
-	convo.Budget.MaxDollars = 0.0000001
-
-	// Send a message to accumulate usage
-	_, err := convo.SendUserTextMessage("test message")
-	if err != nil {
-		t.Fatalf("SendUserTextMessage failed: %v", err)
-	}
-
-	// Test that OverBudget returns an error
-	err = convo.OverBudget()
-	if err == nil {
-		t.Error("OverBudget should return an error when budget is exceeded")
+	response := message.Assistant("expensive")
+	response.Usage = &message.Usage{CostUSD: 0.75}
+	if err := overBudget([]message.Message{response}, 0.5); err == nil {
+		t.Fatal("expected exceeded budget error")
 	}
 }
 
-// TestResetBudgetWithUsage tests ResetBudget with existing usage
 func TestResetBudgetWithUsage(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Send a message to accumulate usage
-	_, err := convo.SendUserTextMessage("test message")
-	if err != nil {
-		t.Fatalf("SendUserTextMessage failed: %v", err)
-	}
-
-	// Get current usage
-	initialUsage := convo.CumulativeUsage()
-	initialCost := initialUsage.TotalCostUSD
-
-	// Reset budget
-	newBudget := Budget{MaxDollars: 10.0}
-	convo.ResetBudget(newBudget)
-
-	// Check that budget was adjusted
-	expectedBudget := 10.0 + initialCost
-	if convo.Budget.MaxDollars != expectedBudget {
-		t.Errorf("Expected budget to be %f, got %f", expectedBudget, convo.Budget.MaxDollars)
+	response := message.Assistant("used")
+	response.Usage = &message.Usage{CostUSD: 2.5}
+	response.OtherUsage = []message.PurposedUsage{{Purpose: "nested", Usage: message.Usage{CostUSD: 0.5}}}
+	if got := resetBudget(10, []message.Message{response}); got != 13 {
+		t.Fatalf("reset budget = %v", got)
 	}
 }
 
-// TestSubConvoWithHistory tests SubConvoWithHistory method
-
-// TestDepth tests Depth method
-
-// TestGetID tests GetID method
-
-// TestDebugJSON tests DebugJSON method
-
-// recordingListener is a listener that records all calls for testing
-type recordingListener struct {
-	calls []string
-}
-
-func (rl *recordingListener) OnToolCall(ctx context.Context, convo *Convo, id, toolName string, toolInput json.RawMessage, content llm.Content) {
-	rl.calls = append(rl.calls, "OnToolCall")
-}
-
-func (rl *recordingListener) OnToolResult(ctx context.Context, convo *Convo, id, toolName string, toolInput json.RawMessage, content llm.Content, result *string, err error) {
-	rl.calls = append(rl.calls, "OnToolResult")
-}
-
-func (rl *recordingListener) OnResponse(ctx context.Context, convo *Convo, id string, resp *llm.Response) {
-	rl.calls = append(rl.calls, "OnResponse")
-}
-
-func (rl *recordingListener) OnRequest(ctx context.Context, convo *Convo, id string, msg *llm.Message) {
-	rl.calls = append(rl.calls, "OnRequest")
-}
-
-// TestConvoListenerIntegration tests that Convo actually calls listener methods during operation
 func TestConvoListenerIntegration(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Set up recording listener
-	listener := &recordingListener{}
-	convo.Listener = listener
-
-	// Send a message to trigger listener calls
-	_, err := convo.SendUserTextMessage("Hello")
-	if err != nil {
-		t.Fatalf("SendUserTextMessage failed: %v", err)
+	var mu sync.Mutex
+	var events []string
+	record := func(value string) { mu.Lock(); events = append(events, value); mu.Unlock() }
+	listener := agent.Middleware{
+		Name: "listener",
+		BeforeModel: func(context.Context, state.Values, agent.Runtime) (state.Values, error) {
+			record("model.before")
+			return nil, nil
+		},
+		AfterModel: func(context.Context, state.Values, agent.Runtime) (state.Values, error) {
+			record("model.after")
+			return nil, nil
+		},
+		WrapToolCall: func(ctx context.Context, request agent.ToolCallRequest, next agent.ToolHandler) (agent.ToolCallResponse, error) {
+			record("tool.before")
+			response, err := next(ctx, request)
+			record("tool.after")
+			return response, err
+		},
 	}
-
-	// Check that we recorded some calls
-	if len(listener.calls) == 0 {
-		t.Error("Expected listener methods to be called during conversation, but no calls were recorded")
+	ping := namedTool("ping", func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		return tool.TextResult("pong"), nil
+	})
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{toolCall("ping-1", "ping")}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	)
+	if _, err := compileAgent(t, script, []tool.Tool{ping}, nil, listener).Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("ping")}}); err != nil {
+		t.Fatal(err)
 	}
-
-	// Verify that request and response events were recorded
-	requestFound := false
-	responseFound := false
-	for _, call := range listener.calls {
-		if call == "OnRequest" {
-			requestFound = true
-		}
-		if call == "OnResponse" {
-			responseFound = true
-		}
-	}
-
-	if !requestFound {
-		t.Error("Expected OnRequest to be called during conversation")
-	}
-	if !responseFound {
-		t.Error("Expected OnResponse to be called during conversation")
+	want := []string{"model.before", "model.after", "tool.before", "tool.after", "model.before", "model.after"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
 	}
 }
 
-// TestSubConvoWithHistory tests SubConvoWithHistory method
 func TestSubConvoWithHistoryAdditional(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Send a message to create some history
-	_, err := convo.SendUserTextMessage("Hello")
+	parentScript := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("parent answer")}})
+	parent, err := compileAgent(t, parentScript, nil, nil).Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("parent question")}})
 	if err != nil {
-		t.Fatalf("SendUserTextMessage failed: %v", err)
+		t.Fatal(err)
 	}
-
-	// Create sub-conversation with history
-	subConvo := convo.SubConvoWithHistory()
-	if subConvo == nil {
-		t.Fatal("SubConvoWithHistory should return a valid conversation")
+	childScript := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		if len(request.Messages) != 3 || request.Messages[0].TextContent() != "parent question" || request.Messages[2].TextContent() != "follow up" {
+			return fmt.Errorf("child history = %#v", request.Messages)
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("child answer")}})
+	childMessages := append(append([]message.Message(nil), parent.Messages...), message.Human("follow up"))
+	child, err := compileAgent(t, childScript, nil, nil).Invoke(context.Background(), agent.Input{Config: checkpoint.Config{ThreadID: "child-history"}, Messages: childMessages})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Check that sub-conversation has parent
-	if subConvo.Parent != convo {
-		t.Error("Sub-conversation should have parent set")
-	}
-
-	// Check that sub-conversation has messages (history)
-	if len(subConvo.messages) == 0 {
-		t.Error("Sub-conversation should have messages from parent")
-	}
-
-	// Check that the first message is from the parent conversation
-	if len(subConvo.messages) < 1 {
-		t.Error("Sub-conversation should have at least one message")
+	if len(parent.Messages) != 2 || len(child.Messages) != 4 {
+		t.Fatalf("parent = %d messages, child = %d", len(parent.Messages), len(child.Messages))
 	}
 }
 
-// TestDepthAdditional tests Depth method
 func TestDepthAdditional(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Root conversation should have depth 0
-	if convo.Depth() != 0 {
-		t.Errorf("Expected depth 0, got %d", convo.Depth())
+	grandchildModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("deep result")}})
+	grandchild := compileAgent(t, grandchildModel, nil, nil)
+	childModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "inner", Name: "task", Arguments: json.RawMessage(`{"description":"deep work","subagent_type":"deep"}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("child done")}},
+	)
+	child, err := dago.New(dago.Options{Model: childModel, Subagents: []dago.Subagent{{Name: "deep", Description: "Deep worker", Runnable: grandchild}}, DisableSummary: true, DisableTodo: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Sub-conversation should have depth 1
-	subConvo := convo.SubConvo()
-	if subConvo.Depth() != 1 {
-		t.Errorf("Expected depth 1, got %d", subConvo.Depth())
+	parentModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "outer", Name: "task", Arguments: json.RawMessage(`{"description":"child work","subagent_type":"child"}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("parent done")}},
+	)
+	parent, err := dago.New(dago.Options{Model: parentModel, Subagents: []dago.Subagent{{Name: "child", Description: "Child worker", Runnable: child}}, DisableSummary: true, DisableTodo: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Sub-sub-conversation should have depth 2
-	subSubConvo := subConvo.SubConvo()
-	if subSubConvo.Depth() != 2 {
-		t.Errorf("Expected depth 2, got %d", subSubConvo.Depth())
+	result, err := parent.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("delegate twice")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "parent done" {
+		t.Fatalf("result = %#v", result.Messages)
 	}
 }
 
-// TestGetIDAdditional tests GetID method
 func TestGetIDAdditional(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	id := convo.GetID()
-	if id == "" {
-		t.Error("GetID should return a non-empty ID")
+	script := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}})
+	result, err := compileAgent(t, script, nil, checkpoint.NewMemorySaver()).Invoke(context.Background(), agent.Input{Config: checkpoint.Config{ThreadID: "conversation-id"}, Messages: []message.Message{message.Human("hi")}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if id != convo.ID {
-		t.Error("GetID should return the conversation ID")
+	if result.Config.ThreadID != "conversation-id" || result.Config.CheckpointID == "" {
+		t.Fatalf("config = %#v", result.Config)
 	}
 }
 
-// TestDebugJSONAdditional tests DebugJSON method
 func TestDebugJSONAdditional(t *testing.T) {
-	ctx := context.Background()
-	srv := loop.NewPredictableService()
-	convo := New(ctx, srv, nil)
-
-	// Test with empty conversation
-	jsonData, err := convo.DebugJSON()
+	messages := []message.Message{message.Human("hello"), message.Assistant("world")}
+	encoded, err := json.MarshalIndent(messages, "", "  ")
 	if err != nil {
-		t.Errorf("DebugJSON failed: %v", err)
+		t.Fatal(err)
 	}
-	if len(jsonData) == 0 {
-		t.Error("DebugJSON should return non-empty data")
+	var decoded []message.Message
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
 	}
-
-	// Test with conversation that has messages
-	_, err = convo.SendUserTextMessage("Hello")
-	if err != nil {
-		t.Fatalf("SendUserTextMessage failed: %v", err)
-	}
-
-	jsonData, err = convo.DebugJSON()
-	if err != nil {
-		t.Errorf("DebugJSON failed: %v", err)
-	}
-	if len(jsonData) == 0 {
-		t.Error("DebugJSON should return non-empty data")
-	}
-
-	// Verify it's valid JSON by trying to unmarshal it
-	var parsed interface{}
-	err = json.Unmarshal(jsonData, &parsed)
-	if err != nil {
-		t.Errorf("DebugJSON should return valid JSON: %v", err)
+	if len(decoded) != 2 || decoded[0].Role != message.RoleHuman || decoded[1].TextContent() != "world" {
+		t.Fatalf("decoded = %#v", decoded)
 	}
 }

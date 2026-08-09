@@ -272,7 +272,7 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 	// Validate before mutating: the model is force-written onto the
 	// conversation below, so an unknown model would otherwise brick the
 	// conversation (every subsequent chat rejects the stored model).
-	if _, err := s.llmManager.GetService(modelID); err != nil {
+	if _, err := s.llmManager.GetChat(modelID); err != nil {
 		http.Error(w, fmt.Sprintf("unknown model %q: %v", modelID, err), http.StatusBadRequest)
 		return
 	}

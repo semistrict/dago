@@ -7,23 +7,28 @@ import (
 	"sync/atomic"
 	"testing"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+	dtool "github.com/semistrict/dago/tool"
+
 	"shelley.exe.dev/llm"
 )
 
-// recordingService wraps another llm.Service and captures each request.
+// recordingService captures native model requests.
 type recordingService struct {
-	llm.Service
+	*customPredictableService
 	mu   sync.Mutex
-	reqs []*llm.Request
+	reqs []dmodel.Request
 }
 
-func (s *recordingService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-	s.mu.Lock()
-	captured := *req
-	captured.Messages = append([]llm.Message(nil), req.Messages...)
-	s.reqs = append(s.reqs, &captured)
-	s.mu.Unlock()
-	return s.Service.Do(ctx, req)
+func (service *recordingService) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
+	service.mu.Lock()
+	service.reqs = append(service.reqs, request)
+	service.mu.Unlock()
+	return service.customPredictableService.Invoke(ctx, request)
+}
+func (service *recordingService) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
+	return service.customPredictableService.Stream(ctx, request)
 }
 
 // TestInjectMessagesMidTurn verifies that messages returned by the
@@ -31,38 +36,23 @@ func (s *recordingService) Do(ctx context.Context, req *llm.Request) (*llm.Respo
 // the very next LLM request already carries them (e.g. a subagent completion
 // notification the parent should react to immediately, mid-turn).
 func TestInjectMessagesMidTurn(t *testing.T) {
-	echoTool := &llm.Tool{
-		Name:        "echo",
-		Description: "echoes",
-		InputSchema: llm.MustSchema(`{"type": "object", "properties": {}}`),
-		Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
-			return llm.ToolOut{LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "echoed"}}}
+	echoTool := dtool.Func{
+		Spec: dtool.Definition{Name: "echo", Description: "echoes", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+		Run: func(context.Context, json.RawMessage, dtool.Runtime) (dtool.Result, error) {
+			return dtool.TextResult("echoed"), nil
 		},
 	}
 
-	service := &recordingService{Service: &customPredictableService{
-		responseFunc: func(req *llm.Request) (*llm.Response, error) {
+	service := &recordingService{customPredictableService: &customPredictableService{
+		responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
 			// Any request that already carries a tool result ends the turn;
 			// the first request calls the tool.
-			for _, msg := range req.Messages {
-				for _, c := range msg.Content {
-					if c.Type == llm.ContentTypeToolResult {
-						return &llm.Response{
-							Role:       llm.MessageRoleAssistant,
-							StopReason: llm.StopReasonEndTurn,
-							Content:    []llm.Content{{Type: llm.ContentTypeText, Text: "done"}},
-						}, nil
-					}
+			for _, item := range request.Messages {
+				if item.Role == dmessage.RoleTool {
+					return nativeTextResponse("done"), nil
 				}
 			}
-			return &llm.Response{
-				Role:       llm.MessageRoleAssistant,
-				StopReason: llm.StopReasonToolUse,
-				Content: []llm.Content{{
-					Type: llm.ContentTypeToolUse, ID: "tool_1",
-					ToolName: "echo", ToolInput: json.RawMessage(`{}`),
-				}},
-			}, nil
+			return nativeToolResponse("", "tool_1", "echo", json.RawMessage(`{}`)), nil
 		},
 	}}
 
@@ -79,8 +69,8 @@ func TestInjectMessagesMidTurn(t *testing.T) {
 
 	var calls atomic.Int64
 	loop := NewLoop(Config{
-		LLM:   service,
-		Tools: []*llm.Tool{echoTool},
+		Model: service,
+		Tools: []dtool.Tool{echoTool},
 		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, purposed []llm.PurposedUsage) error {
 			return nil
 		},
@@ -113,10 +103,10 @@ func TestInjectMessagesMidTurn(t *testing.T) {
 	if len(msgs) != 5 {
 		t.Fatalf("expected 5 messages in second request, got %d: %+v", len(msgs), msgs)
 	}
-	if msgs[3].Content[0].ID != "sa_done_1" {
+	if len(msgs[3].ToolCalls) != 1 || msgs[3].ToolCalls[0].ID != "sa_done_1" {
 		t.Errorf("expected injected tool_use at index 3, got %+v", msgs[3])
 	}
-	if msgs[4].Content[0].ToolUseID != "sa_done_1" {
+	if msgs[4].ToolCallID != "sa_done_1" {
 		t.Errorf("expected injected tool_result at index 4, got %+v", msgs[4])
 	}
 }

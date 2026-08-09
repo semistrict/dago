@@ -16,7 +16,6 @@ require (
 	github.com/richardlehane/crock32 v1.0.1
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/samber/slog-http v1.12.1
-	github.com/sashabaranov/go-openai v1.41.2
 	go.skia.org/infra v0.0.0-20260709164234-a736e8709729
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.44.0

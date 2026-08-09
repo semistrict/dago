@@ -15,7 +15,7 @@ func TestModelCostsHandler(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 
 	body := `{"models":[` +
-		`{"model":"claude-opus-4-6","url":"https://llm.int.exe.xyz/v1/messages"},` +
+		`{"model":"gpt-5.3-codex","url":"https://llm.int.exe.xyz/v1/responses"},` +
 		`{"model":"gpt-5.5-2026-04-23","url":"https://llm.int.exe.xyz/v1/responses"},` +
 		`{"model":"predictable-v1"}]}`
 	w := httptest.NewRecorder()
@@ -30,9 +30,9 @@ func TestModelCostsHandler(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
 		t.Fatal(err)
 	}
-	opus := res.Costs["claude-opus-4-6"]
-	if opus == nil || opus.Input != 5 || opus.Output != 25 || opus.CacheRead != 0.5 || opus.CacheWrite != 6.25 {
-		t.Errorf("claude-opus-4-6 = %+v, want 5/25/0.5/6.25", opus)
+	codex := res.Costs["gpt-5.3-codex"]
+	if codex == nil || codex.Input != 1.75 || codex.Output != 14 || codex.CacheRead != 0.175 {
+		t.Errorf("gpt-5.3-codex = %+v, want 1.75/14/0.175", codex)
 	}
 	gpt := res.Costs["gpt-5.5-2026-04-23"]
 	if gpt == nil || gpt.Input != 5 || gpt.Output != 30 {
@@ -78,9 +78,9 @@ func TestSubagentUsageHandler(t *testing.T) {
 		}
 	}
 	// Parent usage must NOT be counted.
-	addUsage(parent.ConversationID, "claude-opus-4-6", "https://llm.int.exe.xyz/v1/messages", 1_000_000, 0, 0)
-	// Child: priced. 1M input @$5 + 1M output @$25 = $30.
-	addUsage(child.ConversationID, "claude-opus-4-6", "https://llm.int.exe.xyz/v1/messages", 1_000_000, 1_000_000, 1.25)
+	addUsage(parent.ConversationID, "gpt-5.5", "https://llm.int.exe.xyz/v1/responses", 1_000_000, 0, 0)
+	// Child: priced. 1M input @$5 + 1M output @$30 = $35.
+	addUsage(child.ConversationID, "gpt-5.5", "https://llm.int.exe.xyz/v1/responses", 1_000_000, 1_000_000, 1.25)
 	// Grandchild (recursive): unpriced model.
 	addUsage(grandchild.ConversationID, "mystery-model", "", 500, 500, 0)
 
@@ -103,8 +103,8 @@ func TestSubagentUsageHandler(t *testing.T) {
 	if res.LLMCalls != 2 {
 		t.Errorf("llm_calls = %d, want 2 (parent excluded, grandchild included)", res.LLMCalls)
 	}
-	if res.EstimatedUsd < 29.99 || res.EstimatedUsd > 30.01 {
-		t.Errorf("estimated_usd = %v, want ~30", res.EstimatedUsd)
+	if res.EstimatedUsd < 34.99 || res.EstimatedUsd > 35.01 {
+		t.Errorf("estimated_usd = %v, want ~35", res.EstimatedUsd)
 	}
 	if res.ReportedUsd != 1.25 {
 		t.Errorf("reported_usd = %v, want 1.25", res.ReportedUsd)

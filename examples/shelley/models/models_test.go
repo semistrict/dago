@@ -9,6 +9,9 @@ import (
 	"sync"
 	"testing"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
@@ -24,7 +27,7 @@ func predictableBuilt() Built {
 		ID:       "predictable",
 		Provider: ProviderBuiltIn,
 		Source:   "test",
-		Service:  loop.NewPredictableService(),
+		Chat:     loop.NewPredictableService(),
 	}
 }
 
@@ -57,19 +60,13 @@ func TestByID(t *testing.T) {
 		{id: "gpt-5.6-luna", wantID: "gpt-5.6-luna"},
 		{id: "gpt-5.5", wantID: "gpt-5.5"},
 		{id: "gpt-5.5-pro", wantNil: true},
-		{id: "deepseek-v4-pro-fireworks", wantID: "deepseek-v4-pro-fireworks"},
-		{id: "gpt-oss-20b-fireworks", wantID: "gpt-oss-20b-fireworks"},
+		{id: "gpt-5.4", wantID: "gpt-5.4"},
+		{id: "gpt-5.4-mini", wantID: "gpt-5.4-mini"},
+		{id: "gpt-5.4-nano", wantID: "gpt-5.4-nano"},
 		{id: "gpt-5.3-codex", wantID: "gpt-5.3-codex"},
-		{id: "claude-opus-5", wantID: "claude-opus-5"},
-		{id: "claude-sonnet-5", wantID: "claude-sonnet-5"},
-		{id: "claude-sonnet-4.5", wantID: "claude-sonnet-4.5"},
-		{id: "claude-haiku-4.5", wantID: "claude-haiku-4.5"},
-		{id: "claude-opus-4.5", wantID: "claude-opus-4.5"},
-		{id: "claude-fable-5", wantID: "claude-fable-5"},
-		{id: "claude-opus-4.8", wantID: "claude-opus-4.8"},
-		{id: "claude-opus-4.7", wantID: "claude-opus-4.7"},
-		{id: "claude-opus-4.6", wantID: "claude-opus-4.6"},
-		{id: "grok-4.5", wantID: "grok-4.5"},
+		{id: "deepseek-v4-pro-fireworks", wantNil: true},
+		{id: "claude-opus-4.8", wantNil: true},
+		{id: "grok-4.5", wantNil: true},
 		{id: "nonexistent", wantNil: true},
 	}
 	for _, tt := range tests {
@@ -92,36 +89,19 @@ func TestByID(t *testing.T) {
 }
 
 func TestKimiK3FireworksCatalogEntry(t *testing.T) {
-	m := ByID("kimi-k3-fireworks")
-	if m == nil {
-		t.Fatal("ByID(kimi-k3-fireworks) = nil, want non-nil")
+	if ByID("kimi-k3-fireworks") != nil {
+		t.Fatal("unsupported Chat Completions model remains in the catalog")
 	}
-	if m.Provider != ProviderFireworks {
-		t.Errorf("Provider = %q, want %q", m.Provider, ProviderFireworks)
-	}
-	if m.APIType != APITypeOpenAIChat {
-		t.Errorf("APIType = %q, want %q", m.APIType, APITypeOpenAIChat)
-	}
-	if m.APIModelName != "accounts/fireworks/models/kimi-k3" {
-		t.Errorf("APIModelName = %q, want %q", m.APIModelName, "accounts/fireworks/models/kimi-k3")
-	}
-	if m.DefaultBaseURL != DefaultFireworksBaseURL {
-		t.Errorf("DefaultBaseURL = %q, want %q", m.DefaultBaseURL, DefaultFireworksBaseURL)
-	}
-	if m.Build == nil {
-		t.Fatal("Build is nil")
-	}
-	// Existing Kimi K2.x entries remain available.
-	for _, id := range []string{"kimi-k2.6-fireworks", "kimi-k2.7-code-fireworks"} {
-		if ByID(id) == nil {
-			t.Errorf("ByID(%q) = nil, want non-nil", id)
+	for _, model := range All() {
+		if model.APIType != APITypeOpenAIResponses && model.APIType != APITypeBuiltIn {
+			t.Errorf("model %q uses unsupported API type %q", model.ID, model.APIType)
 		}
 	}
 }
 
 func TestDefault(t *testing.T) {
-	if d := Default(); d.ID != "claude-opus-4.8" {
-		t.Errorf("Default().ID = %q, want %q", d.ID, "claude-opus-4.8")
+	if d := Default(); d.ID != "gpt-5.6-sol" {
+		t.Errorf("Default().ID = %q, want %q", d.ID, "gpt-5.6-sol")
 	}
 }
 
@@ -144,9 +124,9 @@ func TestNewManagerRegistersBuiltModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	svc, err := mgr.GetService("predictable")
-	if err != nil || svc == nil {
-		t.Fatalf("GetService(predictable) failed: svc=%v err=%v", svc, err)
+	chat, err := mgr.GetChat("predictable")
+	if err != nil || chat == nil {
+		t.Fatalf("GetChat(predictable) failed: chat=%v err=%v", chat, err)
 	}
 	info := mgr.GetModelInfo("predictable")
 	if info == nil {
@@ -178,18 +158,18 @@ func TestGetAvailableModelsOrderStable(t *testing.T) {
 }
 
 func TestLoggingService(t *testing.T) {
-	mockService := &mockLLMService{}
+	mockModel := &mockChat{}
 	logger := slog.Default()
-	loggingSvc := &loggingService{service: mockService, logger: logger, modelID: "test-model", provider: ProviderBuiltIn}
+	loggingModel := &loggingChat{chat: mockModel, logger: logger, modelID: "test-model", provider: ProviderBuiltIn}
 
-	response, err := loggingSvc.Do(context.Background(), &llm.Request{Messages: []llm.Message{llm.UserStringMessage("Hello")}})
-	if err != nil || response == nil {
-		t.Fatalf("Do: response=%v err=%v", response, err)
+	response, err := loggingModel.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("Hello")}})
+	if err != nil || response.Message.TextContent() == "" {
+		t.Fatalf("Invoke: response=%v err=%v", response, err)
 	}
-	if loggingSvc.TokenContextWindow() != mockService.TokenContextWindow() {
+	if loggingModel.Profile().ContextWindow != mockModel.Profile().ContextWindow {
 		t.Errorf("TokenContextWindow mismatch")
 	}
-	if loggingSvc.MaxImageDimension() != mockService.MaxImageDimension() {
+	if loggingModel.Profile().MaxImageDimension != mockModel.Profile().MaxImageDimension {
 		t.Errorf("MaxImageDimension mismatch")
 	}
 }
@@ -200,18 +180,18 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 		usage   llm.Usage
 	}
 	var got []collected
-	svc := &loggingService{
-		service: &mockLLMService{},
+	chat := &loggingChat{
+		chat:    &mockChat{},
 		logger:  slog.Default(),
 		modelID: "test-model",
 	}
-	req := &llm.Request{Messages: []llm.Message{llm.UserStringMessage("hi")}}
+	req := dmodel.Request{Messages: []dmessage.Message{dmessage.Human("hi")}}
 	ctxWithCollector := llmhttp.WithUsageCollector(context.Background(), func(purpose string, usage llm.Usage) {
 		got = append(got, collected{purpose, usage})
 	})
 
 	// No purpose tag: nothing collected even with a collector.
-	if _, err := svc.Do(ctxWithCollector, req); err != nil {
+	if _, err := chat.Invoke(ctxWithCollector, req); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 0 {
@@ -220,7 +200,7 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 
 	// Purpose tag: collected, model falls back to modelID (mock leaves Model empty).
 	ctx := llmhttp.WithPurpose(ctxWithCollector, "keyword_search")
-	if _, err := svc.Do(ctx, req); err != nil {
+	if _, err := chat.Invoke(ctx, req); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
@@ -235,8 +215,8 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 	}
 
 	// Zero usage: not collected even with a purpose tag.
-	svc.service = &zeroUsageLLMService{}
-	if _, err := svc.Do(ctx, req); err != nil {
+	chat.chat = &mockChat{zeroUsage: true}
+	if _, err := chat.Invoke(ctx, req); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
@@ -244,8 +224,8 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 	}
 
 	// Purpose tag but no collector in ctx: no panic, nothing collected.
-	svc.service = &mockLLMService{}
-	if _, err := svc.Do(llmhttp.WithPurpose(context.Background(), "keyword_search"), req); err != nil {
+	chat.chat = &mockChat{}
+	if _, err := chat.Invoke(llmhttp.WithPurpose(context.Background(), "keyword_search"), req); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
@@ -253,56 +233,66 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 	}
 }
 
-// zeroUsageLLMService responds with no usage data.
-type zeroUsageLLMService struct{ mockLLMService }
-
-func (z *zeroUsageLLMService) Do(ctx context.Context, request *llm.Request) (*llm.Response, error) {
-	return &llm.Response{Content: llm.TextContent("ok")}, nil
-}
-
-// mockLLMService implements llm.Service for testing.
-type mockLLMService struct {
+type mockChat struct {
 	tokenContextWindow int
 	maxImageDimension  int
 	useSimplifiedPatch bool
+	zeroUsage          bool
+	gotReasoning       string
+	defaultReasoning   string
 }
 
-func (m *mockLLMService) Do(ctx context.Context, request *llm.Request) (*llm.Response, error) {
-	return &llm.Response{
-		Content: llm.TextContent("Hello, world!"),
-		Usage:   llm.Usage{InputTokens: 10, OutputTokens: 5, CostUSD: 0.001},
-	}, nil
+func (m *mockChat) Invoke(_ context.Context, request dmodel.Request) (dmodel.Response, error) {
+	if request.Reasoning != nil {
+		m.gotReasoning = request.Reasoning.Effort
+	}
+	message := dmessage.Assistant("Hello, world!")
+	if !m.zeroUsage {
+		message.Usage = &dmessage.Usage{InputTokens: 10, OutputTokens: 5, CostUSD: 0.001}
+	}
+	return dmodel.Response{Message: message}, nil
 }
 
-func (m *mockLLMService) Provider() string { return "" }
+func (m *mockChat) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+	return dmodel.EmptyStream{}, nil
+}
 
-func (m *mockLLMService) TokenContextWindow() int {
+func (m *mockChat) Profile() dmodel.Profile {
+	contextWindow := m.tokenContextWindow
+	if contextWindow == 0 {
+		contextWindow = 4096
+	}
+	imageDimension := m.maxImageDimension
+	if imageDimension == 0 {
+		imageDimension = 2048
+	}
+	return dmodel.Profile{ContextWindow: contextWindow, MaxImageDimension: imageDimension, MaxImageBytes: 5 * 1024 * 1024, SupportsImages: true, UseSimplifiedPatch: m.useSimplifiedPatch, SupportsReasoning: true, DefaultReasoningLevel: m.defaultReasoning}
+}
+
+func (m *mockChat) TokenContextWindow() int {
 	if m.tokenContextWindow == 0 {
 		return 4096
 	}
 	return m.tokenContextWindow
 }
 
-func (m *mockLLMService) MaxImageDimension() int {
+func (m *mockChat) MaxImageDimension() int {
 	if m.maxImageDimension == 0 {
 		return 2048
 	}
 	return m.maxImageDimension
 }
 
-func (m *mockLLMService) MaxImageBytes() int       { return 5 * 1024 * 1024 }
-func (m *mockLLMService) UseSimplifiedPatch() bool { return m.useSimplifiedPatch }
-
 func TestManagerGetService(t *testing.T) {
 	mgr, err := NewManager(&Config{Models: []Built{predictableBuilt()}})
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
-	if svc, err := mgr.GetService("predictable"); err != nil || svc == nil {
-		t.Errorf("GetService(predictable): svc=%v err=%v", svc, err)
+	if chat, err := mgr.GetChat("predictable"); err != nil || chat == nil {
+		t.Errorf("GetChat(predictable): chat=%v err=%v", chat, err)
 	}
-	if _, err := mgr.GetService("non-existent-model"); err == nil {
-		t.Error("GetService(non-existent) should have failed")
+	if _, err := mgr.GetChat("non-existent-model"); err == nil {
+		t.Error("GetChat(non-existent) should have failed")
 	}
 }
 
@@ -323,12 +313,12 @@ func TestManagerHasModel(t *testing.T) {
 }
 
 func TestModelBuildSignature(t *testing.T) {
-	// Each catalog model's Build must produce a non-nil llm.Service when
+	// Each catalog model's Build must produce a non-nil native chat model when
 	// given any URL/key and an http.Client.
 	customClient := &http.Client{}
 	for _, m := range All() {
-		svc := m.Build("https://example.test/v1", "key", customClient)
-		if svc == nil {
+		chat, err := m.Build("https://example.test/v1", "key", customClient)
+		if err != nil || chat == nil {
 			t.Errorf("Build(%s) returned nil", m.ID)
 		}
 	}
@@ -336,22 +326,15 @@ func TestModelBuildSignature(t *testing.T) {
 
 func TestUseSimplifiedPatch(t *testing.T) {
 	logger := slog.Default()
-	plain := &loggingService{service: &mockLLMService{}, logger: logger, modelID: "t1", provider: ProviderBuiltIn}
-	if plain.UseSimplifiedPatch() {
+	plain := &loggingChat{chat: &mockChat{}, logger: logger, modelID: "t1", provider: ProviderBuiltIn}
+	if plain.Profile().UseSimplifiedPatch {
 		t.Error("plain mock should not implement SimplifiedPatcher")
 	}
-	with := &loggingService{service: &mockSimplifiedLLMService{useSimplified: true}, logger: logger, modelID: "t2", provider: ProviderBuiltIn}
-	if !with.UseSimplifiedPatch() {
+	with := &loggingChat{chat: &mockChat{useSimplifiedPatch: true}, logger: logger, modelID: "t2", provider: ProviderBuiltIn}
+	if !with.Profile().UseSimplifiedPatch {
 		t.Error("simplified mock should return true")
 	}
 }
-
-type mockSimplifiedLLMService struct {
-	mockLLMService
-	useSimplified bool
-}
-
-func (m *mockSimplifiedLLMService) UseSimplifiedPatch() bool { return m.useSimplified }
 
 func TestRefreshCustomModelsConcurrent(t *testing.T) {
 	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
@@ -365,7 +348,7 @@ func TestRefreshCustomModelsConcurrent(t *testing.T) {
 	if _, err := testDB.CreateModel(context.Background(), generated.CreateModelParams{
 		ModelID:      "custom-test-model",
 		DisplayName:  "Test Model",
-		ProviderType: "openai",
+		ProviderType: "openai-responses",
 		Endpoint:     "https://api.example.com/v1",
 		ApiKey:       "test-key",
 		ModelName:    "test-model",
@@ -389,7 +372,7 @@ func TestRefreshCustomModelsConcurrent(t *testing.T) {
 				mgr.GetAvailableModels()
 				mgr.HasModel("custom-test-model")
 				mgr.GetModelInfo("custom-test-model")
-				mgr.GetService("custom-test-model")
+				mgr.GetChat("custom-test-model")
 			}
 		}()
 	}
@@ -415,7 +398,7 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 	if _, err := testDB.CreateModel(context.Background(), generated.CreateModelParams{
 		ModelID:      "custom-test-model",
 		DisplayName:  "Test Model",
-		ProviderType: "openai",
+		ProviderType: "openai-responses",
 		Endpoint:     "https://api.example.com/v1",
 		ApiKey:       "test-key",
 		ModelName:    "test-model",
@@ -431,7 +414,7 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 				DisplayName: "Old Built",
 				Provider:    ProviderBuiltIn,
 				Source:      "old source",
-				Service:     &mockLLMService{},
+				Chat:        &mockChat{},
 			},
 		},
 		DB: testDB,
@@ -446,7 +429,7 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 			DisplayName: "New Built",
 			Provider:    ProviderBuiltIn,
 			Source:      "new source",
-			Service:     &mockLLMService{},
+			Chat:        &mockChat{},
 		},
 	}); err != nil {
 		t.Fatalf("RefreshBuiltModels failed: %v", err)
@@ -485,70 +468,54 @@ func TestPreferredToolModelsAreRegistered(t *testing.T) {
 	}
 }
 
-func (m *mockLLMService) SupportsImages() bool { return true }
-
 func TestReasoningServiceMapping(t *testing.T) {
-	inner := &captureThinkingService{}
+	inner := &mockChat{defaultReasoning: "medium"}
 	svc := WrapReasoningConfig(inner, "", "unknown", "yes", `{"off":"off","minimal":"low","medium":"high"}`)
 
-	levels := llm.SupportedReasoningLevels(svc)
-	if got := []string{levels[0].Name(), levels[1].Name(), levels[2].Name()}; !reflect.DeepEqual(got, []string{"off", "minimal", "medium"}) {
-		t.Fatalf("levels = %v", got)
+	levels := svc.Profile().ReasoningLevels
+	if !reflect.DeepEqual(levels, []string{"off", "minimal", "medium"}) {
+		t.Fatalf("levels = %v", levels)
 	}
-	if _, err := svc.Do(context.Background(), &llm.Request{ThinkingLevel: llm.ThinkingLevelMinimal}); err != nil {
+	if _, err := svc.Invoke(context.Background(), dmodel.Request{Reasoning: &dmodel.Reasoning{Effort: "minimal"}}); err != nil {
 		t.Fatal(err)
 	}
-	if inner.got != llm.ThinkingLevelLow {
-		t.Fatalf("mapped level = %s, want low", inner.got.Name())
+	if inner.gotReasoning != "low" {
+		t.Fatalf("mapped level = %s, want low", inner.gotReasoning)
 	}
 }
 
 func TestReasoningServiceDisabled(t *testing.T) {
-	inner := &captureThinkingService{}
+	inner := &mockChat{}
 	svc := WrapReasoningConfig(inner, "", "unknown", "no", "")
-	if llm.SupportsReasoning(svc) {
+	if svc.Profile().SupportsReasoning {
 		t.Fatal("disabled service reports reasoning support")
 	}
-	if _, err := svc.Do(context.Background(), &llm.Request{ThinkingLevel: llm.ThinkingLevelHigh}); err != nil {
+	if _, err := svc.Invoke(context.Background(), dmodel.Request{Reasoning: &dmodel.Reasoning{Effort: "high"}}); err != nil {
 		t.Fatal(err)
 	}
-	if inner.got != llm.ThinkingLevelOff {
-		t.Fatalf("level = %s, want off", inner.got.Name())
+	if inner.gotReasoning != "" {
+		t.Fatalf("reasoning effort = %q, want omitted", inner.gotReasoning)
 	}
-}
-
-type captureThinkingService struct {
-	mockLLMService
-	got llm.ThinkingLevel
-}
-
-func (s *captureThinkingService) Do(_ context.Context, req *llm.Request) (*llm.Response, error) {
-	s.got = req.ThinkingLevel
-	return &llm.Response{}, nil
 }
 
 func TestReasoningServiceRejectsUnsupportedLevel(t *testing.T) {
-	svc := WrapReasoningConfig(&captureThinkingService{}, "", "unknown", "yes", `{"low":"low"}`)
-	_, err := svc.Do(context.Background(), &llm.Request{ThinkingLevel: llm.ThinkingLevelHigh})
+	svc := WrapReasoningConfig(&mockChat{}, "", "unknown", "yes", `{"low":"low"}`)
+	_, err := svc.Invoke(context.Background(), dmodel.Request{Reasoning: &dmodel.Reasoning{Effort: "high"}})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("error = %v, want unsupported-level error", err)
 	}
 }
 
 func TestReasoningServiceMapsServiceDefault(t *testing.T) {
-	inner := &defaultThinkingService{captureThinkingService: captureThinkingService{}}
+	inner := &mockChat{defaultReasoning: "medium"}
 	svc := WrapReasoningConfig(inner, "", "unknown", "yes", `{"medium":"low"}`)
-	if got := llm.ServiceDefaultReasoningLevel(svc); got != "low" {
+	if got := svc.Profile().DefaultReasoningLevel; got != "low" {
 		t.Fatalf("default = %q, want low", got)
 	}
-	if _, err := svc.Do(context.Background(), &llm.Request{}); err != nil {
+	if _, err := svc.Invoke(context.Background(), dmodel.Request{}); err != nil {
 		t.Fatal(err)
 	}
-	if inner.got != llm.ThinkingLevelLow {
-		t.Fatalf("level = %s, want low", inner.got.Name())
+	if inner.gotReasoning != "low" {
+		t.Fatalf("level = %s, want low", inner.gotReasoning)
 	}
 }
-
-type defaultThinkingService struct{ captureThinkingService }
-
-func (s *defaultThinkingService) DefaultReasoningLevel() string { return "medium" }

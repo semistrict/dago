@@ -33,9 +33,9 @@ type PermissionCallback func(command string) error
 // PreferredToolModels is the ordered list of model IDs preferred for
 // internal tool operations (validation, keyword search, etc.).
 // Every entry must be a model ID registered in models.All().
-var PreferredToolModels = []string{"gpt-oss-20b-fireworks", "claude-sonnet-4.6", "claude-sonnet-4.5", "predictable"}
+var PreferredToolModels = []string{"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "predictable"}
 
-// BashTool specifies an llm.Tool for executing shell commands.
+// BashTool executes shell commands through Dago's tool contract.
 type BashTool struct {
 	// CheckPermission is called before running any command, if set
 	CheckPermission PermissionCallback
@@ -82,18 +82,7 @@ func (t *Timeouts) slow() time.Duration {
 	return t.Slow
 }
 
-// Tool returns an llm.Tool based on b.
-func (b *BashTool) Tool() *llm.Tool {
-	return &llm.Tool{
-		Name:        bashName,
-		Description: strings.TrimSpace(bashDescription),
-		InputSchema: llm.MustSchema(bashInputSchema),
-		Run:         llm.RunJSON(b.run),
-	}
-}
-
-// NativeTool executes bash through Dago's tool contract. Tool remains the
-// pinned Shelley facade for its original package tests.
+// NativeTool executes bash through Dago's tool contract.
 func (b *BashTool) NativeTool() dtool.Tool {
 	return dtool.Func{
 		Spec: dtool.Definition{
@@ -199,14 +188,6 @@ func (i *bashInput) timeout(t *Timeouts) time.Duration {
 		return t.slow()
 	}
 	return t.fast()
-}
-
-func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
-	execution, err := b.execute(ctx, req, false)
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
 }
 
 func (b *BashTool) execute(ctx context.Context, req bashInput, nativeModelCalls bool) (bashExecution, error) {
@@ -533,7 +514,7 @@ func shellHasCommand(ctx context.Context, name string) bool {
 
 // checkAndInstallMissingTools analyzes a bash command and attempts to automatically install any missing tools.
 func (b *BashTool) checkAndInstallMissingTools(ctx context.Context, command string) error {
-	return b.checkAndInstallMissingToolsWith(ctx, command, b.installTool)
+	return b.checkAndInstallMissingToolsWith(ctx, command, b.installToolNative)
 }
 
 func (b *BashTool) checkAndInstallMissingToolsNative(ctx context.Context, command string) error {
@@ -610,47 +591,6 @@ func autodetectPackageManager() string {
 	return ""
 }
 
-// installTool attempts to install a single missing tool using LLM validation and system package manager.
-func (b *BashTool) installTool(ctx context.Context, cmd string) error {
-	slog.InfoContext(ctx, "attempting to install tool", "tool", cmd)
-
-	packageManager := autodetectPackageManager()
-	if packageManager == "" {
-		return fmt.Errorf("no known package manager found in PATH")
-	}
-	// Use LLM to validate and get package name
-	if b.LLMProvider == nil {
-		return fmt.Errorf("no LLM provider available for tool validation")
-	}
-	llmService, err := b.selectBestLLM()
-	if err != nil {
-		return fmt.Errorf("failed to get LLM service for tool validation: %w", err)
-	}
-
-	query := toolInstallQuery(packageManager, cmd)
-
-	req := &llm.Request{
-		Messages: []llm.Message{{
-			Role:    llm.MessageRoleUser,
-			Content: []llm.Content{llm.StringContent(query)},
-		}},
-		System: []llm.SystemContent{{
-			Type: "text",
-			Text: "You are an expert in software developer tools.",
-		}},
-	}
-
-	resp, err := llmService.Do(llmhttp.WithPurpose(ctx, "tool_install"), req)
-	if err != nil {
-		return fmt.Errorf("failed to validate tool with LLM: %w", err)
-	}
-
-	if len(resp.Content) == 0 {
-		return fmt.Errorf("empty response from LLM for tool validation")
-	}
-	return b.finishToolInstall(ctx, cmd, packageManager, resp.Content[0].Text)
-}
-
 func (b *BashTool) installToolNative(ctx context.Context, cmd string) error {
 	slog.InfoContext(ctx, "attempting to install tool", "tool", cmd)
 	packageManager := autodetectPackageManager()
@@ -660,15 +600,11 @@ func (b *BashTool) installToolNative(ctx context.Context, cmd string) error {
 	if b.LLMProvider == nil {
 		return fmt.Errorf("no LLM provider available for tool validation")
 	}
-	service, err := b.selectBestLLM()
+	chat, err := b.selectBestChat()
 	if err != nil {
-		return fmt.Errorf("failed to get LLM service for tool validation: %w", err)
+		return fmt.Errorf("failed to get chat model for tool validation: %w", err)
 	}
-	native, ok := service.(interface{ DagoChat() dmodel.Chat })
-	if !ok || native.DagoChat() == nil {
-		return fmt.Errorf("tool validation model does not expose a native Dago chat")
-	}
-	response, err := native.DagoChat().Invoke(llmhttp.WithPurpose(ctx, "tool_install"), dmodel.Request{Messages: []dmessage.Message{
+	response, err := chat.Invoke(llmhttp.WithPurpose(ctx, "tool_install"), dmodel.Request{Messages: []dmessage.Message{
 		dmessage.System("You are an expert in software developer tools."),
 		dmessage.Human(toolInstallQuery(packageManager, cmd)),
 	}})
@@ -676,6 +612,23 @@ func (b *BashTool) installToolNative(ctx context.Context, cmd string) error {
 		return fmt.Errorf("failed to validate tool with LLM: %w", err)
 	}
 	return b.finishToolInstall(ctx, cmd, packageManager, response.Message.TextContent())
+}
+
+func (b *BashTool) selectBestChat() (dmodel.Chat, error) {
+	if b.LLMProvider == nil {
+		return nil, fmt.Errorf("no LLM provider available")
+	}
+	for _, model := range PreferredToolModels {
+		chat, err := b.LLMProvider.GetChat(model)
+		if err == nil {
+			return chat, nil
+		}
+	}
+	available := b.LLMProvider.GetAvailableModels()
+	if len(available) > 0 {
+		return b.LLMProvider.GetChat(available[0])
+	}
+	return nil, fmt.Errorf("no chat models available")
 }
 
 func toolInstallQuery(packageManager, cmd string) string {
@@ -773,26 +726,4 @@ func (b *BashTool) installPackage(ctx context.Context, cmd, packageName, package
 
 	slog.InfoContext(ctx, "tool installation successful", "tool", cmd, "package", packageName)
 	return nil
-}
-
-// selectBestLLM selects the best available LLM service for bash tool validation
-func (b *BashTool) selectBestLLM() (llm.Service, error) {
-	if b.LLMProvider == nil {
-		return nil, fmt.Errorf("no LLM provider available")
-	}
-
-	for _, model := range PreferredToolModels {
-		svc, err := b.LLMProvider.GetService(model)
-		if err == nil {
-			return svc, nil
-		}
-	}
-
-	// If no preferred model is available, try any available model
-	available := b.LLMProvider.GetAvailableModels()
-	if len(available) > 0 {
-		return b.LLMProvider.GetService(available[0])
-	}
-
-	return nil, fmt.Errorf("no LLM services available")
 }

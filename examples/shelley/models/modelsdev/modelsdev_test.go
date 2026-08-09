@@ -10,11 +10,9 @@ func TestLookupImageSupport(t *testing.T) {
 		wantFound  bool
 		wantImages bool
 	}{
-		// First-party hosts (models.dev omits their "api" field; seeded via
-		// knownHosts).
-		{"anthropic", "https://api.anthropic.com", "claude-opus-4-1-20250805", true, true},
+		// The OpenAI first-party host is seeded because models.dev omits its
+		// implicit official API URL.
 		{"openai", "https://api.openai.com/v1", "gpt-5.4", true, true},
-		{"gemini", "https://generativelanguage.googleapis.com", "gemini-3.1-pro-preview", true, true},
 
 		// Hosts that carry an explicit "api" field in models.dev.
 		{"fireworks text-only", "https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/glm-5p2", true, false},
@@ -34,16 +32,16 @@ func TestLookupImageSupport(t *testing.T) {
 
 		// Unknown / empty endpoints yield no information.
 		{"unknown host", "https://made-up.example.com", "x", false, false},
-		{"empty endpoint", "", "claude-opus-4-1-20250805", false, false},
+		{"empty endpoint", "", "gpt-5.4", false, false},
 		{"known host unknown model", "https://api.fireworks.ai/inference/v1", "made-up-model", false, false},
 
 		// Last-segment fallback within a host-matched provider.
 		{"openai slug", "https://api.openai.com", "openai/gpt-4o", true, true},
-		{"openai slug text", "https://api.openai.com", "openai/gpt-oss-20b", true, false},
+		{"unsupported openai-prefixed slug", "https://api.openai.com", "openai/gpt-oss-20b", false, false},
 
-		// Slugs whose host we don't know fall through to OpenRouter's catalog.
-		{"openrouter llama", "", "meta-llama/llama-3.3-70b-instruct", true, false},
-		{"openrouter deepseek", "", "deepseek/deepseek-chat", true, false},
+		// A vendor slug without an explicitly configured Responses endpoint is
+		// not treated as supported merely because it exists in another catalog.
+		{"vendor slug without endpoint", "", "meta-llama/llama-3.3-70b-instruct", false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -114,7 +112,6 @@ func TestLookupReasoningSupport(t *testing.T) {
 		{"https://api.openai.com/v1", "gpt-5.4", true, true},
 		{"https://api.openai.com/v1", "gpt-4o", false, true},
 		{"https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/gpt-oss-20b", true, true},
-		{"https://generativelanguage.googleapis.com", "gemini-3-flash-preview", true, true},
 		{"https://made-up.example.com", "x", false, false},
 	}
 	for _, tc := range cases {
@@ -134,14 +131,11 @@ func TestLookupCost(t *testing.T) {
 		wantIn    float64
 		wantOut   float64
 	}{
-		// First-party models resolve by name alone even when the endpoint is
-		// an unknown gateway host.
-		{"anthropic via gateway", "https://llm.int.exe.xyz/v1/messages", "claude-opus-4-6", true, 5, 25},
-		{"anthropic dated", "", "claude-sonnet-4-5-20250929", true, 3, 15},
-		// OpenAI snapshot names carry a date suffix that models.dev omits.
+		// OpenAI snapshot names carry a date suffix that models.dev omits and
+		// resolve even when a Responses-compatible gateway host is unknown.
 		{"openai dated", "https://llm.int.exe.xyz/v1/responses", "gpt-5.5-2026-04-23", true, 5, 30},
 		{"openai undated", "", "gpt-5.3-codex", true, 1.75, 14},
-		{"fireworks full path", "", "accounts/fireworks/models/kimi-k2p6", true, 0.95, 4},
+		{"vendor without endpoint", "", "accounts/fireworks/models/kimi-k2p6", false, 0, 0},
 		{"unknown model", "", "predictable-v1", false, 0, 0},
 	}
 	for _, tc := range cases {

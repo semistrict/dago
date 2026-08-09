@@ -14,6 +14,8 @@ import (
 	"shelley.exe.dev/llm"
 )
 
+import dmessage "github.com/semistrict/dago/message"
+
 // TestCancelAfterToolCompletesCreatesDuplicateToolResult reproduces the bug where
 // cancelling a conversation after a tool has already completed creates a duplicate
 // tool_result for the same tool_use_id.
@@ -189,10 +191,8 @@ func TestCancelAfterToolCompletesCreatesDuplicateToolResult(t *testing.T) {
 	// Count tool_results in the request by tool_use_id
 	requestToolResultsByID := make(map[string]int)
 	for _, msg := range lastRequest.Messages {
-		for _, content := range msg.Content {
-			if content.Type == llm.ContentTypeToolResult && content.ToolUseID != "" {
-				requestToolResultsByID[content.ToolUseID]++
-			}
+		if msg.Role == dmessage.RoleTool && msg.ToolCallID != "" {
+			requestToolResultsByID[msg.ToolCallID]++
 		}
 	}
 

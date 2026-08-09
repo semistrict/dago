@@ -14,6 +14,8 @@ import (
 	"shelley.exe.dev/llm"
 )
 
+import dmessage "github.com/semistrict/dago/message"
+
 // TestMessageQueuedDuringThinking tests that messages sent while the LLM is
 // processing (thinking/tool execution) are properly queued and eventually processed.
 func TestMessageQueuedDuringThinking(t *testing.T) {
@@ -248,7 +250,7 @@ func TestContextPreservedAfterCancel(t *testing.T) {
 		for i, msg := range lastReq.Messages {
 			t.Logf("  Message %d: role=%s, content_count=%d", i, msg.Role, len(msg.Content))
 			for j, content := range msg.Content {
-				if content.Type == llm.ContentTypeText {
+				if content.Type == dmessage.BlockText {
 					// Truncate long text
 					text := content.Text
 					if len(text) > 100 {
@@ -266,7 +268,7 @@ func TestContextPreservedAfterCancel(t *testing.T) {
 	foundInitialContext := false
 	for _, msg := range lastReq.Messages {
 		for _, content := range msg.Content {
-			if content.Type == llm.ContentTypeText && strings.Contains(content.Text, "initial context message") {
+			if content.Type == dmessage.BlockText && strings.Contains(content.Text, "initial context message") {
 				foundInitialContext = true
 				break
 			}

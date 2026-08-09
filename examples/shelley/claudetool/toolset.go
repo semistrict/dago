@@ -3,14 +3,13 @@ package claudetool
 import (
 	"context"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 
+	dmodel "github.com/semistrict/dago/model"
 	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/claudetool/browse"
-	"shelley.exe.dev/llm"
 )
 
 // WorkingDir is a thread-safe mutable working directory.
@@ -99,15 +98,15 @@ type ToolSetConfig struct {
 // ToolSet holds a set of tools for a single conversation.
 // Each conversation should have its own ToolSet.
 type ToolSet struct {
-	tools       []*llm.Tool
+	definitions []dtool.Definition
 	nativeTools []dtool.Tool
 	cleanup     func()
 	wd          *MutableWorkingDir
 }
 
-// Tools returns the tools in this set.
-func (ts *ToolSet) Tools() []*llm.Tool {
-	return ts.tools
+// Tools returns display-safe definitions for all local and provider-hosted tools.
+func (ts *ToolSet) Tools() []dtool.Definition {
+	return append([]dtool.Definition(nil), ts.definitions...)
 }
 
 // NativeTools returns production Dago executables. A fresh slice prevents
@@ -128,42 +127,14 @@ func (ts *ToolSet) WorkingDir() *MutableWorkingDir {
 	return ts.wd
 }
 
-// ServerSideWebSearchCapable is implemented by services that support
-// server-side web search. Only certain services/models qualify: the OpenAI
-// Responses API (not legacy Chat Completions), and genuine Anthropic Claude
-// models (not other models reached over the Anthropic Messages wire protocol).
-type ServerSideWebSearchCapable interface {
-	SupportsServerSideWebSearch() bool
-}
-
-// serverSideTools returns server-side tools appropriate for the given service.
+// serverSideTools returns display definitions for provider-hosted tools.
 // Server-side tools are executed on the LLM provider's infrastructure.
-func serverSideTools(svc llm.Service) []*llm.Tool {
-	// Every service that can run server-side web search advertises it via the
-	// optional ServerSideWebSearchCapable interface. Bail out otherwise so we
-	// never send a web_search tool a model can't handle (e.g. a third-party
-	// model served over the Anthropic Messages or OpenAI Chat Completions wire
-	// protocol by an LLM integration).
-	if c, ok := svc.(ServerSideWebSearchCapable); !ok || !c.SupportsServerSideWebSearch() {
+func serverSideTools(profile dmodel.Profile) []dtool.Definition {
+	if !profile.SupportsWebSearch {
 		return nil
 	}
-	switch svc.Provider() {
-	case "anthropic":
-		return []*llm.Tool{
-			{
-				Name:       "web_search",
-				Type:       "web_search_20250305",
-				ServerSide: true,
-			},
-		}
-	case "openai":
-		return []*llm.Tool{
-			{
-				Name:       "web_search",
-				Type:       "web_search",
-				ServerSide: true,
-			},
-		}
+	if profile.Provider == "openai" {
+		return []dtool.Definition{{Name: "web_search", Description: "Search the web using the model provider."}}
 	}
 	return nil
 }
@@ -172,7 +143,7 @@ func serverSideTools(svc llm.Service) []*llm.Tool {
 // isStrongModel returns true for models that can handle complex tool schemas.
 func isStrongModel(modelID string) bool {
 	lower := strings.ToLower(modelID)
-	return strings.Contains(lower, "sonnet") || strings.Contains(lower, "opus")
+	return strings.Contains(lower, "gpt-5.6-sol") || strings.Contains(lower, "gpt-5.6-terra") || strings.Contains(lower, "gpt-5.6-luna")
 }
 
 func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
@@ -221,14 +192,6 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		BackgroundCtx:    ctx,
 	}
 
-	tools := []*llm.Tool{
-		bashTool.Tool(),
-		shellTool.Tool(),
-		patchTool.Tool(),
-		keywordTool.Tool(),
-		changeDirTool.Tool(),
-		outputIframeTool.Tool(),
-	}
 	nativeTools := []dtool.Tool{
 		bashTool.NativeTool(), shellTool.NativeTool(), patchTool.NativeTool(),
 		keywordTool.NativeTool(), changeDirTool.NativeTool(), outputIframeTool.NativeTool(),
@@ -259,7 +222,6 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			AvailableModels:      availableModels,
 			ParentReasoning:      cfg.ReasoningLevel,
 		}
-		tools = append(tools, subagentTool.Tool())
 		nativeTools = append(nativeTools, subagentTool.NativeTool())
 	}
 
@@ -271,7 +233,6 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			WorkingDir:      wd,
 			AvailableModels: availableModels,
 		}
-		tools = append(tools, llmOneShotTool.Tool())
 		nativeTools = append(nativeTools, llmOneShotTool.NativeTool())
 	}
 
@@ -284,24 +245,18 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		}
 	}
 	if cfg.EnableBrowser && anyBrowserToolEnabled {
-		browserTools, nativeBrowserTools, browserCleanup := browse.RegisterBrowserToolSet(ctx)
-		if len(browserTools) > 0 {
+		nativeBrowserTools, browserCleanup := browse.RegisterBrowserTools(ctx)
+		if len(nativeBrowserTools) > 0 {
 			// If the model doesn't support image inputs, drop read_image — it
 			// returns image content the model cannot consume. The `browser`
 			// tool's screenshot action also returns images, but it self-gates
-			// at run time via llm.ServiceFromContext (see browse.screenshotRun),
+			// at run time via the native model profile in its tool context,
 			// so the combined browser tool stays available.
 			modelSupportsImages := true
 			if cfg.LLMProvider != nil && cfg.ModelID != "" {
-				if svc, err := cfg.LLMProvider.GetService(cfg.ModelID); err == nil {
-					modelSupportsImages = svc.SupportsImages()
+				if chat, err := cfg.LLMProvider.GetChat(cfg.ModelID); err == nil {
+					modelSupportsImages = chat.Profile().SupportsImages
 				}
-			}
-			for _, bt := range browserTools {
-				if bt.Name == "read_image" && !modelSupportsImages {
-					continue
-				}
-				tools = append(tools, bt)
 			}
 			for _, bt := range nativeBrowserTools {
 				if bt.Definition().Name == "read_image" && !modelSupportsImages {
@@ -313,24 +268,25 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		cleanup = browserCleanup
 	}
 
-	// Add server-side tools (e.g., web search for Anthropic models, or for
-	// OpenAI's Responses API).
-	if cfg.LLMProvider != nil && cfg.ModelID != "" {
-		if svc, err := cfg.LLMProvider.GetService(cfg.ModelID); err == nil {
-			tools = append(tools, serverSideTools(svc)...)
-		}
+	definitions := make([]dtool.Definition, 0, len(nativeTools)+1)
+	nativeTools = FilterTools(nativeTools, cfg.ToolOverrides, cfg.DisableAllTools)
+	for _, item := range nativeTools {
+		definitions = append(definitions, item.Definition())
 	}
 
-	tools = FilterTools(tools, cfg.ToolOverrides, cfg.DisableAllTools)
-	enabled := make(map[string]bool, len(tools))
-	for _, item := range tools {
-		enabled[item.Name] = true
+	// Add provider-hosted tools to display metadata. They are configured on the
+	// model and are not dispatched through the local tool executor.
+	if cfg.LLMProvider != nil && cfg.ModelID != "" {
+		if chat, err := cfg.LLMProvider.GetChat(cfg.ModelID); err == nil {
+			for _, definition := range serverSideTools(chat.Profile()) {
+				if IsToolEnabled(definition.Name, cfg.ToolOverrides, cfg.DisableAllTools) {
+					definitions = append(definitions, definition)
+				}
+			}
+		}
 	}
-	nativeTools = slices.DeleteFunc(nativeTools, func(item dtool.Tool) bool {
-		return !enabled[item.Definition().Name]
-	})
 	return &ToolSet{
-		tools:       tools,
+		definitions: definitions,
 		nativeTools: nativeTools,
 		cleanup:     cleanup,
 		wd:          wd,

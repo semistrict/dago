@@ -104,11 +104,7 @@ func GenerateSlug(ctx context.Context, llmProvider LLMServiceProvider, database 
 // this list slug generation would fall through to the conversation's model.
 // Cheap, fast models first.
 var preferredModelSubstrings = []string{
-	"gpt-oss-20b",
 	"gpt-5.6-luna",
-	"haiku",
-	"gemini-3.6-flash",
-	"gemini-3-flash",
 	"-nano",
 	"-mini",
 }

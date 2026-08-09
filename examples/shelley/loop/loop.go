@@ -48,28 +48,17 @@ type GitStateChangeFunc func(ctx context.Context, state *gitstate.GitState)
 
 // Config contains all configuration needed to create a Loop.
 type Config struct {
-	LLM     llm.Service
-	History []llm.Message
-	Tools   []*llm.Tool
-	// NativeTools are production Dago executables keyed by definition name.
-	// Legacy Tools remain the pinned test/provider facade and supply fallbacks
-	// only when a native implementation has not been provided.
-	NativeTools []dtool.Tool
-	// RequireNativeTools rejects any executable client-side tool without a
-	// matching Dago implementation. The server enables this; pinned unit
-	// fixtures may leave it false when exercising Shelley facade types.
-	RequireNativeTools bool
-	// RequireNativeModel rejects services that do not expose a Dago chat. The
-	// application enables this so the legacy model adapter cannot be reached by
-	// executable traffic while its provider-contract fixtures are migrated.
-	RequireNativeModel bool
-	RecordMessage      MessageRecordFunc
-	RecordWarning      WarningRecordFunc
-	Logger             *slog.Logger
-	System             []llm.SystemContent
-	WorkingDir         string // working directory for tools
-	OnGitStateChange   GitStateChangeFunc
-	// ThinkingLevel, when non-default, is sent on every llm.Request the loop
+	Model            dmodel.Chat
+	ModelID          string
+	History          []llm.Message
+	Tools            []dtool.Tool
+	RecordMessage    MessageRecordFunc
+	RecordWarning    WarningRecordFunc
+	Logger           *slog.Logger
+	System           []llm.SystemContent
+	WorkingDir       string // working directory for tools
+	OnGitStateChange GitStateChangeFunc
+	// ThinkingLevel, when non-default, is sent on every native model request the loop
 	// issues. Per-conversation override; ThinkingLevelDefault means "use the
 	// service default".
 	ThinkingLevel llm.ThinkingLevel
@@ -107,37 +96,35 @@ type Config struct {
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
 // Notably, when the turn ends, the "Loop" is over. TODO: maybe rename to Turn?
 type Loop struct {
-	llm                llm.Service
-	tools              []*llm.Tool
-	nativeTools        []dtool.Tool
-	requireNative      bool
-	requireNativeModel bool
-	recordMessage      MessageRecordFunc
-	recordWarning      WarningRecordFunc
-	history            []llm.Message
-	messageQueue       []llm.Message
-	totalUsage         llm.Usage
-	mu                 sync.Mutex
-	logger             *slog.Logger
-	system             []llm.SystemContent
-	workingDir         string
-	onGitStateChange   GitStateChangeFunc
-	getWorkingDir      func() string
-	lastGitState       *gitstate.GitState
-	onToolProgress     llm.ToolProgressFunc
-	onStreamDelta      func(llm.StreamDelta)
-	onStreamDone       func()
-	injectMessages     func(ctx context.Context) []llm.Message
-	thinkingLevel      llm.ThinkingLevel
-	notify             chan struct{} // signaled when a message is queued or retry requested
-	retryPending       bool          // set by Retry() to re-run processLLMRequest with current history
-	saver              checkpoint.Saver
-	threadID           string
-	namespace          string
-	runtimeSeeded      bool
-	pendingInput       []llm.Message
-	executionMu        sync.Mutex
-	runtime            *dagent.Agent
+	model            dmodel.Chat
+	modelID          string
+	tools            []dtool.Tool
+	recordMessage    MessageRecordFunc
+	recordWarning    WarningRecordFunc
+	history          []llm.Message
+	messageQueue     []llm.Message
+	totalUsage       llm.Usage
+	mu               sync.Mutex
+	logger           *slog.Logger
+	system           []llm.SystemContent
+	workingDir       string
+	onGitStateChange GitStateChangeFunc
+	getWorkingDir    func() string
+	lastGitState     *gitstate.GitState
+	onToolProgress   llm.ToolProgressFunc
+	onStreamDelta    func(llm.StreamDelta)
+	onStreamDone     func()
+	injectMessages   func(ctx context.Context) []llm.Message
+	thinkingLevel    llm.ThinkingLevel
+	notify           chan struct{} // signaled when a message is queued or retry requested
+	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
+	saver            checkpoint.Saver
+	threadID         string
+	namespace        string
+	runtimeSeeded    bool
+	pendingInput     []llm.Message
+	executionMu      sync.Mutex
+	runtime          *dagent.Agent
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -159,30 +146,28 @@ func NewLoop(config Config) *Loop {
 		saver = checkpoint.NewMemorySaver()
 	}
 	loop := &Loop{
-		llm:                config.LLM,
-		history:            config.History,
-		tools:              config.Tools,
-		nativeTools:        append([]dtool.Tool(nil), config.NativeTools...),
-		requireNative:      config.RequireNativeTools,
-		requireNativeModel: config.RequireNativeModel,
-		recordMessage:      config.RecordMessage,
-		recordWarning:      config.RecordWarning,
-		messageQueue:       make([]llm.Message, 0),
-		logger:             logger,
-		system:             config.System,
-		workingDir:         config.WorkingDir,
-		onGitStateChange:   config.OnGitStateChange,
-		getWorkingDir:      config.GetWorkingDir,
-		lastGitState:       initialGitState,
-		onToolProgress:     config.OnToolProgress,
-		onStreamDelta:      config.OnStreamDelta,
-		onStreamDone:       config.OnStreamDone,
-		injectMessages:     config.InjectMessages,
-		thinkingLevel:      config.ThinkingLevel,
-		notify:             make(chan struct{}, 1),
-		saver:              saver,
-		threadID:           config.ThreadID,
-		namespace:          config.Namespace,
+		model:            config.Model,
+		modelID:          config.ModelID,
+		history:          config.History,
+		tools:            append([]dtool.Tool(nil), config.Tools...),
+		recordMessage:    config.RecordMessage,
+		recordWarning:    config.RecordWarning,
+		messageQueue:     make([]llm.Message, 0),
+		logger:           logger,
+		system:           config.System,
+		workingDir:       config.WorkingDir,
+		onGitStateChange: config.OnGitStateChange,
+		getWorkingDir:    config.GetWorkingDir,
+		lastGitState:     initialGitState,
+		onToolProgress:   config.OnToolProgress,
+		onStreamDelta:    config.OnStreamDelta,
+		onStreamDone:     config.OnStreamDone,
+		injectMessages:   config.InjectMessages,
+		thinkingLevel:    config.ThinkingLevel,
+		notify:           make(chan struct{}, 1),
+		saver:            saver,
+		threadID:         config.ThreadID,
+		namespace:        config.Namespace,
 	}
 	if loop.threadID == "" {
 		loop.threadID = fmt.Sprintf("shelley-loop-%p", loop)
@@ -268,8 +253,8 @@ func (l *Loop) GetHistory() []llm.Message {
 
 // Go runs the conversation loop until the context is canceled
 func (l *Loop) Go(ctx context.Context) error {
-	if l.llm == nil {
-		return fmt.Errorf("no LLM service configured")
+	if l.model == nil {
+		return fmt.Errorf("no chat model configured")
 	}
 
 	l.logger.Info("starting conversation loop", "tools", len(l.tools))
@@ -321,8 +306,8 @@ func (l *Loop) Go(ctx context.Context) error {
 // ProcessOneTurn processes queued messages through one complete turn (user message + assistant response)
 // It stops after the assistant responds, regardless of whether tools were called
 func (l *Loop) ProcessOneTurn(ctx context.Context) error {
-	if l.llm == nil {
-		return fmt.Errorf("no LLM service configured")
+	if l.model == nil {
+		return fmt.Errorf("no chat model configured")
 	}
 
 	// Process any queued messages first
@@ -354,18 +339,12 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	}
 
 	l.mu.Lock()
-	tools := append([]*llm.Tool(nil), l.tools...)
-	nativeOverrides := append([]dtool.Tool(nil), l.nativeTools...)
-	service := l.llm
+	tools := append([]dtool.Tool(nil), l.tools...)
+	model := l.model
 	system := append([]llm.SystemContent(nil), l.system...)
 	l.mu.Unlock()
 
-	dagoTools, err := resolveNativeTools(tools, nativeOverrides, nativeToolOptions{
-		WorkingDir:    l.currentWorkingDir,
-		Progress:      l.onToolProgress,
-		Service:       service,
-		RequireNative: l.requireNative,
-	})
+	dagoTools, err := validateTools(tools)
 	if err != nil {
 		return err
 	}
@@ -374,16 +353,9 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		return err
 	}
 
-	chat, err := resolveNativeChat(service, nativeChatOptions{
-		ThinkingLevel: l.getThinkingLevel,
-		OnRetry:       l.recordRetryWarning(ctx),
-	}, l.requireNativeModel)
-	if err != nil {
-		return err
-	}
 	middleware := []dagent.Middleware{l.runtimeMiddleware()}
 	runtime, err := dagent.New(dagent.Options{
-		Name: "Shelley", Model: chat,
+		Name: "Shelley", Model: model,
 		Tools: dagoTools, SystemPrompt: joinSystem(system), Middleware: middleware,
 		Saver: l.saver, MaxConcurrency: 1, FailOnToolError: false,
 		StateFields: map[string]dagent.StateField{
@@ -477,9 +449,7 @@ func (l *Loop) runtimeInput(ctx context.Context) ([]llm.Message, error) {
 			l.mu.Unlock()
 			return pending, nil
 		}
-		request := &llm.Request{Messages: history}
-		l.insertMissingToolResults(request)
-		return request.Messages, nil
+		return l.repairMessageHistory(history), nil
 	}
 	return pending, nil
 }
@@ -532,7 +502,19 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 				if err == nil || !isRetryableError(err) || attempt == attempts {
 					return response, err
 				}
-				timer := time.NewTimer(time.Duration(attempt) * time.Second)
+				delay := time.Duration(attempt) * time.Second
+				var retry dmodel.RetryReporter
+				if errors.As(err, &retry) && l.recordWarning != nil {
+					event := retry.RetryEvent(attempt, delay)
+					warning := llm.RetryEvent{
+						Attempt: event.Attempt, Sleep: event.Delay, Err: event.Err, Status: event.Status,
+						Provider: event.Provider, Model: event.Model,
+					}
+					if warningErr := l.recordWarning(ctx, llm.FormatRetryEvent(warning)); warningErr != nil {
+						l.logger.Error("failed to record retry warning", "error", warningErr)
+					}
+				}
+				timer := time.NewTimer(delay)
 				select {
 				case <-timer.C:
 				case <-requestCtx.Done():
@@ -596,9 +578,7 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 			if l.onToolProgress != nil {
 				toolCtx = llm.WithToolProgress(toolCtx, l.onToolProgress)
 			}
-			if l.llm != nil {
-				toolCtx = llm.WithLLMService(toolCtx, l.llm)
-			}
+			toolCtx = llm.WithModelProfile(toolCtx, l.model.Profile())
 			var usage llmhttp.UsageAccumulator
 			toolCtx = llmhttp.WithUsageCollector(toolCtx, usage.Collect)
 			started := time.Now()
@@ -621,7 +601,8 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 				ToolUseStartTime: &started, ToolUseEndTime: &finished, Display: display,
 			}
 			artifact, encodeErr := json.Marshal(toolArtifactEnvelope{
-				Version: 1, Kind: shelleyToolArtifact, Content: exact, OtherUsage: usage.Take(),
+				Version: 1, Kind: shelleyToolArtifact, Content: exact,
+				OtherUsage: append(purposedUsageFromDago(response.Result.OtherUsage), usage.Take()...),
 			})
 			if encodeErr != nil {
 				return dagent.ToolCallResponse{}, encodeErr
@@ -651,11 +632,9 @@ func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update sta
 			if !found {
 				continue
 			}
-			if response.Model == "" {
-				if identified, ok := l.llm.(interface{ ModelID() string }); ok {
-					response.Model = identified.ModelID()
-					response.Usage.Model = response.Model
-				}
+			if response.Model == "" && l.modelID != "" {
+				response.Model = l.modelID
+				response.Usage.Model = response.Model
 			}
 			l.mu.Lock()
 			l.totalUsage.Add(response.Usage)
@@ -766,18 +745,6 @@ func (l *Loop) recordRuntimeError(ctx context.Context, err error) error {
 		l.logger.Error("failed to record Dago runtime error", "error", recordErr)
 	}
 	return fmt.Errorf("LLM request failed: %w", err)
-}
-
-func (l *Loop) recordRetryWarning(ctx context.Context) func(llm.RetryEvent) {
-	if l.recordWarning == nil {
-		return nil
-	}
-	return func(event llm.RetryEvent) {
-		msg := llm.FormatRetryEvent(event)
-		if err := l.recordWarning(ctx, msg); err != nil {
-			l.logger.Error("failed to record retry warning", "error", err)
-		}
-	}
 }
 
 // checkGitStateChange checks if the git state has changed and calls the callback if so.
@@ -936,7 +903,7 @@ func (l *Loop) handleRefusal(ctx context.Context, resp *llm.Response) error {
 	return nil
 }
 
-// insertMissingToolResults fixes tool_result issues in the conversation history:
+// repairMessageHistory fixes tool_result issues in persisted conversation history:
 //  1. Adds error results for tool_uses that were requested but not included in the next message.
 //     This can happen when a request is cancelled or fails after the LLM responds with tool_use
 //     blocks but before the tools execute.
@@ -948,11 +915,9 @@ func (l *Loop) handleRefusal(ctx context.Context, resp *llm.Response) error {
 //   - "tool_use ids were found without tool_result blocks"
 //   - "unexpected tool_use_id found in tool_result blocks ... Each tool_result block must have
 //     a corresponding tool_use block in the previous message"
-//
-// Mutates the request's Messages slice.
-func (l *Loop) insertMissingToolResults(req *llm.Request) {
-	if len(req.Messages) < 1 {
-		return
+func (l *Loop) repairMessageHistory(messages []llm.Message) []llm.Message {
+	if len(messages) < 1 {
+		return messages
 	}
 
 	// Scan through all messages looking for assistant messages with tool_use
@@ -965,17 +930,16 @@ func (l *Loop) insertMissingToolResults(req *llm.Request) {
 	// Track the tool_use IDs from the most recent assistant message
 	var prevAssistantToolUseIDs map[string]bool
 
-	for i := 0; i < len(req.Messages); i++ {
-		msg := req.Messages[i]
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
 
 		if msg.Role == llm.MessageRoleAssistant {
 			// Handle empty assistant messages - add placeholder content if not the last message
 			// The API requires all messages to have non-empty content except for the optional
 			// final assistant message. Empty content can happen when the model ends its turn
 			// without producing any output.
-			if len(msg.Content) == 0 && i < len(req.Messages)-1 {
-				req.Messages[i].Content = []llm.Content{{Type: llm.ContentTypeText, Text: "(no response)"}}
-				msg = req.Messages[i] // update local copy for subsequent processing
+			if len(msg.Content) == 0 && i < len(messages)-1 {
+				msg.Content = []llm.Content{{Type: llm.ContentTypeText, Text: "(no response)"}}
 				l.logger.Debug("added placeholder content to empty assistant message", "index", i)
 			}
 
@@ -1002,8 +966,8 @@ func (l *Loop) insertMissingToolResults(req *llm.Request) {
 
 			// Check if next message is a user message with corresponding tool_results
 			var nextMsg *llm.Message
-			if i+1 < len(req.Messages) {
-				nextMsg = &req.Messages[i+1]
+			if i+1 < len(messages) {
+				nextMsg = &messages[i+1]
 			}
 
 			if nextMsg == nil || nextMsg.Role != llm.MessageRoleUser {
@@ -1089,7 +1053,6 @@ func (l *Loop) insertMissingToolResults(req *llm.Request) {
 	}
 
 	if totalInserted > 0 || totalRemoved > 0 {
-		req.Messages = newMessages
 		if totalInserted > 0 {
 			l.logger.Debug("inserted missing tool results", "count", totalInserted)
 		}
@@ -1097,6 +1060,7 @@ func (l *Loop) insertMissingToolResults(req *llm.Request) {
 			l.logger.Debug("removed orphan tool results", "count", totalRemoved)
 		}
 	}
+	return newMessages
 }
 
 // userFacingLLMError renders an LLM request failure into a message shown in
@@ -1137,6 +1101,10 @@ func userFacingLLMError(err error, trace *llmhttp.RequestTrace) string {
 func isRetryableError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var reporter dmodel.RetryReporter
+	if errors.As(err, &reporter) {
+		return reporter.RetryEvent(0, 0).Retryable
 	}
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
 		return true
@@ -1179,6 +1147,10 @@ func isRetryableError(err error) bool {
 func IsRetryableLLMError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var reporter dmodel.RetryReporter
+	if errors.As(err, &reporter) {
+		return reporter.RetryEvent(0, 0).Retryable
 	}
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
 		return true

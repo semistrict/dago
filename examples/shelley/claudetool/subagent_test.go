@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	dtool "github.com/semistrict/dago/tool"
 )
 
 // mockSubagentDB implements SubagentDB for testing.
@@ -90,26 +92,26 @@ func TestSubagentTool_Run(t *testing.T) {
 	}
 	inputJSON, _ := json.Marshal(input)
 
-	result := tool.Tool().Run(context.Background(), inputJSON)
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
+	result, err := tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(result.LLMContent) == 0 {
+	if len(result.Content) == 0 {
 		t.Fatal("expected LLM content")
 	}
 
-	if result.LLMContent[0].Text == "" {
+	if result.Content[0].Text == "" {
 		t.Error("expected non-empty response text")
 	}
 
 	// Check display data
-	if result.Display == nil {
+	if len(result.Artifact) == 0 {
 		t.Error("expected display data")
 	}
-	displayData, ok := result.Display.(SubagentDisplayData)
-	if !ok {
-		t.Error("display data should be SubagentDisplayData")
+	var displayData SubagentDisplayData
+	if err := json.Unmarshal(result.Artifact, &displayData); err != nil {
+		t.Fatalf("decode display data: %v", err)
 	}
 	if displayData.Slug != "test-task" {
 		t.Errorf("expected slug 'test-task', got %q", displayData.Slug)
@@ -132,8 +134,8 @@ func TestSubagentTool_Validation(t *testing.T) {
 	t.Run("empty slug", func(t *testing.T) {
 		input := subagentInput{Slug: "", Prompt: "test"}
 		inputJSON, _ := json.Marshal(input)
-		result := tool.Tool().Run(context.Background(), inputJSON)
-		if result.Error == nil {
+		_, err := tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
+		if err == nil {
 			t.Error("expected error for empty slug")
 		}
 	})
@@ -142,8 +144,8 @@ func TestSubagentTool_Validation(t *testing.T) {
 	t.Run("empty prompt", func(t *testing.T) {
 		input := subagentInput{Slug: "test", Prompt: ""}
 		inputJSON, _ := json.Marshal(input)
-		result := tool.Tool().Run(context.Background(), inputJSON)
-		if result.Error == nil {
+		_, err := tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
+		if err == nil {
 			t.Error("expected error for empty prompt")
 		}
 	})
@@ -152,8 +154,8 @@ func TestSubagentTool_Validation(t *testing.T) {
 	t.Run("invalid slug", func(t *testing.T) {
 		input := subagentInput{Slug: "@#$%", Prompt: "test"}
 		inputJSON, _ := json.Marshal(input)
-		result := tool.Tool().Run(context.Background(), inputJSON)
-		if result.Error == nil {
+		_, err := tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
+		if err == nil {
 			t.Error("expected error for invalid slug")
 		}
 	})
@@ -174,7 +176,7 @@ func TestSubagentTool_InheritsModel(t *testing.T) {
 
 	input := subagentInput{Slug: "test", Prompt: "do something"}
 	inputJSON, _ := json.Marshal(input)
-	tool.Tool().Run(context.Background(), inputJSON)
+	_, _ = tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
 
 	if runner.lastModelID != "claude-sonnet-4-6" {
 		t.Errorf("expected model 'claude-sonnet-4-6', got %q", runner.lastModelID)
@@ -199,29 +201,29 @@ func TestSubagentTool_ModelOverride(t *testing.T) {
 	}
 
 	// Verify the tool schema includes model enum
-	llmTool := tool.Tool()
-	schemaJSON, _ := json.Marshal(llmTool.InputSchema)
+	definition := tool.NativeTool().Definition()
+	schemaJSON, _ := json.Marshal(definition.InputSchema)
 	schemaStr := string(schemaJSON)
 	if !strings.Contains(schemaStr, "claude-haiku-4.5") {
 		t.Errorf("expected schema to contain model enum, got %s", schemaStr)
 	}
 
 	// Verify the description includes available models
-	if !strings.Contains(llmTool.Description, "claude-haiku-4.5 (Claude Haiku 4.5)") {
-		t.Errorf("expected description to list model with display name, got %s", llmTool.Description)
+	if !strings.Contains(definition.Description, "claude-haiku-4.5 (Claude Haiku 4.5)") {
+		t.Errorf("expected description to list model with display name, got %s", definition.Description)
 	}
-	if !strings.Contains(llmTool.Description, "claude-sonnet-4-6") {
-		t.Errorf("expected description to list model without display name suffix, got %s", llmTool.Description)
+	if !strings.Contains(definition.Description, "claude-sonnet-4-6") {
+		t.Errorf("expected description to list model without display name suffix, got %s", definition.Description)
 	}
 	// sonnet has no display name, so it should NOT have parentheses
-	if strings.Contains(llmTool.Description, "claude-sonnet-4-6 (") {
-		t.Errorf("expected no display name suffix for sonnet, got %s", llmTool.Description)
+	if strings.Contains(definition.Description, "claude-sonnet-4-6 (") {
+		t.Errorf("expected no display name suffix for sonnet, got %s", definition.Description)
 	}
 
 	// Override model
 	input := subagentInput{Slug: "test", Prompt: "do something", Model: "claude-haiku-4.5"}
 	inputJSON, _ := json.Marshal(input)
-	tool.Tool().Run(context.Background(), inputJSON)
+	_, _ = tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
 
 	if runner.lastModelID != "claude-haiku-4.5" {
 		t.Errorf("expected model 'claude-haiku-4.5', got %q", runner.lastModelID)
@@ -247,15 +249,15 @@ func TestSubagentTool_ModelOverride_InvalidModel(t *testing.T) {
 
 	input := subagentInput{Slug: "test", Prompt: "do something", Model: "nonexistent-model"}
 	inputJSON, _ := json.Marshal(input)
-	result := tool.Tool().Run(context.Background(), inputJSON)
-	if result.Error == nil {
+	_, err := tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
+	if err == nil {
 		t.Fatal("expected error for invalid model")
 	}
-	if !strings.Contains(result.Error.Error(), "nonexistent-model") {
-		t.Errorf("expected error to mention invalid model, got %v", result.Error)
+	if !strings.Contains(err.Error(), "nonexistent-model") {
+		t.Errorf("expected error to mention invalid model, got %v", err)
 	}
-	if !strings.Contains(result.Error.Error(), "claude-sonnet-4-6") {
-		t.Errorf("expected error to list available models, got %v", result.Error)
+	if !strings.Contains(err.Error(), "claude-sonnet-4-6") {
+		t.Errorf("expected error to list available models, got %v", err)
 	}
 }
 
@@ -269,8 +271,8 @@ func TestSubagentTool_NoModels(t *testing.T) {
 		ModelID:              "some-model",
 	}
 
-	llmTool := tool.Tool()
-	schemaJSON, _ := json.Marshal(llmTool.InputSchema)
+	definition := tool.NativeTool().Definition()
+	schemaJSON, _ := json.Marshal(definition.InputSchema)
 	schemaStr := string(schemaJSON)
 	// The model property is only present when models are available; make sure
 	// the model enum specifically is absent (the reasoning enum is always
@@ -278,7 +280,7 @@ func TestSubagentTool_NoModels(t *testing.T) {
 	if strings.Contains(schemaStr, `"model"`) {
 		t.Errorf("expected no model property in schema when no available models, got %s", schemaStr)
 	}
-	if strings.Contains(llmTool.Description, "Available models") {
+	if strings.Contains(definition.Description, "Available models") {
 		t.Errorf("expected no model list in description when no available models")
 	}
 }
@@ -295,7 +297,7 @@ func TestSubagentTool_InheritsReasoning(t *testing.T) {
 	runner := tool.Runner.(*mockSubagentRunner)
 	input := subagentInput{Slug: "test", Prompt: "do something"}
 	inputJSON, _ := json.Marshal(input)
-	tool.Tool().Run(context.Background(), inputJSON)
+	_, _ = tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
 
 	if runner.lastReasoning != "high" {
 		t.Errorf("expected inherited reasoning 'high', got %q", runner.lastReasoning)
@@ -312,7 +314,7 @@ func TestSubagentTool_ReasoningOverride(t *testing.T) {
 	}
 
 	// The reasoning enum is always present in the schema.
-	schemaJSON, _ := json.Marshal(tool.Tool().InputSchema)
+	schemaJSON, _ := json.Marshal(tool.NativeTool().Definition().InputSchema)
 	if !strings.Contains(string(schemaJSON), `"reasoning"`) {
 		t.Errorf("expected reasoning property in schema, got %s", schemaJSON)
 	}
@@ -320,7 +322,7 @@ func TestSubagentTool_ReasoningOverride(t *testing.T) {
 	runner := tool.Runner.(*mockSubagentRunner)
 	input := subagentInput{Slug: "test", Prompt: "do something", Reasoning: "low"}
 	inputJSON, _ := json.Marshal(input)
-	tool.Tool().Run(context.Background(), inputJSON)
+	_, _ = tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
 
 	if runner.lastReasoning != "low" {
 		t.Errorf("expected reasoning override 'low', got %q", runner.lastReasoning)
@@ -337,11 +339,11 @@ func TestSubagentTool_ReasoningOverride_Invalid(t *testing.T) {
 
 	input := subagentInput{Slug: "test", Prompt: "do something", Reasoning: "turbo"}
 	inputJSON, _ := json.Marshal(input)
-	result := tool.Tool().Run(context.Background(), inputJSON)
-	if result.Error == nil {
+	_, err := tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
+	if err == nil {
 		t.Fatal("expected error for invalid reasoning level")
 	}
-	if !strings.Contains(result.Error.Error(), "turbo") {
-		t.Errorf("expected error to mention invalid level, got %v", result.Error)
+	if !strings.Contains(err.Error(), "turbo") {
+		t.Errorf("expected error to mention invalid level, got %v", err)
 	}
 }

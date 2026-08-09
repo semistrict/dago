@@ -9,8 +9,41 @@ import (
 	"testing"
 	"time"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+	dtool "github.com/semistrict/dago/tool"
+
 	"shelley.exe.dev/llm"
 )
+
+func nativeToolResultCount(request dmodel.Request) int {
+	count := 0
+	for _, item := range request.Messages {
+		if item.Role == dmessage.RoleTool {
+			count++
+		}
+	}
+	return count
+}
+
+func nativeRequestHasText(request dmodel.Request, text string) bool {
+	for _, item := range request.Messages {
+		if item.Role == dmessage.RoleHuman && item.TextContent() == text {
+			return true
+		}
+	}
+	return false
+}
+
+func nativeTextResponse(text string) dmodel.Response {
+	return dmodel.Response{Message: dmessage.Assistant(text)}
+}
+
+func nativeToolResponse(text, id, name string, arguments json.RawMessage) dmodel.Response {
+	result := dmessage.Assistant(text)
+	result.ToolCalls = []dmessage.ToolCall{{ID: id, Name: name, Arguments: arguments}}
+	return dmodel.Response{Message: result}
+}
 
 // TestInterruptionDuringToolExecution tests that user messages queued during
 // tool execution are processed after the tool completes but before the next
@@ -22,20 +55,14 @@ func TestInterruptionDuringToolExecution(t *testing.T) {
 	var interruptionSeen atomic.Bool
 
 	// Create a slow tool
-	slowTool := &llm.Tool{
-		Name:        "slow_tool",
-		Description: "A tool that takes time to execute",
-		InputSchema: llm.MustSchema(`{"type": "object", "properties": {"input": {"type": "string"}}}`),
-		Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
+	slowTool := dtool.Func{
+		Spec: dtool.Definition{Name: "slow_tool", Description: "A tool that takes time to execute", InputSchema: json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`)},
+		Run: func(ctx context.Context, input json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
 			toolStarted.Store(true)
 			// Sleep to simulate slow tool execution
 			time.Sleep(200 * time.Millisecond)
 			toolCompleted.Store(true)
-			return llm.ToolOut{
-				LLMContent: []llm.Content{
-					{Type: llm.ContentTypeText, Text: "Tool completed"},
-				},
-			}
+			return dtool.TextResult("Tool completed"), nil
 		},
 	}
 
@@ -45,59 +72,28 @@ func TestInterruptionDuringToolExecution(t *testing.T) {
 
 	// Create a service that detects the interruption
 	service := &customPredictableService{
-		responseFunc: func(req *llm.Request) (*llm.Response, error) {
+		responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
 			// Check if we've seen the interruption
-			toolResults := 0
-			for _, msg := range req.Messages {
-				for _, c := range msg.Content {
-					if c.Type == llm.ContentTypeToolResult {
-						toolResults++
-					}
-					if c.Type == llm.ContentTypeText && c.Text == "INTERRUPTION" {
-						interruptionSeen.Store(true)
-						return &llm.Response{
-							Role:       llm.MessageRoleAssistant,
-							StopReason: llm.StopReasonEndTurn,
-							Content: []llm.Content{
-								{Type: llm.ContentTypeText, Text: "Acknowledged interruption"},
-							},
-						}, nil
-					}
-				}
+			toolResults := nativeToolResultCount(request)
+			if nativeRequestHasText(request, "INTERRUPTION") {
+				interruptionSeen.Store(true)
+				return nativeTextResponse("Acknowledged interruption"), nil
 			}
 
 			// First call: use the slow tool
 			if toolResults == 0 {
-				return &llm.Response{
-					Role:       llm.MessageRoleAssistant,
-					StopReason: llm.StopReasonToolUse,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "I'll use the slow tool"},
-						{
-							Type:      llm.ContentTypeToolUse,
-							ID:        "tool_1",
-							ToolName:  "slow_tool",
-							ToolInput: json.RawMessage(`{"input":"test"}`),
-						},
-					},
-				}, nil
+				return nativeToolResponse("I'll use the slow tool", "tool_1", "slow_tool", json.RawMessage(`{"input":"test"}`)), nil
 			}
 
 			// After tool result, continue with more work
-			return &llm.Response{
-				Role:       llm.MessageRoleAssistant,
-				StopReason: llm.StopReasonEndTurn,
-				Content: []llm.Content{
-					{Type: llm.ContentTypeText, Text: "Done with tool"},
-				},
-			}, nil
+			return nativeTextResponse("Done with tool"), nil
 		},
 	}
 
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{slowTool},
+		Tools:         []dtool.Tool{slowTool},
 		RecordMessage: recordMessage,
 	})
 
@@ -159,19 +155,13 @@ func TestInterruptionDuringMultiToolChain(t *testing.T) {
 	var interruptionSeenAtToolResult atomic.Int32 // -1 means not seen
 
 	// Create a tool that's called multiple times
-	multiTool := &llm.Tool{
-		Name:        "multi_tool",
-		Description: "A tool that might be called multiple times",
-		InputSchema: llm.MustSchema(`{"type": "object", "properties": {"step": {"type": "integer"}}}`),
-		Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
+	multiTool := dtool.Func{
+		Spec: dtool.Definition{Name: "multi_tool", Description: "A tool that might be called multiple times", InputSchema: json.RawMessage(`{"type":"object","properties":{"step":{"type":"integer"}}}`)},
+		Run: func(ctx context.Context, input json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
 			count := toolCallCount.Add(1)
 			time.Sleep(100 * time.Millisecond) // Simulate some work
 			_ = count
-			return llm.ToolOut{
-				LLMContent: []llm.Content{
-					{Type: llm.ContentTypeText, Text: "Tool step completed"},
-				},
-			}
+			return dtool.TextResult("Tool step completed"), nil
 		},
 	}
 
@@ -182,61 +172,28 @@ func TestInterruptionDuringMultiToolChain(t *testing.T) {
 	// Service that makes multiple tool calls but stops when it sees "STOP"
 	interruptionSeenAtToolResult.Store(-1)
 	service := &customPredictableService{
-		responseFunc: func(req *llm.Request) (*llm.Response, error) {
+		responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
 			// Check if we've seen the STOP message
-			toolResults := 0
-			for _, msg := range req.Messages {
-				for _, c := range msg.Content {
-					if c.Type == llm.ContentTypeToolResult {
-						toolResults++
-					}
-					if c.Type == llm.ContentTypeText && c.Text == "STOP" {
-						// Record when we first saw the interruption
-						interruptionSeenAtToolResult.CompareAndSwap(-1, int32(toolResults))
-						// Stop immediately when we see the interruption
-						return &llm.Response{
-							Role:       llm.MessageRoleAssistant,
-							StopReason: llm.StopReasonEndTurn,
-							Content: []llm.Content{
-								{Type: llm.ContentTypeText, Text: "Stopped due to user interruption"},
-							},
-						}, nil
-					}
-				}
+			toolResults := nativeToolResultCount(request)
+			if nativeRequestHasText(request, "STOP") {
+				interruptionSeenAtToolResult.CompareAndSwap(-1, int32(toolResults))
+				return nativeTextResponse("Stopped due to user interruption"), nil
 			}
 
 			if toolResults < 5 {
 				// Keep calling the tool (would do 5 if not interrupted)
-				return &llm.Response{
-					Role:       llm.MessageRoleAssistant,
-					StopReason: llm.StopReasonToolUse,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "Calling tool again"},
-						{
-							Type:      llm.ContentTypeToolUse,
-							ID:        fmt.Sprintf("tool_%d", toolResults+1),
-							ToolName:  "multi_tool",
-							ToolInput: json.RawMessage(fmt.Sprintf(`{"step":%d}`, toolResults+1)),
-						},
-					},
-				}, nil
+				return nativeToolResponse("Calling tool again", fmt.Sprintf("tool_%d", toolResults+1), "multi_tool", json.RawMessage(fmt.Sprintf(`{"step":%d}`, toolResults+1))), nil
 			}
 
 			// Done with tools
-			return &llm.Response{
-				Role:       llm.MessageRoleAssistant,
-				StopReason: llm.StopReasonEndTurn,
-				Content: []llm.Content{
-					{Type: llm.ContentTypeText, Text: "All tools completed"},
-				},
-			}, nil
+			return nativeTextResponse("All tools completed"), nil
 		},
 	}
 
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{multiTool},
+		Tools:         []dtool.Tool{multiTool},
 		RecordMessage: recordMessage,
 	})
 
@@ -297,33 +254,27 @@ func TestInterruptionDuringMultiToolChain(t *testing.T) {
 // customPredictableService allows custom response logic for testing
 type customPredictableService struct {
 	responses    []customResponse
-	responseFunc func(req *llm.Request) (*llm.Response, error)
+	responseFunc func(request dmodel.Request) (dmodel.Response, error)
 	callIndex    int
 	mu           sync.Mutex
 }
 
 type customResponse struct {
-	response *llm.Response
+	response dmodel.Response
 	err      error
 }
 
-func (s *customPredictableService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (s *customPredictableService) Invoke(_ context.Context, request dmodel.Request) (dmodel.Response, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.responseFunc != nil {
-		return s.responseFunc(req)
+		return s.responseFunc(request)
 	}
 
 	if s.callIndex >= len(s.responses) {
 		// Default response
-		return &llm.Response{
-			Role:       llm.MessageRoleAssistant,
-			StopReason: llm.StopReasonEndTurn,
-			Content: []llm.Content{
-				{Type: llm.ContentTypeText, Text: "No more responses configured"},
-			},
-		}, nil
+		return dmodel.Response{Message: dmessage.Assistant("No more responses configured")}, nil
 	}
 
 	resp := s.responses[s.callIndex]
@@ -331,22 +282,12 @@ func (s *customPredictableService) Do(ctx context.Context, req *llm.Request) (*l
 	return resp.response, resp.err
 }
 
-func (s *customPredictableService) GetDefaultModel() string {
-	return "custom-test"
+func (*customPredictableService) Profile() dmodel.Profile {
+	return dmodel.Profile{Provider: "builtin", Model: "custom-test", ContextWindow: 100000, ToolCalling: true, SupportsImages: true, MaxImageDimension: 8000}
 }
 
-func (s *customPredictableService) Provider() string { return "" }
-
-func (s *customPredictableService) TokenContextWindow() int {
-	return 100000
-}
-
-func (s *customPredictableService) MaxImageDimension() int {
-	return 8000
-}
-
-func (s *customPredictableService) MaxImageBytes() int {
-	return 0
+func (*customPredictableService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+	return nil, fmt.Errorf("custom test model does not stream")
 }
 
 // TestNoInterruptionNormalFlow verifies that normal tool chains work correctly
@@ -355,17 +296,11 @@ func TestNoInterruptionNormalFlow(t *testing.T) {
 	var toolCallCount atomic.Int32
 
 	// Create a tool that tracks calls
-	multiTool := &llm.Tool{
-		Name:        "multi_tool",
-		Description: "A tool",
-		InputSchema: llm.MustSchema(`{"type": "object", "properties": {"step": {"type": "integer"}}}`),
-		Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
+	multiTool := dtool.Func{
+		Spec: dtool.Definition{Name: "multi_tool", Description: "A tool", InputSchema: json.RawMessage(`{"type":"object","properties":{"step":{"type":"integer"}}}`)},
+		Run: func(ctx context.Context, input json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
 			toolCallCount.Add(1)
-			return llm.ToolOut{
-				LLMContent: []llm.Content{
-					{Type: llm.ContentTypeText, Text: "done"},
-				},
-			}
+			return dtool.TextResult("done"), nil
 		},
 	}
 
@@ -375,46 +310,21 @@ func TestNoInterruptionNormalFlow(t *testing.T) {
 
 	// Service that makes 3 tool calls then finishes
 	service := &customPredictableService{
-		responseFunc: func(req *llm.Request) (*llm.Response, error) {
-			toolResults := 0
-			for _, msg := range req.Messages {
-				for _, c := range msg.Content {
-					if c.Type == llm.ContentTypeToolResult {
-						toolResults++
-					}
-				}
-			}
+		responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
+			toolResults := nativeToolResultCount(request)
 
 			if toolResults < 3 {
-				return &llm.Response{
-					Role:       llm.MessageRoleAssistant,
-					StopReason: llm.StopReasonToolUse,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "Calling tool"},
-						{
-							Type:      llm.ContentTypeToolUse,
-							ID:        fmt.Sprintf("tool_%d", toolResults+1),
-							ToolName:  "multi_tool",
-							ToolInput: json.RawMessage(fmt.Sprintf(`{"step":%d}`, toolResults+1)),
-						},
-					},
-				}, nil
+				return nativeToolResponse("Calling tool", fmt.Sprintf("tool_%d", toolResults+1), "multi_tool", json.RawMessage(fmt.Sprintf(`{"step":%d}`, toolResults+1))), nil
 			}
 
-			return &llm.Response{
-				Role:       llm.MessageRoleAssistant,
-				StopReason: llm.StopReasonEndTurn,
-				Content: []llm.Content{
-					{Type: llm.ContentTypeText, Text: "All done"},
-				},
-			}, nil
+			return nativeTextResponse("All done"), nil
 		},
 	}
 
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{multiTool},
+		Tools:         []dtool.Tool{multiTool},
 		RecordMessage: recordMessage,
 	})
 
@@ -444,5 +354,3 @@ func TestNoInterruptionNormalFlow(t *testing.T) {
 		t.Log("SUCCESS: Normal flow completed 3 tool calls as expected")
 	}
 }
-
-func (s *customPredictableService) SupportsImages() bool { return true }

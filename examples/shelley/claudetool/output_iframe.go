@@ -10,23 +10,12 @@ import (
 
 	dmessage "github.com/semistrict/dago/message"
 	dtool "github.com/semistrict/dago/tool"
-
-	"shelley.exe.dev/llm"
 )
 
 // OutputIframeTool displays sandboxed HTML content to the user.
 // It requires a MutableWorkingDir to resolve relative file paths.
 type OutputIframeTool struct {
 	WorkingDir *MutableWorkingDir
-}
-
-func (t *OutputIframeTool) Tool() *llm.Tool {
-	return &llm.Tool{
-		Name:        outputIframeName,
-		Description: outputIframeDescription,
-		InputSchema: llm.MustSchema(outputIframeInputSchema),
-		Run:         llm.RunJSON(t.run),
-	}
 }
 
 func (t *OutputIframeTool) NativeTool() dtool.Tool {
@@ -298,14 +287,6 @@ type outputIframeInput struct {
 	Title     string            `json:"title"`
 	Files     map[string]string `json:"files"`
 	Libraries []string          `json:"libraries"`
-}
-
-func (t *OutputIframeTool) run(_ context.Context, input outputIframeInput) llm.ToolOut {
-	display, err := t.execute(input)
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	return llm.ToolOut{LLMContent: llm.TextContent("displayed"), Display: display}
 }
 
 func (t *OutputIframeTool) execute(input outputIframeInput) (OutputIframeDisplay, error) {

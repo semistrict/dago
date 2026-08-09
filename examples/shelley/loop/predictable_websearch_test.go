@@ -2,10 +2,11 @@ package loop
 
 import (
 	"context"
-	"encoding/json"
+	"strings"
 	"testing"
 
-	"shelley.exe.dev/llm"
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
 )
 
 // TestPredictableWebSearchCitations verifies the "web search" predictable
@@ -17,13 +18,7 @@ func TestPredictableWebSearchCitations(t *testing.T) {
 	for _, trigger := range []string{"web search", "citations"} {
 		t.Run(trigger, func(t *testing.T) {
 			svc := NewPredictableService()
-			req := &llm.Request{
-				Messages: []llm.Message{{
-					Role:    llm.MessageRoleUser,
-					Content: []llm.Content{{Type: llm.ContentTypeText, Text: trigger}},
-				}},
-			}
-			resp, err := svc.Do(context.Background(), req)
+			resp, err := svc.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human(trigger)}})
 			if err != nil {
 				t.Fatalf("Do: %v", err)
 			}
@@ -33,28 +28,24 @@ func TestPredictableWebSearchCitations(t *testing.T) {
 				searchResults int
 				textBlocks    int
 				citedBlocks   int
+				prose         strings.Builder
 			)
-			for _, c := range resp.Content {
+			for _, c := range resp.Message.Content {
 				switch c.Type {
-				case llm.ContentTypeServerToolUse:
+				case dmessage.BlockServerTool:
 					serverToolUse++
-				case llm.ContentTypeWebSearchToolResult:
-					searchResults = len(c.ToolResult)
-				case llm.ContentTypeText:
+				case dmessage.BlockSearchResult:
+					searchResults++
+				case dmessage.BlockText:
 					textBlocks++
+					prose.WriteString(c.Text)
 					if len(c.Citations) > 0 {
 						citedBlocks++
-						// Citations must be a valid JSON array of objects
-						// with the web_search_result_location shape.
-						var arr []map[string]any
-						if err := json.Unmarshal(c.Citations, &arr); err != nil {
-							t.Fatalf("citations not valid JSON: %v", err)
-						}
-						if len(arr) == 0 {
+						if len(c.Citations) == 0 {
 							t.Fatalf("empty citation array on a cited block")
 						}
-						if arr[0]["url"] == "" || arr[0]["type"] != "web_search_result_location" {
-							t.Fatalf("unexpected citation shape: %v", arr[0])
+						if c.Citations[0].URL == "" {
+							t.Fatalf("unexpected citation shape: %v", c.Citations[0])
 						}
 					}
 				}
@@ -71,6 +62,9 @@ func TestPredictableWebSearchCitations(t *testing.T) {
 			}
 			if citedBlocks == 0 {
 				t.Errorf("cited text blocks = 0, want > 0")
+			}
+			if !strings.Contains(prose.String(), "never lose work, so model switching pairs well") {
+				t.Errorf("adjacent cited prose does not preserve the upstream sentence: %q", prose.String())
 			}
 		})
 	}

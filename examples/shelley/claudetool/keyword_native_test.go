@@ -11,21 +11,12 @@ import (
 	dmodel "github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
 	dtool "github.com/semistrict/dago/tool"
-
-	"shelley.exe.dev/llm"
 )
 
-type nativeKeywordService struct {
-	mockService
-	chat dmodel.Chat
-}
+type nativeKeywordProvider struct{ chat dmodel.Chat }
 
-func (service *nativeKeywordService) DagoChat() dmodel.Chat { return service.chat }
-
-type nativeKeywordProvider struct{ service llm.Service }
-
-func (provider nativeKeywordProvider) GetService(string) (llm.Service, error) {
-	return provider.service, nil
+func (provider nativeKeywordProvider) GetChat(string) (dmodel.Chat, error) {
+	return provider.chat, nil
 }
 
 func (nativeKeywordProvider) GetAvailableModels() []string { return []string{"native-keyword"} }
@@ -41,7 +32,7 @@ func TestKeywordNativeToolUsesDagoModelContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat := modeltest.NewPredictable(modeltest.PredictableOptions{DefaultResponse: "native relevance result"})
-	provider := nativeKeywordProvider{service: &nativeKeywordService{chat: chat}}
+	provider := nativeKeywordProvider{chat: chat}
 	executable := NewKeywordToolWithWorkingDir(provider, NewMutableWorkingDir(root)).NativeTool()
 	result, err := executable.Execute(context.Background(), json.RawMessage(`{
 		"query":"find the native keyword fixture",
@@ -52,5 +43,8 @@ func TestKeywordNativeToolUsesDagoModelContract(t *testing.T) {
 	}
 	if len(result.Content) != 1 || result.Content[0].Text != "native relevance result" {
 		t.Fatalf("content = %#v", result.Content)
+	}
+	if len(result.OtherUsage) != 1 || result.OtherUsage[0].Purpose != "keyword_search" || result.OtherUsage[0].Model != "predictable-v1" {
+		t.Fatalf("other usage = %#v", result.OtherUsage)
 	}
 }

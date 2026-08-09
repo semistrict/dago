@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	dtool "github.com/semistrict/dago/tool"
+
 	"shelley.exe.dev/llm"
 )
 
@@ -19,18 +21,22 @@ func runShell(t *testing.T, tool *ShellTool, input string, timeout time.Duration
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out := tool.Tool().Run(ctx, json.RawMessage(input))
+	out, err := tool.NativeTool().Execute(ctx, json.RawMessage(input), dtool.Runtime{})
 	var disp *ShellDisplayData
-	if d, ok := out.Display.(ShellDisplayData); ok {
-		disp = &d
+	if len(out.Artifact) > 0 {
+		var decoded ShellDisplayData
+		if decodeErr := json.Unmarshal(out.Artifact, &decoded); decodeErr != nil {
+			t.Fatalf("decode shell display: %v", decodeErr)
+		}
+		disp = &decoded
 	}
-	if out.Error != nil {
-		return "", disp, out.Error
+	if err != nil {
+		return "", disp, err
 	}
-	if len(out.LLMContent) == 0 {
+	if len(out.Content) == 0 {
 		return "", disp, nil
 	}
-	return out.LLMContent[0].Text, disp, nil
+	return out.Content[0].Text, disp, nil
 }
 
 func newTestShell(t *testing.T) *ShellTool {
@@ -190,12 +196,12 @@ func TestShellContextCancelKills(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		cancel()
 	}()
-	out := s.Tool().Run(ctx, json.RawMessage(`{"command":"sleep 30"}`))
-	if out.Error == nil {
+	_, err := s.NativeTool().Execute(ctx, json.RawMessage(`{"command":"sleep 30"}`), dtool.Runtime{})
+	if err == nil {
 		t.Fatalf("expected error after cancel")
 	}
-	if !strings.Contains(out.Error.Error(), "cancelled") {
-		t.Errorf("expected cancelled in error, got %v", out.Error)
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("expected cancelled in error, got %v", err)
 	}
 }
 
@@ -245,11 +251,11 @@ func TestShellProgressLoop(t *testing.T) {
 	ctx = WithToolProgress(ctx, progress)
 	ctx = WithToolUseID(ctx, "tool-use-123")
 
-	out := s.Tool().Run(ctx, json.RawMessage(
+	_, err := s.NativeTool().Execute(ctx, json.RawMessage(
 		`{"command":"echo first; sleep 1; echo second"}`,
-	))
-	if out.Error != nil {
-		t.Fatalf("unexpected error: %v", out.Error)
+	), dtool.Runtime{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	mu.Lock()

@@ -15,8 +15,6 @@ import (
 	"time"
 
 	dopenai "github.com/semistrict/dago/providers/openai"
-
-	"shelley.exe.dev/llm"
 )
 
 type staticOAuthCredentials struct{}
@@ -46,16 +44,12 @@ func TestOpenAIOAuthLoadsPersistedSessionAndBuildsLuna(t *testing.T) {
 	if len(built) != 1 || built[0].ID != OpenAISubscriptionModelID || built[0].Source != "OpenAI subscription" {
 		t.Fatalf("BuiltModels() = %#v", built)
 	}
-	service, ok := built[0].Service.(*llm.NativeService)
-	if !ok {
-		t.Fatalf("service type = %T", built[0].Service)
-	}
-	profile := service.DagoChat().Profile()
+	profile := built[0].Chat.Profile()
 	if profile.Model != OpenAISubscriptionModelID || profile.Provider != "openai" || !profile.ToolCalling {
 		t.Fatalf("Dago profile = %#v", profile)
 	}
-	if !service.SupportsImages() || !service.SupportsReasoning() || service.TokenContextWindow() <= 0 {
-		t.Fatalf("service capabilities images=%v reasoning=%v context=%d", service.SupportsImages(), service.SupportsReasoning(), service.TokenContextWindow())
+	if !profile.SupportsImages || !profile.SupportsReasoning || profile.ContextWindow <= 0 {
+		t.Fatalf("chat capabilities = %#v", profile)
 	}
 }
 

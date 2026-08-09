@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"shelley.exe.dev/llm"
+	dtool "github.com/semistrict/dago/tool"
 )
 
 func TestIsToolEnabled(t *testing.T) {
@@ -34,15 +34,15 @@ func TestIsToolEnabled(t *testing.T) {
 }
 
 func TestFilterTools(t *testing.T) {
-	tools := []*llm.Tool{
-		{Name: "bash"},
-		{Name: "patch"},
-		{Name: "browser"},
+	tools := []dtool.Tool{
+		dtool.Func{Spec: dtool.Definition{Name: "bash"}},
+		dtool.Func{Spec: dtool.Definition{Name: "patch"}},
+		dtool.Func{Spec: dtool.Definition{Name: "browser"}},
 	}
 	filtered := FilterTools(tools, map[string]string{"patch": "off"}, false)
 	names := make([]string, 0, len(filtered))
 	for _, tt := range filtered {
-		names = append(names, tt.Name)
+		names = append(names, tt.Definition().Name)
 	}
 	sort.Strings(names)
 	want := []string{"bash", "browser"}

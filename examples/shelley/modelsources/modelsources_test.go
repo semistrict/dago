@@ -10,8 +10,6 @@ import (
 	"testing"
 
 	"shelley.exe.dev/exeenv"
-	"shelley.exe.dev/llm/ant"
-	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/models"
 )
 
@@ -38,14 +36,12 @@ func TestPredictableBuilds(t *testing.T) {
 }
 
 func TestEnvSourceBuildsAllProviders(t *testing.T) {
-	src := Env("a", "o", "g", "f")
+	src := Env("o")
 	bs := Build(models.All(), []Source{src}, &http.Client{}, nil)
 	// Order must match catalog order.
 	var expected []string
 	for _, m := range models.All() {
-		// Env source covers Anthropic/OpenAI/Gemini/Fireworks only.
-		switch m.Provider {
-		case models.ProviderAnthropic, models.ProviderOpenAI, models.ProviderGemini, models.ProviderFireworks:
+		if m.Provider == models.ProviderOpenAI {
 			expected = append(expected, m.ID)
 		}
 	}
@@ -60,15 +56,8 @@ func TestEnvSourceBuildsAllProviders(t *testing.T) {
 }
 
 func TestEnvSourceLabels(t *testing.T) {
-	bs := Build(models.All(), []Source{Env("a", "o", "g", "f")}, &http.Client{}, nil)
-	for _, tt := range []struct {
-		id, want string
-	}{
-		{"claude-opus-4.6", "$ANTHROPIC_API_KEY"},
-		{"gpt-5.5", "$OPENAI_API_KEY"},
-		{"gemini-3-flash", "$GEMINI_API_KEY"},
-		{"gpt-oss-20b-fireworks", "$FIREWORKS_API_KEY"},
-	} {
+	bs := Build(models.All(), []Source{Env("o")}, &http.Client{}, nil)
+	for _, tt := range []struct{ id, want string }{{"gpt-5.5", "$OPENAI_API_KEY"}} {
 		b := findBuilt(bs, tt.id)
 		if b == nil {
 			t.Errorf("missing %q", tt.id)
@@ -81,25 +70,14 @@ func TestEnvSourceLabels(t *testing.T) {
 }
 
 func TestGatewaySourceLabels(t *testing.T) {
-	// Plain gateway.
-	bs := Build(models.All(), []Source{Gateway("https://gw.example.com", "", "", "")}, &http.Client{}, nil)
-	if b := findBuilt(bs, "claude-opus-4.6"); b == nil || b.Source != "exe.dev gateway" {
-		t.Errorf("claude-opus-4.6 with plain gateway: %+v", b)
-	}
-	if b := findBuilt(bs, "gemini-3-flash"); b != nil {
-		t.Errorf("gemini-3-flash should not be built by gateway, got %+v", b)
-	}
-	if b := findBuilt(bs, "grok-4.5"); b == nil || b.Source != "exe.dev gateway" {
-		t.Errorf("grok-4.5 with plain gateway: %+v", b)
+	bs := Build(models.All(), []Source{Gateway("https://gw.example.com", "")}, &http.Client{}, nil)
+	if b := findBuilt(bs, "gpt-5.5"); b == nil || b.Source != "exe.dev gateway" {
+		t.Errorf("gpt-5.5 with plain gateway: %+v", b)
 	}
 
-	// Gateway with explicit anthropic key: provider label switches.
-	bs = Build(models.All(), []Source{Gateway("https://gw.example.com", "real-key", "", "")}, &http.Client{}, nil)
-	if b := findBuilt(bs, "claude-opus-4.6"); b == nil || b.Source != "$ANTHROPIC_API_KEY" {
-		t.Errorf("claude-opus-4.6 with explicit anthropic key: %+v", b)
-	}
-	if b := findBuilt(bs, "gpt-5.5"); b == nil || b.Source != "exe.dev gateway" {
-		t.Errorf("gpt-5.5 should still be gateway: %+v", b)
+	bs = Build(models.All(), []Source{Gateway("https://gw.example.com", "real-key")}, &http.Client{}, nil)
+	if b := findBuilt(bs, "gpt-5.5"); b == nil || b.Source != "$OPENAI_API_KEY" {
+		t.Errorf("gpt-5.5 with explicit key: %+v", b)
 	}
 }
 
@@ -125,19 +103,10 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 	bs := Build(models.All(), []Source{LLMIntegration(integ, ""), Predictable()}, &http.Client{}, nil)
 	wantLabel := "llm.int.exe.xyz"
 	for _, id := range []string{
-		"claude-opus-4.8",
-		"claude-opus-4.7",
-		"claude-opus-4.6",
-		"claude-sonnet-4.6",
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",
 		"gpt-5.5",
-		"glm-5.2-fireworks",
-		"kimi-k2.6-fireworks",
-		"deepseek-v4-pro-fireworks",
-		"deepseek-v4-flash-fireworks",
-		"gpt-oss-20b-fireworks",
 	} {
 		b := findBuilt(bs, id)
 		if b == nil {
@@ -152,11 +121,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 		"anthropic/claude-opus-4-7",
 		"openai/gpt-5.5",
 		"claude-opus-4-7",
-		"glm-5p2",
-		"kimi-k2p6",
-		"deepseek-v4-pro",
-		"deepseek-v4-flash",
-		"gpt-oss-20b",
+		"glm-5p2", "kimi-k2p6", "deepseek-v4-pro", "deepseek-v4-flash", "gpt-oss-20b",
 		"gemini-3-flash",
 	} {
 		if b := findBuilt(bs, id); b != nil {
@@ -191,23 +156,14 @@ func TestLLMIntegrationEnrichesCompatibleCatalogModel(t *testing.T) {
 	if built.APIType != models.APITypeOpenAIResponses {
 		t.Errorf("APIType = %q, want %q", built.APIType, models.APITypeOpenAIResponses)
 	}
-	service, ok := built.Service.(*oai.ResponsesService)
-	if !ok {
-		t.Fatalf("service = %T, want *oai.ResponsesService", built.Service)
+	profile := built.Chat.Profile()
+	if profile.Model != "gpt-5.6-sol" {
+		t.Errorf("wire model = %q, want native ID", profile.Model)
 	}
-	if service.Model.ModelName != "gpt-5.6-sol" {
-		t.Errorf("wire model = %q, want native ID", service.Model.ModelName)
-	}
-	if service.ModelURL != integrationURL+"/v1" {
-		t.Errorf("service URL = %q, want integration URL", service.ModelURL)
-	}
-	if service.APIKey != "implicit" {
-		t.Errorf("API key = %q, want implicit", service.APIKey)
-	}
-	if !service.SupportsImages() {
+	if !profile.SupportsImages {
 		t.Error("known Sol should retain built-in image support")
 	}
-	if !service.Model.IsReasoningModel {
+	if !profile.SupportsReasoning {
 		t.Error("known Sol should retain built-in reasoning behavior")
 	}
 }
@@ -224,12 +180,9 @@ func TestLLMIntegrationEnrichesCatalogModelUsingIDFallback(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("built models = %+v, want one", got)
 	}
-	service, ok := got[0].Service.(*oai.ResponsesService)
-	if !ok {
-		t.Fatalf("service = %T, want *oai.ResponsesService", got[0].Service)
-	}
-	if !service.SupportsImages() || !service.Model.IsReasoningModel {
-		t.Errorf("ID fallback did not retain Sol capabilities: %+v", service.Model)
+	profile := got[0].Chat.Profile()
+	if !profile.SupportsImages || !profile.SupportsReasoning {
+		t.Error("ID fallback did not retain Sol capabilities")
 	}
 }
 
@@ -256,24 +209,19 @@ func TestLLMIntegrationUnknownModelUsesDynamicCapabilities(t *testing.T) {
 	if got[0].ID != "upstream-only" {
 		t.Errorf("ID = %q, want short upstream ID", got[0].ID)
 	}
-	service, ok := got[0].Service.(*oai.ResponsesService)
-	if !ok {
-		t.Fatalf("service = %T, want dynamic *oai.ResponsesService", got[0].Service)
+	profile := got[0].Chat.Profile()
+	if profile.Model != "native-upstream-only" {
+		t.Errorf("wire model = %q, want native ID", profile.Model)
 	}
-	if service.Model.ModelName != "native-upstream-only" {
-		t.Errorf("wire model = %q, want native ID", service.Model.ModelName)
-	}
-	if !service.SupportsImages() {
+	if !profile.SupportsImages {
 		t.Error("unknown model should preserve upstream image modality")
 	}
-	if service.Model.IsReasoningModel {
+	if profile.SupportsReasoning {
 		t.Error("unknown model should not inherit built-in reasoning behavior")
 	}
 }
 
 func TestLLMIntegrationPrefersOpenAIAPIOverAnthropic(t *testing.T) {
-	// Fireworks models advertise both OpenAI and Anthropic APIs; prefer the
-	// more common OpenAI protocol over anthropic_messages.
 	integ := &LLMIntegrationConfig{
 		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
 		Models: []IntegrationModel{
@@ -283,20 +231,14 @@ func TestLLMIntegrationPrefersOpenAIAPIOverAnthropic(t *testing.T) {
 	}
 
 	got := Build(models.All(), []Source{LLMIntegration(integ, "")}, &http.Client{}, nil)
-	if len(got) != 2 {
-		t.Fatalf("built models = %+v, want two", got)
+	if len(got) != 1 {
+		t.Fatalf("built models = %+v, want only the Responses-capable model", got)
 	}
 	if got[0].APIType != models.APITypeOpenAIResponses {
 		t.Errorf("APIType = %q, want %q", got[0].APIType, models.APITypeOpenAIResponses)
 	}
-	if _, ok := got[0].Service.(*oai.ResponsesService); !ok {
-		t.Fatalf("service = %T, want *oai.ResponsesService", got[0].Service)
-	}
-	if got[1].APIType != models.APITypeOpenAIChat {
-		t.Errorf("APIType = %q, want %q", got[1].APIType, models.APITypeOpenAIChat)
-	}
-	if _, ok := got[1].Service.(*oai.Service); !ok {
-		t.Fatalf("service = %T, want *oai.Service", got[1].Service)
+	if got[0].Chat == nil {
+		t.Fatal("native chat is nil")
 	}
 }
 
@@ -309,21 +251,8 @@ func TestLLMIntegrationAPIMismatchUsesDynamicService(t *testing.T) {
 	}
 
 	got := Build(models.All(), []Source{LLMIntegration(integ, "")}, &http.Client{}, nil)
-	if len(got) != 1 {
-		t.Fatalf("built models = %+v, want one", got)
-	}
-	if got[0].APIType != models.APITypeOpenAIChat {
-		t.Errorf("APIType = %q, want %q", got[0].APIType, models.APITypeOpenAIChat)
-	}
-	service, ok := got[0].Service.(*oai.Service)
-	if !ok {
-		t.Fatalf("service = %T, want dynamic *oai.Service", got[0].Service)
-	}
-	if service.Model.ModelName != "gpt-5.6-sol" {
-		t.Errorf("wire model = %q, want native ID", service.Model.ModelName)
-	}
-	if service.SupportsImages() {
-		t.Error("API mismatch should preserve upstream modality instead of using Sol catalog capabilities")
+	if len(got) != 0 {
+		t.Fatalf("built models = %+v, want Chat-only model rejected", got)
 	}
 }
 
@@ -339,12 +268,9 @@ func TestLLMIntegrationProviderMismatchUsesDynamicService(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("built models = %+v, want one", got)
 	}
-	service, ok := got[0].Service.(*oai.ResponsesService)
-	if !ok {
-		t.Fatalf("service = %T, want dynamic *oai.ResponsesService", got[0].Service)
-	}
-	if service.SupportsImages() || service.Model.IsReasoningModel {
-		t.Errorf("provider mismatch inherited OpenAI catalog capabilities: %+v", service.Model)
+	profile := got[0].Chat.Profile()
+	if profile.SupportsImages || profile.SupportsReasoning {
+		t.Error("provider mismatch inherited OpenAI catalog capabilities")
 	}
 }
 
@@ -359,10 +285,10 @@ func TestLLMIntegrationModelsJSONIsAuthoritative(t *testing.T) {
 	}
 
 	got := Build(models.All(), []Source{LLMIntegration(integ, "@llm2")}, &http.Client{}, nil)
-	if len(got) != 3 {
-		t.Fatalf("built models = %+v, want exactly the three integration models", got)
+	if len(got) != 1 {
+		t.Fatalf("built models = %+v, want exactly the Responses-capable model", got)
 	}
-	wantIDs := []string{"upstream-only@llm2", "claude-opus-4.7@llm2", "upstream-chat@llm2"}
+	wantIDs := []string{"upstream-only@llm2"}
 	for i, want := range wantIDs {
 		if got[i].ID != want {
 			t.Fatalf("built model %d ID = %q, want %q", i, got[i].ID, want)
@@ -371,32 +297,8 @@ func TestLLMIntegrationModelsJSONIsAuthoritative(t *testing.T) {
 	if got[0].APIType != models.APITypeOpenAIResponses {
 		t.Errorf("first API type = %q, want %q", got[0].APIType, models.APITypeOpenAIResponses)
 	}
-	responses, ok := got[0].Service.(*oai.ResponsesService)
-	if !ok {
-		t.Fatalf("first service = %T, want *oai.ResponsesService", got[0].Service)
-	}
-	if responses.Model.ModelName != "native-upstream-only" {
-		t.Errorf("first wire model = %q, want native ID", responses.Model.ModelName)
-	}
-	if got[1].APIType != models.APITypeAnthropicMessages {
-		t.Errorf("second API type = %q, want %q", got[1].APIType, models.APITypeAnthropicMessages)
-	}
-	anthropic, ok := got[1].Service.(*ant.Service)
-	if !ok {
-		t.Fatalf("second service = %T, want *ant.Service", got[1].Service)
-	}
-	if anthropic.Model != "claude-opus-4-7" {
-		t.Errorf("second wire model = %q, want native ID", anthropic.Model)
-	}
-	if got[2].APIType != models.APITypeOpenAIChat {
-		t.Errorf("third API type = %q, want %q", got[2].APIType, models.APITypeOpenAIChat)
-	}
-	chat, ok := got[2].Service.(*oai.Service)
-	if !ok {
-		t.Fatalf("third service = %T, want *oai.Service", got[2].Service)
-	}
-	if chat.Model.ModelName != "native-upstream-chat" {
-		t.Errorf("third wire model = %q, want native ID", chat.Model.ModelName)
+	if got[0].Chat.Profile().Model != "native-upstream-only" {
+		t.Errorf("first wire model = %q, want native ID", got[0].Chat.Profile().Model)
 	}
 }
 
@@ -404,7 +306,7 @@ func TestLLMIntegrationPreservesNestedModelIDPathAndOrder(t *testing.T) {
 	integ := &LLMIntegrationConfig{
 		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
 		Models: []IntegrationModel{
-			{ID: "openrouter/meta/llama", Provider: "openrouter", NativeID: "meta/llama-native", APIs: []string{"openai_chat"}},
+			{ID: "openrouter/meta/llama", Provider: "openrouter", NativeID: "meta/llama-native", APIs: []string{"openai_responses"}},
 			{ID: "openai/gpt-5.5", Provider: "openai", NativeID: "gpt-5.5-native", APIs: []string{"openai_responses"}},
 		},
 	}
@@ -418,12 +320,8 @@ func TestLLMIntegrationPreservesNestedModelIDPathAndOrder(t *testing.T) {
 			t.Errorf("built model %d ID = %q, want %q", i, got[i].ID, want)
 		}
 	}
-	chat, ok := got[0].Service.(*oai.Service)
-	if !ok {
-		t.Fatalf("first service = %T, want *oai.Service", got[0].Service)
-	}
-	if chat.Model.ModelName != "meta/llama-native" {
-		t.Errorf("first wire model = %q, want native ID", chat.Model.ModelName)
+	if got[0].Chat.Profile().Model != "meta/llama-native" {
+		t.Errorf("first wire model = %q, want native ID", got[0].Chat.Profile().Model)
 	}
 }
 
@@ -431,8 +329,8 @@ func TestLLMIntegrationKeepsProviderPrefixesForShortIDCollisions(t *testing.T) {
 	integ := &LLMIntegrationConfig{
 		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
 		Models: []IntegrationModel{
-			{ID: "openrouter/meta/llama", Provider: "openrouter", NativeID: "openrouter-llama", APIs: []string{"openai_chat"}},
-			{ID: "fireworks/meta/llama", Provider: "fireworks", NativeID: "fireworks-llama", APIs: []string{"openai_chat"}},
+			{ID: "openrouter/meta/llama", Provider: "openrouter", NativeID: "openrouter-llama", APIs: []string{"openai_responses"}},
+			{ID: "fireworks/meta/llama", Provider: "fireworks", NativeID: "fireworks-llama", APIs: []string{"openai_responses"}},
 			{ID: "openai/unique", Provider: "openai", NativeID: "unique", APIs: []string{"openai_responses"}},
 		},
 	}
@@ -452,8 +350,8 @@ func TestLLMIntegrationStableCatalogIDWinsShortIDCollision(t *testing.T) {
 	integ := &LLMIntegrationConfig{
 		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
 		Models: []IntegrationModel{
-			{ID: "openrouter/claude-opus-4.7", Provider: "openrouter", NativeID: "openrouter-opus", APIs: []string{"openai_chat"}},
-			{ID: "anthropic/renamed-upstream", Provider: "anthropic", NativeID: "claude-opus-4-7", APIs: []string{"anthropic_messages"}},
+			{ID: "mistral/gpt-5.6-sol", Provider: "mistral", NativeID: "mistral-sol", APIs: []string{"openai_responses"}},
+			{ID: "openai/renamed-upstream", Provider: "openai", NativeID: "gpt-5.6-sol", APIs: []string{"openai_responses"}},
 		},
 	}
 
@@ -461,7 +359,7 @@ func TestLLMIntegrationStableCatalogIDWinsShortIDCollision(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("built models = %+v, want two", got)
 	}
-	for i, want := range []string{"openrouter/claude-opus-4.7", "claude-opus-4.7"} {
+	for i, want := range []string{"mistral/gpt-5.6-sol", "gpt-5.6-sol"} {
 		if got[i].ID != want {
 			t.Errorf("built model %d ID = %q, want %q", i, got[i].ID, want)
 		}
@@ -472,13 +370,13 @@ func TestLLMIntegrationCollisionResolutionSpansSourcesBeforeSuffixes(t *testing.
 	primary := &LLMIntegrationConfig{
 		Name: "primary", Host: "primary.int.exe.xyz", URL: "https://primary.int.exe.xyz",
 		Models: []IntegrationModel{
-			{ID: "openrouter/meta/llama", Provider: "openrouter", NativeID: "openrouter-llama", APIs: []string{"openai_chat"}},
+			{ID: "openrouter/meta/llama", Provider: "openrouter", NativeID: "openrouter-llama", APIs: []string{"openai_responses"}},
 		},
 	}
 	secondary := &LLMIntegrationConfig{
 		Name: "secondary", Host: "secondary.int.exe.xyz", URL: "https://secondary.int.exe.xyz",
 		Models: []IntegrationModel{
-			{ID: "fireworks/meta/llama", Provider: "fireworks", NativeID: "fireworks-llama", APIs: []string{"openai_chat"}},
+			{ID: "fireworks/meta/llama", Provider: "fireworks", NativeID: "fireworks-llama", APIs: []string{"openai_responses"}},
 		},
 	}
 
@@ -517,8 +415,6 @@ func TestLLMIntegrationCatalogAndDynamicImageCapabilities(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{
 		"schema_version": 1,
 		"models": [
-			{"id":"anthropic/image","provider":"anthropic","native_id":"claude-opus-4-7","apis":["anthropic_messages"],"architecture":{"input_modalities":["text","image"]}},
-			{"id":"anthropic/text","provider":"anthropic","native_id":"claude-opus-4-6","apis":["anthropic_messages"]},
 			{"id":"openai/responses-image","provider":"openai","native_id":"gpt-5.6-sol","apis":["openai_responses"],"architecture":{"input_modalities":["text","image"]}},
 			{"id":"openai/responses-text","provider":"openai","native_id":"gpt-5.5","apis":["openai_responses"]},
 			{"id":"openai/chat-image","provider":"openai","native_id":"gpt-4o","apis":["openai_chat"],"architecture":{"input_modalities":["image","text"]}},
@@ -539,19 +435,15 @@ func TestLLMIntegrationCatalogAndDynamicImageCapabilities(t *testing.T) {
 		id   string
 		want bool
 	}{
-		{"claude-opus-4.7", true},
-		{"claude-opus-4.6", true},
 		{"gpt-5.6-sol", true},
 		{"gpt-5.5", true},
-		{"chat-image", true},
-		{"chat-text", false},
 	} {
 		b := findBuilt(built, tt.id)
 		if b == nil {
 			t.Errorf("missing %q", tt.id)
 			continue
 		}
-		if got := b.Service.SupportsImages(); got != tt.want {
+		if got := b.Chat.Profile().SupportsImages; got != tt.want {
 			t.Errorf("%s SupportsImages() = %t, want %t", tt.id, got, tt.want)
 		}
 	}
@@ -572,10 +464,10 @@ func TestIntegrationModelsFromCatalogUsesNativeIDsForSupportedAPIs(t *testing.T)
 		},
 	})
 
-	if len(got) != 5 {
-		t.Fatalf("supported model count = %d, want 5 (%+v)", len(got), got)
+	if len(got) != 2 {
+		t.Fatalf("supported model count = %d, want 2 (%+v)", len(got), got)
 	}
-	for i, want := range []string{"claude-opus-4-7", "gpt-5.6-sol", "gpt-5.5", "accounts/fireworks/models/glm-5p2", "upstream-chat"} {
+	for i, want := range []string{"gpt-5.6-sol", "gpt-5.5"} {
 		if got[i].apiModelName() != want {
 			t.Fatalf("model %d apiModelName = %q, want %q", i, got[i].apiModelName(), want)
 		}
@@ -791,10 +683,10 @@ func TestDiscoverLLMIntegrationsReadsModelsJSONCatalog(t *testing.T) {
 	if integ.Name != "llm" || integ.Host != "llm.int.exe.xyz" || integ.URL != "https://llm.int.exe.xyz" {
 		t.Fatalf("integration = %+v, want llm host/base URL", integ)
 	}
-	if len(integ.Models) != 4 {
-		t.Fatalf("models = %+v, want 4", integ.Models)
+	if len(integ.Models) != 2 {
+		t.Fatalf("models = %+v, want 2", integ.Models)
 	}
-	for i, want := range []string{"claude-opus-4-7", "gpt-5.6-sol", "gpt-5.5", "accounts/fireworks/models/glm-5p2"} {
+	for i, want := range []string{"gpt-5.6-sol", "gpt-5.5"} {
 		if integ.Models[i].apiModelName() != want {
 			t.Fatalf("model %d apiModelName = %q, want %q", i, integ.Models[i].apiModelName(), want)
 		}
@@ -900,15 +792,14 @@ func TestMultipleLLMIntegrationsUnionWithSuffix(t *testing.T) {
 	primary := &LLMIntegrationConfig{
 		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
 		Models: []IntegrationModel{
-			{ID: "anthropic/claude-opus-4-7", Provider: "anthropic", NativeID: "claude-opus-4-7", APIs: []string{"anthropic_messages"}},
 			{ID: "openai/gpt-5.5", Provider: "openai", NativeID: "gpt-5.5", APIs: []string{"openai_responses"}},
 		},
 	}
 	secondary := &LLMIntegrationConfig{
 		Name: "llm2", Host: "llm2.int.exe.xyz", URL: "https://llm2.int.exe.xyz",
 		Models: []IntegrationModel{
-			{ID: "anthropic/claude-opus-4-7", Provider: "anthropic", NativeID: "claude-opus-4-7", APIs: []string{"anthropic_messages"}},
-			{ID: "anthropic/claude-sonnet-4-6", Provider: "anthropic", NativeID: "claude-sonnet-4-6", APIs: []string{"anthropic_messages"}},
+			{ID: "openai/gpt-5.5", Provider: "openai", NativeID: "gpt-5.5", APIs: []string{"openai_responses"}},
+			{ID: "openai/gpt-5.4", Provider: "openai", NativeID: "gpt-5.4", APIs: []string{"openai_responses"}},
 		},
 	}
 	bs := Build(models.All(), []Source{
@@ -916,29 +807,26 @@ func TestMultipleLLMIntegrationsUnionWithSuffix(t *testing.T) {
 		LLMIntegration(secondary, "@llm2"),
 		Predictable(),
 	}, &http.Client{}, nil)
-	for _, id := range []string{"claude-opus-4.7", "gpt-5.5", "claude-opus-4.7@llm2", "claude-sonnet-4.6@llm2"} {
+	for _, id := range []string{"gpt-5.5", "gpt-5.5@llm2", "gpt-5.4@llm2"} {
 		if findBuilt(bs, id) == nil {
 			t.Errorf("missing %q", id)
 		}
 	}
-	if b := findBuilt(bs, "claude-opus-4.7"); b == nil || b.Source != "llm.int.exe.xyz" {
+	if b := findBuilt(bs, "gpt-5.5"); b == nil || b.Source != "llm.int.exe.xyz" {
 		t.Errorf("primary collision lost: %+v", b)
 	}
-	if b := findBuilt(bs, "claude-opus-4.7@llm2"); b == nil || b.Source != "llm2.int.exe.xyz" {
+	if b := findBuilt(bs, "gpt-5.5@llm2"); b == nil || b.Source != "llm2.int.exe.xyz" {
 		t.Errorf("suffixed model wrong: %+v", b)
 	}
 }
 
 func TestBuiltBaseURLResolution(t *testing.T) {
 	// Env source supplies no URL: BaseURL should be the catalog default.
-	bs := Build(models.All(), []Source{Env("a", "o", "g", "f")}, &http.Client{}, nil)
+	bs := Build(models.All(), []Source{Env("o")}, &http.Client{}, nil)
 	for _, tt := range []struct {
 		id, want string
 	}{
-		{"claude-opus-4.6", "https://api.anthropic.com"},
 		{"gpt-5.5", "https://api.openai.com"},
-		{"gpt-oss-20b-fireworks", "https://api.fireworks.ai/inference"},
-		{"gemini-3-flash", "https://generativelanguage.googleapis.com"},
 	} {
 		b := findBuilt(bs, tt.id)
 		if b == nil {
@@ -954,29 +842,22 @@ func TestBuiltBaseURLResolution(t *testing.T) {
 	integ := &LLMIntegrationConfig{
 		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
 		Models: []IntegrationModel{
-			{ID: "anthropic/claude-opus-4-7", Provider: "anthropic", NativeID: "claude-opus-4-7", APIs: []string{"anthropic_messages"}},
 			{ID: "openai/gpt-5.5", Provider: "openai", NativeID: "gpt-5.5", APIs: []string{"openai_responses"}},
 		},
 	}
 	bs = Build(models.All(), []Source{LLMIntegration(integ, "")}, &http.Client{}, nil)
-	if b := findBuilt(bs, "claude-opus-4.7"); b == nil || b.BaseURL != "https://llm.int.exe.xyz" {
-		t.Errorf("claude-opus-4.7 BaseURL: %+v", b)
-	}
 	if b := findBuilt(bs, "gpt-5.5"); b == nil || b.BaseURL != "https://llm.int.exe.xyz" {
 		t.Errorf("gpt-5.5 BaseURL: %+v", b)
 	}
 }
 
 func TestBuiltAPITypePopulated(t *testing.T) {
-	bs := Build(models.All(), []Source{Env("a", "o", "g", "f"), Predictable()}, &http.Client{}, nil)
+	bs := Build(models.All(), []Source{Env("o"), Predictable()}, &http.Client{}, nil)
 	for _, tt := range []struct {
 		id   string
 		want models.APIType
 	}{
-		{"claude-opus-4.6", models.APITypeAnthropicMessages},
 		{"gpt-5.5", models.APITypeOpenAIResponses},
-		{"gpt-oss-20b-fireworks", models.APITypeOpenAIChat},
-		{"gemini-3-flash", models.APITypeGemini},
 		{"predictable", models.APITypeBuiltIn},
 	} {
 		b := findBuilt(bs, tt.id)

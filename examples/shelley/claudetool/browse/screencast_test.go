@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"shelley.exe.dev/llm"
 )
 
 func TestScreencastStartStop(t *testing.T) {
@@ -31,7 +29,7 @@ func TestScreencastStartStop(t *testing.T) {
 	}
 
 	// Start via combined tool.
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	out := tool.Run(ctx, json.RawMessage(`{"action":"screencast_start"}`))
 	text := contentText(t, out)
 	if !strings.Contains(text, "Screencast recording") {
@@ -129,7 +127,7 @@ func TestScreencastStatusWhenInactive(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	out := tool.Run(ctx, json.RawMessage(`{"action":"screencast_status"}`))
 	text := contentText(t, out)
 	if !strings.Contains(text, "No active screencast") {
@@ -143,7 +141,7 @@ func TestScreencastSchemaIncludes(t *testing.T) {
 		tools.Close()
 	})
 
-	tool := tools.CombinedTool()
+	tool := probeNativeTool(tools.NativeCombinedTool())
 	var schema struct {
 		Properties map[string]struct {
 			Enum []string `json:"enum"`
@@ -174,7 +172,7 @@ func TestScreencastSchemaIncludes(t *testing.T) {
 }
 
 // contentText extracts the text from a tool output, including errors.
-func contentText(t *testing.T, out llm.ToolOut) string {
+func contentText(t *testing.T, out nativeProbeResult) string {
 	t.Helper()
 	if out.Error != nil {
 		return out.Error.Error()

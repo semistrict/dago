@@ -9,6 +9,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/semistrict/dago/message"
+	"github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/providers/openai"
 )
 
 func TestIsRetryableAnthropicErr(t *testing.T) {
@@ -20,129 +24,128 @@ func TestIsRetryableAnthropicErr(t *testing.T) {
 		{"nil", nil, false},
 		{"context canceled", context.Canceled, false},
 		{"deadline exceeded", context.DeadlineExceeded, true},
-		{"429 too many requests", &anthropicStatusError{StatusCode: http.StatusTooManyRequests}, true},
-		{"500 server error", &anthropicStatusError{StatusCode: http.StatusInternalServerError}, true},
-		{"503 unavailable", &anthropicStatusError{StatusCode: http.StatusServiceUnavailable}, true},
-		{"400 bad request", &anthropicStatusError{StatusCode: http.StatusBadRequest}, false},
-		{"401 unauthorized", &anthropicStatusError{StatusCode: http.StatusUnauthorized}, false},
-		{"wrapped 503", fmt.Errorf("HTTP request: %w", &anthropicStatusError{StatusCode: 503}), true},
-		{"transport error", errors.New("connection reset by peer"), true},
+		{"429 too many requests", &openai.Error{Status: http.StatusTooManyRequests}, true},
+		{"500 server error", &openai.Error{Status: http.StatusInternalServerError}, true},
+		{"503 unavailable", &openai.Error{Status: http.StatusServiceUnavailable}, true},
+		{"400 bad request", &openai.Error{Status: http.StatusBadRequest}, false},
+		{"401 unauthorized", &openai.Error{Status: http.StatusUnauthorized}, false},
+		{"wrapped 503", fmt.Errorf("model request: %w", &openai.Error{Status: 503}), true},
+		{"transport error", errors.New("openai: request: connection reset by peer"), true},
+		{"decode error", errors.New("openai: decode response: unexpected EOF"), true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isRetryableAnthropicErr(tt.err); got != tt.want {
-				t.Errorf("isRetryableAnthropicErr(%v) = %v, want %v", tt.err, got, tt.want)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isRetryableModelError(context.Background(), test.err); got != test.want {
+				t.Errorf("isRetryableModelError(%v) = %v, want %v", test.err, got, test.want)
 			}
 		})
 	}
 }
 
-// shrinkBackoff sets a tiny retry backoff for the duration of a test so the
-// retry loop doesn't sleep for real seconds. AGENTS.md: don't sleep in tests.
-func shrinkBackoff(t *testing.T) {
+const validResponsesResponse = `{"id":"resp_1","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+
+func newTestChat(t *testing.T, baseURL string) *retryingChat {
 	t.Helper()
-	prev := anthropicRetryBackoff
-	anthropicRetryBackoff = time.Millisecond
-	t.Cleanup(func() { anthropicRetryBackoff = prev })
+	client, err := openai.NewAPIKey("test-key", openai.Options{
+		Model:        "gpt-5.6-luna",
+		BaseURL:      baseURL,
+		RetryBackoff: []time.Duration{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &retryingChat{inner: client, attempts: modelMaxAttempts, backoff: 0}
 }
 
-// validAnthropicResponse is a minimal well-formed apiResponse body.
-const validAnthropicResponse = `{"id":"msg_1","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
-
-func newTestAgentConfig(baseURL string) *AgentConfig {
-	return &AgentConfig{
-		Model:            "claude-haiku-4-5",
-		AnthropicBaseURL: baseURL,
-		AnthropicAPIKey:  "test-key",
-		Verbose:          true,
-	}
+func invokeTestChat(ctx context.Context, chat model.Chat) (model.Response, error) {
+	return chat.Invoke(ctx, model.Request{Messages: []message.Message{message.Human("hi")}})
 }
 
 func TestCallAnthropicRetriesTransient5xx(t *testing.T) {
-	shrinkBackoff(t)
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		if n < 3 {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) < 3 {
 			http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, validAnthropicResponse)
+		fmt.Fprint(w, validResponsesResponse)
 	}))
-	defer srv.Close()
+	defer server.Close()
 
-	cfg := newTestAgentConfig(srv.URL)
-	resp, err := callAnthropic(context.Background(), cfg, "sys", []apiMessage{{Role: "user", Content: "hi"}}, nil)
+	response, err := invokeTestChat(context.Background(), newTestChat(t, server.URL))
 	if err != nil {
-		t.Fatalf("callAnthropic returned error after retries: %v", err)
+		t.Fatalf("native model returned error after retries: %v", err)
 	}
-	if resp == nil || resp.ID != "msg_1" {
-		t.Fatalf("unexpected response: %+v", resp)
+	if got := response.Message.TextContent(); got != "ok" {
+		t.Fatalf("response text = %q, want ok", got)
 	}
-	if got := atomic.LoadInt32(&calls); got != 3 {
-		t.Errorf("expected 3 attempts (2 failures + 1 success), got %d", got)
+	if got := calls.Load(); got != 3 {
+		t.Errorf("attempts = %d, want 3", got)
 	}
 }
 
 func TestCallAnthropicDoesNotRetry4xx(t *testing.T) {
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
 		http.Error(w, "bad request", http.StatusBadRequest)
 	}))
-	defer srv.Close()
+	defer server.Close()
 
-	cfg := newTestAgentConfig(srv.URL)
-	_, err := callAnthropic(context.Background(), cfg, "sys", []apiMessage{{Role: "user", Content: "hi"}}, nil)
+	_, err := invokeTestChat(context.Background(), newTestChat(t, server.URL))
 	if err == nil {
 		t.Fatal("expected error from 400 response")
 	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("expected exactly 1 attempt for non-retryable 400, got %d", got)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1", got)
 	}
 }
 
 func TestCallAnthropicExhaustsAttempts(t *testing.T) {
-	shrinkBackoff(t)
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
 		http.Error(w, "still down", http.StatusServiceUnavailable)
 	}))
-	defer srv.Close()
+	defer server.Close()
 
-	cfg := newTestAgentConfig(srv.URL)
-	_, err := callAnthropic(context.Background(), cfg, "sys", []apiMessage{{Role: "user", Content: "hi"}}, nil)
+	_, err := invokeTestChat(context.Background(), newTestChat(t, server.URL))
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
 	}
-	if got := atomic.LoadInt32(&calls); got != anthropicMaxAttempts {
-		t.Errorf("expected %d attempts, got %d", anthropicMaxAttempts, got)
+	if got := calls.Load(); got != modelMaxAttempts {
+		t.Errorf("attempts = %d, want %d", got, modelMaxAttempts)
 	}
 }
 
 func TestCallAnthropicStopsOnContextCancel(t *testing.T) {
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
-		http.Error(w, "down", http.StatusServiceUnavailable)
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		close(started)
+		<-release
+		http.Error(w, "released", http.StatusServiceUnavailable)
 	}))
-	defer srv.Close()
+	defer server.Close()
 
-	// Cancel well before the first backoff (2s) elapses so the retry loop must
-	// observe the cancelled context instead of sleeping through it.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	cfg := newTestAgentConfig(srv.URL)
-	_, err := callAnthropic(ctx, cfg, "sys", []apiMessage{{Role: "user", Content: "hi"}}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	chat := newTestChat(t, server.URL)
+	done := make(chan error, 1)
+	go func() {
+		_, err := invokeTestChat(ctx, chat)
+		done <- err
+	}()
+	<-started
+	cancel()
+	err := <-done
+	close(release)
 	if err == nil {
-		t.Fatal("expected error when context is cancelled")
+		t.Fatal("expected cancellation error")
 	}
-	// One request happens, then the loop should bail rather than retry to
-	// exhaustion under a cancelled context.
-	if got := atomic.LoadInt32(&calls); got >= anthropicMaxAttempts {
-		t.Errorf("expected fewer than %d attempts under cancellation, got %d", anthropicMaxAttempts, got)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1", got)
 	}
 }

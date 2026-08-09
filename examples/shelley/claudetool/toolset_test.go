@@ -7,7 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/llm"
+	dmodel "github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/model/modeltest"
 )
 
 func TestIsStrongModel(t *testing.T) {
@@ -15,12 +16,11 @@ func TestIsStrongModel(t *testing.T) {
 		modelID  string
 		expected bool
 	}{
-		{"claude-3-sonnet-20240229", true},
-		{"claude-3-opus-20240229", true},
-		{"claude-3-haiku-20240307", false},
-		{"Sonnet Model", true},
-		{"OPUS Model", true},
-		{"haiku model", false},
+		{"gpt-5.6-sol", true},
+		{"gpt-5.6-terra", true},
+		{"gpt-5.6-luna", true},
+		{"gpt-5.5", false},
+		{"gpt-5.4-mini", false},
 		{"other-model", false},
 		{"", false},
 	}
@@ -53,7 +53,7 @@ func TestNewToolSet(t *testing.T) {
 		t.Error("Working directory not initialized")
 	}
 
-	if ts.tools == nil {
+	if ts.definitions == nil {
 		t.Error("Tools not initialized")
 	}
 }
@@ -162,7 +162,7 @@ func TestNewToolSet_WithBrowser(t *testing.T) {
 		t.Error("Working directory not initialized")
 	}
 
-	if ts.tools == nil {
+	if ts.definitions == nil {
 		t.Error("Tools not initialized")
 	}
 }
@@ -440,84 +440,40 @@ func TestNewToolSet_BuildAvailableModelsFreshOnEachCall(t *testing.T) {
 	}
 }
 
-// mockServiceWithProvider is a mock llm.Service that returns a configurable provider.
-type mockServiceWithProvider struct {
-	mockService
-	provider string
-}
-
-func (m *mockServiceWithProvider) Provider() string { return m.provider }
-
-// mockServiceWithWebSearch is mockServiceWithProvider plus the optional
-// ServerSideWebSearchCapable marker interface (e.g. for OpenAI Responses API).
-type mockServiceWithWebSearch struct {
-	mockServiceWithProvider
-}
-
-func (m *mockServiceWithWebSearch) SupportsServerSideWebSearch() bool { return true }
-
-// mockLLMProviderWithProviders is a mock that maps model IDs to providers.
-// Both anthropic and OpenAI-flavored services are returned as
-// mockServiceWithWebSearch so they satisfy ServerSideWebSearchCapable
-// (mirroring genuine Claude models and oai.ResponsesService).
+// mockLLMProviderWithProviders maps model IDs to native provider profiles.
 type mockLLMProviderWithProviders struct {
 	providers map[string]string
 }
 
-func (m *mockLLMProviderWithProviders) GetService(modelID string) (llm.Service, error) {
-	p := m.providers[modelID]
-	if p == "" {
+func (m *mockLLMProviderWithProviders) GetChat(modelID string) (dmodel.Chat, error) {
+	provider := m.providers[modelID]
+	if provider == "" {
 		return nil, fmt.Errorf("unknown model: %s", modelID)
 	}
-	if p == "openai" || p == "anthropic" {
-		return &mockServiceWithWebSearch{mockServiceWithProvider: mockServiceWithProvider{provider: p}}, nil
-	}
-	return &mockServiceWithProvider{provider: p}, nil
+	profile := dmodel.Profile{Provider: provider, Model: modelID, SupportsImages: true, SupportsWebSearch: provider == "openai"}
+	return modeltest.NewPredictable(modeltest.PredictableOptions{Profile: &profile}), nil
 }
 
 func (m *mockLLMProviderWithProviders) GetAvailableModels() []string {
 	return nil
 }
 
-// plainOpenAIProvider returns a mockServiceWithProvider (no web search
-// capability) reporting provider "openai".
+// plainOpenAIProvider reports OpenAI without hosted web-search capability.
 type plainOpenAIProvider struct{}
 
-func (p *plainOpenAIProvider) GetService(modelID string) (llm.Service, error) {
-	return &mockServiceWithProvider{provider: "openai"}, nil
+func (p *plainOpenAIProvider) GetChat(modelID string) (dmodel.Chat, error) {
+	profile := dmodel.Profile{Provider: "openai", Model: modelID, SupportsImages: true}
+	return modeltest.NewPredictable(modeltest.PredictableOptions{Profile: &profile}), nil
 }
 func (p *plainOpenAIProvider) GetAvailableModels() []string { return nil }
-
-// plainAnthropicProvider returns a mockServiceWithProvider (no web search
-// capability) reporting provider "anthropic". This mirrors a non-Claude model
-// reached over the Anthropic Messages wire protocol (e.g. a third-party model
-// an LLM integration serves via anthropic_messages): it reports provider
-// "anthropic" but cannot run the Anthropic server-side web_search tool.
-type plainAnthropicProvider struct{}
-
-func (p *plainAnthropicProvider) GetService(modelID string) (llm.Service, error) {
-	return &mockServiceWithProvider{provider: "anthropic"}, nil
-}
-func (p *plainAnthropicProvider) GetAvailableModels() []string { return nil }
 
 func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 	provider := &mockLLMProviderWithProviders{
 		providers: map[string]string{
-			"claude-sonnet-4.5": "anthropic",
-			"claude-opus-4.6":   "anthropic",
-			"claude-haiku-4.5":  "anthropic",
-			"gpt-5.3-codex":     "openai",
+			"gpt-5.6-luna": "openai",
 		},
 	}
 
-	hasWebSearchToolOfType := func(ts *ToolSet, toolType string) bool {
-		for _, tool := range ts.Tools() {
-			if tool.Name == "web_search" && tool.Type == toolType {
-				return true
-			}
-		}
-		return false
-	}
 	hasWebSearchTool := func(ts *ToolSet) bool {
 		for _, tool := range ts.Tools() {
 			if tool.Name == "web_search" {
@@ -527,66 +483,28 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 		return false
 	}
 
-	// Anthropic models should have the Anthropic-flavored web_search tool
-	for _, modelID := range []string{"claude-sonnet-4.5", "claude-opus-4.6", "claude-haiku-4.5"} {
-		t.Run(modelID+" has web_search", func(t *testing.T) {
-			cfg := ToolSetConfig{
-				LLMProvider: provider,
-				ModelID:     modelID,
-				WorkingDir:  "/test",
-			}
-			ts := NewToolSet(context.Background(), cfg)
-			if !hasWebSearchToolOfType(ts, "web_search_20250305") {
-				t.Errorf("expected anthropic web_search tool for %s", modelID)
-			}
-		})
-	}
-
-	// OpenAI models should have the OpenAI-flavored web_search tool (only
-	// when the service is the Responses-API-backed one).
 	t.Run("openai responses has web_search", func(t *testing.T) {
 		cfg := ToolSetConfig{
 			LLMProvider: provider,
-			ModelID:     "gpt-5.3-codex",
+			ModelID:     "gpt-5.6-luna",
 			WorkingDir:  "/test",
 		}
 		ts := NewToolSet(context.Background(), cfg)
-		if !hasWebSearchToolOfType(ts, "web_search") {
+		if !hasWebSearchTool(ts) {
 			t.Error("expected web_search tool for OpenAI Responses model")
 		}
 	})
 
-	// OpenAI-compatible Chat Completions services (which don't support web
-	// search) should NOT get a web_search tool.
-	t.Run("openai chat-completions service has no web_search", func(t *testing.T) {
-		// Build a provider that returns a plain openai service WITHOUT the
-		// ServerSideWebSearchCapable marker interface.
+	t.Run("openai service without capability has no web_search", func(t *testing.T) {
 		plainProvider := &plainOpenAIProvider{}
 		cfg := ToolSetConfig{
 			LLMProvider: plainProvider,
-			ModelID:     "openai-chat",
+			ModelID:     "openai-without-hosted-tools",
 			WorkingDir:  "/test",
 		}
 		ts := NewToolSet(context.Background(), cfg)
 		if hasWebSearchTool(ts) {
-			t.Error("expected no web_search tool for a chat-completions openai service")
-		}
-	})
-
-	// A non-Claude model reached over the Anthropic Messages wire protocol
-	// (e.g. a third-party model an LLM integration serves via anthropic_messages)
-	// reports provider "anthropic" but cannot run the Anthropic server-side
-	// web_search tool. Sending it would produce a 400 Bad Request (issue #242),
-	// so it must NOT get a web_search tool.
-	t.Run("anthropic-protocol non-claude service has no web_search", func(t *testing.T) {
-		cfg := ToolSetConfig{
-			LLMProvider: &plainAnthropicProvider{},
-			ModelID:     "third-party-model",
-			WorkingDir:  "/test",
-		}
-		ts := NewToolSet(context.Background(), cfg)
-		if hasWebSearchTool(ts) {
-			t.Error("expected no web_search tool for a non-Claude anthropic-protocol service")
+			t.Error("expected no web_search tool without the capability")
 		}
 	})
 
@@ -620,7 +538,7 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 	t.Run("nil provider has no web_search", func(t *testing.T) {
 		cfg := ToolSetConfig{
 			LLMProvider: nil,
-			ModelID:     "claude-sonnet-4.5",
+			ModelID:     "gpt-5.6-luna",
 			WorkingDir:  "/test",
 		}
 		ts := NewToolSet(context.Background(), cfg)
@@ -629,27 +547,23 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 		}
 	})
 
-	// Server-side tool should have no Run function, no InputSchema, no Description
+	// A provider-hosted tool is display metadata, not a local executable.
 	t.Run("web_search tool properties", func(t *testing.T) {
 		cfg := ToolSetConfig{
 			LLMProvider: provider,
-			ModelID:     "claude-sonnet-4.5",
+			ModelID:     "gpt-5.6-luna",
 			WorkingDir:  "/test",
 		}
 		ts := NewToolSet(context.Background(), cfg)
 		for _, tool := range ts.Tools() {
 			if tool.Name == "web_search" {
-				if tool.Run != nil {
-					t.Error("server-side tool should have nil Run function")
-				}
 				if tool.InputSchema != nil {
 					t.Error("server-side tool should have nil InputSchema")
 				}
-				if tool.Description != "" {
-					t.Error("server-side tool should have empty Description")
-				}
-				if !tool.ServerSide {
-					t.Error("server-side tool should have ServerSide=true")
+				for _, executable := range ts.NativeTools() {
+					if executable.Definition().Name == "web_search" {
+						t.Error("provider-hosted tool must not be a local executable")
+					}
 				}
 				return
 			}

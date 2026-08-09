@@ -16,18 +16,15 @@ import (
 	"github.com/pkg/diff"
 	dmessage "github.com/semistrict/dago/message"
 	dtool "github.com/semistrict/dago/tool"
-	"shelley.exe.dev/llm"
 	"sketch.dev/claudetool/editbuf"
 	"sketch.dev/claudetool/patchkit"
 )
 
-// PatchCallback defines the signature for patch tool callbacks.
-// It runs after the patch tool has executed.
-// It receives the patch input and the tool output,
-// and returns a new, possibly altered tool output.
-type PatchCallback func(input PatchInput, output llm.ToolOut) llm.ToolOut
+// PatchCallback runs after parsing and execution and may alter the native tool
+// result or error.
+type PatchCallback func(input PatchInput, result dtool.Result, err error) (dtool.Result, error)
 
-// PatchTool specifies an llm.Tool for patching files.
+// PatchTool applies filesystem patches.
 // PatchTools are not concurrency-safe.
 type PatchTool struct {
 	Callback PatchCallback // may be nil
@@ -50,17 +47,6 @@ func (p *PatchTool) getWorkingDir() string {
 	return p.WorkingDir.Get()
 }
 
-// Tool returns an llm.Tool based on p.
-func (p *PatchTool) Tool() *llm.Tool {
-	description, schema := p.definition()
-	return &llm.Tool{
-		Name:        PatchName,
-		Description: description,
-		InputSchema: llm.MustSchema(schema),
-		Run:         p.Run,
-	}
-}
-
 func (p *PatchTool) definition() (string, string) {
 	description := PatchBaseDescription + PatchUsageNotes
 	schema := PatchStandardInputSchema
@@ -74,8 +60,7 @@ func (p *PatchTool) definition() (string, string) {
 	return strings.TrimSpace(description), schema
 }
 
-// NativeTool applies patches through Dago's tool contract. Tool and Run remain
-// the pinned Shelley facade used by the original package tests.
+// NativeTool applies patches through Dago's tool contract.
 func (p *PatchTool) NativeTool() dtool.Tool {
 	description, schema := p.definition()
 	return dtool.Func{
@@ -86,22 +71,29 @@ func (p *PatchTool) NativeTool() dtool.Tool {
 			}
 			input, err := p.patchParse(raw)
 			if err != nil {
-				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
+				return p.finish(input, dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err))
 			}
 			execution, err := p.patchRun(ctx, &input)
 			if err != nil {
-				return dtool.Result{}, err
+				return p.finish(input, dtool.Result{}, err)
 			}
 			artifact, err := json.Marshal(execution.Display)
 			if err != nil {
 				return dtool.Result{}, fmt.Errorf("encode patch display: %w", err)
 			}
-			return dtool.Result{
+			return p.finish(input, dtool.Result{
 				Content:  []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}},
 				Artifact: artifact,
-			}, nil
+			}, nil)
 		},
 	}
+}
+
+func (p *PatchTool) finish(input PatchInput, result dtool.Result, err error) (dtool.Result, error) {
+	if p.Callback != nil {
+		return p.Callback(input, result, err)
+	}
+	return result, err
 }
 
 const (
@@ -326,29 +318,6 @@ type Reindent struct {
 	// or strip based on a regex.
 	Strip string `json:"strip,omitempty"`
 	Add   string `json:"add,omitempty"`
-}
-
-// Run implements the patch tool logic.
-func (p *PatchTool) Run(ctx context.Context, m json.RawMessage) llm.ToolOut {
-	if p.clipboards == nil {
-		p.clipboards = make(map[string]string)
-	}
-	input, err := p.patchParse(m)
-	var output llm.ToolOut
-	if err != nil {
-		output = llm.ErrorToolOut(err)
-	} else {
-		execution, runErr := p.patchRun(ctx, &input)
-		if runErr != nil {
-			output = llm.ErrorToolOut(runErr)
-		} else {
-			output = llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
-		}
-	}
-	if p.Callback != nil {
-		return p.Callback(input, output)
-	}
-	return output
 }
 
 // patchParse parses the input message into a PatchInput structure.

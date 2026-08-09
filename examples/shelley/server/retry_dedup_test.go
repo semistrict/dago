@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
 	"shelley.exe.dev/loop"
 )
 
@@ -21,34 +22,33 @@ import (
 // the test can hold the retried turn open (no new bottom message appended)
 // while it issues a second retry.
 type gatingTestLLM struct {
-	inner llm.Service
+	inner dmodel.Chat
 	mu    sync.Mutex
 	err   error
 	gate  chan struct{} // when non-nil, Do blocks on it after err clears
 }
 
-func (g *gatingTestLLM) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (g *gatingTestLLM) Profile() dmodel.Profile { return g.inner.Profile() }
+func (g *gatingTestLLM) Invoke(ctx context.Context, req dmodel.Request) (dmodel.Response, error) {
 	g.mu.Lock()
 	err := g.err
 	gate := g.gate
 	g.mu.Unlock()
 	if err != nil {
-		return nil, err
+		return dmodel.Response{}, err
 	}
 	if gate != nil {
 		select {
 		case <-gate:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return dmodel.Response{}, ctx.Err()
 		}
 	}
-	return g.inner.Do(ctx, req)
+	return g.inner.Invoke(ctx, req)
 }
-func (g *gatingTestLLM) Provider() string        { return g.inner.Provider() }
-func (g *gatingTestLLM) TokenContextWindow() int { return g.inner.TokenContextWindow() }
-func (g *gatingTestLLM) MaxImageDimension() int  { return g.inner.MaxImageDimension() }
-func (g *gatingTestLLM) MaxImageBytes() int      { return g.inner.MaxImageBytes() }
-func (g *gatingTestLLM) SupportsImages() bool    { return g.inner.SupportsImages() }
+func (*gatingTestLLM) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+	return nil, fmt.Errorf("gating test model does not stream")
+}
 
 // TestRetryDoubleClickDeduped verifies that a second retry POST for the SAME
 // bottom error message is rejected (MAJOR 6) — without mutating the error row.

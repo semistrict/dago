@@ -33,15 +33,15 @@ func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Child main-loop usage: 1M in + 1M out of claude-opus-4-6 = $30 estimated.
+	// Child main-loop usage: 1M in + 1M out of gpt-5.5 = $35 estimated.
 	if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
 		ConversationID: child.ConversationID,
 		Type:           db.MessageTypeAgent,
 		UsageData: map[string]any{
 			"input_tokens": 1_000_000, "output_tokens": 1_000_000, "cost_usd": 1.25,
 		},
-		ModelName: "claude-opus-4-6",
-		LLMAPIURL: "https://llm.int.exe.xyz/v1/messages",
+		ModelName: "gpt-5.5",
+		LLMAPIURL: "https://llm.int.exe.xyz/v1/responses",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
 		LLMData:        llm.Message{Role: llm.MessageRoleUser},
 		OtherUsageData: []llm.PurposedUsage{{
 			Purpose: "keyword_search",
-			Usage:   llm.Usage{InputTokens: 1_000_000, CostUSD: 0.75, Model: "claude-opus-4-6", URL: "https://llm.int.exe.xyz/v1/messages"},
+			Usage:   llm.Usage{InputTokens: 1_000_000, CostUSD: 0.75, Model: "gpt-5.5", URL: "https://llm.int.exe.xyz/v1/responses"},
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
 		LLMData:        llm.Message{Role: llm.MessageRoleUser},
 		OtherUsageData: []llm.PurposedUsage{{
 			Purpose: "compaction",
-			Usage:   llm.Usage{InputTokens: 999, CostUSD: 9, Model: "claude-opus-4-6", URL: "https://llm.int.exe.xyz/v1/messages"},
+			Usage:   llm.Usage{InputTokens: 999, CostUSD: 9, Model: "gpt-5.5", URL: "https://llm.int.exe.xyz/v1/responses"},
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -89,8 +89,8 @@ func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
 	if res.LLMCalls != 2 {
 		t.Errorf("llm_calls = %d, want 2 (1 message + 1 indirect)", res.LLMCalls)
 	}
-	if res.EstimatedUsd < 34.99 || res.EstimatedUsd > 35.01 {
-		t.Errorf("estimated_usd = %v, want ~35", res.EstimatedUsd)
+	if res.EstimatedUsd < 39.99 || res.EstimatedUsd > 40.01 {
+		t.Errorf("estimated_usd = %v, want ~40", res.EstimatedUsd)
 	}
 	if res.ReportedUsd != 2.0 {
 		t.Errorf("reported_usd = %v, want 2.0", res.ReportedUsd)
@@ -101,7 +101,7 @@ func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
 }
 
 // TestCompactionRecordsUsage runs a real compaction through a real
-// models.Manager (so GetService returns a loggingService, which feeds the
+// models.Manager (so GetChat returns a loggingChat, which feeds the
 // usage collector installed by performPiDistillation) and verifies the
 // summarization call's usage lands on the summary message's
 // other_usage_data.
@@ -113,7 +113,7 @@ func TestCompactionRecordsUsage(t *testing.T) {
 		ps := loop.NewPredictableService()
 		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
 		mgr := NewLLMServiceManager(&LLMConfig{
-			Models: []models.Built{{ID: "predictable", Provider: models.ProviderBuiltIn, Source: "test", Service: ps}},
+			Models: []models.Built{{ID: "predictable", Provider: models.ProviderBuiltIn, Source: "test", Chat: ps}},
 			DB:     database,
 			Logger: logger,
 		})

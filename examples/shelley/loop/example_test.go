@@ -2,8 +2,11 @@ package loop_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/loop"
@@ -15,15 +18,15 @@ func ExampleLoop() {
 	}
 
 	// Create a simple tool
-	testTool := &llm.Tool{
-		Name:        "greet",
-		Description: "Greets the user with a friendly message",
-		InputSchema: llm.MustSchema(`{"type": "object", "properties": {"name": {"type": "string"}}}`),
-		Run: llm.RunJSON(func(ctx context.Context, req greetInput) llm.ToolOut {
-			return llm.ToolOut{
-				LLMContent: llm.TextContent(fmt.Sprintf("Hello, %s! Nice to meet you.", req.Name)),
+	testTool := tool.Func{
+		Spec: tool.Definition{Name: "greet", Description: "Greets the user with a friendly message", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)},
+		Run: func(_ context.Context, arguments json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+			var request greetInput
+			if err := json.Unmarshal(arguments, &request); err != nil {
+				return tool.Result{}, err
 			}
-		}),
+			return tool.TextResult(fmt.Sprintf("Hello, %s! Nice to meet you.", request.Name)), nil
+		},
 	}
 
 	// Message recording function (in real usage, this would save to database)
@@ -49,9 +52,9 @@ func ExampleLoop() {
 	// Set up a predictable service for this example
 	service := loop.NewPredictableService()
 	myLoop := loop.NewLoop(loop.Config{
-		LLM:           service,
+		Model:         service,
 		History:       initialHistory,
-		Tools:         []*llm.Tool{testTool},
+		Tools:         []tool.Tool{testTool},
 		RecordMessage: recordMessage,
 	})
 
@@ -73,5 +76,5 @@ func ExampleLoop() {
 
 	// Output:
 	// Recorded assistant message with 1 content items
-	// Total usage: in: 31, out: 3
+	// Total usage: in: 30, out: 3
 }

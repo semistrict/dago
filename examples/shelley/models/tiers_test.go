@@ -4,29 +4,29 @@ import "testing"
 
 func TestAssignTiers(t *testing.T) {
 	t.Run("shadowed model drops to tier 2 when both present", func(t *testing.T) {
-		tiers := AssignTiers([]string{"claude-opus-4.8", "claude-opus-4.7"})
-		if tiers["claude-opus-4.8"] != Tier1 {
-			t.Errorf("opus-4.8 tier = %d, want %d", tiers["claude-opus-4.8"], Tier1)
+		tiers := AssignTiers([]string{"gpt-5.6-sol", "gpt-5.5"})
+		if tiers["gpt-5.6-sol"] != Tier1 {
+			t.Errorf("sol tier = %d, want %d", tiers["gpt-5.6-sol"], Tier1)
 		}
-		if tiers["claude-opus-4.7"] != Tier2 {
-			t.Errorf("opus-4.7 tier = %d, want %d", tiers["claude-opus-4.7"], Tier2)
+		if tiers["gpt-5.5"] != Tier2 {
+			t.Errorf("gpt-5.5 tier = %d, want %d", tiers["gpt-5.5"], Tier2)
 		}
 	})
 
 	t.Run("opus 5 shadows opus 4.8", func(t *testing.T) {
-		tiers := AssignTiers([]string{"claude-opus-5", "claude-opus-4.8"})
-		if tiers["claude-opus-5"] != Tier1 {
-			t.Errorf("opus-5 tier = %d, want %d", tiers["claude-opus-5"], Tier1)
+		tiers := AssignTiers([]string{"gpt-5.6-terra", "gpt-5.4-mini"})
+		if tiers["gpt-5.6-terra"] != Tier1 {
+			t.Errorf("terra tier = %d, want %d", tiers["gpt-5.6-terra"], Tier1)
 		}
-		if tiers["claude-opus-4.8"] != Tier2 {
-			t.Errorf("opus-4.8 tier = %d, want %d", tiers["claude-opus-4.8"], Tier2)
+		if tiers["gpt-5.4-mini"] != Tier2 {
+			t.Errorf("mini tier = %d, want %d", tiers["gpt-5.4-mini"], Tier2)
 		}
 	})
 
 	t.Run("worse model stays tier 1 when better absent", func(t *testing.T) {
-		tiers := AssignTiers([]string{"claude-opus-4.7"})
-		if tiers["claude-opus-4.7"] != Tier1 {
-			t.Errorf("opus-4.7 tier = %d, want %d (no shadowing model present)", tiers["claude-opus-4.7"], Tier1)
+		tiers := AssignTiers([]string{"gpt-5.5"})
+		if tiers["gpt-5.5"] != Tier1 {
+			t.Errorf("gpt-5.5 tier = %d, want %d (no shadowing model present)", tiers["gpt-5.5"], Tier1)
 		}
 	})
 
@@ -45,12 +45,12 @@ func TestAssignTiers(t *testing.T) {
 	})
 
 	t.Run("multiple shadows demote several models", func(t *testing.T) {
-		avail := []string{"gpt-5.6-luna", "gpt-5.3-codex", "claude-haiku-4.5"}
+		avail := []string{"gpt-5.6-sol", "gpt-5.5", "gpt-5.4"}
 		tiers := AssignTiers(avail)
-		if tiers["gpt-5.6-luna"] != Tier1 {
-			t.Errorf("luna tier = %d, want %d", tiers["gpt-5.6-luna"], Tier1)
+		if tiers["gpt-5.6-sol"] != Tier1 {
+			t.Errorf("sol tier = %d, want %d", tiers["gpt-5.6-sol"], Tier1)
 		}
-		for _, worse := range []string{"gpt-5.3-codex", "claude-haiku-4.5"} {
+		for _, worse := range []string{"gpt-5.5", "gpt-5.4"} {
 			if tiers[worse] != Tier2 {
 				t.Errorf("%s tier = %d, want %d", worse, tiers[worse], Tier2)
 			}

@@ -14,8 +14,6 @@ import (
 	dmodel "github.com/semistrict/dago/model"
 	dopenai "github.com/semistrict/dago/providers/openai"
 
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/models"
 )
 
@@ -115,23 +113,23 @@ func (controller *OpenAIOAuth) BuiltModels() ([]models.Built, error) {
 	if session == nil {
 		return nil, nil
 	}
-	metadata := &oai.ResponsesService{Model: oai.GPT56Luna}
 	chat, err := dopenai.NewSubscription(session, dopenai.Options{
-		Model: OpenAISubscriptionModelID, ContextWindow: metadata.TokenContextWindow(),
-		MaxOutputTokens:  oai.DefaultMaxTokens,
+		Model: OpenAISubscriptionModelID, ContextWindow: 272000,
+		MaxOutputTokens:  32768,
 		DefaultReasoning: &dmodel.Reasoning{Effort: "medium", Summary: "auto"},
+		WebSearch:        true,
 	})
 	if err != nil {
 		return nil, err
 	}
-	service, err := llm.NewNativeServiceWithOptions(chat, llm.NativeServiceOptions{
-		SupportsImages: true, SupportsReasoning: true, Provider: "openai",
-		ModelID: OpenAISubscriptionModelID, BaseURL: "https://chatgpt.com",
-		MaxImageBytes: 20 * 1024 * 1024,
+	profiledChat := models.WithProfile(chat, func(profile *dmodel.Profile) {
+		profile.SupportsImages = true
+		profile.SupportsReasoning = true
+		profile.SupportsWebSearch = true
+		profile.MaxImageBytes = 20 * 1024 * 1024
+		profile.ReasoningLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
+		profile.DefaultReasoningLevel = "medium"
 	})
-	if err != nil {
-		return nil, err
-	}
 	catalog := models.ByID(OpenAISubscriptionModelID)
 	tags := ""
 	if catalog != nil {
@@ -140,7 +138,7 @@ func (controller *OpenAIOAuth) BuiltModels() ([]models.Built, error) {
 	return []models.Built{{
 		ID: OpenAISubscriptionModelID, DisplayName: "GPT-5.6 Luna",
 		Provider: models.ProviderOpenAI, Source: "OpenAI subscription", Tags: tags,
-		Service: service, APIType: models.APITypeOpenAIResponses, BaseURL: "https://chatgpt.com",
+		Chat: profiledChat, APIType: models.APITypeOpenAIResponses, BaseURL: "https://chatgpt.com",
 	}}, nil
 }
 

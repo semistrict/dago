@@ -11,14 +11,13 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
-	"shelley.exe.dev/llm"
 )
 
 // emulateTestEnv holds shared scaffolding for emulation tests that verify
 // user-agent override behaviour. Call newEmulateTestEnv from each test.
 type emulateTestEnv struct {
 	ctx          context.Context
-	emuTool      *llm.Tool
+	emuTool      *nativeToolProbe
 	getUserAgent func(t *testing.T) string
 	baselineUA   string
 }
@@ -50,7 +49,7 @@ func newEmulateTestEnv(t *testing.T) *emulateTestEnv {
 	tools := NewBrowseTools(ctx, 0)
 	t.Cleanup(func() { tools.Close() })
 
-	browserTool := tools.CombinedTool()
+	browserTool := probeNativeTool(tools.NativeCombinedTool())
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d/ua", port)
 
 	getUserAgent := func(t *testing.T) string {
@@ -78,7 +77,7 @@ func newEmulateTestEnv(t *testing.T) *emulateTestEnv {
 
 	return &emulateTestEnv{
 		ctx:          ctx,
-		emuTool:      tools.CombinedTool(),
+		emuTool:      probeNativeTool(tools.NativeCombinedTool()),
 		getUserAgent: getUserAgent,
 		baselineUA:   baselineUA,
 	}

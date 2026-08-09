@@ -8,7 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/llm"
+	dmessage "github.com/semistrict/dago/message"
+	dtool "github.com/semistrict/dago/tool"
 )
 
 func TestPatchTool_BasicOperations(t *testing.T) {
@@ -27,7 +28,7 @@ func TestPatchTool_BasicOperations(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(input)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("overwrite failed: %v", result.Error)
 	}
@@ -48,7 +49,7 @@ func TestPatchTool_BasicOperations(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("replace failed: %v", result.Error)
 	}
@@ -65,7 +66,7 @@ func TestPatchTool_BasicOperations(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("append_eof failed: %v", result.Error)
 	}
@@ -83,7 +84,7 @@ func TestPatchTool_BasicOperations(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("prepend_bof failed: %v", result.Error)
 	}
@@ -112,7 +113,7 @@ func TestPatchTool_ClipboardOperations(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(input)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("initial overwrite failed: %v", result.Error)
 	}
@@ -126,7 +127,7 @@ func TestPatchTool_ClipboardOperations(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("toClipboard failed: %v", result.Error)
 	}
@@ -138,7 +139,7 @@ func TestPatchTool_ClipboardOperations(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("fromClipboard failed: %v", result.Error)
 	}
@@ -166,7 +167,7 @@ func TestPatchTool_IndentationAdjustment(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(input)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("initial setup failed: %v", result.Error)
 	}
@@ -183,7 +184,7 @@ func TestPatchTool_IndentationAdjustment(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("indentation adjustment failed: %v", result.Error)
 	}
@@ -212,7 +213,7 @@ func TestPatchTool_FuzzyMatching(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(input)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("initial setup failed: %v", result.Error)
 	}
@@ -225,7 +226,7 @@ func TestPatchTool_FuzzyMatching(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("fuzzy matching failed: %v", result.Error)
 	}
@@ -254,7 +255,7 @@ func TestPatchTool_ErrorCases(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(input)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error == nil {
 		t.Error("expected error for replace on non-existent file")
 	}
@@ -266,7 +267,7 @@ func TestPatchTool_ErrorCases(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("failed to create test file: %v", result.Error)
 	}
@@ -279,7 +280,7 @@ func TestPatchTool_ErrorCases(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error == nil || !strings.Contains(result.Error.Error(), "not unique") {
 		t.Error("expected non-unique error")
 	}
@@ -292,7 +293,7 @@ func TestPatchTool_ErrorCases(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error == nil || !strings.Contains(result.Error.Error(), "not found") {
 		t.Error("expected not found error")
 	}
@@ -304,14 +305,14 @@ func TestPatchTool_ErrorCases(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error == nil || !strings.Contains(result.Error.Error(), "clipboard") {
 		t.Error("expected clipboard error")
 	}
 
 	// Test missing patches field (simulates truncated LLM response)
 	msg = json.RawMessage(`{"path":"server/dashboard.go"}`)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error == nil {
 		t.Error("expected error for missing patches field")
 	}
@@ -321,7 +322,7 @@ func TestPatchTool_ErrorCases(t *testing.T) {
 
 	// Test empty patches array
 	msg = json.RawMessage(`{"path":"server/dashboard.go","patches":[]}`)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error == nil {
 		t.Error("expected error for empty patches array")
 	}
@@ -344,7 +345,7 @@ func TestPatchTool_FlexibleInputParsing(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(inputOne)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("single patch format failed: %v", result.Error)
 	}
@@ -362,7 +363,7 @@ func TestPatchTool_FlexibleInputParsing(t *testing.T) {
 	}
 
 	msg, _ = json.Marshal(inputStr)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("string patch format failed: %v", result.Error)
 	}
@@ -390,7 +391,7 @@ func TestPatchTool_AutogeneratedDetection(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(input)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("failed to create generated file: %v", result.Error)
 	}
@@ -403,7 +404,7 @@ func TestPatchTool_AutogeneratedDetection(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("patching generated file failed: %v", result.Error)
 	}
@@ -420,7 +421,7 @@ func TestPatchTool_MultiplePatches(t *testing.T) {
 
 	testFile := filepath.Join(tempDir, "multi.go")
 	var msg []byte
-	var result llm.ToolOut
+	var result patchProbeResult
 
 	// Apply multiple patches - first create file, then modify
 	input := PatchInput{
@@ -432,7 +433,7 @@ func TestPatchTool_MultiplePatches(t *testing.T) {
 	}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("failed to create initial file: %v", result.Error)
 	}
@@ -456,7 +457,7 @@ func TestPatchTool_MultiplePatches(t *testing.T) {
 	}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("multiple patches failed: %v", result.Error)
 	}
@@ -488,7 +489,7 @@ func TestPatchTool_CopyRecipe(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(input)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("failed to create file: %v", result.Error)
 	}
@@ -503,7 +504,7 @@ func TestPatchTool_CopyRecipe(t *testing.T) {
 	}}
 
 	msg, _ = json.Marshal(input)
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("copy recipe failed: %v", result.Error)
 	}
@@ -530,7 +531,7 @@ func TestPatchTool_RelativePaths(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(input)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("relative path failed: %v", result.Error)
 	}
@@ -564,7 +565,7 @@ func BenchmarkPatchTool_BasicOperations(b *testing.B) {
 		}},
 	}
 	msg, _ := json.Marshal(input)
-	patch.Run(ctx, msg)
+	runPatchProbe(patch, ctx, msg)
 
 	for b.Loop() {
 		// Benchmark replace operation
@@ -575,7 +576,7 @@ func BenchmarkPatchTool_BasicOperations(b *testing.B) {
 		}}
 
 		msg, _ := json.Marshal(input)
-		result := patch.Run(ctx, msg)
+		result := runPatchProbe(patch, ctx, msg)
 		if result.Error != nil {
 			b.Fatalf("benchmark failed: %v", result.Error)
 		}
@@ -587,7 +588,7 @@ func BenchmarkPatchTool_BasicOperations(b *testing.B) {
 			NewText:   "fmt.Println(i)",
 		}}
 		msg, _ = json.Marshal(input)
-		patch.Run(ctx, msg)
+		runPatchProbe(patch, ctx, msg)
 	}
 }
 
@@ -595,17 +596,19 @@ func TestPatchTool_CallbackFunction(t *testing.T) {
 	tempDir := t.TempDir()
 	callbackCalled := false
 	var capturedInput PatchInput
-	var capturedOutput llm.ToolOut
+	var capturedOutput dtool.Result
+	var capturedErr error
 
 	patch := &PatchTool{
 		WorkingDir: NewMutableWorkingDir(tempDir),
-		Callback: func(input PatchInput, output llm.ToolOut) llm.ToolOut {
+		Callback: func(input PatchInput, output dtool.Result, err error) (dtool.Result, error) {
 			callbackCalled = true
 			capturedInput = input
 			capturedOutput = output
+			capturedErr = err
 			// Modify the output
-			output.LLMContent = llm.TextContent("Modified by callback")
-			return output
+			output.Content = []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: "Modified by callback"}}
+			return output, err
 		},
 	}
 
@@ -621,7 +624,7 @@ func TestPatchTool_CallbackFunction(t *testing.T) {
 	}
 
 	msg, _ := json.Marshal(input)
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 
 	if !callbackCalled {
 		t.Error("callback was not called")
@@ -635,8 +638,11 @@ func TestPatchTool_CallbackFunction(t *testing.T) {
 		t.Error("callback did not modify output correctly")
 	}
 
-	if capturedOutput.Error != nil {
-		t.Errorf("callback received error: %v", capturedOutput.Error)
+	if capturedErr != nil {
+		t.Errorf("callback received error: %v", capturedErr)
+	}
+	if len(capturedOutput.Content) == 0 {
+		t.Error("callback received no native content")
 	}
 }
 
@@ -658,7 +664,7 @@ func TestPatchTool_DisplayDataContainsUnifiedDiffOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal patch input: %v", err)
 	}
-	result := patch.Run(ctx, msg)
+	result := runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("initial overwrite failed: %v", result.Error)
 	}
@@ -675,7 +681,7 @@ func TestPatchTool_DisplayDataContainsUnifiedDiffOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal patch input: %v", err)
 	}
-	result = patch.Run(ctx, msg)
+	result = runPatchProbe(patch, ctx, msg)
 	if result.Error != nil {
 		t.Fatalf("replace failed: %v", result.Error)
 	}

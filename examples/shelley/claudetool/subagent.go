@@ -9,8 +9,6 @@ import (
 
 	dmessage "github.com/semistrict/dago/message"
 	dtool "github.com/semistrict/dago/tool"
-
-	"shelley.exe.dev/llm"
 )
 
 // SubagentRunner is the interface for running a subagent conversation.
@@ -179,16 +177,6 @@ type subagentInput struct {
 	Reasoning      string `json:"reasoning,omitempty"`
 }
 
-// Tool returns an llm.Tool for the subagent functionality.
-func (s *SubagentTool) Tool() *llm.Tool {
-	return &llm.Tool{
-		Name:        subagentName,
-		Description: s.subagentDescription(),
-		InputSchema: llm.MustSchema(s.subagentInputSchema()),
-		Run:         llm.RunJSON(s.run),
-	}
-}
-
 // NativeTool dispatches subagent work through Dago's tool contract. The
 // server-supplied runner owns the child conversation's native agent runtime.
 func (s *SubagentTool) NativeTool() dtool.Tool {
@@ -215,14 +203,6 @@ func (s *SubagentTool) NativeTool() dtool.Tool {
 			}, nil
 		},
 	}
-}
-
-func (s *SubagentTool) run(ctx context.Context, req subagentInput) llm.ToolOut {
-	execution, err := s.execute(ctx, req)
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
 }
 
 type subagentExecution struct {

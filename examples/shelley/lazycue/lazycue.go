@@ -21,13 +21,13 @@ import (
 
 // Options configures a lazycue test run.
 type Options struct {
-	BaseURL          string // Base URL of the application under test (required)
-	CacheDir         string // Directory holding cache JSON files (default: ".lazycue")
-	Model            string // LLM model (default: "claude-sonnet-4-6")
-	AnthropicBaseURL string // Anthropic API base URL (default: ANTHROPIC_BASE_URL or https://api.anthropic.com)
-	AnthropicAPIKey  string // Anthropic API key (default: ANTHROPIC_API_KEY)
-	Verbose          bool   // Verbose output
-	ArtifactDir      string // If set, write per-step screenshots here and record their paths on StepResults
+	BaseURL       string // Base URL of the application under test (required)
+	CacheDir      string // Directory holding cache JSON files (default: ".lazycue")
+	Model         string // OpenAI Responses model (default: "gpt-5.6-luna")
+	OpenAIBaseURL string // OpenAI API base URL (default: OPENAI_BASE_URL or https://api.openai.com/v1)
+	OpenAIAPIKey  string // OpenAI API key (default: OPENAI_API_KEY)
+	Verbose       bool   // Verbose output
+	ArtifactDir   string // If set, write per-step screenshots here and record their paths on StepResults
 }
 
 func (o *Options) defaults() {
@@ -35,17 +35,17 @@ func (o *Options) defaults() {
 		o.CacheDir = ".lazycue"
 	}
 	if o.Model == "" {
-		o.Model = "claude-sonnet-4-6"
+		o.Model = "gpt-5.6-luna"
 	}
-	if o.AnthropicBaseURL == "" {
-		if v := os.Getenv("ANTHROPIC_BASE_URL"); v != "" {
-			o.AnthropicBaseURL = v
+	if o.OpenAIBaseURL == "" {
+		if v := os.Getenv("OPENAI_BASE_URL"); v != "" {
+			o.OpenAIBaseURL = v
 		} else {
-			o.AnthropicBaseURL = "https://api.anthropic.com"
+			o.OpenAIBaseURL = "https://api.openai.com/v1"
 		}
 	}
-	if o.AnthropicAPIKey == "" {
-		o.AnthropicAPIKey = os.Getenv("ANTHROPIC_API_KEY")
+	if o.OpenAIAPIKey == "" {
+		o.OpenAIAPIKey = os.Getenv("OPENAI_API_KEY")
 	}
 }
 
@@ -225,17 +225,17 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 
 			agentStart := time.Now()
 			agentResult, agentErr := RunAgent(ctx, &AgentConfig{
-				Mode:             AgentModeFix,
-				Description:      description,
-				PreviousSteps:    cachedTest.Steps,
-				PreviousError:    failureDesc,
-				CacheFilePath:    CacheFilePath(opts.CacheDir, description),
-				Browser:          browser,
-				BaseURL:          opts.BaseURL,
-				Model:            opts.Model,
-				AnthropicBaseURL: opts.AnthropicBaseURL,
-				AnthropicAPIKey:  opts.AnthropicAPIKey,
-				Verbose:          opts.Verbose,
+				Mode:          AgentModeFix,
+				Description:   description,
+				PreviousSteps: cachedTest.Steps,
+				PreviousError: failureDesc,
+				CacheFilePath: CacheFilePath(opts.CacheDir, description),
+				Browser:       browser,
+				BaseURL:       opts.BaseURL,
+				Model:         opts.Model,
+				OpenAIBaseURL: opts.OpenAIBaseURL,
+				OpenAIAPIKey:  opts.OpenAIAPIKey,
+				Verbose:       opts.Verbose,
 			})
 			agentDur := time.Since(agentStart)
 			if agentErr != nil {
@@ -290,14 +290,14 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 	logf("[lazycue] no cached test, spawning agent to generate")
 	agentStart := time.Now()
 	agentResult, agentErr := RunAgent(ctx, &AgentConfig{
-		Mode:             AgentModeGenerate,
-		Description:      description,
-		Browser:          browser,
-		BaseURL:          opts.BaseURL,
-		Model:            opts.Model,
-		AnthropicBaseURL: opts.AnthropicBaseURL,
-		AnthropicAPIKey:  opts.AnthropicAPIKey,
-		Verbose:          opts.Verbose,
+		Mode:          AgentModeGenerate,
+		Description:   description,
+		Browser:       browser,
+		BaseURL:       opts.BaseURL,
+		Model:         opts.Model,
+		OpenAIBaseURL: opts.OpenAIBaseURL,
+		OpenAIAPIKey:  opts.OpenAIAPIKey,
+		Verbose:       opts.Verbose,
 	})
 	agentDur := time.Since(agentStart)
 	if agentErr != nil {

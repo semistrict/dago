@@ -15,6 +15,10 @@ import (
 	"testing"
 	"time"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+	dtool "github.com/semistrict/dago/tool"
+
 	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/llmhttp"
@@ -24,15 +28,13 @@ func TestNewLoop(t *testing.T) {
 	history := []llm.Message{
 		{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hello"}}},
 	}
-	tools := []*llm.Tool{}
 	recordFunc := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 		return nil
 	}
 
 	loop := NewLoop(Config{
-		LLM:           NewPredictableService(),
+		Model:         NewPredictableService(),
 		History:       history,
-		Tools:         tools,
 		RecordMessage: recordFunc,
 	})
 	if loop == nil {
@@ -50,9 +52,8 @@ func TestNewLoop(t *testing.T) {
 
 func TestQueueUserMessage(t *testing.T) {
 	loop := NewLoop(Config{
-		LLM:     NewPredictableService(),
+		Model:   NewPredictableService(),
 		History: []llm.Message{},
-		Tools:   []*llm.Tool{},
 	})
 
 	message := llm.Message{
@@ -73,34 +74,21 @@ func TestQueueUserMessage(t *testing.T) {
 
 func TestPredictableService(t *testing.T) {
 	service := NewPredictableService()
-
-	// Test simple hello response
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("hello")}})
 	if err != nil {
-		t.Fatalf("predictable service Do failed: %v", err)
+		t.Fatalf("predictable model Invoke failed: %v", err)
 	}
-
-	if resp.Role != llm.MessageRoleAssistant {
-		t.Errorf("expected assistant role, got %v", resp.Role)
+	if resp.Message.Role != dmessage.RoleAssistant {
+		t.Errorf("expected assistant role, got %v", resp.Message.Role)
 	}
-
-	if len(resp.Content) == 0 {
+	if len(resp.Message.Content) == 0 {
 		t.Error("expected non-empty content")
 	}
-
-	if resp.Content[0].Type != llm.ContentTypeText {
-		t.Errorf("expected text content, got %v", resp.Content[0].Type)
+	if resp.Message.Content[0].Type != dmessage.BlockText {
+		t.Errorf("expected text content, got %v", resp.Message.Content[0].Type)
 	}
-
-	if resp.Content[0].Text != "Well, hi there!" {
-		t.Errorf("unexpected response text: %s", resp.Content[0].Text)
+	if resp.Message.TextContent() != "Well, hi there!" {
+		t.Errorf("unexpected response text: %s", resp.Message.TextContent())
 	}
 }
 
@@ -108,76 +96,44 @@ func TestPredictableServiceEcho(t *testing.T) {
 	service := NewPredictableService()
 
 	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "echo: foo"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(ctx, dmodel.Request{Messages: []dmessage.Message{dmessage.Human("echo: foo")}})
 	if err != nil {
 		t.Fatalf("echo test failed: %v", err)
 	}
 
-	if resp.Content[0].Text != "foo" {
-		t.Errorf("expected 'foo', got '%s'", resp.Content[0].Text)
+	if resp.Message.TextContent() != "foo" {
+		t.Errorf("expected 'foo', got '%s'", resp.Message.TextContent())
 	}
 
-	// Test another echo
-	req.Messages[0].Content[0].Text = "echo: hello world"
-	resp, err = service.Do(ctx, req)
+	resp, err = service.Invoke(ctx, dmodel.Request{Messages: []dmessage.Message{dmessage.Human("echo: hello world")}})
 	if err != nil {
 		t.Fatalf("echo hello world test failed: %v", err)
 	}
 
-	if resp.Content[0].Text != "hello world" {
-		t.Errorf("expected 'hello world', got '%s'", resp.Content[0].Text)
+	if resp.Message.TextContent() != "hello world" {
+		t.Errorf("expected 'hello world', got '%s'", resp.Message.TextContent())
 	}
 }
 
 func TestPredictableServiceBashTool(t *testing.T) {
 	service := NewPredictableService()
 
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "bash: ls -la"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("bash: ls -la")}})
 	if err != nil {
 		t.Fatalf("bash tool test failed: %v", err)
 	}
 
-	if resp.StopReason != llm.StopReasonToolUse {
-		t.Errorf("expected tool use stop reason, got %v", resp.StopReason)
-	}
-
-	if len(resp.Content) != 2 {
-		t.Errorf("expected 2 content items (text + tool_use), got %d", len(resp.Content))
-	}
-
-	// Find the tool use content
-	var toolUseContent *llm.Content
-	for _, content := range resp.Content {
-		if content.Type == llm.ContentTypeToolUse {
-			toolUseContent = &content
-			break
-		}
-	}
-
-	if toolUseContent == nil {
+	if len(resp.Message.ToolCalls) != 1 {
 		t.Fatal("no tool use content found")
 	}
-
-	if toolUseContent.ToolName != "bash" {
-		t.Errorf("expected tool name 'bash', got '%s'", toolUseContent.ToolName)
+	toolCall := resp.Message.ToolCalls[0]
+	if toolCall.Name != "bash" {
+		t.Errorf("expected tool name 'bash', got '%s'", toolCall.Name)
 	}
 
 	// Check tool input contains the command
 	var toolInput map[string]interface{}
-	if err := json.Unmarshal(toolUseContent.ToolInput, &toolInput); err != nil {
+	if err := json.Unmarshal(toolCall.Arguments, &toolInput); err != nil {
 		t.Fatalf("failed to parse tool input: %v", err)
 	}
 
@@ -189,35 +145,21 @@ func TestPredictableServiceBashTool(t *testing.T) {
 func TestPredictableServiceDefaultResponse(t *testing.T) {
 	service := NewPredictableService()
 
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "some unknown input"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("some unknown input")}})
 	if err != nil {
 		t.Fatalf("default response test failed: %v", err)
 	}
 
-	if resp.Content[0].Text != "edit predictable.go to add a response for that one..." {
-		t.Errorf("unexpected default response: %s", resp.Content[0].Text)
+	if resp.Message.TextContent() != "edit predictable.go to add a response for that one..." {
+		t.Errorf("unexpected default response: %s", resp.Message.TextContent())
 	}
 }
 
 func TestPredictableServiceDelay(t *testing.T) {
 	service := NewPredictableService()
 
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "delay: 0.1"}}},
-		},
-	}
-
 	start := time.Now()
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("delay: 0.1")}})
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -228,8 +170,8 @@ func TestPredictableServiceDelay(t *testing.T) {
 		t.Errorf("expected delay of at least 100ms, got %v", elapsed)
 	}
 
-	if resp.Content[0].Text != "Delayed for 0.1 seconds" {
-		t.Errorf("unexpected response text: %s", resp.Content[0].Text)
+	if resp.Message.TextContent() != "Delayed for 0.1 seconds" {
+		t.Errorf("unexpected response text: %s", resp.Message.TextContent())
 	}
 }
 
@@ -245,9 +187,8 @@ func TestLoopWithPredictableService(t *testing.T) {
 
 	service := NewPredictableService()
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{},
 		RecordMessage: recordFunc,
 	})
 
@@ -282,25 +223,19 @@ func TestLoopWithPredictableService(t *testing.T) {
 func TestLoopWithTools(t *testing.T) {
 	var toolCalls []string
 
-	testTool := &llm.Tool{
-		Name:        "bash",
-		Description: "A test bash tool",
-		InputSchema: llm.MustSchema(`{"type": "object", "properties": {"command": {"type": "string"}}}`),
-		Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
+	testTool := dtool.Func{
+		Spec: dtool.Definition{Name: "bash", Description: "A test bash tool", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}}}`)},
+		Run: func(ctx context.Context, input json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
 			toolCalls = append(toolCalls, string(input))
-			return llm.ToolOut{
-				LLMContent: []llm.Content{
-					{Type: llm.ContentTypeText, Text: "Command executed successfully"},
-				},
-			}
+			return dtool.TextResult("Command executed successfully"), nil
 		},
 	}
 
 	service := NewPredictableService()
 	loop := NewLoop(Config{
-		LLM:     service,
+		Model:   service,
 		History: []llm.Message{},
-		Tools:   []*llm.Tool{testTool},
+		Tools:   []dtool.Tool{testTool},
 		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return nil
 		},
@@ -338,9 +273,8 @@ func TestGetHistory(t *testing.T) {
 	}
 
 	loop := NewLoop(Config{
-		LLM:     NewPredictableService(),
+		Model:   NewPredictableService(),
 		History: initialHistory,
-		Tools:   []*llm.Tool{},
 	})
 
 	history := loop.GetHistory()
@@ -368,23 +302,9 @@ func TestLoopWithKeywordTool(t *testing.T) {
 		return nil
 	}
 
-	// Add a mock keyword tool that doesn't actually search
-	tools := []*llm.Tool{
-		{
-			Name:        "keyword_search",
-			Description: "Mock keyword search",
-			InputSchema: llm.MustSchema(`{"type": "object", "properties": {"query": {"type": "string"}, "search_terms": {"type": "array", "items": {"type": "string"}}}, "required": ["query", "search_terms"]}`),
-			Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
-				// Simple mock implementation
-				return llm.ToolOut{LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "mock keyword search result"}}}
-			},
-		},
-	}
-
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         tools,
 		RecordMessage: recordMessage,
 	})
 
@@ -430,25 +350,9 @@ func TestLoopWithActualKeywordTool(t *testing.T) {
 		return nil
 	}
 
-	// Use the actual keyword tool from claudetool package
-	// Note: We need to import it first
-	tools := []*llm.Tool{
-		// Add a simplified keyword tool to avoid file system dependencies in tests
-		{
-			Name:        "keyword_search",
-			Description: "Search for files by keyword",
-			InputSchema: llm.MustSchema(`{"type": "object", "properties": {"query": {"type": "string"}, "search_terms": {"type": "array", "items": {"type": "string"}}}, "required": ["query", "search_terms"]}`),
-			Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
-				// Simple mock implementation - no context dependencies
-				return llm.ToolOut{LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "mock keyword search result"}}}
-			},
-		},
-	}
-
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         tools,
 		RecordMessage: recordMessage,
 	})
 
@@ -580,17 +484,13 @@ func TestInsertMissingToolResults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			loop := NewLoop(Config{
-				LLM:     NewPredictableService(),
+				Model:   NewPredictableService(),
 				History: []llm.Message{},
 			})
 
-			req := &llm.Request{
-				Messages: tt.messages,
-			}
+			messages := loop.repairMessageHistory(tt.messages)
 
-			loop.insertMissingToolResults(req)
-
-			got := req.Messages[len(req.Messages)-1]
+			got := messages[len(messages)-1]
 			if len(got.Content) != tt.wantLen {
 				t.Errorf("expected %d content items, got %d", tt.wantLen, len(got.Content))
 			}
@@ -619,11 +519,11 @@ func TestInsertMissingToolResults(t *testing.T) {
 
 func TestInsertMissingToolResultsWithEdgeCases(t *testing.T) {
 	// Test for the bug: when an assistant error message is recorded after a tool_use
-	// but before tool execution, the tool_use is "hidden" from insertMissingToolResults
+	// but before tool execution, the tool_use is "hidden" from history repair
 	// because it only checks the last two messages.
 	t.Run("tool_use hidden by subsequent assistant message", func(t *testing.T) {
 		loop := NewLoop(Config{
-			LLM:     NewPredictableService(),
+			Model:   NewPredictableService(),
 			History: []llm.Message{},
 		})
 
@@ -632,31 +532,29 @@ func TestInsertMissingToolResultsWithEdgeCases(t *testing.T) {
 		// 2. Something fails, error message recorded (assistant message)
 		// 3. User sends new message
 		// The tool_use in message 0 is never followed by a tool_result
-		req := &llm.Request{
-			Messages: []llm.Message{
-				{
-					Role: llm.MessageRoleAssistant,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "I'll run a command"},
-						{Type: llm.ContentTypeToolUse, ID: "tool_hidden", ToolName: "bash"},
-					},
+		messages := []llm.Message{
+			{
+				Role: llm.MessageRoleAssistant,
+				Content: []llm.Content{
+					{Type: llm.ContentTypeText, Text: "I'll run a command"},
+					{Type: llm.ContentTypeToolUse, ID: "tool_hidden", ToolName: "bash"},
 				},
-				{
-					Role: llm.MessageRoleAssistant,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "LLM request failed: some error"},
-					},
+			},
+			{
+				Role: llm.MessageRoleAssistant,
+				Content: []llm.Content{
+					{Type: llm.ContentTypeText, Text: "LLM request failed: some error"},
 				},
-				{
-					Role: llm.MessageRoleUser,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "Please try again"},
-					},
+			},
+			{
+				Role: llm.MessageRoleUser,
+				Content: []llm.Content{
+					{Type: llm.ContentTypeText, Text: "Please try again"},
 				},
 			},
 		}
 
-		loop.insertMissingToolResults(req)
+		messages = loop.repairMessageHistory(messages)
 
 		// The function should have inserted a tool_result for tool_hidden
 		// It should be inserted as a user message after the assistant message with tool_use
@@ -664,7 +562,7 @@ func TestInsertMissingToolResultsWithEdgeCases(t *testing.T) {
 
 		// Check that there's a tool_result for tool_hidden somewhere in the messages
 		found := false
-		for _, msg := range req.Messages {
+		for _, msg := range messages {
 			for _, c := range msg.Content {
 				if c.Type == llm.ContentTypeToolResult && c.ToolUseID == "tool_hidden" {
 					found = true
@@ -683,46 +581,44 @@ func TestInsertMissingToolResultsWithEdgeCases(t *testing.T) {
 	// Test for tool_use in earlier message (not the second-to-last)
 	t.Run("tool_use in earlier message without result", func(t *testing.T) {
 		loop := NewLoop(Config{
-			LLM:     NewPredictableService(),
+			Model:   NewPredictableService(),
 			History: []llm.Message{},
 		})
 
-		req := &llm.Request{
-			Messages: []llm.Message{
-				{
-					Role: llm.MessageRoleUser,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "Do something"},
-					},
+		messages := []llm.Message{
+			{
+				Role: llm.MessageRoleUser,
+				Content: []llm.Content{
+					{Type: llm.ContentTypeText, Text: "Do something"},
 				},
-				{
-					Role: llm.MessageRoleAssistant,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "I'll use a tool"},
-						{Type: llm.ContentTypeToolUse, ID: "tool_earlier", ToolName: "bash"},
-					},
+			},
+			{
+				Role: llm.MessageRoleAssistant,
+				Content: []llm.Content{
+					{Type: llm.ContentTypeText, Text: "I'll use a tool"},
+					{Type: llm.ContentTypeToolUse, ID: "tool_earlier", ToolName: "bash"},
 				},
-				// Missing: user message with tool_result for tool_earlier
-				{
-					Role: llm.MessageRoleAssistant,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "Something went wrong"},
-					},
+			},
+			// Missing: user message with tool_result for tool_earlier
+			{
+				Role: llm.MessageRoleAssistant,
+				Content: []llm.Content{
+					{Type: llm.ContentTypeText, Text: "Something went wrong"},
 				},
-				{
-					Role: llm.MessageRoleUser,
-					Content: []llm.Content{
-						{Type: llm.ContentTypeText, Text: "Try again"},
-					},
+			},
+			{
+				Role: llm.MessageRoleUser,
+				Content: []llm.Content{
+					{Type: llm.ContentTypeText, Text: "Try again"},
 				},
 			},
 		}
 
-		loop.insertMissingToolResults(req)
+		messages = loop.repairMessageHistory(messages)
 
 		// Should have inserted a tool_result for tool_earlier
 		found := false
-		for _, msg := range req.Messages {
+		for _, msg := range messages {
 			for _, c := range msg.Content {
 				if c.Type == llm.ContentTypeToolResult && c.ToolUseID == "tool_earlier" {
 					found = true
@@ -737,53 +633,45 @@ func TestInsertMissingToolResultsWithEdgeCases(t *testing.T) {
 
 	t.Run("empty message list", func(t *testing.T) {
 		loop := NewLoop(Config{
-			LLM:     NewPredictableService(),
+			Model:   NewPredictableService(),
 			History: []llm.Message{},
 		})
 
-		req := &llm.Request{
-			Messages: []llm.Message{},
-		}
-
-		loop.insertMissingToolResults(req)
+		loop.repairMessageHistory(nil)
 		// Should not panic
 	})
 
 	t.Run("single message", func(t *testing.T) {
 		loop := NewLoop(Config{
-			LLM:     NewPredictableService(),
+			Model:   NewPredictableService(),
 			History: []llm.Message{},
 		})
 
-		req := &llm.Request{
-			Messages: []llm.Message{
-				{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}}},
-			},
+		messages := []llm.Message{
+			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}}},
 		}
 
-		loop.insertMissingToolResults(req)
+		messages = loop.repairMessageHistory(messages)
 		// Should not panic, should not modify
-		if len(req.Messages[0].Content) != 1 {
+		if len(messages[0].Content) != 1 {
 			t.Error("should not modify single message")
 		}
 	})
 
 	t.Run("wrong role order - user then assistant", func(t *testing.T) {
 		loop := NewLoop(Config{
-			LLM:     NewPredictableService(),
+			Model:   NewPredictableService(),
 			History: []llm.Message{},
 		})
 
-		req := &llm.Request{
-			Messages: []llm.Message{
-				{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}}},
-				{Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}},
-			},
+		messages := []llm.Message{
+			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}}},
+			{Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}},
 		}
 
-		loop.insertMissingToolResults(req)
+		messages = loop.repairMessageHistory(messages)
 		// Should not modify when roles are wrong order
-		if len(req.Messages[1].Content) != 1 {
+		if len(messages[1].Content) != 1 {
 			t.Error("should not modify when roles are in wrong order")
 		}
 	})
@@ -798,116 +686,110 @@ func TestInsertMissingToolResults_EmptyAssistantContent(t *testing.T) {
 
 	t.Run("empty assistant content in middle of conversation", func(t *testing.T) {
 		loop := NewLoop(Config{
-			LLM:     NewPredictableService(),
+			Model:   NewPredictableService(),
 			History: []llm.Message{},
 		})
 
-		req := &llm.Request{
-			Messages: []llm.Message{
-				{
-					Role:    llm.MessageRoleUser,
-					Content: []llm.Content{{Type: llm.ContentTypeText, Text: "run git fetch"}},
-				},
-				{
-					Role:    llm.MessageRoleAssistant,
-					Content: []llm.Content{{Type: llm.ContentTypeToolUse, ID: "tool1", ToolName: "bash"}},
-				},
-				{
-					Role: llm.MessageRoleUser,
-					Content: []llm.Content{{
-						Type:       llm.ContentTypeToolResult,
-						ToolUseID:  "tool1",
-						ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "success"}},
-					}},
-				},
-				{
-					// Empty assistant message - this can happen when model ends turn without output
-					Role:      llm.MessageRoleAssistant,
-					Content:   []llm.Content{},
-					EndOfTurn: true,
-				},
-				{
-					Role:    llm.MessageRoleUser,
-					Content: []llm.Content{{Type: llm.ContentTypeText, Text: "next question"}},
-				},
+		messages := []llm.Message{
+			{
+				Role:    llm.MessageRoleUser,
+				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "run git fetch"}},
+			},
+			{
+				Role:    llm.MessageRoleAssistant,
+				Content: []llm.Content{{Type: llm.ContentTypeToolUse, ID: "tool1", ToolName: "bash"}},
+			},
+			{
+				Role: llm.MessageRoleUser,
+				Content: []llm.Content{{
+					Type:       llm.ContentTypeToolResult,
+					ToolUseID:  "tool1",
+					ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "success"}},
+				}},
+			},
+			{
+				// Empty assistant message - this can happen when model ends turn without output
+				Role:      llm.MessageRoleAssistant,
+				Content:   []llm.Content{},
+				EndOfTurn: true,
+			},
+			{
+				Role:    llm.MessageRoleUser,
+				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "next question"}},
 			},
 		}
 
-		loop.insertMissingToolResults(req)
+		messages = loop.repairMessageHistory(messages)
 
 		// The empty assistant message (index 3) should now have placeholder content
-		if len(req.Messages[3].Content) == 0 {
+		if len(messages[3].Content) == 0 {
 			t.Error("expected placeholder content to be added to empty assistant message")
 		}
-		if req.Messages[3].Content[0].Type != llm.ContentTypeText {
+		if messages[3].Content[0].Type != llm.ContentTypeText {
 			t.Error("expected placeholder to be text content")
 		}
-		if req.Messages[3].Content[0].Text != "(no response)" {
-			t.Errorf("expected placeholder text '(no response)', got %q", req.Messages[3].Content[0].Text)
+		if messages[3].Content[0].Text != "(no response)" {
+			t.Errorf("expected placeholder text '(no response)', got %q", messages[3].Content[0].Text)
 		}
 	})
 
 	t.Run("empty assistant content at end of conversation - no modification needed", func(t *testing.T) {
 		loop := NewLoop(Config{
-			LLM:     NewPredictableService(),
+			Model:   NewPredictableService(),
 			History: []llm.Message{},
 		})
 
-		req := &llm.Request{
-			Messages: []llm.Message{
-				{
-					Role:    llm.MessageRoleUser,
-					Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}},
-				},
-				{
-					// Empty assistant message at end is allowed by the API
-					Role:      llm.MessageRoleAssistant,
-					Content:   []llm.Content{},
-					EndOfTurn: true,
-				},
+		messages := []llm.Message{
+			{
+				Role:    llm.MessageRoleUser,
+				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}},
+			},
+			{
+				// Empty assistant message at end is allowed by the API
+				Role:      llm.MessageRoleAssistant,
+				Content:   []llm.Content{},
+				EndOfTurn: true,
 			},
 		}
 
-		loop.insertMissingToolResults(req)
+		messages = loop.repairMessageHistory(messages)
 
 		// The empty assistant message at the end should NOT be modified
 		// because the API allows empty content for the final assistant message
-		if len(req.Messages[1].Content) != 0 {
+		if len(messages[1].Content) != 0 {
 			t.Error("expected final empty assistant message to remain empty")
 		}
 	})
 
 	t.Run("non-empty assistant content - no modification needed", func(t *testing.T) {
 		loop := NewLoop(Config{
-			LLM:     NewPredictableService(),
+			Model:   NewPredictableService(),
 			History: []llm.Message{},
 		})
 
-		req := &llm.Request{
-			Messages: []llm.Message{
-				{
-					Role:    llm.MessageRoleUser,
-					Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}},
-				},
-				{
-					Role:    llm.MessageRoleAssistant,
-					Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi there"}},
-				},
-				{
-					Role:    llm.MessageRoleUser,
-					Content: []llm.Content{{Type: llm.ContentTypeText, Text: "goodbye"}},
-				},
+		messages := []llm.Message{
+			{
+				Role:    llm.MessageRoleUser,
+				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}},
+			},
+			{
+				Role:    llm.MessageRoleAssistant,
+				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi there"}},
+			},
+			{
+				Role:    llm.MessageRoleUser,
+				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "goodbye"}},
 			},
 		}
 
-		loop.insertMissingToolResults(req)
+		messages = loop.repairMessageHistory(messages)
 
 		// The assistant message should not be modified
-		if len(req.Messages[1].Content) != 1 {
-			t.Errorf("expected assistant message to have 1 content item, got %d", len(req.Messages[1].Content))
+		if len(messages[1].Content) != 1 {
+			t.Errorf("expected assistant message to have 1 content item, got %d", len(messages[1].Content))
 		}
-		if req.Messages[1].Content[0].Text != "hi there" {
-			t.Errorf("expected assistant message text 'hi there', got %q", req.Messages[1].Content[0].Text)
+		if messages[1].Content[0].Text != "hi there" {
+			t.Errorf("expected assistant message text 'hi there', got %q", messages[1].Content[0].Text)
 		}
 	})
 }
@@ -934,7 +816,7 @@ func TestGitStateTracking(t *testing.T) {
 	var gitStateChanges []*gitstate.GitState
 
 	loop := NewLoop(Config{
-		LLM:           NewPredictableService(),
+		Model:         NewPredictableService(),
 		History:       []llm.Message{},
 		WorkingDir:    tmpDir,
 		GetWorkingDir: func() string { return tmpDir },
@@ -1037,7 +919,7 @@ func TestGitStateTrackingWorktree(t *testing.T) {
 	var gitStateChanges []*gitstate.GitState
 
 	loop := NewLoop(Config{
-		LLM:           NewPredictableService(),
+		Model:         NewPredictableService(),
 		History:       []llm.Message{},
 		WorkingDir:    worktreeDir,
 		GetWorkingDir: func() string { return worktreeDir },
@@ -1111,7 +993,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 
 func TestPredictableServiceTokenContextWindow(t *testing.T) {
 	service := NewPredictableService()
-	window := service.TokenContextWindow()
+	window := service.Profile().ContextWindow
 	if window != 200000 {
 		t.Errorf("expected TokenContextWindow to return 200000, got %d", window)
 	}
@@ -1119,7 +1001,7 @@ func TestPredictableServiceTokenContextWindow(t *testing.T) {
 
 func TestPredictableServiceMaxImageDimension(t *testing.T) {
 	service := NewPredictableService()
-	dimension := service.MaxImageDimension()
+	dimension := service.Profile().MaxImageDimension
 	if dimension != 2000 {
 		t.Errorf("expected MaxImageDimension to return 2000, got %d", dimension)
 	}
@@ -1128,27 +1010,14 @@ func TestPredictableServiceMaxImageDimension(t *testing.T) {
 func TestPredictableServiceThinking(t *testing.T) {
 	service := NewPredictableService()
 
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "think: This is a test thought"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("think: This is a test thought")}})
 	if err != nil {
 		t.Fatalf("thinking test failed: %v", err)
 	}
 
-	// Now returns EndTurn since thinking is content, not a tool
-	if resp.StopReason != llm.StopReasonEndTurn {
-		t.Errorf("expected end turn stop reason, got %v", resp.StopReason)
-	}
-
-	// Find the thinking content
-	var thinkingContent *llm.Content
-	for _, content := range resp.Content {
-		if content.Type == llm.ContentTypeThinking {
+	var thinkingContent *dmessage.ContentBlock
+	for _, content := range resp.Message.Content {
+		if content.Type == dmessage.BlockReasoning {
 			thinkingContent = &content
 			break
 		}
@@ -1159,46 +1028,26 @@ func TestPredictableServiceThinking(t *testing.T) {
 	}
 
 	// Check thinking content contains the thoughts
-	if thinkingContent.Thinking != "This is a test thought" {
-		t.Errorf("expected thinking 'This is a test thought', got '%v'", thinkingContent.Thinking)
+	if thinkingContent.Reasoning != "This is a test thought" {
+		t.Errorf("expected thinking 'This is a test thought', got '%v'", thinkingContent.Reasoning)
 	}
 }
 
 func TestPredictableServicePatchTool(t *testing.T) {
 	service := NewPredictableService()
 
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "patch: /tmp/test.txt"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("patch: /tmp/test.txt")}})
 	if err != nil {
 		t.Fatalf("patch tool test failed: %v", err)
 	}
 
-	if resp.StopReason != llm.StopReasonToolUse {
-		t.Errorf("expected tool use stop reason, got %v", resp.StopReason)
-	}
-
-	// Find the tool use content
-	var toolUseContent *llm.Content
-	for _, content := range resp.Content {
-		if content.Type == llm.ContentTypeToolUse && content.ToolName == "patch" {
-			toolUseContent = &content
-			break
-		}
-	}
-
-	if toolUseContent == nil {
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "patch" {
 		t.Fatal("no patch tool use content found")
 	}
 
 	// Check tool input contains the file path
 	var toolInput map[string]interface{}
-	if err := json.Unmarshal(toolUseContent.ToolInput, &toolInput); err != nil {
+	if err := json.Unmarshal(resp.Message.ToolCalls[0].Arguments, &toolInput); err != nil {
 		t.Fatalf("failed to parse tool input: %v", err)
 	}
 
@@ -1210,37 +1059,17 @@ func TestPredictableServicePatchTool(t *testing.T) {
 func TestPredictableServiceMalformedPatchTool(t *testing.T) {
 	service := NewPredictableService()
 
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "patch bad json"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("patch bad json")}})
 	if err != nil {
 		t.Fatalf("malformed patch tool test failed: %v", err)
 	}
 
-	if resp.StopReason != llm.StopReasonToolUse {
-		t.Errorf("expected tool use stop reason, got %v", resp.StopReason)
-	}
-
-	// Find the tool use content
-	var toolUseContent *llm.Content
-	for _, content := range resp.Content {
-		if content.Type == llm.ContentTypeToolUse && content.ToolName == "patch" {
-			toolUseContent = &content
-			break
-		}
-	}
-
-	if toolUseContent == nil {
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "patch" {
 		t.Fatal("no patch tool use content found")
 	}
 
 	// Check that the tool input is malformed JSON (as expected)
-	toolInputStr := string(toolUseContent.ToolInput)
+	toolInputStr := string(resp.Message.ToolCalls[0].Arguments)
 	if !strings.Contains(toolInputStr, "parameter name") {
 		t.Errorf("expected malformed JSON in tool input, got: %s", toolInputStr)
 	}
@@ -1249,14 +1078,7 @@ func TestPredictableServiceMalformedPatchTool(t *testing.T) {
 func TestPredictableServiceError(t *testing.T) {
 	service := NewPredictableService()
 
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "error: test error"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("error: test error")}})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1265,8 +1087,8 @@ func TestPredictableServiceError(t *testing.T) {
 		t.Errorf("expected error message to contain 'predictable error: test error', got: %v", err)
 	}
 
-	if resp != nil {
-		t.Error("expected response to be nil when error occurs")
+	if resp.Message.Role != "" {
+		t.Error("expected empty response when error occurs")
 	}
 }
 
@@ -1286,13 +1108,9 @@ func TestPredictableServiceRequestTracking(t *testing.T) {
 
 	// Make a request
 	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}}},
-		},
-	}
+	req := dmodel.Request{Messages: []dmessage.Message{dmessage.Human("hello")}}
 
-	_, err := service.Do(ctx, req)
+	_, err := service.Invoke(ctx, req)
 	if err != nil {
 		t.Fatalf("Do failed: %v", err)
 	}
@@ -1326,12 +1144,8 @@ func TestPredictableServiceRequestTracking(t *testing.T) {
 
 	// Test that only last 10 requests are kept
 	for i := range 15 {
-		testReq := &llm.Request{
-			Messages: []llm.Message{
-				{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: fmt.Sprintf("test %d", i)}}},
-			},
-		}
-		_, err := service.Do(ctx, testReq)
+		testReq := dmodel.Request{Messages: []dmessage.Message{dmessage.Human(fmt.Sprintf("test %d", i))}}
+		_, err := service.Invoke(ctx, testReq)
 		if err != nil {
 			t.Fatalf("Do failed on iteration %d: %v", i, err)
 		}
@@ -1349,7 +1163,7 @@ func TestPredictableServiceRequestTracking(t *testing.T) {
 			t.Errorf("request %d has no content", i)
 			continue
 		}
-		if req.Messages[0].Content[0].Text != expectedText {
+		if req.Messages[0].TextContent() != expectedText {
 			t.Errorf("expected request %d to have text '%s', got '%s'", i, expectedText, req.Messages[0].Content[0].Text)
 		}
 	}
@@ -1358,38 +1172,18 @@ func TestPredictableServiceRequestTracking(t *testing.T) {
 func TestPredictableServiceScreenshotTool(t *testing.T) {
 	service := NewPredictableService()
 
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "screenshot: .test-class"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("screenshot: .test-class")}})
 	if err != nil {
 		t.Fatalf("screenshot tool test failed: %v", err)
 	}
 
-	if resp.StopReason != llm.StopReasonToolUse {
-		t.Errorf("expected tool use stop reason, got %v", resp.StopReason)
-	}
-
-	// Find the tool use content
-	var toolUseContent *llm.Content
-	for _, content := range resp.Content {
-		if content.Type == llm.ContentTypeToolUse && content.ToolName == "browser" {
-			toolUseContent = &content
-			break
-		}
-	}
-
-	if toolUseContent == nil {
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "browser" {
 		t.Fatal("no screenshot tool use content found")
 	}
 
 	// Check tool input contains the selector
 	var toolInput map[string]interface{}
-	if err := json.Unmarshal(toolUseContent.ToolInput, &toolInput); err != nil {
+	if err := json.Unmarshal(resp.Message.ToolCalls[0].Arguments, &toolInput); err != nil {
 		t.Fatalf("failed to parse tool input: %v", err)
 	}
 
@@ -1401,33 +1195,24 @@ func TestPredictableServiceScreenshotTool(t *testing.T) {
 func TestPredictableServiceToolSmorgasbord(t *testing.T) {
 	service := NewPredictableService()
 
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "tool smorgasbord"}}},
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("tool smorgasbord")}})
 	if err != nil {
 		t.Fatalf("tool smorgasbord test failed: %v", err)
 	}
 
-	if resp.StopReason != llm.StopReasonToolUse {
-		t.Errorf("expected tool use stop reason, got %v", resp.StopReason)
-	}
+	toolUseCount := len(resp.Message.ToolCalls)
 
-	// Count the tool use contents
-	toolUseCount := 0
-	for _, content := range resp.Content {
-		if content.Type == llm.ContentTypeToolUse {
-			toolUseCount++
+	if toolUseCount != 19 {
+		t.Errorf("expected the complete 19-call tool fixture, got %d", toolUseCount)
+	}
+	counts := map[string]int{}
+	for _, call := range resp.Message.ToolCalls {
+		counts[call.Name]++
+	}
+	for _, name := range []string{"browser_emulate", "browser_network", "browser_accessibility", "browser_profile"} {
+		if counts[name] != 1 {
+			t.Errorf("tool fixture contains %d %q calls, want 1", counts[name], name)
 		}
-	}
-
-	// Should have at least several tool uses
-	if toolUseCount < 5 {
-		t.Errorf("expected at least 5 tool uses, got %d", toolUseCount)
 	}
 }
 
@@ -1442,9 +1227,8 @@ func TestProcessLLMRequestError(t *testing.T) {
 	}
 
 	loop := NewLoop(Config{
-		LLM:           errorService,
+		Model:         errorService,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{},
 		RecordMessage: recordFunc,
 	})
 
@@ -1499,22 +1283,14 @@ type errorLLMService struct {
 	err error
 }
 
-func (e *errorLLMService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (e *errorLLMService) Profile() dmodel.Profile {
+	return dmodel.Profile{Provider: "test", Model: "error", ContextWindow: 200000, SupportsImages: true, MaxImageDimension: 2000, MaxImageBytes: 5 * 1024 * 1024}
+}
+func (e *errorLLMService) Invoke(context.Context, dmodel.Request) (dmodel.Response, error) {
+	return dmodel.Response{}, e.err
+}
+func (e *errorLLMService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
 	return nil, e.err
-}
-
-func (e *errorLLMService) Provider() string { return "" }
-
-func (e *errorLLMService) TokenContextWindow() int {
-	return 200000
-}
-
-func (e *errorLLMService) MaxImageDimension() int {
-	return 2000
-}
-
-func (e *errorLLMService) MaxImageBytes() int {
-	return 5 * 1024 * 1024
 }
 
 // retryableLLMService fails with a retryable error a specified number of times, then succeeds
@@ -1524,37 +1300,23 @@ type retryableLLMService struct {
 	mu                sync.Mutex
 }
 
-func (r *retryableLLMService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (r *retryableLLMService) Profile() dmodel.Profile {
+	return dmodel.Profile{Provider: "test", Model: "retryable", ContextWindow: 200000, SupportsImages: true, MaxImageDimension: 2000, MaxImageBytes: 5 * 1024 * 1024}
+}
+func (r *retryableLLMService) Invoke(context.Context, dmodel.Request) (dmodel.Response, error) {
 	r.mu.Lock()
 	r.callCount++
 	if r.failuresRemaining > 0 {
 		r.failuresRemaining--
 		r.mu.Unlock()
-		return nil, fmt.Errorf("connection error: EOF")
+		return dmodel.Response{}, fmt.Errorf("connection error: EOF")
 	}
 	r.mu.Unlock()
-	return &llm.Response{
-		Content: []llm.Content{
-			{Type: llm.ContentTypeText, Text: "Success after retry"},
-		},
-		StopReason: llm.StopReasonEndTurn,
-	}, nil
+	return dmodel.Response{Message: dmessage.Assistant("Success after retry")}, nil
 }
-
-func (r *retryableLLMService) Provider() string { return "" }
-
-func (r *retryableLLMService) TokenContextWindow() int {
-	return 200000
+func (r *retryableLLMService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+	return nil, fmt.Errorf("retryable test model does not stream")
 }
-
-func (r *retryableLLMService) MaxImageDimension() int {
-	return 2000
-}
-
-func (r *retryableLLMService) MaxImageBytes() int {
-	return 5 * 1024 * 1024
-}
-
 func (r *retryableLLMService) getCallCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1573,9 +1335,8 @@ func TestLLMRequestRetryOnEOF(t *testing.T) {
 	var warnings []string
 
 	loop := NewLoop(Config{
-		LLM:           retryService,
+		Model:         retryService,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{},
 		RecordMessage: recordFunc,
 		RecordWarning: func(ctx context.Context, text string) error {
 			warnings = append(warnings, text)
@@ -1628,9 +1389,8 @@ func TestLLMRequestRetryExhausted(t *testing.T) {
 	}
 
 	loop := NewLoop(Config{
-		LLM:           retryService,
+		Model:         retryService,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{},
 		RecordMessage: recordFunc,
 	})
 
@@ -1749,7 +1509,7 @@ func TestCheckGitStateChange(t *testing.T) {
 
 	// Test with nil OnGitStateChange - should not panic
 	loop := NewLoop(Config{
-		LLM:           NewPredictableService(),
+		Model:         NewPredictableService(),
 		History:       []llm.Message{},
 		WorkingDir:    tmpDir,
 		GetWorkingDir: func() string { return tmpDir },
@@ -1765,7 +1525,7 @@ func TestCheckGitStateChange(t *testing.T) {
 	// Test with actual callback
 	var gitStateChanges []*gitstate.GitState
 	loop = NewLoop(Config{
-		LLM:           NewPredictableService(),
+		Model:         NewPredictableService(),
 		History:       []llm.Message{},
 		WorkingDir:    tmpDir,
 		GetWorkingDir: func() string { return tmpDir },
@@ -1806,29 +1566,16 @@ func TestExecuteToolCallsWithMissingTool(t *testing.T) {
 		return nil
 	}
 
-	loop := NewLoop(Config{
-		LLM:           NewPredictableService(),
-		History:       []llm.Message{},
-		Tools:         []*llm.Tool{}, // No tools registered
-		RecordMessage: recordFunc,
-	})
-
-	// Create content with a tool use for a tool that doesn't exist
-	content := []llm.Content{
-		{
-			ID:        "test_tool_123",
-			Type:      llm.ContentTypeToolUse,
-			ToolName:  "nonexistent_tool",
-			ToolInput: json.RawMessage(`{"test": "input"}`),
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	err := loop.executeToolCalls(ctx, content)
-	if err != nil {
-		t.Fatalf("executeToolCalls failed: %v", err)
+	service := &customPredictableService{responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
+		if nativeToolResultCount(request) == 0 {
+			return nativeToolResponse("", "test_tool_123", "nonexistent_tool", json.RawMessage(`{"test":"input"}`)), nil
+		}
+		return nativeTextResponse("done"), nil
+	}}
+	loop := NewLoop(Config{Model: service, RecordMessage: recordFunc})
+	loop.QueueUserMessage(llm.UserStringMessage("call a missing tool"))
+	if err := loop.ProcessOneTurn(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 
 	// Should have recorded a user message with tool result
@@ -1836,7 +1583,10 @@ func TestExecuteToolCallsWithMissingTool(t *testing.T) {
 		t.Fatalf("expected 1 recorded message, got %d", len(recordedMessages))
 	}
 
-	msg := recordedMessages[0]
+	msg, ok := recordedToolResult(recordedMessages)
+	if !ok {
+		t.Fatalf("no tool-result message in %#v", recordedMessages)
+	}
 	if msg.Role != llm.MessageRoleUser {
 		t.Errorf("expected user role, got %s", msg.Role)
 	}
@@ -1880,38 +1630,27 @@ func TestExecuteToolCallsWithErrorTool(t *testing.T) {
 	}
 
 	// Create a tool that always returns an error
-	errorTool := &llm.Tool{
-		Name:        "error_tool",
-		Description: "A tool that always errors",
-		InputSchema: llm.MustSchema(`{"type": "object", "properties": {}}`),
-		Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
-			return llm.ErrorToolOut(fmt.Errorf("intentional test error"))
+	errorTool := dtool.Func{
+		Spec: dtool.Definition{Name: "error_tool", Description: "A tool that always errors", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+		Run: func(context.Context, json.RawMessage, dtool.Runtime) (dtool.Result, error) {
+			return dtool.Result{}, fmt.Errorf("intentional test error")
 		},
 	}
 
+	service := &customPredictableService{responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
+		if nativeToolResultCount(request) == 0 {
+			return nativeToolResponse("", "error_tool_123", "error_tool", json.RawMessage(`{}`)), nil
+		}
+		return nativeTextResponse("done"), nil
+	}}
 	loop := NewLoop(Config{
-		LLM:           NewPredictableService(),
-		History:       []llm.Message{},
-		Tools:         []*llm.Tool{errorTool},
+		Model:         service,
+		Tools:         []dtool.Tool{errorTool},
 		RecordMessage: recordFunc,
 	})
-
-	// Create content with a tool use that will error
-	content := []llm.Content{
-		{
-			ID:        "error_tool_123",
-			Type:      llm.ContentTypeToolUse,
-			ToolName:  "error_tool",
-			ToolInput: json.RawMessage(`{}`),
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	err := loop.executeToolCalls(ctx, content)
-	if err != nil {
-		t.Fatalf("executeToolCalls failed: %v", err)
+	loop.QueueUserMessage(llm.UserStringMessage("call an error tool"))
+	if err := loop.ProcessOneTurn(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 
 	// Should have recorded a user message with tool result
@@ -1919,7 +1658,10 @@ func TestExecuteToolCallsWithErrorTool(t *testing.T) {
 		t.Fatalf("expected 1 recorded message, got %d", len(recordedMessages))
 	}
 
-	msg := recordedMessages[0]
+	msg, ok := recordedToolResult(recordedMessages)
+	if !ok {
+		t.Fatalf("no tool-result message in %#v", recordedMessages)
+	}
 	if msg.Role != llm.MessageRoleUser {
 		t.Errorf("expected user role, got %s", msg.Role)
 	}
@@ -1950,9 +1692,20 @@ func TestExecuteToolCallsWithErrorTool(t *testing.T) {
 	}
 
 	expectedText := "intentional test error"
-	if toolResult.ToolResult[0].Text != expectedText {
-		t.Errorf("expected tool result text '%s', got '%s'", expectedText, toolResult.ToolResult[0].Text)
+	if !strings.Contains(toolResult.ToolResult[0].Text, expectedText) {
+		t.Errorf("expected tool result text to contain %q, got %q", expectedText, toolResult.ToolResult[0].Text)
 	}
+}
+
+func recordedToolResult(messages []llm.Message) (llm.Message, bool) {
+	for _, item := range messages {
+		for _, content := range item.Content {
+			if content.Type == llm.ContentTypeToolResult {
+				return item, true
+			}
+		}
+	}
+	return llm.Message{}, false
 }
 
 func TestMaxTokensTruncation(t *testing.T) {
@@ -1967,9 +1720,8 @@ func TestMaxTokensTruncation(t *testing.T) {
 
 	service := NewPredictableService()
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{},
 		RecordMessage: recordFunc,
 	})
 
@@ -2062,9 +1814,8 @@ func TestRefusal(t *testing.T) {
 
 	service := NewPredictableService()
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{},
 		RecordMessage: recordFunc,
 	})
 
@@ -2169,22 +1920,26 @@ func TestRefusal(t *testing.T) {
 // delegates to a PredictableService so keyword triggers like "refusal" and
 // "hello" still drive realistic responses.
 type requestCapturingService struct {
-	*PredictableService // embedded: promotes Provider/TokenContextWindow/MaxImage*/etc.
-	mu                  *sync.Mutex
-	out                 *[]*llm.Request
+	*PredictableService
+	mu  *sync.Mutex
+	out *[]dmodel.Request
 }
 
-func NewRequestCapturingService(mu *sync.Mutex, out *[]*llm.Request) *requestCapturingService {
+func NewRequestCapturingService(mu *sync.Mutex, out *[]dmodel.Request) *requestCapturingService {
 	return &requestCapturingService{PredictableService: NewPredictableService(), mu: mu, out: out}
 }
 
-func (s *requestCapturingService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-	s.mu.Lock()
-	captured := *req
-	captured.Messages = append([]llm.Message(nil), req.Messages...)
-	*s.out = append(*s.out, &captured)
-	s.mu.Unlock()
-	return s.PredictableService.Do(ctx, req)
+func (service *requestCapturingService) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
+	service.mu.Lock()
+	*service.out = append(*service.out, request)
+	service.mu.Unlock()
+	return service.PredictableService.Invoke(ctx, request)
+}
+func (service *requestCapturingService) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
+	service.mu.Lock()
+	*service.out = append(*service.out, request)
+	service.mu.Unlock()
+	return service.PredictableService.Stream(ctx, request)
 }
 
 // TestRefusalThenRephraseNotInContext is the reviewer's regression test: after
@@ -2193,13 +1948,12 @@ func (s *requestCapturingService) Do(ctx context.Context, req *llm.Request) (*ll
 // active-vs-rehydrated divergence where l.history leaked the error message.
 func TestRefusalThenRephraseNotInContext(t *testing.T) {
 	var mu sync.Mutex
-	var sentRequests []*llm.Request
+	var sentRequests []dmodel.Request
 	service := NewRequestCapturingService(&mu, &sentRequests)
 
 	loop := NewLoop(Config{
-		LLM:           service,
+		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{},
 		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
 	})
 
@@ -2227,7 +1981,7 @@ func TestRefusalThenRephraseNotInContext(t *testing.T) {
 	}
 
 	mu.Lock()
-	reqs := make([]*llm.Request, len(sentRequests))
+	reqs := make([]dmodel.Request, len(sentRequests))
 	copy(reqs, sentRequests)
 	mu.Unlock()
 
@@ -2239,140 +1993,31 @@ func TestRefusalThenRephraseNotInContext(t *testing.T) {
 	// refusal text or any ErrorTypeRefusal message.
 	last := reqs[len(reqs)-1]
 	for i, m := range last.Messages {
-		if m.ErrorType == llm.ErrorTypeRefusal {
-			t.Errorf("rephrase request message[%d] carries ErrorTypeRefusal", i)
-		}
-		for _, c := range m.Content {
-			if strings.Contains(c.Text, "declined to continue") {
-				t.Errorf("rephrase request message[%d] leaks synthetic refusal text: %q", i, c.Text)
-			}
+		if strings.Contains(m.TextContent(), "declined to continue") {
+			t.Errorf("rephrase request message[%d] leaks synthetic refusal text: %q", i, m.TextContent())
 		}
 	}
 }
 
-//func TestInsertMissingToolResultsEdgeCases(t *testing.T) {
-//	loop := NewLoop(Config{
-//		LLM:     NewPredictableService(),
-//		History: []llm.Message{},
-//	})
-//
-//	// Test with nil request
-//	loop.insertMissingToolResults(nil) // Should not panic
-//
-//	// Test with empty messages
-//	req := &llm.Request{Messages: []llm.Message{}}
-//	loop.insertMissingToolResults(req) // Should not panic
-//
-//	// Test with single message
-//	req = &llm.Request{
-//		Messages: []llm.Message{
-//			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}}},
-//		},
-//	}
-//	loop.insertMissingToolResults(req) // Should not panic
-//	if len(req.Messages) != 1 {
-//		t.Errorf("expected 1 message, got %d", len(req.Messages))
-//	}
-//
-//	// Test with multiple consecutive assistant messages with tool_use
-//	req = &llm.Request{
-//		Messages: []llm.Message{
-//			{
-//				Role: llm.MessageRoleAssistant,
-//				Content: []llm.Content{
-//					{Type: llm.ContentTypeText, Text: "First tool"},
-//					{Type: llm.ContentTypeToolUse, ID: "tool1", ToolName: "bash"},
-//				},
-//			},
-//			{
-//				Role: llm.MessageRoleAssistant,
-//				Content: []llm.Content{
-//					{Type: llm.ContentTypeText, Text: "Second tool"},
-//					{Type: llm.ContentTypeToolUse, ID: "tool2", ToolName: "read"},
-//				},
-//			},
-//			{
-//				Role: llm.MessageRoleUser,
-//				Content: []llm.Content{
-//					{Type: llm.ContentTypeText, Text: "User response"},
-//				},
-//			},
-//		},
-//	}
-//
-//	loop.insertMissingToolResults(req)
-//
-//	// Should have inserted synthetic tool results for both tool_uses
-//	// The structure should be:
-//	// 0: First assistant message
-//	// 1: Synthetic user message with tool1 result
-//	// 2: Second assistant message
-//	// 3: Synthetic user message with tool2 result
-//	// 4: Original user message
-//	if len(req.Messages) != 5 {
-//		t.Fatalf("expected 5 messages after processing, got %d", len(req.Messages))
-//	}
-//
-//	// Check first synthetic message
-//	if req.Messages[1].Role != llm.MessageRoleUser {
-//		t.Errorf("expected message 1 to be user role, got %s", req.Messages[1].Role)
-//	}
-//	foundTool1 := false
-//	for _, content := range req.Messages[1].Content {
-//		if content.Type == llm.ContentTypeToolResult && content.ToolUseID == "tool1" {
-//			foundTool1 = true
-//			break
-//		}
-//	}
-//	if !foundTool1 {
-//		t.Error("expected to find tool1 result in message 1")
-//	}
-//
-//	// Check second synthetic message
-//	if req.Messages[3].Role != llm.MessageRoleUser {
-//		t.Errorf("expected message 3 to be user role, got %s", req.Messages[3].Role)
-//	}
-//	foundTool2 := false
-//	for _, content := range req.Messages[3].Content {
-//		if content.Type == llm.ContentTypeToolResult && content.ToolUseID == "tool2" {
-//			foundTool2 = true
-//			break
-//		}
-//}
-//	if !foundTool2 {
-//		t.Error("expected to find tool2 result in message 3")
-//	}
-//}
-
 func TestPredictableServiceFailEmitsRetryWarning(t *testing.T) {
 	service := NewPredictableService()
-	var warnings []llm.RetryEvent
-
-	ctx := context.Background()
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "fail nope"}}},
-		},
-		OnRetry: func(event llm.RetryEvent) {
-			warnings = append(warnings, event)
-		},
-	}
-
-	resp, err := service.Do(ctx, req)
+	resp, err := service.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("fail nope")}})
 	if err == nil {
 		t.Fatal("expected failure, got nil")
 	}
 	if !strings.Contains(err.Error(), "predictable failure: nope") {
 		t.Fatalf("expected predictable failure, got %v", err)
 	}
-	if resp != nil {
-		t.Fatal("expected nil response")
+	if resp.Message.Role != "" {
+		t.Fatal("expected empty response")
 	}
-	if len(warnings) != 1 {
-		t.Fatalf("got %d warnings, want 1", len(warnings))
+	retryable, ok := err.(dmodel.RetryReporter)
+	if !ok {
+		t.Fatalf("error %T does not expose retry metadata", err)
 	}
-	if warnings[0].Provider != "predictable" || warnings[0].Model != "predictable-v1" || warnings[0].Err != "nope" {
-		t.Fatalf("unexpected warning: %#v", warnings[0])
+	warning := retryable.RetryEvent(1, time.Second)
+	if !warning.Retryable || warning.Provider != "predictable" || warning.Model != "predictable-v1" || warning.Err != "nope" {
+		t.Fatalf("unexpected warning: %#v", warning)
 	}
 }
 
@@ -2383,23 +2028,22 @@ type switchableLLM struct {
 	failWith error
 }
 
-func (s *switchableLLM) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (s *switchableLLM) Profile() dmodel.Profile {
+	return dmodel.Profile{Provider: "test", Model: "switchable", ContextWindow: 200000, SupportsImages: true, MaxImageDimension: 2000, MaxImageBytes: 5 * 1024 * 1024}
+}
+func (s *switchableLLM) Invoke(context.Context, dmodel.Request) (dmodel.Response, error) {
 	s.mu.Lock()
 	s.calls++
 	err := s.failWith
 	s.mu.Unlock()
 	if err != nil {
-		return nil, err
+		return dmodel.Response{}, err
 	}
-	return &llm.Response{
-		Content:    []llm.Content{{Type: llm.ContentTypeText, Text: "ok"}},
-		StopReason: llm.StopReasonEndTurn,
-	}, nil
+	return dmodel.Response{Message: dmessage.Assistant("ok")}, nil
 }
-func (s *switchableLLM) Provider() string        { return "" }
-func (s *switchableLLM) TokenContextWindow() int { return 200000 }
-func (s *switchableLLM) MaxImageDimension() int  { return 2000 }
-func (s *switchableLLM) MaxImageBytes() int      { return 5 * 1024 * 1024 }
+func (s *switchableLLM) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+	return nil, fmt.Errorf("switchable test model does not stream")
+}
 func (s *switchableLLM) succeed() {
 	s.mu.Lock()
 	s.failWith = nil
@@ -2431,9 +2075,8 @@ func TestLoopRetryAfterPersistentFailure(t *testing.T) {
 	}
 
 	loop := NewLoop(Config{
-		LLM:           svc,
+		Model:         svc,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{},
 		RecordMessage: record,
 		RecordWarning: func(ctx context.Context, _ string) error { return nil },
 	})
@@ -2501,63 +2144,36 @@ func TestLoopRetryAfterPersistentFailure(t *testing.T) {
 	t.Fatalf("Retry() did not produce a successful assistant message; calls=%d, recorded=%d", svc.callCount(), len(recorded))
 }
 
-// pauseLLMService simulates Anthropic's server-side tool "pause_turn" flow:
-// the first response pauses mid-turn with a server_tool_use (no result yet),
-// and the continuation returns the matching web_search_tool_result followed by
-// the final text. It records the messages it was asked to send so tests can
-// assert the continuation request resumed from the running assistant turn.
+// pauseLLMService preserves the upstream fixture name while modeling the
+// OpenAI Responses server-side web-search shape used by the native port.
 type pauseLLMService struct {
-	calls      int
-	lastSent   [][]llm.Message // Messages of each request, in order
-	firstStart time.Time       // StartTime reported by the first (paused) leg
+	calls    int
+	lastSent []dmodel.Request
 }
 
-func (p *pauseLLMService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (p *pauseLLMService) Profile() dmodel.Profile {
+	return dmodel.Profile{Provider: "openai", Model: "gpt-5.6-luna", ContextWindow: 200000, SupportsImages: true, MaxImageDimension: 2000, MaxImageBytes: 5 * 1024 * 1024}
+}
+func (p *pauseLLMService) Invoke(_ context.Context, request dmodel.Request) (dmodel.Response, error) {
 	p.calls++
-	p.lastSent = append(p.lastSent, req.Messages)
-	if p.calls == 1 {
-		// Paused: server_tool_use with no result yet.
-		start := p.firstStart
-		end := p.firstStart.Add(time.Second)
-		return &llm.Response{
-			Role: llm.MessageRoleAssistant,
-			Content: []llm.Content{
-				{Type: llm.ContentTypeText, Text: "Let me search."},
-				{Type: llm.ContentTypeServerToolUse, ID: "srv_1", ToolName: "web_search", ToolInput: json.RawMessage(`{"query":"x"}`)},
-			},
-			StopReason: llm.StopReasonPause,
-			Usage:      llm.Usage{InputTokens: 10, OutputTokens: 5},
-			StartTime:  &start,
-			EndTime:    &end,
-		}, nil
+	p.lastSent = append(p.lastSent, request)
+	response := dmessage.Assistant("The answer is 42.")
+	response.Content = []dmessage.ContentBlock{
+		{Type: dmessage.BlockText, Text: "Let me search."},
+		{Type: dmessage.BlockServerTool, ID: "srv_1", Name: "web_search", Extra: map[string]json.RawMessage{"arguments": json.RawMessage(`{"query":"x"}`)}},
+		{Type: dmessage.BlockSearchResult, ID: "result_1", Name: "t", URL: "https://example.com"},
+		{Type: dmessage.BlockText, Text: "The answer is 42."},
 	}
-	// Continuation: result + final text, end of turn.
-	start := p.firstStart.Add(2 * time.Second)
-	end := p.firstStart.Add(3 * time.Second)
-	return &llm.Response{
-		Role: llm.MessageRoleAssistant,
-		Content: []llm.Content{
-			{Type: llm.ContentTypeWebSearchToolResult, ToolUseID: "srv_1", ToolResult: []llm.Content{
-				{Type: llm.ContentTypeWebSearchResult, Title: "t", URL: "https://example.com", EncryptedContent: "enc"},
-			}},
-			{Type: llm.ContentTypeText, Text: "The answer is 42."},
-		},
-		StopReason: llm.StopReasonEndTurn,
-		Usage:      llm.Usage{InputTokens: 20, OutputTokens: 8},
-		StartTime:  &start,
-		EndTime:    &end,
-	}, nil
+	response.Usage = &dmessage.Usage{InputTokens: 30, OutputTokens: 13, TotalTokens: 43, Provider: "openai", Model: "gpt-5.6-luna"}
+	return dmodel.Response{Message: response}, nil
 }
 
-func (p *pauseLLMService) Provider() string        { return "anthropic" }
-func (p *pauseLLMService) TokenContextWindow() int { return 200000 }
-func (p *pauseLLMService) MaxImageDimension() int  { return 2000 }
-func (p *pauseLLMService) MaxImageBytes() int      { return 5 * 1024 * 1024 }
+func (*pauseLLMService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+	return nil, fmt.Errorf("web-search test model does not stream")
+}
 
-// TestLoopResolvesPauseTurn verifies that a server-side tool pause_turn is
-// resolved by re-requesting and merging the continuation into a SINGLE assistant
-// message, keeping the server_tool_use and its web_search_tool_result together.
-// This prevents the split-history wedge that broke patch-tools-code-agents.
+// TestLoopResolvesPauseTurn preserves the upstream name while verifying that
+// OpenAI Responses server-side search blocks remain in one assistant message.
 func TestLoopResolvesPauseTurn(t *testing.T) {
 	var recorded []llm.Message
 	var recordedUsage []llm.Usage
@@ -2567,11 +2183,10 @@ func TestLoopResolvesPauseTurn(t *testing.T) {
 		return nil
 	}
 
-	svc := &pauseLLMService{firstStart: time.Now()}
+	svc := &pauseLLMService{}
 	loop := NewLoop(Config{
-		LLM:           svc,
+		Model:         svc,
 		History:       []llm.Message{},
-		Tools:         []*llm.Tool{},
 		RecordMessage: recordFunc,
 	})
 
@@ -2583,20 +2198,12 @@ func TestLoopResolvesPauseTurn(t *testing.T) {
 		t.Fatalf("ProcessOneTurn: %v", err)
 	}
 
-	// The service should have been called exactly twice (initial + 1 continuation).
-	if svc.calls != 2 {
-		t.Fatalf("expected 2 LLM calls, got %d", svc.calls)
+	if svc.calls != 1 {
+		t.Fatalf("expected 1 native Responses call, got %d", svc.calls)
 	}
 
-	// The continuation request must include the running assistant turn as its
-	// last message, so the provider resumes from it.
-	if len(svc.lastSent) != 2 {
-		t.Fatalf("expected 2 recorded requests, got %d", len(svc.lastSent))
-	}
-	contMsgs := svc.lastSent[1]
-	last := contMsgs[len(contMsgs)-1]
-	if last.Role != llm.MessageRoleAssistant {
-		t.Fatalf("continuation request last message role = %v, want assistant", last.Role)
+	if len(svc.lastSent) != 1 {
+		t.Fatalf("expected 1 recorded request, got %d", len(svc.lastSent))
 	}
 
 	// Find the recorded assistant message and assert it merges server_tool_use
@@ -2616,7 +2223,7 @@ func TestLoopResolvesPauseTurn(t *testing.T) {
 		switch c.Type {
 		case llm.ContentTypeServerToolUse:
 			hasServerUse = true
-		case llm.ContentTypeWebSearchToolResult:
+		case llm.ContentTypeWebSearchResult:
 			hasResult = true
 		}
 	}
@@ -2629,27 +2236,17 @@ func TestLoopResolvesPauseTurn(t *testing.T) {
 		t.Errorf("merged assistant message should be EndOfTurn")
 	}
 
-	// Usage must be summed across the pause chain (10/5 + 20/8), and the merged
-	// turn's StartTime must come from the first (paused) leg so the recorded
-	// duration covers the whole chain rather than just the last continuation.
+	// Usage comes directly from the single native Responses result.
 	found := false
 	for _, u := range recordedUsage {
 		if u.InputTokens == 30 && u.OutputTokens == 13 {
 			found = true
-			if u.StartTime == nil || !u.StartTime.Equal(svc.firstStart) {
-				t.Errorf("merged StartTime = %v, want first leg start %v", u.StartTime, svc.firstStart)
-			}
 		}
 	}
 	if !found {
 		t.Errorf("expected summed usage input=30 output=13 in %+v", recordedUsage)
 	}
 }
-
-func (e *errorLLMService) SupportsImages() bool     { return true }
-func (r *retryableLLMService) SupportsImages() bool { return true }
-func (s *switchableLLM) SupportsImages() bool       { return true }
-func (p *pauseLLMService) SupportsImages() bool     { return true }
 
 func TestUserFacingLLMError(t *testing.T) {
 	idleErr := fmt.Errorf("stream: %w after 3m0s: context canceled", llmhttp.ErrIdleTimeout)
@@ -2701,19 +2298,15 @@ func TestUserFacingLLMError(t *testing.T) {
 // (from indirect LLM calls made by tools, e.g. keyword_search) to the
 // tool-result message record.
 func TestToolOtherUsageAttachedToToolResult(t *testing.T) {
-	testTool := &llm.Tool{
-		Name:        "bash",
-		Description: "A test tool that makes an indirect LLM call",
-		InputSchema: llm.MustSchema(`{"type": "object", "properties": {"command": {"type": "string"}}}`),
-		Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
-			// Simulate what models.loggingService does for a purposed call.
-			collect := llmhttp.UsageCollectorFromContext(ctx)
-			if collect == nil {
-				t.Error("no usage collector in tool ctx")
-			} else {
-				collect("keyword_search", llm.Usage{InputTokens: 42, OutputTokens: 7, CostUSD: 0.001, Model: "m1"})
-			}
-			return llm.ToolOut{LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "ok"}}}
+	testTool := dtool.Func{
+		Spec: dtool.Definition{Name: "bash", Description: "A test tool that makes an indirect model call", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}}}`)},
+		Run: func(context.Context, json.RawMessage, dtool.Runtime) (dtool.Result, error) {
+			return dtool.Result{
+				Content: []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: "ok"}},
+				OtherUsage: []dmessage.PurposedUsage{{Purpose: "keyword_search", Usage: dmessage.Usage{
+					InputTokens: 42, OutputTokens: 7, CostUSD: 0.001, Model: "m1",
+				}}},
+			}, nil
 		},
 	}
 
@@ -2724,8 +2317,8 @@ func TestToolOtherUsageAttachedToToolResult(t *testing.T) {
 	}
 	var records []recorded
 	loop := NewLoop(Config{
-		LLM:   NewPredictableService(),
-		Tools: []*llm.Tool{testTool},
+		Model: NewPredictableService(),
+		Tools: []dtool.Tool{testTool},
 		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			mu.Lock()
 			defer mu.Unlock()

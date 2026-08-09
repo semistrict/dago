@@ -12,6 +12,9 @@ import (
 	"testing"
 	"testing/synctest"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
@@ -658,37 +661,28 @@ func TestPiDistillFailureRollsBackGeneration(t *testing.T) {
 	})
 }
 
-// refusingService wraps an llm.Service and always returns an empty-content
-// response, simulating a model that refuses summarization prompts (e.g. fable
-// returning stop_reason=refusal with no text).
-type refusingService struct {
-	llm.Service
-}
-
-func (r *refusingService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-	return &llm.Response{
-		Type:       "message",
-		Role:       llm.MessageRoleAssistant,
-		StopReason: llm.StopReasonRefusal,
-	}, nil
-}
-
-// refusingModelProvider serves the refusing service for one model ID and
-// delegates everything else to the wrapped provider.
+// refusingModelProvider serves an empty assistant response for one model ID
+// and delegates everything else to the wrapped provider.
 type refusingModelProvider struct {
 	LLMProvider
 	refusingModelID string
 }
 
-func (p *refusingModelProvider) GetService(modelID string) (llm.Service, error) {
-	svc, err := p.LLMProvider.GetService(modelID)
+type refusingChat struct{ dmodel.Chat }
+
+func (r refusingChat) Invoke(context.Context, dmodel.Request) (dmodel.Response, error) {
+	return dmodel.Response{Message: dmessage.Message{Role: dmessage.RoleAssistant}}, nil
+}
+
+func (p *refusingModelProvider) GetChat(modelID string) (dmodel.Chat, error) {
+	chat, err := nativeChatFor(p.LLMProvider, modelID)
 	if err != nil {
 		return nil, err
 	}
 	if modelID == p.refusingModelID {
-		return &refusingService{Service: svc}, nil
+		return refusingChat{Chat: chat}, nil
 	}
-	return svc, nil
+	return chat, nil
 }
 
 // TestPiDistillRetriesWithDefaultModelOnRefusal verifies that when the

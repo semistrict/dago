@@ -4,21 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	dmessage "github.com/semistrict/dago/message"
 	dmodel "github.com/semistrict/dago/model"
+	dopenai "github.com/semistrict/dago/providers/openai"
+	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/ant"
-	"shelley.exe.dev/llm/gem"
 	"shelley.exe.dev/llm/llmhttp"
-	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/loop"
 	"shelley.exe.dev/models/modelsdev"
 )
@@ -27,12 +28,8 @@ import (
 type Provider string
 
 const (
-	ProviderOpenAI    Provider = "openai"
-	ProviderAnthropic Provider = "anthropic"
-	ProviderFireworks Provider = "fireworks"
-	ProviderGemini    Provider = "gemini"
-	ProviderXAI       Provider = "xai"
-	ProviderBuiltIn   Provider = "builtin"
+	ProviderOpenAI  Provider = "openai"
+	ProviderBuiltIn Provider = "builtin"
 )
 
 // SourceCustomLabel is the label used for custom (DB-backed) models.
@@ -43,11 +40,7 @@ const SourceCustomLabel = "custom"
 // factory in Model.Build — keeping that knowledge out of the catalog
 // and out of any caller that hands a baseURL to Build.
 const (
-	DefaultAnthropicBaseURL = "https://api.anthropic.com"
-	DefaultOpenAIBaseURL    = "https://api.openai.com"
-	DefaultFireworksBaseURL = "https://api.fireworks.ai/inference"
-	DefaultGeminiBaseURL    = "https://generativelanguage.googleapis.com"
-	DefaultXAIBaseURL       = "https://api.x.ai"
+	DefaultOpenAIBaseURL = "https://api.openai.com"
 )
 
 // APIType identifies the wire protocol Shelley uses to talk to a model.
@@ -56,11 +49,8 @@ const (
 type APIType string
 
 const (
-	APITypeAnthropicMessages APIType = "anthropic-messages"
-	APITypeOpenAIResponses   APIType = "openai-responses"
-	APITypeOpenAIChat        APIType = "openai-chat-completions"
-	APITypeGemini            APIType = "gemini"
-	APITypeBuiltIn           APIType = "builtin"
+	APITypeOpenAIResponses APIType = "openai-responses"
+	APITypeBuiltIn         APIType = "builtin"
 )
 
 // Model is one entry in Shelley's catalog of built-in models.
@@ -89,13 +79,13 @@ type Model struct {
 	// see exactly which endpoint each model will be reached at.
 	DefaultBaseURL string
 
-	// Build constructs an llm.Service for this model given a BARE base
+	// Build constructs a native Dago chat model given a BARE base
 	// URL (origin + any non-API prefix, e.g. "https://llm.int.exe.xyz"
 	// or "" for the provider package default), an API key, and an HTTP
 	// client. The function is responsible for appending its own
 	// API-protocol path ("/v1", "/v1/messages", "/v1beta", ...) — the
 	// caller never encodes those.
-	Build func(baseURL, apiKey string, httpc *http.Client) llm.Service
+	Build func(baseURL, apiKey string, httpc *http.Client) (dmodel.Chat, error)
 }
 
 // Built is a ready-to-use model, shaped to mirror a row in the custom
@@ -105,9 +95,9 @@ type Built struct {
 	ID          string
 	DisplayName string
 	Provider    Provider
-	Source      string // human-readable origin ("exe.dev gateway", "$ANTHROPIC_API_KEY", "custom", ...)
+	Source      string // human-readable origin ("exe.dev gateway", "$OPENAI_API_KEY", "custom", ...)
 	Tags        string
-	Service     llm.Service
+	Chat        dmodel.Chat
 
 	// APIType is the wire protocol used to talk to this model.
 	APIType APIType
@@ -135,64 +125,117 @@ type Config struct {
 
 // --- Catalog ---------------------------------------------------------------
 
-// antSvc / oaiResponsesSvc / oaiChatSvc / gemSvc are factories for the
-// per-provider llm.Service constructors used by Model.Build.
+const defaultOpenAIMaxOutputTokens = 32768
+
+// OpenAIResponsesOptions describes capabilities attached to a native Responses model.
+type OpenAIResponsesOptions struct {
+	ContextWindow         int
+	MaxOutputTokens       int
+	SupportsImages        bool
+	SupportsReasoning     bool
+	SupportsWebSearch     bool
+	UseSimplifiedPatch    bool
+	MaxImageBytes         int
+	DefaultReasoningLevel string
+	ReasoningEffort       string
+}
+
+// NewOpenAIResponses constructs a native Dago Responses model.
+func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client, options OpenAIResponsesOptions) (dmodel.Chat, error) {
+	effort := options.ReasoningEffort
+	if effort == "" {
+		effort = options.DefaultReasoningLevel
+	}
+	var defaultReasoning *dmodel.Reasoning
+	if options.SupportsReasoning && effort != "" && effort != "off" {
+		defaultReasoning = &dmodel.Reasoning{Effort: effort, Summary: "auto"}
+	}
+	chat, err := dopenai.NewAPIKey(apiKey, dopenai.Options{
+		Model: modelID, BaseURL: openAIResponsesBaseURL(baseURL), HTTPClient: httpClient,
+		ContextWindow: options.ContextWindow, MaxOutputTokens: options.MaxOutputTokens,
+		DefaultReasoning: defaultReasoning, WebSearch: options.SupportsWebSearch,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return WithProfile(chat, func(profile *dmodel.Profile) {
+		profile.SupportsImages = options.SupportsImages
+		profile.SupportsReasoning = options.SupportsReasoning
+		profile.SupportsWebSearch = options.SupportsWebSearch
+		profile.UseSimplifiedPatch = options.UseSimplifiedPatch
+		profile.MaxImageBytes = options.MaxImageBytes
+		profile.DefaultReasoningLevel = options.DefaultReasoningLevel
+		if options.SupportsReasoning {
+			profile.ReasoningLevels = standardReasoningLevels()
+		}
+	}), nil
+}
+
+// openAIResponsesModel constructs one catalog entry for the sole supported
+// external provider protocol.
 //
 // The `baseURL` parameter is a BARE origin/prefix with NO API-protocol
-// path on it (e.g. "https://llm.int.exe.xyz" or "" for the package
-// default). Each factory knows its own protocol's path suffix and
-// appends it before constructing the service. Keeping that knowledge
-// inside the factory means modelsources never has to encode
-// per-API-type paths like "/v1" or "/v1/messages".
-func antSvc(modelName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		return ant.NewNative(apiKey, modelName, baseURL, httpc, ant.NativeOptions{
-			SupportsImages: true, SupportsReasoning: true, ThinkingLevel: llm.ThinkingLevelMedium,
-		})
+// path on it. The native builder owns protocol URL normalization.
+func openAIResponsesModel(id, description string, contextWindow int, supportsReasoning bool) Model {
+	return Model{
+		ID: id, Provider: ProviderOpenAI, Description: description,
+		APIModelName: id, APIType: APITypeOpenAIResponses,
+		DefaultBaseURL: DefaultOpenAIBaseURL,
+		Build: func(baseURL, apiKey string, httpc *http.Client) (dmodel.Chat, error) {
+			return NewOpenAIResponses(apiKey, id, baseURL, httpc, OpenAIResponsesOptions{
+				ContextWindow: contextWindow, MaxOutputTokens: defaultOpenAIMaxOutputTokens,
+				SupportsImages: true, SupportsReasoning: supportsReasoning,
+				SupportsWebSearch: true, MaxImageBytes: 20 * 1024 * 1024,
+				DefaultReasoningLevel: "medium",
+			})
+		},
 	}
 }
 
-func oaiResponsesSvc(model oai.Model) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-	return oaiResponsesSvcNamed(model, "openai")
+func openAIResponsesBaseURL(value string) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return ""
+	}
+	value = strings.TrimSuffix(value, "/responses")
+	if strings.HasSuffix(value, "/v1") {
+		return value
+	}
+	return value + "/v1"
 }
 
-func oaiResponsesSvcNamed(model oai.Model, providerName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		metadata := &oai.ResponsesService{Model: model}
-		return oai.NewNativeResponses(apiKey, model.ModelName, baseURL, httpc, oai.NativeResponsesOptions{
-			Provider: providerName, ContextWindow: metadata.TokenContextWindow(), MaxOutputTokens: oai.DefaultMaxTokens,
-			SupportsImages: model.SupportsImages, SupportsReasoning: model.IsReasoningModel,
-			UseSimplifiedPatch: model.UseSimplifiedPatch, MaxImageBytes: 20 * 1024 * 1024,
-			ThinkingLevel: llm.ThinkingLevelMedium,
-		})
-	}
+func standardReasoningLevels() []string {
+	return []string{"off", "minimal", "low", "medium", "high", "xhigh"}
 }
 
-func oaiChatSvc(model oai.Model, providerName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		apiBaseURL := baseURL
-		if baseURL != "" {
-			apiBaseURL = strings.TrimRight(baseURL, "/") + "/v1"
-		}
-		metadata := &oai.Service{Model: model}
-		return oai.NewNativeChat(apiKey, model.ModelName, apiBaseURL, httpc, oai.NativeChatOptions{
-			Provider: providerName, ContextWindow: metadata.TokenContextWindow(), MaxOutputTokens: oai.DefaultMaxTokens,
-			SupportsImages: model.SupportsImages, SupportsReasoning: model.IsReasoningModel,
-			UseSimplifiedPatch: model.UseSimplifiedPatch,
-		})
-	}
+type profiledChat struct {
+	dmodel.Chat
+	profile dmodel.Profile
 }
 
-func gemSvc(modelName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		endpoint := baseURL
-		if baseURL != "" {
-			endpoint = strings.TrimRight(baseURL, "/") + "/v1beta"
-		}
-		return gem.NewNative(apiKey, modelName, endpoint, httpc, gem.NativeOptions{
-			SupportsImages: true, SupportsReasoning: true,
-		})
+// WithProfile returns a native chat model with explicit catalog capabilities.
+func WithProfile(chat dmodel.Chat, configure func(*dmodel.Profile)) dmodel.Chat {
+	profile := chat.Profile()
+	configure(&profile)
+	return &profiledChat{Chat: chat, profile: profile}
+}
+
+func (chat *profiledChat) Profile() dmodel.Profile {
+	profile := chat.profile
+	profile.ReasoningLevels = append([]string(nil), profile.ReasoningLevels...)
+	return profile
+}
+
+func (chat *profiledChat) BindTools(definitions []dtool.Definition) (dmodel.Chat, error) {
+	binder, ok := chat.Chat.(dmodel.Binder)
+	if !ok {
+		return chat, nil
 	}
+	bound, err := binder.BindTools(definitions)
+	if err != nil {
+		return nil, err
+	}
+	return &profiledChat{Chat: bound, profile: chat.profile}, nil
 }
 
 // All returns all available models in Shelley.
@@ -222,186 +265,22 @@ func gemSvc(modelName string) func(baseURL, apiKey string, httpc *http.Client) l
 // flagship slot and move the prior release down into the secondary group.
 func All() []Model {
 	return []Model{
-		{
-			ID: "claude-opus-5", Provider: ProviderAnthropic,
-			Description: "Claude Opus 5", APIModelName: ant.Claude5Opus,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude5Opus),
-		},
-		{
-			ID: "claude-fable-5", Provider: ProviderAnthropic,
-			Description: "Claude Fable 5", APIModelName: ant.ClaudeFable5,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.ClaudeFable5),
-		},
-		{
-			ID: "gpt-5.6-sol", Provider: ProviderOpenAI,
-			Description: "GPT-5.6 Sol", APIModelName: oai.GPT56Sol.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
-			Build: oaiResponsesSvc(oai.GPT56Sol),
-		},
-		{
-			ID: "gpt-5.6-terra", Provider: ProviderOpenAI,
-			Description: "GPT-5.6 Terra", APIModelName: oai.GPT56Terra.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
-			Build: oaiResponsesSvc(oai.GPT56Terra),
-		},
-		{
-			ID: "gpt-5.6-luna", Provider: ProviderOpenAI,
-			Description: "GPT-5.6 Luna", APIModelName: oai.GPT56Luna.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
-			Build: oaiResponsesSvc(oai.GPT56Luna),
-		},
-		{
-			ID: "gpt-5.5", Provider: ProviderOpenAI,
-			Description: "GPT-5.5", APIModelName: oai.GPT55.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
-			Build: oaiResponsesSvc(oai.GPT55),
-		},
-		{
-			ID: "claude-opus-4.6", Provider: ProviderAnthropic,
-			Description: "Claude Opus 4.6", APIModelName: ant.Claude46Opus,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude46Opus),
-		},
-		{
-			ID: "glm-5.2-fireworks", Provider: ProviderFireworks,
-			Description: "GLM-5.2 on Fireworks", APIModelName: oai.GLM52Fireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.GLM52Fireworks, "fireworks"),
-		},
-		{
-			ID: "gemini-3.1-pro", Provider: ProviderGemini,
-			Description: "Gemini 3.1 Pro", APIModelName: "gemini-3.1-pro-preview",
-			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
-			Build: gemSvc("gemini-3.1-pro-preview"),
-		},
-		{
-			ID: "grok-4.5", Provider: ProviderXAI,
-			Description: "Grok 4.5", APIModelName: oai.Grok45.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultXAIBaseURL,
-			Build: oaiResponsesSvcNamed(oai.Grok45, "xai"),
-		},
-		{
-			ID: "kimi-k2.6-fireworks", Provider: ProviderFireworks,
-			Description: "Kimi K2.6 on Fireworks", APIModelName: oai.KimiK26Fireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.KimiK26Fireworks, "fireworks"),
-		},
-		{
-			ID: "kimi-k2.7-code-fireworks", Provider: ProviderFireworks,
-			Description: "Kimi K2.7 Code on Fireworks", APIModelName: oai.KimiK27CodeFireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.KimiK27CodeFireworks, "fireworks"),
-		},
-		{
-			ID: "kimi-k3-fireworks", Provider: ProviderFireworks,
-			Description: "Kimi K3 on Fireworks", APIModelName: oai.KimiK3Fireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.KimiK3Fireworks, "fireworks"),
-		},
-		{
-			ID: "deepseek-v4-pro-fireworks", Provider: ProviderFireworks,
-			Description: "DeepSeek V4 Pro on Fireworks", APIModelName: oai.DeepseekV4ProFireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.DeepseekV4ProFireworks, "fireworks"),
-		},
-		{
-			ID: "claude-opus-4.8", Provider: ProviderAnthropic,
-			Description: "Claude Opus 4.8 (default)", APIModelName: ant.Claude48Opus,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude48Opus),
-		},
-		{
-			ID: "claude-opus-4.7", Provider: ProviderAnthropic,
-			Description: "Claude Opus 4.7", APIModelName: ant.Claude47Opus,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude47Opus),
-		},
-		{
-			ID: "claude-opus-4.5", Provider: ProviderAnthropic,
-			Description: "Claude Opus 4.5", APIModelName: ant.Claude45Opus,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude45Opus),
-		},
-		{
-			ID: "claude-sonnet-5", Provider: ProviderAnthropic,
-			Description: "Claude Sonnet 5", APIModelName: ant.Claude5Sonnet,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude5Sonnet),
-		},
-		{
-			ID: "claude-sonnet-4.6", Provider: ProviderAnthropic,
-			Description: "Claude Sonnet 4.6", APIModelName: ant.Claude46Sonnet,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude46Sonnet),
-		},
-		{
-			ID: "claude-sonnet-4.5", Provider: ProviderAnthropic,
-			Description: "Claude Sonnet 4.5", APIModelName: ant.Claude45Sonnet,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude45Sonnet),
-		},
-		{
-			ID: "claude-haiku-4.5", Provider: ProviderAnthropic, Tags: "slug-backup",
-			Description: "Claude Haiku 4.5", APIModelName: ant.Claude45Haiku,
-			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude45Haiku),
-		},
-		{
-			ID: "gpt-5.4", Provider: ProviderOpenAI,
-			Description: "GPT-5.4", APIModelName: oai.GPT54.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
-			Build: oaiResponsesSvc(oai.GPT54),
-		},
-		{
-			ID: "gpt-5.4-mini", Provider: ProviderOpenAI,
-			Description: "GPT-5.4 mini", APIModelName: oai.GPT54Mini.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
-			Build: oaiResponsesSvc(oai.GPT54Mini),
-		},
-		{
-			ID: "gpt-5.4-nano", Provider: ProviderOpenAI,
-			Description: "GPT-5.4 nano", APIModelName: oai.GPT54Nano.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
-			Build: oaiResponsesSvc(oai.GPT54Nano),
-		},
-		{
-			ID: "gpt-5.3-codex", Provider: ProviderOpenAI,
-			Description: "GPT-5.3 Codex", APIModelName: oai.GPT53Codex.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
-			Build: oaiResponsesSvc(oai.GPT53Codex),
-		},
-		{
-			ID: "gemini-3.6-flash", Provider: ProviderGemini,
-			Description: "Gemini 3.6 Flash", APIModelName: "gemini-3.6-flash",
-			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
-			Build: gemSvc("gemini-3.6-flash"),
-		},
-		{
-			ID: "gemini-3-flash", Provider: ProviderGemini,
-			Description: "Gemini 3 Flash", APIModelName: "gemini-3-flash-preview",
-			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
-			Build: gemSvc("gemini-3-flash-preview"),
-		},
-		{
-			ID: "deepseek-v4-flash-fireworks", Provider: ProviderFireworks,
-			Description: "DeepSeek V4 Flash on Fireworks", APIModelName: oai.DeepseekV4FlashFireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.DeepseekV4FlashFireworks, "fireworks"),
-		},
-		{
-			ID: "gpt-oss-20b-fireworks", Provider: ProviderFireworks, Tags: "slug",
-			Description: "GPT-OSS 20B on Fireworks", APIModelName: oai.GPTOSS20B.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.GPTOSS20B, "fireworks"),
-		},
+		openAIResponsesModel("gpt-5.6-sol", "GPT-5.6 Sol", 272000, true),
+		openAIResponsesModel("gpt-5.6-terra", "GPT-5.6 Terra", 272000, true),
+		openAIResponsesModel("gpt-5.6-luna", "GPT-5.6 Luna", 272000, true),
+		openAIResponsesModel("gpt-5.5", "GPT-5.5", 272000, false),
+		openAIResponsesModel("gpt-5.4", "GPT-5.4", 304000, false),
+		openAIResponsesModel("gpt-5.4-mini", "GPT-5.4 mini", 304000, false),
+		openAIResponsesModel("gpt-5.4-nano", "GPT-5.4 nano", 304000, false),
+		openAIResponsesModel("gpt-5.3-codex", "GPT-5.3 Codex", 288000, false),
 		{
 			ID: "predictable", Provider: ProviderBuiltIn,
 			Description:    "Deterministic test model (no API key)",
 			APIType:        APITypeBuiltIn,
 			DefaultBaseURL: "-",
-			Build:          func(url, apiKey string, httpc *http.Client) llm.Service { return loop.NewPredictableService() },
+			Build: func(url, apiKey string, httpc *http.Client) (dmodel.Chat, error) {
+				return loop.NewPredictableService(), nil
+			},
 		},
 	}
 }
@@ -428,7 +307,7 @@ func IDs() []string {
 
 // Default returns the default catalog model.
 func Default() Model {
-	if m := ByID("claude-opus-4.8"); m != nil {
+	if m := ByID("gpt-5.6-sol"); m != nil {
 		return *m
 	}
 	return All()[0]
@@ -439,15 +318,15 @@ func Default() Model {
 // Manager owns the live set of LLM services for a Shelley server.
 type Manager struct {
 	mu         sync.RWMutex
-	services   map[string]serviceEntry
+	models     map[string]modelEntry
 	modelOrder []string
 	logger     *slog.Logger
 	db         *db.DB
 	httpc      *http.Client
 }
 
-type serviceEntry struct {
-	service     llm.Service
+type modelEntry struct {
+	chat        dmodel.Chat
 	provider    Provider
 	modelID     string
 	source      string
@@ -457,113 +336,106 @@ type serviceEntry struct {
 	apiType     APIType
 }
 
-// ConfigInfo is an optional interface that services can implement to provide configuration details for logging
-type ConfigInfo interface {
-	ConfigDetails() map[string]string
-}
-
-// loggingService wraps an llm.Service with request/usage logging.
-type loggingService struct {
-	service  llm.Service
+// loggingChat wraps a native chat model with request and usage logging.
+type loggingChat struct {
+	chat     dmodel.Chat
 	logger   *slog.Logger
 	modelID  string
 	provider Provider
 }
 
-func (l *loggingService) Do(ctx context.Context, request *llm.Request) (*llm.Response, error) {
+func (l *loggingChat) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
 	start := time.Now()
 	ctx = llmhttp.WithModelID(ctx, l.modelID)
 	ctx = llmhttp.WithProvider(ctx, string(l.provider))
-	response, err := l.service.Do(ctx, request)
-	durationSeconds := time.Since(start).Seconds()
-
-	if err != nil {
-		logAttrs := []any{"model", l.modelID, "duration_seconds", durationSeconds}
-		if configProvider, ok := l.service.(ConfigInfo); ok {
-			for k, v := range configProvider.ConfigDetails() {
-				logAttrs = append(logAttrs, k, v)
-			}
-		}
-		logAttrs = append(logAttrs, "error", err)
-		l.logger.Error("LLM request failed", logAttrs...)
-		return response, err
-	}
-
-	logAttrs := []any{"model", l.modelID, "duration_seconds", durationSeconds}
-	if !response.Usage.IsZero() {
-		logAttrs = append(
-			logAttrs,
-			"input_tokens", response.Usage.InputTokens,
-			"output_tokens", response.Usage.OutputTokens,
-			"cost_usd", response.Usage.CostUSD,
-		)
-		if response.Usage.CacheCreationInputTokens > 0 {
-			logAttrs = append(logAttrs, "cache_creation_input_tokens", response.Usage.CacheCreationInputTokens)
-		}
-		if response.Usage.CacheReadInputTokens > 0 {
-			logAttrs = append(logAttrs, "cache_read_input_tokens", response.Usage.CacheReadInputTokens)
-		}
-	}
-	l.logger.Info("LLM request completed", logAttrs...)
-	if purpose := llmhttp.PurposeFromContext(ctx); purpose != "" && !response.Usage.IsZero() {
-		if collect := llmhttp.UsageCollectorFromContext(ctx); collect != nil {
-			usage := response.UsageWithMeta()
-			if usage.Model == "" {
-				usage.Model = l.modelID
-			}
-			collect(purpose, usage)
-		}
-	}
+	response, err := l.chat.Invoke(ctx, request)
+	l.finish(ctx, start, response.Message.Usage, err)
 	return response, err
 }
 
-func (l *loggingService) Provider() string        { return l.service.Provider() }
-func (l *loggingService) TokenContextWindow() int { return l.service.TokenContextWindow() }
-func (l *loggingService) MaxImageDimension() int  { return l.service.MaxImageDimension() }
-func (l *loggingService) MaxImageBytes() int      { return l.service.MaxImageBytes() }
-
-func (l *loggingService) DagoChat() dmodel.Chat {
-	if native, ok := l.service.(interface{ DagoChat() dmodel.Chat }); ok {
-		return native.DagoChat()
+func (l *loggingChat) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
+	ctx = llmhttp.WithModelID(ctx, l.modelID)
+	ctx = llmhttp.WithProvider(ctx, string(l.provider))
+	start := time.Now()
+	stream, err := l.chat.Stream(ctx, request)
+	if err != nil {
+		l.finish(ctx, start, nil, err)
+		return nil, err
 	}
-	return nil
+	return &loggingStream{Stream: stream, owner: l, ctx: ctx, started: start}, nil
 }
 
-func (l *loggingService) UseDagoChatInAgent() bool {
-	if policy, ok := l.service.(interface{ UseDagoChatInAgent() bool }); ok {
-		return policy.UseDagoChatInAgent()
+func (l *loggingChat) Profile() dmodel.Profile { return l.chat.Profile() }
+
+func (l *loggingChat) BindTools(definitions []dtool.Definition) (dmodel.Chat, error) {
+	binder, ok := l.chat.(dmodel.Binder)
+	if !ok {
+		return l, nil
 	}
-	return true
-}
-
-func (l *loggingService) UseSimplifiedPatch() bool {
-	if sp, ok := l.service.(llm.SimplifiedPatcher); ok {
-		return sp.UseSimplifiedPatch()
+	bound, err := binder.BindTools(definitions)
+	if err != nil {
+		return nil, err
 	}
-	return false
+	copy := *l
+	copy.chat = bound
+	return &copy, nil
 }
 
-func (l *loggingService) SupportsServerSideWebSearch() bool {
-	type capable interface{ SupportsServerSideWebSearch() bool }
-	if c, ok := l.service.(capable); ok {
-		return c.SupportsServerSideWebSearch()
+func (l *loggingChat) finish(ctx context.Context, started time.Time, native *dmessage.Usage, err error) {
+	attrs := []any{"model", l.modelID, "duration_seconds", time.Since(started).Seconds()}
+	if err != nil {
+		attrs = append(attrs, "error", err)
+		l.logger.Error("LLM request failed", attrs...)
+		return
 	}
-	return false
+	usage := legacyUsage(native, l.modelID, string(l.provider))
+	if !usage.IsZero() {
+		attrs = append(attrs, "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens, "cost_usd", usage.CostUSD)
+	}
+	l.logger.Info("LLM request completed", attrs...)
+	if purpose := llmhttp.PurposeFromContext(ctx); purpose != "" && !usage.IsZero() {
+		if collect := llmhttp.UsageCollectorFromContext(ctx); collect != nil {
+			collect(purpose, usage)
+		}
+	}
 }
 
-func (l *loggingService) SupportsImages() bool { return l.service.SupportsImages() }
-func (l *loggingService) SupportsReasoning() bool {
-	return llm.SupportsReasoning(l.service)
+type loggingStream struct {
+	dmodel.Stream
+	owner   *loggingChat
+	ctx     context.Context
+	started time.Time
+	usage   *dmessage.Usage
+	done    bool
 }
 
-func (l *loggingService) SupportedReasoningLevels() []llm.ThinkingLevel {
-	return llm.SupportedReasoningLevels(l.service)
+func (stream *loggingStream) Next(ctx context.Context) (dmodel.Chunk, error) {
+	chunk, err := stream.Stream.Next(ctx)
+	if chunk.MessageDelta.Usage != nil {
+		usage := *chunk.MessageDelta.Usage
+		stream.usage = &usage
+	}
+	if err != nil && !stream.done {
+		stream.done = true
+		if err == io.EOF {
+			stream.owner.finish(stream.ctx, stream.started, stream.usage, nil)
+		} else {
+			stream.owner.finish(stream.ctx, stream.started, stream.usage, err)
+		}
+	}
+	return chunk, err
 }
 
-// DefaultReasoningLevel forwards the wrapped service's default reasoning level
-// so the llm.DefaultReasoner assertion survives the logging wrapper.
-func (l *loggingService) DefaultReasoningLevel() string {
-	return llm.ServiceDefaultReasoningLevel(l.service)
+func legacyUsage(native *dmessage.Usage, modelID, _ string) llm.Usage {
+	if native == nil {
+		return llm.Usage{}
+	}
+	usage := llm.Usage{InputTokens: uint64(native.InputTokens), OutputTokens: uint64(native.OutputTokens), CostUSD: native.CostUSD, Model: native.Model, URL: native.URL}
+	if usage.Model == "" {
+		usage.Model = modelID
+	}
+	usage.CacheReadInputTokens = uint64(native.InputDetails["cache_read"])
+	return usage
 }
 
 // NewManager registers the supplied built-in models, then loads custom
@@ -578,10 +450,10 @@ func NewManager(cfg *Config) (*Manager, error) {
 		httpc = llmhttp.NewClient(nil)
 	}
 	m := &Manager{
-		services: map[string]serviceEntry{},
-		logger:   cfg.Logger,
-		db:       cfg.DB,
-		httpc:    httpc,
+		models: map[string]modelEntry{},
+		logger: cfg.Logger,
+		db:     cfg.DB,
+		httpc:  httpc,
 	}
 
 	m.registerBuiltModelsLocked(cfg.Models)
@@ -598,8 +470,8 @@ func (m *Manager) registerBuiltModelsLocked(built []Built) {
 		if dn == "" {
 			dn = b.ID
 		}
-		m.services[b.ID] = serviceEntry{
-			service:     b.Service,
+		m.models[b.ID] = modelEntry{
+			chat:        b.Chat,
 			provider:    b.Provider,
 			modelID:     b.ID,
 			source:      b.Source,
@@ -633,15 +505,18 @@ func (m *Manager) loadCustomModels() error {
 
 func (m *Manager) loadCustomModelsLocked(dbModels []generated.Model) {
 	for _, model := range dbModels {
-		if _, exists := m.services[model.ModelID]; exists {
+		if _, exists := m.models[model.ModelID]; exists {
 			continue
 		}
-		svc := m.createServiceFromModel(&model)
-		if svc == nil {
+		chat, err := m.createChatFromModel(&model)
+		if err != nil {
+			if m.logger != nil {
+				m.logger.Error("Could not configure custom model", "model_id", model.ModelID, "error", err)
+			}
 			continue
 		}
-		m.services[model.ModelID] = serviceEntry{
-			service:     svc,
+		m.models[model.ModelID] = modelEntry{
+			chat:        chat,
 			provider:    Provider(model.ProviderType),
 			modelID:     model.ModelID,
 			source:      SourceCustomLabel,
@@ -663,11 +538,11 @@ func (m *Manager) RefreshCustomModels() error {
 	defer m.mu.Unlock()
 	newOrder := make([]string, 0, len(m.modelOrder))
 	for _, id := range m.modelOrder {
-		entry, ok := m.services[id]
+		entry, ok := m.models[id]
 		if ok && entry.source != SourceCustomLabel {
 			newOrder = append(newOrder, id)
 		} else {
-			delete(m.services, id)
+			delete(m.models, id)
 		}
 	}
 	m.modelOrder = newOrder
@@ -684,46 +559,28 @@ func (m *Manager) RefreshBuiltModels(built []Built) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.services = map[string]serviceEntry{}
+	m.models = map[string]modelEntry{}
 	m.modelOrder = nil
 	m.registerBuiltModelsLocked(built)
 	m.loadCustomModelsLocked(dbModels)
 	return nil
 }
 
-// GetService returns the LLM service for modelID, wrapped with logging.
-func (m *Manager) GetService(modelID string) (llm.Service, error) {
-	m.mu.RLock()
-	entry, ok := m.services[modelID]
-	m.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("unsupported model: %s", modelID)
-	}
-	if m.logger != nil {
-		return &loggingService{
-			service:  entry.service,
-			logger:   m.logger,
-			modelID:  entry.modelID,
-			provider: entry.provider,
-		}, nil
-	}
-	return entry.service, nil
-}
-
-// GetChat returns the native model contract for modelID. Product features use
-// this instead of crossing through Shelley's legacy request/response facade.
+// GetChat returns the native model contract for modelID.
 func (m *Manager) GetChat(modelID string) (dmodel.Chat, error) {
 	m.mu.RLock()
-	entry, ok := m.services[modelID]
+	entry, ok := m.models[modelID]
 	m.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unsupported model: %s", modelID)
 	}
-	native, ok := entry.service.(interface{ DagoChat() dmodel.Chat })
-	if !ok || native.DagoChat() == nil {
-		return nil, fmt.Errorf("model %s does not provide a native chat implementation", modelID)
+	if entry.chat == nil {
+		return nil, fmt.Errorf("model %s has no chat implementation", modelID)
 	}
-	return native.DagoChat(), nil
+	if m.logger != nil {
+		return &loggingChat{chat: entry.chat, logger: m.logger, modelID: entry.modelID, provider: entry.provider}, nil
+	}
+	return entry.chat, nil
 }
 
 func (m *Manager) GetAvailableModels() []string {
@@ -736,7 +593,7 @@ func (m *Manager) GetAvailableModels() []string {
 
 func (m *Manager) HasModel(modelID string) bool {
 	m.mu.RLock()
-	_, ok := m.services[modelID]
+	_, ok := m.models[modelID]
 	m.mu.RUnlock()
 	return ok
 }
@@ -748,16 +605,17 @@ type ModelInfo struct {
 	Source      string
 	BaseURL     string
 	APIType     string
+	Profile     dmodel.Profile
 }
 
 func (m *Manager) GetModelInfo(modelID string) *ModelInfo {
 	m.mu.RLock()
-	entry, ok := m.services[modelID]
+	entry, ok := m.models[modelID]
 	m.mu.RUnlock()
 	if !ok {
 		return nil
 	}
-	return &ModelInfo{DisplayName: entry.displayName, Tags: entry.tags, Source: entry.source, BaseURL: entry.baseURL, APIType: string(entry.apiType)}
+	return &ModelInfo{DisplayName: entry.displayName, Tags: entry.tags, Source: entry.source, BaseURL: entry.baseURL, APIType: string(entry.apiType), Profile: entry.chat.Profile()}
 }
 
 type reasoningMapping struct {
@@ -765,31 +623,47 @@ type reasoningMapping struct {
 	effort string
 }
 
-type reasoningService struct {
-	llm.Service
+type reasoningChat struct {
+	dmodel.Chat
 	supported     bool
 	levels        []llm.ThinkingLevel
 	mapping       map[llm.ThinkingLevel]reasoningMapping
 	defaultSource llm.ThinkingLevel
 }
 
-func (s *reasoningService) DagoChat() dmodel.Chat {
-	native, ok := s.Service.(interface{ DagoChat() dmodel.Chat })
-	if !ok || native.DagoChat() == nil {
-		return nil
-	}
-	return &reasoningChat{Chat: native.DagoChat(), service: s}
-}
-
-type reasoningChat struct {
-	dmodel.Chat
-	service *reasoningService
-}
-
 func (chat *reasoningChat) Profile() dmodel.Profile {
 	profile := chat.Chat.Profile()
-	profile.SupportsReasoning = chat.service.supported
+	profile.SupportsReasoning = chat.supported
+	profile.ReasoningLevels = nil
+	profile.DefaultReasoningLevel = "off"
+	if chat.supported {
+		for _, level := range chat.levels {
+			profile.ReasoningLevels = append(profile.ReasoningLevels, level.Name())
+		}
+		if len(profile.ReasoningLevels) == 0 {
+			profile.ReasoningLevels = standardReasoningLevels()
+		}
+		if mapped, ok := chat.mapping[chat.defaultSource]; ok {
+			profile.DefaultReasoningLevel = nativeReasoningEffort(mapped)
+		} else if profile.DefaultReasoningLevel == "" || profile.DefaultReasoningLevel == "off" {
+			profile.DefaultReasoningLevel = chat.defaultSource.Name()
+		}
+	}
 	return profile
+}
+
+func (chat *reasoningChat) BindTools(definitions []dtool.Definition) (dmodel.Chat, error) {
+	binder, ok := chat.Chat.(dmodel.Binder)
+	if !ok {
+		return chat, nil
+	}
+	bound, err := binder.BindTools(definitions)
+	if err != nil {
+		return nil, err
+	}
+	copy := *chat
+	copy.Chat = bound
+	return &copy, nil
 }
 
 func (chat *reasoningChat) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
@@ -810,21 +684,21 @@ func (chat *reasoningChat) Stream(ctx context.Context, request dmodel.Request) (
 
 func (chat *reasoningChat) configure(request dmodel.Request) (dmodel.Request, error) {
 	copyRequest := request
-	if !chat.service.supported {
+	if !chat.supported {
 		copyRequest.Reasoning = nil
 		return copyRequest, nil
 	}
 	if request.Reasoning == nil {
-		if mapped, ok := chat.service.mapping[chat.service.defaultSource]; ok {
+		if mapped, ok := chat.mapping[chat.defaultSource]; ok {
 			copyRequest.Reasoning = &dmodel.Reasoning{Effort: nativeReasoningEffort(mapped)}
 		}
 		return copyRequest, nil
 	}
-	if len(chat.service.mapping) == 0 {
+	if len(chat.mapping) == 0 {
 		return copyRequest, nil
 	}
 	level := llm.ParseThinkingLevel(request.Reasoning.Effort)
-	mapped, ok := chat.service.mapping[level]
+	mapped, ok := chat.mapping[level]
 	if !ok {
 		return dmodel.Request{}, fmt.Errorf("reasoning level %q is not supported by this model", request.Reasoning.Effort)
 	}
@@ -841,61 +715,15 @@ func nativeReasoningEffort(mapped reasoningMapping) string {
 	return mapped.level.ThinkingEffort()
 }
 
-func (s *reasoningService) SupportsReasoning() bool  { return s.supported }
-func (s *reasoningService) UseSimplifiedPatch() bool { return llm.UseSimplifiedPatch(s.Service) }
-func (s *reasoningService) SupportsServerSideWebSearch() bool {
-	type capable interface{ SupportsServerSideWebSearch() bool }
-	c, ok := s.Service.(capable)
-	return ok && c.SupportsServerSideWebSearch()
-}
-
-func (s *reasoningService) SupportedReasoningLevels() []llm.ThinkingLevel {
-	return append([]llm.ThinkingLevel(nil), s.levels...)
-}
-
-func (s *reasoningService) DefaultReasoningLevel() string {
-	if !s.supported {
-		return "off"
-	}
-	if mapped, ok := s.mapping[s.defaultSource]; ok {
-		if mapped.level != llm.ThinkingLevelDefault {
-			return mapped.level.Name()
-		}
-		return mapped.effort
-	}
-	return llm.ServiceDefaultReasoningLevel(s.Service)
-}
-
-func (s *reasoningService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-	copyReq := *req
-	if !s.supported {
-		copyReq.ThinkingLevel = llm.ThinkingLevelOff
-	} else if copyReq.ThinkingLevel == llm.ThinkingLevelDefault {
-		if mapped, ok := s.mapping[s.defaultSource]; ok {
-			copyReq.ThinkingLevel = mapped.level
-			copyReq.ReasoningEffort = mapped.effort
-		}
-	} else if len(s.mapping) > 0 {
-		mapped, ok := s.mapping[copyReq.ThinkingLevel]
-		if !ok {
-			return nil, fmt.Errorf("reasoning level %q is not supported by this model", copyReq.ThinkingLevel.Name())
-		}
-		copyReq.ThinkingLevel = mapped.level
-		copyReq.ReasoningEffort = mapped.effort
-	}
-	return s.Service.Do(ctx, &copyReq)
-}
-
-func wrapReasoningService(service llm.Service, model *generated.Model) llm.Service {
-	return WrapReasoningConfig(service, model.Endpoint, model.ModelName, model.ReasoningSupport, model.ReasoningMap)
-}
-
 // WrapReasoningConfig applies custom-model capability and level mapping.
-func WrapReasoningConfig(service llm.Service, endpoint, modelName, support, rawMap string) llm.Service {
+func WrapReasoningConfig(chat dmodel.Chat, endpoint, modelName, support, rawMap string) dmodel.Chat {
 	supported := ResolveSupportsReasoning(endpoint, modelName, support)
 	mapping, levels := parseReasoningMap(rawMap)
-	defaultSource := llm.ParseThinkingLevel(llm.ServiceDefaultReasoningLevel(service))
-	return &reasoningService{Service: service, supported: supported, levels: levels, mapping: mapping, defaultSource: defaultSource}
+	defaultSource := llm.ParseThinkingLevel(chat.Profile().DefaultReasoningLevel)
+	if defaultSource == llm.ThinkingLevelDefault {
+		defaultSource = llm.ThinkingLevelMedium
+	}
+	return &reasoningChat{Chat: chat, supported: supported, levels: levels, mapping: mapping, defaultSource: defaultSource}
 }
 
 func parseReasoningMap(raw string) (map[llm.ThinkingLevel]reasoningMapping, []llm.ThinkingLevel) {
@@ -926,53 +754,25 @@ func parseReasoningMap(raw string) (map[llm.ThinkingLevel]reasoningMapping, []ll
 	return mapping, levels
 }
 
-// createServiceFromModel creates an LLM service from a database model configuration.
-func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
+// createChatFromModel creates a native chat model from database configuration.
+func (m *Manager) createChatFromModel(model *generated.Model) (dmodel.Chat, error) {
 	supportsImages := ResolveSupportsImages(model.Endpoint, model.ModelName, model.ImageSupport)
-	var service llm.Service
-	switch model.ProviderType {
-	case "anthropic":
-		service = ant.NewNative(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, ant.NativeOptions{
-			SupportsImages: supportsImages,
-			SupportsReasoning: ResolveSupportsReasoning(
-				model.Endpoint, model.ModelName, model.ReasoningSupport,
-			),
-			ThinkingLevel: llm.ThinkingLevelMedium,
-		})
-	case "openai":
-		service = oai.NewNativeChat(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, oai.NativeChatOptions{
-			Provider: "openai", MaxOutputTokens: int(model.MaxTokens),
-			SupportsImages: supportsImages,
-			SupportsReasoning: ResolveSupportsReasoning(
-				model.Endpoint, model.ModelName, model.ReasoningSupport,
-			),
-			ReasoningEffort: model.ReasoningEffort,
-		})
-	case "openai-responses":
-		service = oai.NewNativeResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, oai.NativeResponsesOptions{
-			Provider: "openai", MaxOutputTokens: int(model.MaxTokens),
-			SupportsImages: supportsImages,
-			SupportsReasoning: ResolveSupportsReasoning(
-				model.Endpoint, model.ModelName, model.ReasoningSupport,
-			),
-			ThinkingLevel:   llm.ThinkingLevelMedium,
-			ReasoningEffort: model.ReasoningEffort,
-		})
-	case "gemini":
-		service = gem.NewNative(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, gem.NativeOptions{
-			SupportsImages: supportsImages,
-			SupportsReasoning: ResolveSupportsReasoning(
-				model.Endpoint, model.ModelName, model.ReasoningSupport,
-			),
-			ReasoningEffort: model.ReasoningEffort,
-		})
-	default:
-		if m.logger != nil {
-			m.logger.Error("Unknown provider type for model", "model_id", model.ModelID, "provider_type", model.ProviderType)
-		}
-		return nil
+	if model.ProviderType != "openai-responses" {
+		return nil, fmt.Errorf("unknown provider type %q", model.ProviderType)
 	}
-	return wrapReasoningService(service, model)
+	effort := model.ReasoningEffort
+	if effort == "" {
+		effort = "medium"
+	}
+	chat, err := NewOpenAIResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, OpenAIResponsesOptions{
+		MaxOutputTokens: int(model.MaxTokens), SupportsImages: supportsImages,
+		SupportsReasoning: true, SupportsWebSearch: true,
+		MaxImageBytes: 20 * 1024 * 1024, DefaultReasoningLevel: "medium", ReasoningEffort: effort,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return WrapReasoningConfig(chat, model.Endpoint, model.ModelName, model.ReasoningSupport, model.ReasoningMap), nil
 }
 
 // ResolveSupportsImages turns a stored image_support value ("auto"|"yes"|"no")

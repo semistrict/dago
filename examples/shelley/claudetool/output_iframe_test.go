@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	dtool "github.com/semistrict/dago/tool"
 )
 
 func TestOutputIframeRun(t *testing.T) {
@@ -156,27 +158,27 @@ func TestOutputIframeRun(t *testing.T) {
 				t.Fatalf("failed to marshal input: %v", err)
 			}
 
-			result := tool.Tool().Run(context.Background(), inputJSON)
+			result, executeErr := tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
 
 			if tt.wantErr {
-				if result.Error == nil {
+				if executeErr == nil {
 					t.Error("expected error, got nil")
 				}
 				return
 			}
 
-			if result.Error != nil {
-				t.Errorf("unexpected error: %v", result.Error)
+			if executeErr != nil {
+				t.Errorf("unexpected error: %v", executeErr)
 				return
 			}
 
-			if len(result.LLMContent) != 1 || result.LLMContent[0].Text != "displayed" {
-				t.Errorf("expected LLMContent [displayed], got %v", result.LLMContent)
+			if len(result.Content) != 1 || result.Content[0].Text != "displayed" {
+				t.Errorf("expected content [displayed], got %v", result.Content)
 			}
 
-			display, ok := result.Display.(OutputIframeDisplay)
-			if !ok {
-				t.Errorf("expected Display to be OutputIframeDisplay, got %T", result.Display)
+			var display OutputIframeDisplay
+			if err := json.Unmarshal(result.Artifact, &display); err != nil {
+				t.Errorf("decode display: %v", err)
 				return
 			}
 
@@ -218,13 +220,13 @@ func TestOutputIframeLibraries(t *testing.T) {
 			"path":      "test.html",
 			"libraries": []string{"excalidraw"},
 		})
-		res := tool.Tool().Run(context.Background(), in)
-		if res.Error != nil {
-			t.Fatalf("unexpected error: %v", res.Error)
+		res, err := tool.NativeTool().Execute(context.Background(), in, dtool.Runtime{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		disp, ok := res.Display.(OutputIframeDisplay)
-		if !ok {
-			t.Fatalf("bad display type %T", res.Display)
+		var disp OutputIframeDisplay
+		if err := json.Unmarshal(res.Artifact, &disp); err != nil {
+			t.Fatalf("decode display: %v", err)
 		}
 		if len(disp.Libraries) != 1 || disp.Libraries[0] != "excalidraw" {
 			t.Errorf("expected libraries=[excalidraw], got %v", disp.Libraries)
@@ -241,8 +243,8 @@ func TestOutputIframeLibraries(t *testing.T) {
 			"path":      "test.html",
 			"libraries": []string{"not-a-real-lib"},
 		})
-		res := tool.Tool().Run(context.Background(), in)
-		if res.Error == nil {
+		_, err := tool.NativeTool().Execute(context.Background(), in, dtool.Runtime{})
+		if err == nil {
 			t.Errorf("expected error for unknown library, got none")
 		}
 	})
@@ -252,11 +254,14 @@ func TestOutputIframeLibraries(t *testing.T) {
 			"path":      "test.html",
 			"libraries": []string{"excalidraw", "excalidraw"},
 		})
-		res := tool.Tool().Run(context.Background(), in)
-		if res.Error != nil {
-			t.Fatalf("unexpected error: %v", res.Error)
+		res, err := tool.NativeTool().Execute(context.Background(), in, dtool.Runtime{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		disp := res.Display.(OutputIframeDisplay)
+		var disp OutputIframeDisplay
+		if err := json.Unmarshal(res.Artifact, &disp); err != nil {
+			t.Fatalf("decode display: %v", err)
+		}
 		if len(disp.Libraries) != 1 {
 			t.Errorf("expected dedupe to 1, got %v", disp.Libraries)
 		}
@@ -389,22 +394,23 @@ func TestOutputIframeToolSchema(t *testing.T) {
 	workingDir := &MutableWorkingDir{}
 	workingDir.Set("/tmp")
 	tool := &OutputIframeTool{WorkingDir: workingDir}
-	llmTool := tool.Tool()
+	nativeTool := tool.NativeTool()
+	definition := nativeTool.Definition()
 
-	if llmTool.Name != "output_iframe" {
-		t.Errorf("expected name 'output_iframe', got %q", llmTool.Name)
+	if definition.Name != "output_iframe" {
+		t.Errorf("expected name 'output_iframe', got %q", definition.Name)
 	}
 
-	if llmTool.Run == nil {
-		t.Error("expected Run function to be set")
+	if err := definition.Validate(); err != nil {
+		t.Fatalf("invalid definition: %v", err)
 	}
 
-	if len(llmTool.InputSchema) == 0 {
+	if len(definition.InputSchema) == 0 {
 		t.Error("expected InputSchema to be set")
 	}
 
 	// Verify schema contains files property
-	if !strings.Contains(string(llmTool.InputSchema), "files") {
+	if !strings.Contains(string(definition.InputSchema), "files") {
 		t.Error("expected InputSchema to contain 'files' property")
 	}
 }

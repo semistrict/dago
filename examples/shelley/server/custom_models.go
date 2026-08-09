@@ -12,10 +12,6 @@ import (
 	dmodel "github.com/semistrict/dago/model"
 
 	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/ant"
-	"shelley.exe.dev/llm/gem"
-	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/models"
 )
 
@@ -180,8 +176,8 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate provider type
-	if req.ProviderType != "anthropic" && req.ProviderType != "openai" && req.ProviderType != "openai-responses" && req.ProviderType != "gemini" {
-		http.Error(w, "provider_type must be 'anthropic', 'openai', 'openai-responses', or 'gemini'", http.StatusBadRequest)
+	if req.ProviderType != "openai-responses" {
+		http.Error(w, "provider_type must be 'openai-responses'", http.StatusBadRequest)
 		return
 	}
 
@@ -487,40 +483,17 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 		reasoningEffort = *req.ReasoningEffort
 	}
 
-	// Create the appropriate service based on provider type
-	var service llm.Service
-	switch req.ProviderType {
-	case "anthropic":
-		service = ant.NewNative(req.APIKey, req.ModelName, req.Endpoint, nil, ant.NativeOptions{
-			SupportsImages:    true,
-			SupportsReasoning: models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
-			ThinkingLevel:     llm.ThinkingLevelMedium,
-		})
-	case "openai":
-		service = oai.NewNativeChat(req.APIKey, req.ModelName, req.Endpoint, nil, oai.NativeChatOptions{
-			Provider:          "openai",
-			SupportsImages:    true,
-			SupportsReasoning: models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
-			ReasoningEffort:   reasoningEffort,
-		})
-	case "gemini":
-		service = gem.NewNative(req.APIKey, req.ModelName, req.Endpoint, nil, gem.NativeOptions{
-			SupportsImages:    true,
-			SupportsReasoning: models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
-			ReasoningEffort:   reasoningEffort,
-		})
-	case "openai-responses":
-		service = oai.NewNativeResponses(req.APIKey, req.ModelName, req.Endpoint, nil, oai.NativeResponsesOptions{
-			Provider:          "openai",
-			SupportsImages:    true,
-			SupportsReasoning: models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
-			// Match createServiceFromModel so Test reflects real runtime behavior:
-			// medium is the default when no explicit override is given.
-			ThinkingLevel:   llm.ThinkingLevelMedium,
-			ReasoningEffort: reasoningEffort,
-		})
-	default:
+	if req.ProviderType != "openai-responses" {
 		http.Error(w, "Invalid provider_type", http.StatusBadRequest)
+		return
+	}
+	chat, err := models.NewOpenAIResponses(req.APIKey, req.ModelName, req.Endpoint, nil, models.OpenAIResponsesOptions{
+		SupportsImages: true, SupportsWebSearch: true,
+		SupportsReasoning:     models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
+		DefaultReasoningLevel: "medium", ReasoningEffort: reasoningEffort,
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Test failed: %v", err), http.StatusBadRequest)
 		return
 	}
 	if _, err := validReasoningSupport(req.ReasoningSupport); err != nil {
@@ -531,22 +504,13 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	service = models.WrapReasoningConfig(service, req.Endpoint, req.ModelName, req.ReasoningSupport, req.ReasoningMap)
+	chat = models.WrapReasoningConfig(chat, req.Endpoint, req.ModelName, req.ReasoningSupport, req.ReasoningMap)
 
 	// Send a simple test request
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	native, ok := service.(interface{ DagoChat() dmodel.Chat })
-	if !ok || native.DagoChat() == nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": false,
-			"message": "Test failed: provider does not expose a native chat implementation",
-		})
-		return
-	}
-	response, err := native.DagoChat().Invoke(ctx, dmodel.Request{Messages: []dmessage.Message{
+	response, err := chat.Invoke(ctx, dmodel.Request{Messages: []dmessage.Message{
 		dmessage.Human("Say 'test successful' in exactly two words."),
 	}})
 	if err != nil {

@@ -4,7 +4,7 @@ package browse
 
 import (
 	"context"
-	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -62,50 +62,42 @@ func TestBrowserProcessGroupCleanup(t *testing.T) {
 
 	tools.Close()
 
-	// Give the kernel a moment to reap.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(50 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		alive := stillAlive(descendants)
 		if len(alive) == 0 {
 			return
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-deadline.C:
 			t.Fatalf("processes still alive after Close: %v", alive)
+		case <-poll.C:
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
 // findDescendantsByPgid returns PIDs whose process group is pgid, by
-// scanning /proc. Includes the leader itself.
+// querying the host process table. Includes the leader itself.
 func findDescendantsByPgid(t *testing.T, pgid int) []int {
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	output, err := exec.Command("ps", "-axo", "pid=,pgid=").Output()
 	if err != nil {
-		t.Fatalf("read /proc: %v", err)
+		t.Fatalf("inspect process table: %v", err)
 	}
 	var pids []int
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
 		if err != nil {
 			continue
 		}
-		stat, err := os.ReadFile("/proc/" + e.Name() + "/stat")
-		if err != nil {
-			continue
-		}
-		// /proc/<pid>/stat: "pid (comm) state ppid pgrp ..."
-		// comm may contain spaces/parens, so find the LAST ')'.
-		s := string(stat)
-		i := strings.LastIndex(s, ")")
-		if i < 0 || i+1 >= len(s) {
-			continue
-		}
-		fields := strings.Fields(s[i+1:])
-		if len(fields) < 3 {
-			continue
-		}
-		got, err := strconv.Atoi(fields[2]) // pgrp
+		got, err := strconv.Atoi(fields[1])
 		if err != nil {
 			continue
 		}

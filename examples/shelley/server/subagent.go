@@ -68,7 +68,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 				prompt = hookResult.Prompt
 			}
 			if hookResult.Model != modelID {
-				if _, svcErr := s.llmManager.GetService(hookResult.Model); svcErr != nil {
+				if _, svcErr := s.llmManager.GetChat(hookResult.Model); svcErr != nil {
 					s.logger.Error("Hook returned unsupported model, keeping original", "hookModel", hookResult.Model, "error", svcErr)
 				} else {
 					modelID = hookResult.Model
@@ -109,10 +109,9 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 		}
 	}
 
-	// Get LLM service
-	llmService, err := s.llmManager.GetService(modelID)
+	chatModel, err := s.llmManager.GetChat(modelID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get LLM service: %w", err)
+		return "", fmt.Errorf("failed to get chat model: %w", err)
 	}
 
 	// Create user message
@@ -159,7 +158,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 			}
 			return fmt.Sprintf("Subagent is busy; message queued and will be processed after its current turn. Conversation ID: %s", conversationID), nil
 		}
-		if _, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage); err != nil {
+		if _, err := manager.AcceptUserMessage(ctx, chatModel, modelID, userMessage); err != nil {
 			return "", fmt.Errorf("failed to accept user message: %w", err)
 		}
 		return fmt.Sprintf("Subagent started processing. Conversation ID: %s", conversationID), nil
@@ -205,7 +204,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 	supersededSeq := r.lastAgentSeq(ctx, conversationID)
 
 	// Accept the follow-up message (this starts a fresh turn).
-	if _, err = manager.AcceptUserMessage(ctx, llmService, modelID, userMessage); err != nil {
+	if _, err = manager.AcceptUserMessage(ctx, chatModel, modelID, userMessage); err != nil {
 		// Release the slot like any other non-delivery exit; endWait also
 		// fires the async completion if a finish was suppressed while we
 		// held it (symmetry with the timeout/cancel paths).

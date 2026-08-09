@@ -12,10 +12,11 @@ import (
 	"testing"
 	"time"
 
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
 	"shelley.exe.dev/loop"
 	"shelley.exe.dev/models"
 )
@@ -24,12 +25,12 @@ import (
 // backed by the same PredictableService, so /model switching can be exercised
 // end-to-end without real providers.
 type twoModelLLMManager struct {
-	service llm.Service
+	chat dmodel.Chat
 }
 
-func (m *twoModelLLMManager) GetService(modelID string) (llm.Service, error) {
+func (m *twoModelLLMManager) GetChat(modelID string) (dmodel.Chat, error) {
 	if modelID == "model-a" || modelID == "model-b" {
-		return m.service, nil
+		return m.chat, nil
 	}
 	return nil, os.ErrNotExist
 }
@@ -55,12 +56,12 @@ func (m *twoModelLLMManager) RefreshCustomModels() error { return nil }
 // levelNamedModelLLMManager exposes a model literally named "high" (colliding
 // with a reasoning level) so the ambiguity-rejection path can be exercised.
 type levelNamedModelLLMManager struct {
-	service llm.Service
+	chat dmodel.Chat
 }
 
-func (m *levelNamedModelLLMManager) GetService(modelID string) (llm.Service, error) {
+func (m *levelNamedModelLLMManager) GetChat(modelID string) (dmodel.Chat, error) {
 	if modelID == "model-a" || modelID == "high" {
-		return m.service, nil
+		return m.chat, nil
 	}
 	return nil, os.ErrNotExist
 }
@@ -84,7 +85,7 @@ func newTwoModelTestServer(t *testing.T) (*Server, *db.DB) {
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	ps := loop.NewPredictableService()
-	svr := NewServer(database, &twoModelLLMManager{service: ps},
+	svr := NewServer(database, &twoModelLLMManager{chat: ps},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		false, "model-a", "")
@@ -343,7 +344,7 @@ func getConvReasoning(t *testing.T, database *db.DB, conversationID string) stri
 func TestModelCommandReasoningOnly(t *testing.T) {
 	t.Parallel()
 	srv, database := newTwoModelTestServer(t)
-	ps := srv.llmManager.(*twoModelLLMManager).service.(*loop.PredictableService)
+	ps := srv.llmManager.(*twoModelLLMManager).chat.(*loop.PredictableService)
 	ctx := context.Background()
 
 	modelA := "model-a"
@@ -391,7 +392,7 @@ func TestModelCommandReasoningOnly(t *testing.T) {
 	}
 	waitFor(t, 5*time.Second, func() bool {
 		for _, req := range ps.GetRecentRequests() {
-			if req.ThinkingLevel == llm.ThinkingLevelHigh {
+			if req.Reasoning != nil && req.Reasoning.Effort == "high" {
 				return true
 			}
 		}
@@ -515,7 +516,7 @@ func TestModelCommandAmbiguous(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	ps := loop.NewPredictableService()
-	srv := NewServer(database, &levelNamedModelLLMManager{service: ps},
+	srv := NewServer(database, &levelNamedModelLLMManager{chat: ps},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		false, "model-a", "")
@@ -950,18 +951,22 @@ func TestChatMessageHookReceivesConversationReasoningLevel(t *testing.T) {
 	}
 }
 
-type defaultReasoningService struct {
-	llm.Service
+type defaultReasoningChat struct {
+	dmodel.Chat
 	level string
 }
 
-func (s defaultReasoningService) DefaultReasoningLevel() string { return s.level }
+func (s defaultReasoningChat) Profile() dmodel.Profile {
+	profile := s.Chat.Profile()
+	profile.DefaultReasoningLevel = s.level
+	return profile
+}
 
 func TestChatMessageHookMaterializesDefaultReasoningLevel(t *testing.T) {
 	srv, database := newTwoModelTestServer(t)
-	srv.llmManager = &twoModelLLMManager{service: defaultReasoningService{
-		Service: loop.NewPredictableService(),
-		level:   "medium",
+	srv.llmManager = &twoModelLLMManager{chat: defaultReasoningChat{
+		Chat:  loop.NewPredictableService(),
+		level: "medium",
 	}}
 	ctx := context.Background()
 	model := "model-a"

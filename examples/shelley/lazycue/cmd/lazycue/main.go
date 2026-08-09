@@ -23,9 +23,9 @@ func main() {
 func runTests() {
 	baseURL := flag.String("base-url", "", "Base URL of the app under test (required)")
 	cacheDir := flag.String("cache-dir", "", "Directory for cache JSON files (default: .lazycue)")
-	model := flag.String("model", "", "LLM model (default: claude-sonnet-4-6)")
-	apiURL := flag.String("api-url", "", "Anthropic API base URL (env: ANTHROPIC_BASE_URL)")
-	apiKey := flag.String("api-key", "", "Anthropic API key (env: ANTHROPIC_API_KEY)")
+	model := flag.String("model", "", "OpenAI Responses model (default: gpt-5.6-luna)")
+	apiURL := flag.String("api-url", "", "OpenAI API base URL (env: OPENAI_BASE_URL)")
+	apiKey := flag.String("api-key", "", "OpenAI API key (env: OPENAI_API_KEY)")
 	verbose := flag.Bool("verbose", false, "Verbose output")
 	artifactDir := flag.String("artifact-dir", "", "Directory to write per-step screenshots and an HTML report (index.html)")
 	jsonOut := flag.String("json", "", "Write a machine-readable JSON summary of the run to this file (for CI cache stats)")
@@ -50,13 +50,13 @@ func runTests() {
 	}
 
 	opts := lazycue.Options{
-		BaseURL:          *baseURL,
-		CacheDir:         resolvedCacheDir,
-		Model:            *model,
-		AnthropicBaseURL: *apiURL,
-		AnthropicAPIKey:  *apiKey,
-		Verbose:          *verbose,
-		ArtifactDir:      *artifactDir,
+		BaseURL:       *baseURL,
+		CacheDir:      resolvedCacheDir,
+		Model:         *model,
+		OpenAIBaseURL: *apiURL,
+		OpenAIAPIKey:  *apiKey,
+		Verbose:       *verbose,
+		ArtifactDir:   *artifactDir,
 	}
 
 	ctx := context.Background()

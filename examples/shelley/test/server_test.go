@@ -17,6 +17,9 @@ import (
 	"testing"
 	"time"
 
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/claudetool/browse"
 	"shelley.exe.dev/db"
@@ -331,52 +334,30 @@ func TestPredictableServiceWithTools(t *testing.T) {
 	service := loop.NewPredictableService()
 
 	// First call should return greeting
-	resp1, err := service.Do(context.Background(), &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hello"}}},
-		},
+	resp1, err := service.Invoke(context.Background(), dmodel.Request{
+		Messages: []dmessage.Message{dmessage.Human("Hello")},
 	})
 	if err != nil {
 		t.Fatalf("First call failed: %v", err)
 	}
 
-	if !strings.Contains(resp1.Content[0].Text, "Shelley") {
+	if !strings.Contains(resp1.Message.TextContent(), "Shelley") {
 		t.Fatal("Expected greeting to mention Shelley")
 	}
 
 	// Second call should return tool use (bash command)
-	resp2, err := service.Do(context.Background(), &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "bash: echo hello"}}},
-		},
+	resp2, err := service.Invoke(context.Background(), dmodel.Request{
+		Messages: []dmessage.Message{dmessage.Human("bash: echo hello")},
 	})
 	if err != nil {
 		t.Fatalf("Second call failed: %v", err)
 	}
 
-	if resp2.StopReason != llm.StopReasonToolUse {
-		t.Fatal("Expected tool use stop reason")
-	}
-
-	if len(resp2.Content) < 2 {
-		t.Fatal("Expected both text and tool use content")
-	}
-
-	// Find tool use content
-	var toolUse *llm.Content
-	for i := range resp2.Content {
-		if resp2.Content[i].Type == llm.ContentTypeToolUse {
-			toolUse = &resp2.Content[i]
-			break
-		}
-	}
-
-	if toolUse == nil {
+	if len(resp2.Message.ToolCalls) != 1 {
 		t.Fatal("Expected tool use content")
 	}
-
-	if toolUse.ToolName != "bash" {
-		t.Fatalf("Expected bash tool, got %s", toolUse.ToolName)
+	if resp2.Message.ToolCalls[0].Name != "bash" {
+		t.Fatalf("Expected bash tool, got %s", resp2.Message.ToolCalls[0].Name)
 	}
 }
 
@@ -776,11 +757,12 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 		// The loop fires both a conversation request (with system prompt)
 		// and a slug-generation request (without). Check all requests
 		// so we find the one with the system prompt regardless of order.
-		var matchedReq *llm.Request
+		var matchedReq *dmodel.Request
 		for i := 0; i < 500; i++ {
 			for _, req := range predictableService.GetRecentRequests() {
-				if len(req.System) > 0 {
-					matchedReq = req
+				if requestHasRole(req, dmessage.RoleSystem) {
+					copy := req
+					matchedReq = &copy
 					break
 				}
 			}
@@ -796,8 +778,10 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 
 		// Verify system prompt contains expected content
 		systemText := ""
-		for _, sys := range lastReq.System {
-			systemText += sys.Text
+		for _, message := range lastReq.Messages {
+			if message.Role == dmessage.RoleSystem {
+				systemText += message.TextContent()
+			}
 		}
 		if !strings.Contains(systemText, "Shelley") {
 			t.Errorf("System prompt doesn't contain 'Shelley': %s", systemText)
@@ -840,7 +824,7 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 		conversationID := createResp.ConversationID
 
 		// Wait for first message to be processed
-		var firstReq *llm.Request
+		var firstReq *dmodel.Request
 		for i := 0; i < 50; i++ {
 			firstReq = predictableService.GetLastRequest()
 			if firstReq != nil {
@@ -873,10 +857,10 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 
 		// Poll for second message to be processed
 		// We need to wait for a request WITH a system prompt, not just any request
-		var lastReq *llm.Request
+		var lastReq *dmodel.Request
 		for i := 0; i < 50; i++ {
 			lastReq = predictableService.GetLastRequest()
-			if lastReq != nil && len(lastReq.System) > 0 {
+			if lastReq != nil && requestHasRole(*lastReq, dmessage.RoleSystem) {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -885,14 +869,16 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 			t.Fatal("No request was sent to the LLM service after 5 seconds")
 		}
 
-		if len(lastReq.System) == 0 {
+		if !requestHasRole(*lastReq, dmessage.RoleSystem) {
 			t.Fatal("System prompt was not included in subsequent LLM request")
 		}
 
 		// Verify system prompt contains expected content
 		systemText := ""
-		for _, sys := range lastReq.System {
-			systemText += sys.Text
+		for _, message := range lastReq.Messages {
+			if message.Role == dmessage.RoleSystem {
+				systemText += message.TextContent()
+			}
 		}
 		if !strings.Contains(systemText, "Shelley") {
 			t.Errorf("System prompt doesn't contain 'Shelley' in subsequent request: %s", systemText)
@@ -908,7 +894,16 @@ type inspectableLLMManager struct {
 	logger             *slog.Logger
 }
 
-func (m *inspectableLLMManager) GetService(modelID string) (llm.Service, error) {
+func requestHasRole(request dmodel.Request, role dmessage.Role) bool {
+	for _, message := range request.Messages {
+		if message.Role == role {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *inspectableLLMManager) GetChat(modelID string) (dmodel.Chat, error) {
 	if modelID != "predictable" {
 		return nil, fmt.Errorf("unsupported model: %s", modelID)
 	}

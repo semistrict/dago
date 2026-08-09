@@ -2,7 +2,6 @@ package claudetool
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,9 +17,7 @@ import (
 	dmessage "github.com/semistrict/dago/message"
 	dmodel "github.com/semistrict/dago/model"
 	dtool "github.com/semistrict/dago/tool"
-	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/imageutil"
-	"shelley.exe.dev/llm/llmhttp"
 )
 
 // LLMOneShotTool sends a one-shot prompt to an LLM and returns the result.
@@ -130,18 +127,7 @@ type llmOneShotInput struct {
 	SystemPrompt string       `json:"system_prompt,omitempty"`
 }
 
-// Tool returns an llm.Tool for the LLM one-shot functionality.
-func (t *LLMOneShotTool) Tool() *llm.Tool {
-	return &llm.Tool{
-		Name:        llmOneShotName,
-		Description: t.llmOneShotDescription(),
-		InputSchema: llm.MustSchema(t.llmOneShotInputSchema()),
-		Run:         llm.RunJSON(t.run),
-	}
-}
-
-// NativeTool executes the one-shot request through Dago's tool and model
-// contracts. Tool remains the pinned Shelley facade for its original tests.
+// NativeTool executes the one-shot request through Dago's tool and model contracts.
 func (t *LLMOneShotTool) NativeTool() dtool.Tool {
 	return dtool.Func{
 		Spec: dtool.Definition{
@@ -157,10 +143,6 @@ func (t *LLMOneShotTool) NativeTool() dtool.Tool {
 			if err != nil {
 				return dtool.Result{}, err
 			}
-			native, ok := prepared.service.(interface{ DagoChat() dmodel.Chat })
-			if !ok || native.DagoChat() == nil {
-				return dtool.Result{}, fmt.Errorf("one-shot model %q does not expose a native Dago chat", prepared.modelID)
-			}
 			message := dmessage.Message{Role: dmessage.RoleHuman}
 			if strings.TrimSpace(prepared.prompt) != "" {
 				message.Content = append(message.Content, dmessage.ContentBlock{Type: dmessage.BlockText, Text: prepared.prompt})
@@ -174,9 +156,8 @@ func (t *LLMOneShotTool) NativeTool() dtool.Tool {
 			if input.SystemPrompt != "" {
 				messages = append([]dmessage.Message{dmessage.System(input.SystemPrompt)}, messages...)
 			}
-			chat := native.DagoChat()
 			started := time.Now()
-			response, err := chat.Invoke(ctx, dmodel.Request{Messages: messages})
+			response, err := prepared.chat.Invoke(ctx, dmodel.Request{Messages: messages})
 			finished := time.Now()
 			if err != nil {
 				return dtool.Result{}, fmt.Errorf("LLM request failed: %w", err)
@@ -199,7 +180,7 @@ func (t *LLMOneShotTool) NativeTool() dtool.Tool {
 			}
 			return dtool.Result{
 				Content: []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}}, Artifact: artifact,
-				OtherUsage: nativePurposedUsage("llm_one_shot", chat, response.Message.Usage, started, finished),
+				OtherUsage: nativePurposedUsage("llm_one_shot", prepared.chat, response.Message.Usage, started, finished),
 			}, nil
 		},
 	}
@@ -230,7 +211,7 @@ func saveOneShotImage(ctx context.Context, prepared imageutil.Prepared) string {
 type oneShotPrepared struct {
 	modelID string
 	wd      string
-	service llm.Service
+	chat    dmodel.Chat
 	prompt  string
 	images  []imageutil.Prepared
 	display any
@@ -239,43 +220,6 @@ type oneShotPrepared struct {
 type oneShotExecution struct {
 	Output  string
 	Display any
-}
-
-func (t *LLMOneShotTool) run(ctx context.Context, req llmOneShotInput) llm.ToolOut {
-	prepared, err := t.prepare(ctx, req)
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	message := llm.Message{Role: llm.MessageRoleUser}
-	if strings.TrimSpace(prepared.prompt) != "" {
-		message.Content = append(message.Content, llm.StringContent(prepared.prompt))
-	}
-	for _, image := range prepared.images {
-		message.Content = append(message.Content, llm.Content{
-			Type: llm.ContentTypeText, MediaType: image.MediaType,
-			Data:         base64.StdEncoding.EncodeToString(image.Data),
-			DisplayWidth: image.Width, DisplayHeight: image.Height,
-		})
-	}
-	request := &llm.Request{Messages: []llm.Message{message}}
-	if req.SystemPrompt != "" {
-		request.System = []llm.SystemContent{{Type: "text", Text: req.SystemPrompt}}
-	}
-	response, err := prepared.service.Do(llmhttp.WithPurpose(ctx, "llm_one_shot"), request)
-	if err != nil {
-		return llm.ErrorfToolOut("LLM request failed: %w", err)
-	}
-	var text strings.Builder
-	for _, content := range response.Content {
-		if content.Type == llm.ContentTypeText {
-			text.WriteString(content.Text)
-		}
-	}
-	execution, err := finishOneShot(req, prepared, text.String(), response.Usage.InputTokens, response.Usage.OutputTokens)
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	return llm.ToolOut{LLMContent: llm.TextContent(execution.Output), Display: execution.Display}
 }
 
 func (t *LLMOneShotTool) prepare(ctx context.Context, req llmOneShotInput) (oneShotPrepared, error) {
@@ -315,9 +259,9 @@ func (t *LLMOneShotTool) prepare(ctx context.Context, req llmOneShotInput) (oneS
 		return oneShotPrepared{}, fmt.Errorf("LLM provider not configured")
 	}
 
-	svc, err := t.LLMProvider.GetService(modelID)
+	chat, err := t.LLMProvider.GetChat(modelID)
 	if err != nil {
-		return oneShotPrepared{}, fmt.Errorf("failed to get LLM service for model %q: %w", modelID, err)
+		return oneShotPrepared{}, fmt.Errorf("failed to get chat model for model %q: %w", modelID, err)
 	}
 
 	// Assemble the prompt: concatenate text files in order, attach images.
@@ -334,10 +278,11 @@ func (t *LLMOneShotTool) prepare(ctx context.Context, req llmOneShotInput) (oneS
 			return oneShotPrepared{}, fmt.Errorf("failed to read prompt file: %w", err)
 		}
 		if isImageData(data) {
-			if !svc.SupportsImages() {
+			profile := chat.Profile()
+			if !profile.SupportsImages {
 				return oneShotPrepared{}, fmt.Errorf("prompt file %q is an image, but model %q does not support image attachments", pf, modelID)
 			}
-			prepared, err := imageutil.Prepare(data, path, svc.MaxImageDimension(), svc.MaxImageBytes())
+			prepared, err := imageutil.Prepare(data, path, profile.MaxImageDimension, profile.MaxImageBytes)
 			if err != nil {
 				return oneShotPrepared{}, fmt.Errorf("invalid image %q: %w", pf, err)
 			}
@@ -385,7 +330,7 @@ func (t *LLMOneShotTool) prepare(ctx context.Context, req llmOneShotInput) (oneS
 	if len(displayImages) > 0 {
 		display = map[string]any{"images": displayImages}
 	}
-	return oneShotPrepared{modelID: modelID, wd: wd, service: svc, prompt: prompt, images: images, display: display}, nil
+	return oneShotPrepared{modelID: modelID, wd: wd, chat: chat, prompt: prompt, images: images, display: display}, nil
 }
 
 func finishOneShot(req llmOneShotInput, prepared oneShotPrepared, resultText string, inputTokens, outputTokens uint64) (oneShotExecution, error) {

@@ -29,12 +29,11 @@ func TestBuiltInLunaExposesNativeDagoChat(t *testing.T) {
 	if catalog == nil {
 		t.Fatal("Luna is missing from the built-in catalog")
 	}
-	service := catalog.Build(server.URL, "secret", server.Client())
-	native, ok := service.(interface{ DagoChat() dmodel.Chat })
-	if !ok || native.DagoChat() == nil {
-		t.Fatalf("service %T does not expose a native Dago chat", service)
+	chat, err := catalog.Build(server.URL, "secret", server.Client())
+	if err != nil {
+		t.Fatal(err)
 	}
-	response, err := native.DagoChat().Invoke(context.Background(), dmodel.Request{
+	response, err := chat.Invoke(context.Background(), dmodel.Request{
 		Messages: []dmessage.Message{dmessage.Human("hello")},
 	})
 	if err != nil {
@@ -46,5 +45,15 @@ func TestBuiltInLunaExposesNativeDagoChat(t *testing.T) {
 	reasoning, ok := requestBody["reasoning"].(map[string]any)
 	if !ok || reasoning["effort"] != "medium" || reasoning["summary"] != "auto" {
 		t.Fatalf("default reasoning = %#v", requestBody["reasoning"])
+	}
+}
+
+func TestNativeUsageProjectsCachedTokens(t *testing.T) {
+	got := legacyUsage(&dmessage.Usage{
+		InputTokens: 20, OutputTokens: 5, TotalTokens: 105,
+		InputDetails: map[string]int{"cache_read": 80},
+	}, "gpt-5.6-luna", "openai")
+	if got.InputTokens != 20 || got.CacheReadInputTokens != 80 || got.OutputTokens != 5 {
+		t.Fatalf("projected usage = %#v", got)
 	}
 }

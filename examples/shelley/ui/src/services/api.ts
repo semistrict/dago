@@ -852,7 +852,7 @@ export const subagentUsageApi = {
 export interface CustomModel {
   model_id: string;
   display_name: string;
-  provider_type: "anthropic" | "openai" | "openai-responses" | "gemini";
+  provider_type: "openai-responses";
   endpoint: string;
   api_key: string;
   model_name: string;
@@ -868,7 +868,7 @@ export interface CustomModel {
 
 export interface CreateCustomModelRequest {
   display_name: string;
-  provider_type: "anthropic" | "openai" | "openai-responses" | "gemini";
+  provider_type: "openai-responses";
   endpoint: string;
   api_key: string;
   model_name: string;
@@ -882,7 +882,7 @@ export interface CreateCustomModelRequest {
 
 export interface TestCustomModelRequest {
   model_id?: string; // If provided with empty api_key, use stored key
-  provider_type: "anthropic" | "openai" | "openai-responses" | "gemini";
+  provider_type: "openai-responses";
   endpoint: string;
   api_key: string;
   model_name: string;

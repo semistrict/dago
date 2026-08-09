@@ -47,8 +47,8 @@ func TestBrowserNetworkClearCache(t *testing.T) {
 	t.Cleanup(func() { tools.Close() })
 	t.Cleanup(func() { server.Close() })
 
-	browser := tools.CombinedTool()
-	netTool := tools.CombinedTool()
+	browser := probeNativeTool(tools.NativeCombinedTool())
+	netTool := probeNativeTool(tools.NativeCombinedTool())
 
 	navURL := fmt.Sprintf(`{"action": "navigate", "url": "http://127.0.0.1:%d/cached"}`, port)
 	readHits := []byte(`{"action": "eval", "expression": "document.getElementById('hits').textContent"}`)

@@ -1,71 +1,55 @@
-# Loop Package
+# Loop package
 
-The `loop` package provides the core agentic conversation loop for Shelley,
-handling LLM interactions, tool execution, and message recording.
+The `loop` package is Shelley's product-facing session adapter around Dago's
+native agent runtime. Dago owns model calls, tool execution, durable checkpoint
+state, and continuation. Shelley projects native messages and events into its
+database and SSE shapes for the existing HTTP API and UI.
 
-## Features
+## Runtime contract
 
-- **LLM Integration**: Works with any LLM service implementing the `llm.Service` interface
-- **Predictable Testing**: Includes a `PredictableService` for deterministic testing
-- **Tool Execution**: Automatically executes tools called by the LLM
-- **Message Recording**: Records all conversation messages via a configurable function
-- **Usage Tracking**: Tracks token usage and costs across all LLM calls
-- **Context Cancellation**: Gracefully handles context cancellation
-- **Thread Safety**: All methods are safe for concurrent use
+- `Config.Model` is a Dago `model.Chat` implementation.
+- `Config.Tools` contains Dago `tool.Tool` implementations.
+- `Config.Saver` is a Dago `checkpoint.Saver`; the server uses the conversation
+  ID as `Config.ThreadID`.
+- `RecordMessage` and the streaming callbacks maintain Shelley's UI projection.
+- The package does not contain a second model or tool-execution state machine.
 
-## Basic Usage
+## Basic usage
 
 ```go
-// Create tools (using claudetool package or custom tools)
-tools := []*llm.Tool{bashTool, patchTool, thinkTool}
-
-// Define message recording function (typically saves to the database)
-recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
-    return messageService.Create(ctx, db.CreateMessageParams{
-        ConversationID: conversationID,
-        Type:            getMessageType(message.Role),
-        LLMData:         message,
-        UsageData:       usage,
-    })
-}
-
-// Create loop with explicit LLM configuration
 agentLoop := loop.NewLoop(loop.Config{
-    LLM:           &ant.Service{APIKey: apiKey},
-    History:       history, // existing conversation history
-    Tools:         tools,
-    RecordMessage: recordMessage,
-    Logger:        logger,
-    System:        systemPrompt, // []llm.SystemContent
+	Model:         chatModel,
+	ModelID:       "gpt-5.6-luna",
+	History:       history,
+	Tools:         nativeTools,
+	Saver:         saver,
+	ThreadID:      conversationID,
+	System:        systemPrompt,
+	RecordMessage: recordMessage,
 })
 
-// Queue user messages for the current turn
-agentLoop.QueueUserMessage(llm.UserStringMessage("Hello, please help me with something"))
-
-// Run the conversation turn
-ctx := context.Background()
+agentLoop.QueueUserMessage(llm.UserStringMessage("Help me inspect this project"))
 if err := agentLoop.ProcessOneTurn(ctx); err != nil {
-    log.Fatalf("conversation failed: %v", err)
+	return err
 }
 ```
 
-## Testing with PredictableService
+The `llm.Message` values at this boundary are Shelley's persisted and rendered
+message projection. Before execution, the loop converts them to native Dago
+messages; Dago checkpoint state remains canonical across turns.
 
-The `PredictableService` records requests and returns deterministic responses that are convenient for tests:
+## Deterministic tests
+
+`NewPredictableService` returns a native `model.Chat` implementation with fixed
+responses and tool calls used by Shelley's Go and browser suites:
 
 ```go
-service := loop.NewPredictableService()
-
-testLoop := loop.NewLoop(loop.Config{
-    LLM:           service,
-    RecordMessage: func(context.Context, llm.Message, llm.Usage) error { return nil },
+chatModel := loop.NewPredictableService()
+agentLoop := loop.NewLoop(loop.Config{
+	Model:         chatModel,
+	RecordMessage: recordMessage,
 })
-
-testLoop.QueueUserMessage(llm.UserStringMessage("hello"))
-if err := testLoop.ProcessOneTurn(context.Background()); err != nil {
-    t.Fatalf("loop failed: %v", err)
-}
-
-last := service.GetLastRequest()
-require.NotNil(t, last)
 ```
+
+Tests can inspect `GetLastRequest` when they need to assert the exact Dago
+request sent by the loop.

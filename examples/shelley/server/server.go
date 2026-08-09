@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	dmodel "github.com/semistrict/dago/model"
 	"tailscale.com/util/singleflight"
 
 	"shelley.exe.dev/claudetool"
@@ -143,9 +144,9 @@ type StreamResponse struct {
 	SnapshotComplete bool `json:"snapshot_complete,omitempty"`
 }
 
-// LLMProvider is an interface for getting LLM services
+// LLMProvider resolves native Dago chat models and their catalog metadata.
 type LLMProvider interface {
-	GetService(modelID string) (llm.Service, error)
+	GetChat(modelID string) (dmodel.Chat, error)
 	GetAvailableModels() []string
 	HasModel(modelID string) bool
 	GetModelInfo(modelID string) *models.ModelInfo

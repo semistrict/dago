@@ -1116,13 +1116,12 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		modelID = s.effectiveDefaultModel(s.getModelList())
 	}
 
-	llmService, err := s.llmManager.GetService(modelID)
+	chatModel, err := s.llmManager.GetChat(modelID)
 	if err != nil {
 		s.logger.Error("Unsupported model requested", "model", modelID, "error", err)
 		http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
 		return
 	}
-
 	userEmail := r.Header.Get("X-ExeDev-Email")
 	// Thread the authenticated exe.dev account down to the message recorder so
 	// the user turn's row is attributed to its author. The active manager is a
@@ -1183,7 +1182,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 			// The promoted row is authoritative — re-resolve so the loop pins
 			// to the model the user actually picked.
 			modelID = *promoted.Model
-			llmService, err = s.llmManager.GetService(modelID)
+			chatModel, err = s.llmManager.GetChat(modelID)
 			if err != nil {
 				s.logger.Error("Unsupported model on promoted draft", "model", modelID, "error", err)
 				http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
@@ -1239,7 +1238,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// failures abort the request — the user's message is not delivered.
 	reasoningLevel := manager.GetThinkingLevel()
 	if reasoningLevel == "" {
-		reasoningLevel = llm.ServiceDefaultReasoningLevel(llmService)
+		reasoningLevel = chatModel.Profile().DefaultReasoningLevel
 	}
 	newMsg, err := RunChatMessageHookIn(s.hooksDir, ChatMessageHookInput{
 		Message: req.Message,
@@ -1285,7 +1284,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
+	firstMessage, err := manager.AcceptUserMessage(ctx, chatModel, modelID, userMessage)
 	if errors.Is(err, errConversationModelMismatch) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1342,15 +1341,22 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get LLM service for the requested model
+	// Resolve the requested model.
 	modelID := req.Model
 	if modelID == "" {
 		modelID = s.effectiveDefaultModel(s.getModelList())
 	}
 
-	llmService, err := s.llmManager.GetService(modelID)
+	_, err := s.llmManager.GetChat(modelID)
 	if err != nil {
 		s.logger.Error("Unsupported model requested", "model", modelID, "error", err)
+		http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
+		return
+	}
+
+	chatModel, err := s.llmManager.GetChat(modelID)
+	if err != nil {
+		s.logger.Error("Native chat model unavailable", "model", modelID, "error", err)
 		http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
 		return
 	}
@@ -1405,14 +1411,18 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hookResult.Model != modelID {
-		newService, svcErr := s.llmManager.GetService(hookResult.Model)
+		_, svcErr := s.llmManager.GetChat(hookResult.Model)
 		if svcErr != nil {
 			s.logger.Error("Hook returned unsupported model, keeping original", "hookModel", hookResult.Model, "error", svcErr)
 		} else if msg := validateModelReasoningLevel(findModelInfo(hookResult.Model, s.getModelList()), convOpts.ThinkingLevel); msg != "" {
 			s.logger.Error("Hook returned model incompatible with reasoning level, keeping original", "hookModel", hookResult.Model, "error", msg)
 		} else {
 			modelID = hookResult.Model
-			llmService = newService
+			chatModel, err = s.llmManager.GetChat(modelID)
+			if err != nil {
+				http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
+				return
+			}
 			if err := s.db.ForceUpdateConversationModel(ctx, conversationID, modelID); err != nil {
 				s.logger.Error("Failed to update model from hook", "error", err)
 			}
@@ -1483,7 +1493,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
+	firstMessage, err := manager.AcceptUserMessage(ctx, chatModel, modelID, userMessage)
 	if errors.Is(err, errConversationModelMismatch) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1621,7 +1631,7 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 		if modelID == "" {
 			modelID = s.effectiveDefaultModel(s.getModelList())
 		}
-		llmService, err := s.llmManager.GetService(modelID)
+		chatModel, err := s.llmManager.GetChat(modelID)
 		if err != nil {
 			http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
 			return
@@ -1631,7 +1641,7 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
-		if err := manager.ensureLoop(llmService, modelID); err != nil {
+		if err := manager.ensureLoop(chatModel, modelID); err != nil {
 			s.logger.Error("Failed to ensure loop for retry", "conversationID", conversationID, "error", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
@@ -1726,12 +1736,12 @@ func (s *Server) handleContinueConversation(w http.ResponseWriter, r *http.Reque
 	if newModel == "" {
 		newModel = models.Default().ID
 	}
-	if _, err := s.llmManager.GetService(newModel); err != nil || !isReadyModel(newModel, modelList) {
+	if _, err := s.llmManager.GetChat(newModel); err != nil || !isReadyModel(newModel, modelList) {
 		http.Error(w, fmt.Sprintf("Unknown or unavailable model: %s", newModel), http.StatusBadRequest)
 		return
 	}
 
-	llmService, err := s.llmManager.GetService(newModel)
+	chatModel, err := s.llmManager.GetChat(newModel)
 	if err != nil {
 		http.Error(w, unsupportedModelMessage(newModel, s.getModelList()), http.StatusBadRequest)
 		return
@@ -1747,7 +1757,7 @@ func (s *Server) handleContinueConversation(w http.ResponseWriter, r *http.Reque
 		ch.NewModelDisplay = modelDisplayName(newModel, modelList)
 	}
 
-	if err := manager.ContinueAfterRefusal(ctx, ch, llmService, newModel); err != nil {
+	if err := manager.ContinueAfterRefusal(ctx, ch, chatModel, newModel); err != nil {
 		if errors.Is(err, errNotRefusal) {
 			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]string{"status": "not_applicable"})
@@ -2375,7 +2385,7 @@ func (s *Server) handleModelCommand(ctx context.Context, w http.ResponseWriter, 
 
 	// Validate the chosen model is present, ready, and constructible.
 	if modelSet {
-		if _, err := s.llmManager.GetService(newModel); err != nil || !isReadyModel(newModel, modelList) {
+		if _, err := s.llmManager.GetChat(newModel); err != nil || !isReadyModel(newModel, modelList) {
 			return reply(fmt.Sprintf("Unknown or unavailable model %q.\n\n%s", newModel, modelCommandStatus(currentModel, currentReasoning, modelList)))
 		}
 	}
@@ -2586,20 +2596,19 @@ func (s *Server) getModelList() []ModelInfo {
 			if id == "predictable" {
 				continue
 			}
-			svc, err := s.llmManager.GetService(id)
+			chat, err := s.llmManager.GetChat(id)
 			maxCtx := 0
 			supportsImages := false
 			supportsReasoning := false
 			var reasoningLevels []string
 			defaultReasoning := ""
-			if err == nil && svc != nil {
-				maxCtx = svc.TokenContextWindow()
-				supportsImages = svc.SupportsImages()
-				supportsReasoning = llm.SupportsReasoning(svc)
-				for _, level := range llm.SupportedReasoningLevels(svc) {
-					reasoningLevels = append(reasoningLevels, level.Name())
-				}
-				defaultReasoning = llm.ServiceDefaultReasoningLevel(svc)
+			if err == nil && chat != nil {
+				profile := chat.Profile()
+				maxCtx = profile.ContextWindow
+				supportsImages = profile.SupportsImages
+				supportsReasoning = profile.SupportsReasoning
+				reasoningLevels = append(reasoningLevels, profile.ReasoningLevels...)
+				defaultReasoning = profile.DefaultReasoningLevel
 			}
 			info := ModelInfo{ID: id, Ready: err == nil, MaxContextTokens: maxCtx, SupportsImages: supportsImages, SupportsReasoning: supportsReasoning, ReasoningLevels: reasoningLevels, DefaultReasoningLevel: defaultReasoning}
 			// Add display name and source from model info
@@ -3764,7 +3773,7 @@ func (s *Server) handleCreateDraft(w http.ResponseWriter, r *http.Request) {
 	// their model setup. An EXPLICIT model is still validated (that's a real
 	// client error); an empty/defaulted one is left to the promoting send.
 	if req.Model != "" {
-		if _, err := s.llmManager.GetService(modelID); err != nil {
+		if _, err := s.llmManager.GetChat(modelID); err != nil {
 			http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
 			return
 		}
@@ -3829,7 +3838,7 @@ func (s *Server) handleUpdateDraft(w http.ResponseWriter, r *http.Request, conve
 			http.Error(w, "model must not be empty", http.StatusBadRequest)
 			return
 		}
-		if _, err := s.llmManager.GetService(*req.Model); err != nil {
+		if _, err := s.llmManager.GetChat(*req.Model); err != nil {
 			http.Error(w, unsupportedModelMessage(*req.Model, s.getModelList()), http.StatusBadRequest)
 			return
 		}

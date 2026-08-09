@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -16,14 +15,6 @@ import (
 )
 
 func TestLoopPrefersNativeToolOverLegacyFacade(t *testing.T) {
-	var legacyCalls atomic.Int64
-	legacy := &llm.Tool{
-		Name: "lookup", Description: "lookup", InputSchema: llm.EmptySchema(),
-		Run: func(context.Context, json.RawMessage) llm.ToolOut {
-			legacyCalls.Add(1)
-			return llm.ErrorfToolOut("legacy tool path called")
-		},
-	}
 	native := dtool.Func{
 		Spec: dtool.Definition{Name: "lookup", Description: "lookup", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
 		Run: func(_ context.Context, _ json.RawMessage, runtime dtool.Runtime) (dtool.Result, error) {
@@ -34,10 +25,9 @@ func TestLoopPrefersNativeToolOverLegacyFacade(t *testing.T) {
 		},
 	}
 	chat := &nativeToolChat{}
-	service := &nativeToolService{chat: chat}
 	var recorded []llm.Message
 	runtime := NewLoop(Config{
-		LLM: service, Tools: []*llm.Tool{legacy}, NativeTools: []dtool.Tool{native},
+		Model: chat, Tools: []dtool.Tool{native},
 		RecordMessage: func(_ context.Context, item llm.Message, _ llm.Usage, _ []llm.PurposedUsage) error {
 			recorded = append(recorded, item)
 			return nil
@@ -46,9 +36,6 @@ func TestLoopPrefersNativeToolOverLegacyFacade(t *testing.T) {
 	runtime.QueueUserMessage(llm.UserStringMessage("lookup"))
 	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
-	}
-	if legacyCalls.Load() != 0 {
-		t.Fatalf("legacy tool calls = %d, want 0", legacyCalls.Load())
 	}
 	if chat.calls.Load() != 2 {
 		t.Fatalf("model calls = %d, want 2", chat.calls.Load())
@@ -60,27 +47,13 @@ func TestLoopPrefersNativeToolOverLegacyFacade(t *testing.T) {
 }
 
 func TestResolveNativeToolsCanRequireCompleteNativeCoverage(t *testing.T) {
-	legacy := &llm.Tool{
-		Name: "missing", Description: "missing native implementation",
-		InputSchema: llm.MustSchema(`{"type":"object","properties":{}}`),
-		Run:         func(context.Context, json.RawMessage) llm.ToolOut { return llm.ToolOut{} },
+	resolved, err := validateTools(nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err := resolveNativeTools([]*llm.Tool{legacy}, nil, nativeToolOptions{RequireNative: true})
-	if err == nil || !strings.Contains(err.Error(), "no native implementation") {
-		t.Fatalf("error = %v", err)
+	if len(resolved) != 0 {
+		t.Fatalf("resolved tools = %#v, want no implicit legacy fallback", resolved)
 	}
-}
-
-type nativeToolService struct{ chat *nativeToolChat }
-
-func (service *nativeToolService) DagoChat() dmodel.Chat { return service.chat }
-func (*nativeToolService) Provider() string              { return "native-test" }
-func (*nativeToolService) TokenContextWindow() int       { return 128000 }
-func (*nativeToolService) MaxImageDimension() int        { return 0 }
-func (*nativeToolService) MaxImageBytes() int            { return 0 }
-func (*nativeToolService) SupportsImages() bool          { return false }
-func (*nativeToolService) Do(context.Context, *llm.Request) (*llm.Response, error) {
-	return nil, fmt.Errorf("legacy model path called")
 }
 
 type nativeToolChat struct{ calls atomic.Int64 }

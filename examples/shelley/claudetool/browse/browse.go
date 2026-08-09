@@ -3,7 +3,6 @@ package browse
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -542,10 +541,6 @@ type screenshotInput struct {
 	Timeout  string `json:"timeout,omitempty"`
 }
 
-func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) llm.ToolOut {
-	return legacyBrowserResult(b.screenshot(ctx, input))
-}
-
 func (b *BrowseTools) screenshot(ctx context.Context, input screenshotInput) (browserExecution, error) {
 	// Try to get a browser context; if unavailable, return an error
 	browserCtx, err := b.GetBrowserContext()
@@ -611,7 +606,7 @@ func (b *BrowseTools) screenshot(ctx context.Context, input screenshotInput) (br
 	// gets saved to disk and shown in the UI via Display; the model just gets
 	// a text note with the path. A nil service (tests, ad-hoc callers) is
 	// treated as image-capable.
-	if svc := llm.ServiceFromContext(ctx); svc != nil && !svc.SupportsImages() {
+	if profile, ok := llm.ModelProfileFromContext(ctx); ok && !profile.SupportsImages {
 		execution := browserText(fmt.Sprintf("Screenshot taken (saved as %s)", screenshotPath))
 		execution.Display = display
 		return execution, nil
@@ -636,19 +631,9 @@ func (b *BrowseTools) screenshot(ctx context.Context, input screenshotInput) (br
 	return browserImage(description, prepared.Data, prepared.MediaType, prepared.Width, prepared.Height, display), nil
 }
 
-// GetTools returns all browser tools. Emulation, network, accessibility, and
-// profiling are folded into the single combined "browser" tool via its
-// "action" field (emulate_*, network_*, accessibility_*, profile_*), so only
-// the combined tool and read_image are exposed as top-level tools.
-func (b *BrowseTools) GetTools() []*llm.Tool {
-	return []*llm.Tool{
-		b.CombinedTool(),
-		b.ReadImageTool(),
-	}
-}
-
-// CombinedTool returns a single tool that handles all browser actions via an "action" field.
-func (b *BrowseTools) CombinedTool() *llm.Tool {
+// browserDefinition describes the single browser tool that dispatches every
+// browser action through its action field.
+func browserDefinition() dtool.Definition {
 	description := `Browser automation tool. Use the "action" field to select an operation:
 
 - action: "navigate"
@@ -826,23 +811,16 @@ Performance profiling (profile_* actions):
 		"required": ["action"]
 	}`
 
-	return &llm.Tool{
-		Name:        "browser",
-		Description: description,
-		InputSchema: json.RawMessage(schema),
-		Run:         llm.RunJSON(b.runCombined),
+	return dtool.Definition{
+		Name: "browser", Description: description, InputSchema: json.RawMessage(schema),
 	}
 }
 
 // NativeCombinedTool executes every browser action through Dago's tool and
-// multimodal content contracts. CombinedTool remains the pinned test facade.
+// multimodal content contracts.
 func (b *BrowseTools) NativeCombinedTool() dtool.Tool {
-	legacy := b.CombinedTool()
 	return dtool.Func{
-		Spec: dtool.Definition{
-			Name: legacy.Name, Description: legacy.Description,
-			InputSchema: append(json.RawMessage(nil), legacy.InputSchema...),
-		},
+		Spec: browserDefinition(),
 		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
 			var input combinedInput
 			if err := json.Unmarshal(raw, &input); err != nil {
@@ -854,16 +832,6 @@ func (b *BrowseTools) NativeCombinedTool() dtool.Tool {
 			}
 			return execution.dagoResult()
 		},
-	}
-}
-
-// ReadImageTool returns a standalone tool for reading image files.
-func (b *BrowseTools) ReadImageTool() *llm.Tool {
-	definition := readImageDefinition()
-	return &llm.Tool{
-		Name: definition.Name, Description: definition.Description,
-		InputSchema: append(json.RawMessage(nil), definition.InputSchema...),
-		Run:         llm.RunJSON(b.readImageRun),
 	}
 }
 
@@ -905,10 +873,15 @@ func (b *BrowseTools) NativeReadImageTool() dtool.Tool {
 			if err != nil {
 				return dtool.Result{}, fmt.Errorf("encode read_image display: %w", err)
 			}
+			width, _ := json.Marshal(execution.Image.Width)
+			height, _ := json.Marshal(execution.Image.Height)
 			return dtool.Result{
 				Content: []dmessage.ContentBlock{
 					{Type: dmessage.BlockText, Text: execution.Description},
-					{Type: dmessage.BlockImage, Data: execution.Image.Data, MIMEType: execution.Image.MediaType},
+					{
+						Type: dmessage.BlockImage, Data: execution.Image.Data, MIMEType: execution.Image.MediaType,
+						Extra: map[string]json.RawMessage{browserImageWidthKey: width, browserImageHeightKey: height},
+					},
 				},
 				Artifact: artifact,
 			}, nil
@@ -951,10 +924,6 @@ type combinedInput struct {
 
 	// Profiling fields (profile_* actions).
 	Categories string `json:"categories,omitempty"`
-}
-
-func (b *BrowseTools) runCombined(ctx context.Context, input combinedInput) llm.ToolOut {
-	return legacyBrowserResult(b.executeCombined(ctx, input))
 }
 
 func (b *BrowseTools) executeCombined(ctx context.Context, input combinedInput) (browserExecution, error) {
@@ -1102,21 +1071,6 @@ type readImageInput struct {
 	Timeout string `json:"timeout,omitempty"`
 }
 
-func (b *BrowseTools) readImageRun(ctx context.Context, input readImageInput) llm.ToolOut {
-	execution, err := b.readImage(ctx, input)
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	return llm.ToolOut{LLMContent: []llm.Content{
-		{Type: llm.ContentTypeText, Text: execution.Description},
-		{
-			Type: llm.ContentTypeText, MediaType: execution.Image.MediaType,
-			Data:         base64.StdEncoding.EncodeToString(execution.Image.Data),
-			DisplayWidth: execution.Image.Width, DisplayHeight: execution.Image.Height,
-		},
-	}, Display: execution.Display}
-}
-
 type readImageExecution struct {
 	Description string
 	Image       imageutil.Prepared
@@ -1186,11 +1140,11 @@ func readImageDisplay(path string, prepared imageutil.Prepared) (map[string]any,
 }
 
 func imageLimits(ctx context.Context) (maxDimension, maxBytes int) {
-	svc := llm.ServiceFromContext(ctx)
-	if svc == nil {
+	profile, ok := llm.ModelProfileFromContext(ctx)
+	if !ok {
 		return 0, 0
 	}
-	return svc.MaxImageDimension(), svc.MaxImageBytes()
+	return profile.MaxImageDimension, profile.MaxImageBytes
 }
 
 // parseTimeout parses a timeout string and returns a time.Duration
@@ -1299,11 +1253,6 @@ func (b *BrowseTools) GetRecentDownloads() []*DownloadInfo {
 		}
 	}
 	return completed
-}
-
-// toolOutWithDownloads creates a tool output that includes any completed downloads
-func (b *BrowseTools) toolOutWithDownloads(message string) llm.ToolOut {
-	return b.executionWithDownloads(message).legacyResult()
 }
 
 func (b *BrowseTools) executionWithDownloads(message string) browserExecution {

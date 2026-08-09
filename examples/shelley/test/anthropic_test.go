@@ -23,9 +23,9 @@ import (
 
 func TestWithAnthropicAPI(t *testing.T) {
 	// Skip if no API key
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		t.Skip("ANTHROPIC_API_KEY not set, skipping Anthropic API test")
+		t.Skip("OPENAI_API_KEY not set, skipping Responses API test")
 	}
 
 	// Create temporary database
@@ -45,12 +45,7 @@ func TestWithAnthropicAPI(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo, // Less verbose for real API test
 	}))
-	srcs := []modelsources.Source{modelsources.Env(
-		os.Getenv("ANTHROPIC_API_KEY"),
-		os.Getenv("OPENAI_API_KEY"),
-		os.Getenv("GEMINI_API_KEY"),
-		os.Getenv("FIREWORKS_API_KEY"),
-	)}
+	srcs := []modelsources.Source{modelsources.Env(apiKey)}
 	llmConfig := &server.LLMConfig{
 		Models: modelsources.Build(models.All(), srcs, nil, logger),
 		Logger: logger,
@@ -85,7 +80,7 @@ func TestWithAnthropicAPI(t *testing.T) {
 		// Send a simple message
 		chatReq := map[string]interface{}{
 			"message": "Hello! Please introduce yourself briefly and tell me what you can help me with. Keep your response under 50 words.",
-			"model":   "claude-haiku-4.5",
+			"model":   "gpt-5.6-sol",
 		}
 		reqBody, _ := json.Marshal(chatReq)
 
@@ -194,7 +189,7 @@ func TestWithAnthropicAPI(t *testing.T) {
 		// Ask Claude to think about something
 		chatReq := map[string]interface{}{
 			"message": "Please use the think tool to plan how you would help someone learn to code. Keep it brief.",
-			"model":   "claude-haiku-4.5",
+			"model":   "gpt-5.6-sol",
 		}
 		reqBody, _ := json.Marshal(chatReq)
 

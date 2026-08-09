@@ -9,7 +9,9 @@ import (
 	"reflect"
 	"testing"
 
-	"shelley.exe.dev/llm"
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+	dtool "github.com/semistrict/dago/tool"
 )
 
 func TestKeywordInputSearchTermsFlexible(t *testing.T) {
@@ -40,25 +42,16 @@ type mockLLMProvider struct{}
 
 type mockService struct{}
 
-func (m *mockService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-	return &llm.Response{Content: llm.TextContent("test response")}, nil
+func (m *mockService) Invoke(context.Context, dmodel.Request) (dmodel.Response, error) {
+	return dmodel.Response{Message: dmessage.Assistant("test response")}, nil
 }
-
-func (m *mockService) Provider() string { return "" }
-
-func (m *mockService) TokenContextWindow() int {
-	return 4096
+func (m *mockService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+	return dmodel.EmptyStream{}, nil
 }
-
-func (m *mockService) MaxImageDimension() int {
-	return 0
+func (m *mockService) Profile() dmodel.Profile {
+	return dmodel.Profile{ContextWindow: 4096, SupportsImages: true}
 }
-
-func (m *mockService) MaxImageBytes() int {
-	return 0
-}
-
-func (m *mockLLMProvider) GetService(modelID string) (llm.Service, error) {
+func (m *mockLLMProvider) GetChat(string) (dmodel.Chat, error) {
 	return &mockService{}, nil
 }
 
@@ -92,23 +85,20 @@ func TestNewKeywordToolWithWorkingDir(t *testing.T) {
 func TestKeywordTool_Tool(t *testing.T) {
 	provider := &mockLLMProvider{}
 	keywordTool := NewKeywordTool(provider)
-	tool := keywordTool.Tool()
+	tool := keywordTool.NativeTool()
 
 	if tool == nil {
 		t.Fatal("Tool() returned nil")
 	}
 
-	if tool.Name != keywordName {
-		t.Errorf("expected name %q, got %q", keywordName, tool.Name)
+	if tool.Definition().Name != keywordName {
+		t.Errorf("expected name %q, got %q", keywordName, tool.Definition().Name)
 	}
 
-	if tool.Description != keywordDescription {
-		t.Errorf("expected description %q, got %q", keywordDescription, tool.Description)
+	if tool.Definition().Description != keywordDescription {
+		t.Errorf("expected description %q, got %q", keywordDescription, tool.Definition().Description)
 	}
 
-	if tool.Run == nil {
-		t.Error("Run function not set")
-	}
 }
 
 func TestFindRepoRoot(t *testing.T) {
@@ -161,15 +151,17 @@ func TestKeywordRun(t *testing.T) {
 		Query:       "what files exist in this project",
 		SearchTerms: stringSlice{"test", "file"},
 	}
-	result := keywordTool.keywordRun(context.Background(), input)
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := keywordTool.NativeTool().Execute(context.Background(), raw, dtool.Runtime{})
 
-	if result.Error != nil {
-		t.Errorf("unexpected error: %v", result.Error)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
 	}
 
-	if len(result.LLMContent) == 0 {
+	if len(result.Content) == 0 {
 		t.Error("expected LLM content")
 	}
 }
-
-func (m *mockService) SupportsImages() bool { return true }

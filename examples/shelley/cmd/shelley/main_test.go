@@ -16,8 +16,9 @@ import (
 	"testing"
 	"time"
 
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/exeenv"
-	"shelley.exe.dev/llm"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/modelsources"
 	"shelley.exe.dev/slug"
@@ -28,9 +29,9 @@ type tieredModelProvider struct {
 	infos map[string]*models.ModelInfo
 }
 
-func (p *tieredModelProvider) GetService(string) (llm.Service, error) { return nil, nil }
-func (p *tieredModelProvider) GetAvailableModels() []string           { return p.ids }
-func (p *tieredModelProvider) HasModel(string) bool                   { return true }
+func (p *tieredModelProvider) GetChat(string) (dmodel.Chat, error) { return nil, nil }
+func (p *tieredModelProvider) GetAvailableModels() []string        { return p.ids }
+func (p *tieredModelProvider) HasModel(string) bool                { return true }
 func (p *tieredModelProvider) GetModelInfo(id string) *models.ModelInfo {
 	return p.infos[id]
 }

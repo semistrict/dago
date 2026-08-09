@@ -1,6 +1,10 @@
 package llm
 
-import "context"
+import (
+	"context"
+
+	dmodel "github.com/semistrict/dago/model"
+)
 
 type workingDirCtxKeyType string
 
@@ -54,20 +58,15 @@ func ToolUseID(ctx context.Context) string {
 	return id
 }
 
-type llmServiceCtxKeyType string
+type modelProfileCtxKeyType string
 
-const llmServiceCtxKey llmServiceCtxKeyType = "llmService"
+const modelProfileCtxKey modelProfileCtxKeyType = "modelProfile"
 
-// WithLLMService attaches the LLM service this tool call is running under to
-// ctx. Tools that need provider-specific knowledge (e.g. image size limits)
-// can retrieve it with ServiceFromContext.
-func WithLLMService(ctx context.Context, svc Service) context.Context {
-	return context.WithValue(ctx, llmServiceCtxKey, svc)
+func WithModelProfile(ctx context.Context, profile dmodel.Profile) context.Context {
+	return context.WithValue(ctx, modelProfileCtxKey, profile)
 }
 
-// ServiceFromContext returns the LLM service attached to ctx by WithLLMService,
-// or nil if none was set (e.g. in tests that invoke a tool directly).
-func ServiceFromContext(ctx context.Context) Service {
-	svc, _ := ctx.Value(llmServiceCtxKey).(Service)
-	return svc
+func ModelProfileFromContext(ctx context.Context) (dmodel.Profile, bool) {
+	profile, ok := ctx.Value(modelProfileCtxKey).(dmodel.Profile)
+	return profile, ok
 }

@@ -1,6 +1,6 @@
 package claudetool
 
-import "shelley.exe.dev/llm"
+import dtool "github.com/semistrict/dago/tool"
 
 // ToolInfo describes a tool available to conversations.
 type ToolInfo struct {
@@ -50,11 +50,11 @@ func IsToolEnabled(name string, overrides map[string]string, disableAll bool) bo
 }
 
 // FilterTools returns only the tools that are enabled under the given overrides.
-func FilterTools(tools []*llm.Tool, overrides map[string]string, disableAll bool) []*llm.Tool {
-	out := make([]*llm.Tool, 0, len(tools))
-	for _, t := range tools {
-		if IsToolEnabled(t.Name, overrides, disableAll) {
-			out = append(out, t)
+func FilterTools(tools []dtool.Tool, overrides map[string]string, disableAll bool) []dtool.Tool {
+	out := make([]dtool.Tool, 0, len(tools))
+	for _, executable := range tools {
+		if IsToolEnabled(executable.Definition().Name, overrides, disableAll) {
+			out = append(out, executable)
 		}
 	}
 	return out

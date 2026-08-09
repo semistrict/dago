@@ -1,279 +1,30 @@
 package loop
 
 import (
-	"context"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	dmessage "github.com/semistrict/dago/message"
 	dmodel "github.com/semistrict/dago/model"
 	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
 )
 
 const (
 	shelleyMessageMetadata  = "shelley.message.v1"
-	shelleyResponseMetadata = "shelley.response.v1"
 	shelleyToolArtifact     = "shelley.tool_result.v1"
 	openAIReasoningStateKey = "openai.responses.reasoning"
+	displayWidthKey         = "shelley.display_width"
+	displayHeightKey        = "shelley.display_height"
 )
 
 type openAIReasoningState struct {
 	ID               string                                `json:"id"`
 	Summary          []llm.OpenAIResponsesReasoningSummary `json:"summary"`
 	EncryptedContent string                                `json:"encrypted_content"`
-}
-
-// nativeChatOptions supplies the request-scoped controls that are not part of
-// Dago's provider-neutral request shape yet.
-type nativeChatOptions struct {
-	ThinkingLevel func() llm.ThinkingLevel
-	OnRetry       func(llm.RetryEvent)
-}
-
-// nativeChat exposes any Shelley model implementation through Dago's model
-// contract. The Dago agent graph remains the sole owner of the model/tool loop.
-func nativeChat(service llm.Service, options nativeChatOptions) dmodel.Chat {
-	chat, _ := resolveNativeChat(service, options, false)
-	return chat
-}
-
-func resolveNativeChat(service llm.Service, options nativeChatOptions, requireNative bool) (dmodel.Chat, error) {
-	if native, ok := service.(interface{ DagoChat() dmodel.Chat }); ok {
-		useDirect := true
-		if policy, ok := service.(interface{ UseDagoChatInAgent() bool }); ok {
-			useDirect = policy.UseDagoChatInAgent()
-		}
-		if chat := native.DagoChat(); chat != nil && (useDirect || requireNative) {
-			return chat, nil
-		}
-	}
-	if requireNative {
-		return nil, fmt.Errorf("Shelley model %T does not expose a native Dago chat", service)
-	}
-	return &chatAdapter{service: service, options: options}, nil
-}
-
-type chatAdapter struct {
-	service llm.Service
-	options nativeChatOptions
-}
-
-func (adapter *chatAdapter) Profile() dmodel.Profile {
-	if adapter == nil || adapter.service == nil {
-		return dmodel.Profile{}
-	}
-	profile := dmodel.Profile{
-		Provider: adapter.service.Provider(), ContextWindow: adapter.service.TokenContextWindow(),
-		ToolCalling: true, ParallelToolCalls: false, NativeStreaming: true,
-	}
-	if identified, ok := adapter.service.(interface{ ModelID() string }); ok {
-		profile.Model = identified.ModelID()
-	}
-	return profile
-}
-
-func (adapter *chatAdapter) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
-	converted, err := adapter.requestFromDago(request, nil)
-	if err != nil {
-		return dmodel.Response{}, err
-	}
-	response, err := adapter.do(ctx, converted)
-	if err != nil {
-		return dmodel.Response{}, err
-	}
-	return responseToDago(response)
-}
-
-func (adapter *chatAdapter) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
-	if adapter == nil || adapter.service == nil {
-		return nil, fmt.Errorf("dago runtime: Shelley service is required")
-	}
-	streamCtx, cancel := context.WithCancel(ctx)
-	result := &shelleyStream{cancel: cancel, chunks: make(chan streamItem, 64)}
-	converted, err := adapter.requestFromDago(request, func(delta llm.StreamDelta) {
-		messageDelta := dmessage.Message{Role: dmessage.RoleAssistant}
-		index := delta.Index
-		switch delta.Type {
-		case "text":
-			messageDelta.Content = []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: delta.Text, Index: &index}}
-		case "thinking":
-			messageDelta.Content = []dmessage.ContentBlock{{Type: dmessage.BlockReasoning, Reasoning: delta.Text, Index: &index}}
-		default:
-			// Tool input deltas do not carry a stable call id/name in Shelley's
-			// callback. The complete tool call is emitted with the final response.
-			return
-		}
-		result.emit(streamCtx, streamItem{chunk: dmodel.Chunk{MessageDelta: messageDelta}})
-		result.mu.Lock()
-		result.sawContent = true
-		result.mu.Unlock()
-	})
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	go func() {
-		defer close(result.chunks)
-		response, runErr := adapter.do(streamCtx, converted)
-		if runErr != nil {
-			result.emit(streamCtx, streamItem{err: runErr})
-			return
-		}
-		convertedResponse, convertErr := responseToDago(response)
-		if convertErr != nil {
-			result.emit(streamCtx, streamItem{err: convertErr})
-			return
-		}
-		result.mu.Lock()
-		sawContent := result.sawContent
-		result.mu.Unlock()
-		terminal := convertedResponse.Message
-		if sawContent {
-			terminal.Content = nil
-		}
-		result.emit(streamCtx, streamItem{chunk: dmodel.Chunk{MessageDelta: terminal, Done: true}})
-	}()
-	return result, nil
-}
-
-func (adapter *chatAdapter) do(ctx context.Context, request *llm.Request) (*llm.Response, error) {
-	response, err := adapter.service.Do(ctx, request)
-	if err != nil || response == nil || response.StopReason != llm.StopReasonPause {
-		return response, err
-	}
-	merged := append([]llm.Content(nil), response.Content...)
-	usage := response.Usage
-	started := response.StartTime
-	for continuation := 0; response.StopReason == llm.StopReasonPause; continuation++ {
-		if continuation >= 16 {
-			break
-		}
-		nextRequest := *request
-		nextRequest.Messages = append(append([]llm.Message(nil), request.Messages...), llm.Message{
-			Role: llm.MessageRoleAssistant, Content: append([]llm.Content(nil), merged...),
-		})
-		response, err = adapter.service.Do(ctx, &nextRequest)
-		if err != nil {
-			return nil, err
-		}
-		usage.Add(response.Usage)
-		merged = append(merged, response.Content...)
-	}
-	resolved := *response
-	resolved.Content = merged
-	resolved.Usage = usage
-	resolved.StartTime = started
-	return &resolved, nil
-}
-
-func (adapter *chatAdapter) requestFromDago(request dmodel.Request, stream func(llm.StreamDelta)) (*llm.Request, error) {
-	if adapter == nil || adapter.service == nil {
-		return nil, fmt.Errorf("dago runtime: Shelley service is required")
-	}
-	converted := &llm.Request{OnStream: stream, OnRetry: adapter.options.OnRetry}
-	if request.Reasoning != nil {
-		converted.ReasoningEffort = request.Reasoning.Effort
-	}
-	if adapter.options.ThinkingLevel != nil {
-		converted.ThinkingLevel = adapter.options.ThinkingLevel()
-	}
-	for _, item := range request.Messages {
-		if item.Role == dmessage.RoleSystem {
-			converted.System = append(converted.System, llm.SystemContent{Text: item.TextContent()})
-			continue
-		}
-		messages, err := messagesFromDago([]dmessage.Message{item})
-		if err != nil {
-			return nil, err
-		}
-		converted.Messages = append(converted.Messages, messages...)
-	}
-	converted.Messages = combineToolResultMessages(converted.Messages)
-	for _, definition := range request.Tools {
-		converted.Tools = append(converted.Tools, &llm.Tool{
-			Name: definition.Name, Description: definition.Description,
-			InputSchema: append(json.RawMessage(nil), definition.InputSchema...), EndsTurn: definition.Direct,
-		})
-	}
-	if request.ToolChoice != nil {
-		choice := &llm.ToolChoice{Name: request.ToolChoice.Name}
-		switch request.ToolChoice.Mode {
-		case "required":
-			choice.Type = llm.ToolChoiceTypeAny
-		case "none":
-			choice.Type = llm.ToolChoiceTypeNone
-		case "tool", "function":
-			choice.Type = llm.ToolChoiceTypeTool
-		default:
-			choice.Type = llm.ToolChoiceTypeAuto
-		}
-		converted.ToolChoice = choice
-	}
-	if request.PromptCache != nil {
-		if len(converted.Tools) > 0 {
-			converted.Tools[len(converted.Tools)-1].Cache = true
-		}
-		for index := len(converted.Messages) - 1; index >= 0; index-- {
-			if converted.Messages[index].Role == llm.MessageRoleUser && len(converted.Messages[index].Content) > 0 {
-				converted.Messages[index].Content[len(converted.Messages[index].Content)-1].Cache = true
-				break
-			}
-		}
-	}
-	return converted, nil
-}
-
-type streamItem struct {
-	chunk dmodel.Chunk
-	err   error
-}
-
-type shelleyStream struct {
-	cancel     context.CancelFunc
-	chunks     chan streamItem
-	mu         sync.Mutex
-	sawContent bool
-	closeOnce  sync.Once
-}
-
-func (stream *shelleyStream) emit(ctx context.Context, item streamItem) {
-	select {
-	case stream.chunks <- item:
-	case <-ctx.Done():
-	}
-}
-
-func (stream *shelleyStream) Next(ctx context.Context) (dmodel.Chunk, error) {
-	select {
-	case <-ctx.Done():
-		return dmodel.Chunk{}, ctx.Err()
-	case item, ok := <-stream.chunks:
-		if !ok {
-			return dmodel.Chunk{}, io.EOF
-		}
-		return item.chunk, item.err
-	}
-}
-
-func (stream *shelleyStream) Close() error {
-	stream.closeOnce.Do(stream.cancel)
-	return nil
-}
-
-// nativeToolOptions supplies the Shelley context values expected by existing tools.
-type nativeToolOptions struct {
-	WorkingDir    func() string
-	Progress      llm.ToolProgressFunc
-	Service       llm.Service
-	RequireNative bool
 }
 
 type toolArtifactEnvelope struct {
@@ -283,12 +34,11 @@ type toolArtifactEnvelope struct {
 	OtherUsage []llm.PurposedUsage `json:"other_usage,omitempty"`
 }
 
-// resolveNativeTools selects production-native executables by name and adapts
-// only the remaining pinned Shelley test facades. Dago validates, schedules,
-// cancels, and checkpoints every returned tool.
-func resolveNativeTools(items []*llm.Tool, overrides []dtool.Tool, options nativeToolOptions) ([]dtool.Tool, error) {
-	nativeByName := make(map[string]dtool.Tool, len(overrides))
-	for _, item := range overrides {
+// validateTools validates the Dago-native executable set before agent creation.
+func validateTools(items []dtool.Tool) ([]dtool.Tool, error) {
+	names := make(map[string]struct{}, len(items))
+	result := make([]dtool.Tool, 0, len(items))
+	for _, item := range items {
 		if item == nil {
 			return nil, fmt.Errorf("native tool is nil")
 		}
@@ -296,87 +46,13 @@ func resolveNativeTools(items []*llm.Tool, overrides []dtool.Tool, options nativ
 		if err := definition.Validate(); err != nil {
 			return nil, fmt.Errorf("native tool %q: %w", definition.Name, err)
 		}
-		if nativeByName[definition.Name] != nil {
+		if _, exists := names[definition.Name]; exists {
 			return nil, fmt.Errorf("duplicate native tool %q", definition.Name)
 		}
-		nativeByName[definition.Name] = item
-	}
-	result := make([]dtool.Tool, 0, len(items))
-	for _, item := range items {
-		if item == nil || item.ServerSide {
-			continue
-		}
-		if native := nativeByName[item.Name]; native != nil {
-			result = append(result, native)
-			delete(nativeByName, item.Name)
-			continue
-		}
-		if options.RequireNative {
-			return nil, fmt.Errorf("dago runtime: tool %q has no native implementation", item.Name)
-		}
-		if item.Run == nil {
-			return nil, fmt.Errorf("dago runtime: tool %q has no implementation", item.Name)
-		}
-		definition := dtool.Definition{
-			Name: item.Name, Description: item.Description,
-			InputSchema: append(json.RawMessage(nil), item.InputSchema...), Direct: item.EndsTurn,
-		}
-		if err := definition.Validate(); err != nil {
-			return nil, fmt.Errorf("dago runtime: tool %q: %w", item.Name, err)
-		}
-		shelleyTool := item
-		result = append(result, dtool.Func{Spec: definition, Run: func(ctx context.Context, input json.RawMessage, runtime dtool.Runtime) (dtool.Result, error) {
-			toolCtx := ctx
-			if options.WorkingDir != nil {
-				if workingDir := options.WorkingDir(); workingDir != "" {
-					toolCtx = llm.WithWorkingDir(toolCtx, workingDir)
-				}
-			}
-			if options.Progress != nil {
-				toolCtx = llm.WithToolProgress(toolCtx, options.Progress)
-			}
-			toolCtx = llm.WithToolUseID(toolCtx, runtime.CallID)
-			if options.Service != nil {
-				toolCtx = llm.WithLLMService(toolCtx, options.Service)
-			}
-			var usage llmhttp.UsageAccumulator
-			toolCtx = llmhttp.WithUsageCollector(toolCtx, usage.Collect)
-			started := time.Now()
-			output := shelleyTool.Run(toolCtx, input)
-			finished := time.Now()
-			content := output.LLMContent
-			if output.Error != nil {
-				content = llm.TextContent(output.Error.Error())
-			}
-			exact := llm.Content{
-				Type: llm.ContentTypeToolResult, ToolUseID: runtime.CallID,
-				ToolError: output.Error != nil, ToolResult: content,
-				ToolUseStartTime: &started, ToolUseEndTime: &finished, Display: output.Display,
-			}
-			artifact, err := json.Marshal(toolArtifactEnvelope{
-				Version: 1, Kind: shelleyToolArtifact, Content: exact, OtherUsage: usage.Take(),
-			})
-			if err != nil {
-				return dtool.Result{}, fmt.Errorf("encode Shelley tool result: %w", err)
-			}
-			blocks := contentToDago(content)
-			if len(blocks) == 0 {
-				blocks = []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: ""}}
-			}
-			return dtool.Result{Content: blocks, Artifact: artifact}, nil
-		}})
-	}
-	if len(nativeByName) > 0 {
-		return nil, fmt.Errorf("native tool %q has no Shelley facade", firstToolName(nativeByName))
+		names[definition.Name] = struct{}{}
+		result = append(result, item)
 	}
 	return result, nil
-}
-
-func firstToolName(items map[string]dtool.Tool) string {
-	for name := range items {
-		return name
-	}
-	return ""
 }
 
 // messagesToDago converts persisted Shelley context into Dago checkpoint state.
@@ -475,14 +151,6 @@ func messagesFromDago(items []dmessage.Message) ([]llm.Message, error) {
 // responseFromDago recovers exact provider response metadata when available and
 // otherwise projects a native assistant message into Shelley's UI record.
 func responseFromDago(item dmessage.Message) (*llm.Response, bool, error) {
-	raw := item.ResponseMetadata[shelleyResponseMetadata]
-	if len(raw) > 0 {
-		var response llm.Response
-		if err := json.Unmarshal(raw, &response); err != nil {
-			return nil, false, fmt.Errorf("decode Shelley response metadata: %w", err)
-		}
-		return &response, true, nil
-	}
 	if item.Role != dmessage.RoleAssistant {
 		return nil, false, nil
 	}
@@ -492,6 +160,18 @@ func responseFromDago(item dmessage.Message) (*llm.Response, bool, error) {
 	response := llm.Response{
 		ID: item.ID, Role: llm.MessageRoleAssistant,
 		Content: contentFromDago(item.Content), StopReason: llm.StopReasonEndTurn,
+	}
+	finishReason, refusal := dmodel.Outcome(item)
+	switch finishReason {
+	case dmodel.FinishReasonMaxTokens:
+		response.StopReason = llm.StopReasonMaxTokens
+	case dmodel.FinishReasonRefusal:
+		response.StopReason = llm.StopReasonRefusal
+		if refusal != nil {
+			response.RefusalDetails = &llm.RefusalDetails{Category: refusal.Category, Explanation: refusal.Explanation}
+		}
+	case dmodel.FinishReasonToolCalls:
+		response.StopReason = llm.StopReasonToolUse
 	}
 	for _, call := range item.ToolCalls {
 		response.Content = append(response.Content, llm.Content{
@@ -507,6 +187,9 @@ func responseFromDago(item dmessage.Message) (*llm.Response, bool, error) {
 		response.Usage.OutputTokens = uint64(max(0, item.Usage.OutputTokens))
 		response.Usage.CacheCreationInputTokens = uint64(max(0, item.Usage.InputDetails["cache_creation"]))
 		response.Usage.CacheReadInputTokens = uint64(max(0, item.Usage.InputDetails["cache_read"]))
+		response.Usage.CostUSD = item.Usage.CostUSD
+		response.Usage.Model = item.Usage.Model
+		response.Usage.URL = item.Usage.URL
 	}
 	return &response, true, nil
 }
@@ -553,49 +236,28 @@ func purposedUsageFromDago(items []dmessage.PurposedUsage) []llm.PurposedUsage {
 	return result
 }
 
-func responseToDago(response *llm.Response) (dmodel.Response, error) {
-	if response == nil {
-		return dmodel.Response{}, errors.New("dago runtime: Shelley service returned a nil response")
-	}
-	exact, err := json.Marshal(response)
-	if err != nil {
-		return dmodel.Response{}, fmt.Errorf("encode Shelley response metadata: %w", err)
-	}
-	message := dmessage.Message{
-		ID: response.ID, Role: dmessage.RoleAssistant,
-		ResponseMetadata: map[string]json.RawMessage{shelleyResponseMetadata: exact},
-		Content:          contentToDago(response.Content),
-	}
-	if message.ID == "" {
-		message.ID = uuid.NewString()
-	}
-	for _, content := range response.Content {
-		if content.Type == llm.ContentTypeToolUse {
-			message.ToolCalls = append(message.ToolCalls, dmessage.ToolCall{
-				ID: content.ID, Name: content.ToolName,
-				Arguments: append(json.RawMessage(nil), content.ToolInput...),
-			})
-		}
-	}
-	if response.StopReason == llm.StopReasonMaxTokens || response.StopReason == llm.StopReasonRefusal {
-		message.ToolCalls = nil
-	}
-	message.Usage = &dmessage.Usage{
-		InputTokens: int(response.Usage.TotalInputTokens()), OutputTokens: int(response.Usage.OutputTokens),
-		TotalTokens: int(response.Usage.TotalInputTokens() + response.Usage.OutputTokens),
-		InputDetails: map[string]int{
-			"uncached": int(response.Usage.InputTokens), "cache_creation": int(response.Usage.CacheCreationInputTokens),
-			"cache_read": int(response.Usage.CacheReadInputTokens),
-		},
-	}
-	return dmodel.Response{Message: message}, nil
-}
-
 func contentToDago(items []llm.Content) []dmessage.ContentBlock {
 	result := make([]dmessage.ContentBlock, 0, len(items))
 	for _, item := range items {
 		switch item.Type {
 		case llm.ContentTypeText:
+			if item.MediaType != "" && item.Data != "" {
+				data, err := base64.StdEncoding.DecodeString(item.Data)
+				if err != nil {
+					// Old Shelley databases may contain pre-native raw image data.
+					// Preserve it during checkpoint hydration; newly projected data
+					// is always canonical base64.
+					data = []byte(item.Data)
+				}
+				width, _ := json.Marshal(item.DisplayWidth)
+				height, _ := json.Marshal(item.DisplayHeight)
+				result = append(result, dmessage.ContentBlock{
+					Type: dmessage.BlockImage, ID: item.ID, URL: item.Text,
+					MIMEType: item.MediaType, Data: data,
+					Extra: map[string]json.RawMessage{displayWidthKey: width, displayHeightKey: height},
+				})
+				continue
+			}
 			result = append(result, dmessage.ContentBlock{Type: dmessage.BlockText, ID: item.ID, Text: item.Text})
 		case llm.ContentTypeThinking, llm.ContentTypeRedactedThinking:
 			block := dmessage.ContentBlock{Type: dmessage.BlockReasoning, ID: item.ID, Reasoning: item.Thinking}
@@ -626,7 +288,19 @@ func contentFromDago(items []dmessage.ContentBlock) []llm.Content {
 	for _, item := range items {
 		switch item.Type {
 		case dmessage.BlockText:
-			result = append(result, llm.Content{ID: item.ID, Type: llm.ContentTypeText, Text: item.Text})
+			content := llm.Content{ID: item.ID, Type: llm.ContentTypeText, Text: item.Text}
+			if len(item.Citations) > 0 {
+				citations := make([]map[string]any, 0, len(item.Citations))
+				for _, citation := range item.Citations {
+					citations = append(citations, map[string]any{
+						"type": "url_citation", "url": citation.URL, "title": citation.Title,
+						"start_index": citation.StartIndex, "end_index": citation.EndIndex,
+						"cited_text": citation.CitedText,
+					})
+				}
+				content.Citations, _ = json.Marshal(citations)
+			}
+			result = append(result, content)
 		case dmessage.BlockReasoning:
 			content := llm.Content{ID: item.ID, Type: llm.ContentTypeThinking, Thinking: item.Reasoning}
 			if raw := item.Extra[openAIReasoningStateKey]; len(raw) > 0 {
@@ -640,7 +314,22 @@ func contentFromDago(items []dmessage.ContentBlock) []llm.Content {
 			}
 			result = append(result, content)
 		case dmessage.BlockImage:
-			result = append(result, llm.Content{ID: item.ID, Type: llm.ContentTypeText, Text: item.URL, MediaType: item.MIMEType, Data: string(item.Data)})
+			var width, height int
+			_ = json.Unmarshal(item.Extra[displayWidthKey], &width)
+			_ = json.Unmarshal(item.Extra[displayHeightKey], &height)
+			result = append(result, llm.Content{
+				ID: item.ID, Type: llm.ContentTypeText, Text: item.URL,
+				MediaType: item.MIMEType, Data: base64.StdEncoding.EncodeToString(item.Data),
+				DisplayWidth: width, DisplayHeight: height,
+			})
+		case dmessage.BlockServerTool:
+			arguments := item.Extra["arguments"]
+			if len(arguments) == 0 {
+				arguments = json.RawMessage(`{}`)
+			}
+			result = append(result, llm.Content{ID: item.ID, Type: llm.ContentTypeServerToolUse, ToolName: item.Name, ToolInput: append(json.RawMessage(nil), arguments...)})
+		case dmessage.BlockSearchResult:
+			result = append(result, llm.Content{ID: item.ID, Type: llm.ContentTypeWebSearchResult, Title: item.Name, URL: item.URL})
 		case dmessage.BlockNonStandard:
 			var exact llm.Content
 			if json.Unmarshal(item.NonStandard, &exact) == nil {

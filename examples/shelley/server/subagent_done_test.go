@@ -13,6 +13,8 @@ import (
 	"shelley.exe.dev/loop"
 )
 
+import dmessage "github.com/semistrict/dago/message"
+
 // subagentDoneFixture sets up a parent conversation with an active manager and
 // a child subagent conversation whose manager has the onDone callback wired up
 // by getOrCreateSubagentConversationManager. It records a final assistant text
@@ -367,12 +369,7 @@ func testSubagentDone_HappyPath(t *testing.T) {
 			return false
 		}
 		cur := last.Messages[len(last.Messages)-1]
-		for _, c := range cur.Content {
-			if c.Type == llm.ContentTypeToolResult && strings.Contains(toolResultText(c), f.subResponse) {
-				return true
-			}
-		}
-		return false
+		return cur.Role == dmessage.RoleTool && strings.Contains(cur.TextContent(), f.subResponse)
 	})
 }
 
@@ -718,20 +715,15 @@ func testSubagentDone_WakesIdleLoop(t *testing.T) {
 		prev := last.Messages[n-2]
 		cur := last.Messages[n-1]
 		var prevUseID string
-		for _, c := range prev.Content {
-			if c.Type == llm.ContentTypeToolUse && c.ToolName == "subagent" {
-				prevUseID = c.ID
+		for _, call := range prev.ToolCalls {
+			if call.Name == "subagent" {
+				prevUseID = call.ID
 			}
 		}
 		if prevUseID == "" {
 			return false
 		}
-		for _, c := range cur.Content {
-			if c.Type == llm.ContentTypeToolResult && c.ToolUseID == prevUseID {
-				return true
-			}
-		}
-		return false
+		return cur.Role == dmessage.RoleTool && cur.ToolCallID == prevUseID
 	})
 }
 

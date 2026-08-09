@@ -30,7 +30,7 @@ type LLMConfig struct {
 	DB *db.DB
 
 	// HTTPC is the shared HTTP client used by both the built-in models
-	// (already baked into Models[*].Service) and custom DB-backed models
+	// (already baked into Models[*].Chat) and custom DB-backed models
 	// the Manager constructs. Pass nil to let the Manager create one.
 	HTTPC *http.Client
 

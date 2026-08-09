@@ -15,11 +15,10 @@ import (
 	"strings"
 	"time"
 
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/exeenv"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/ant"
 	"shelley.exe.dev/llm/llmhttp"
-	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/models"
 )
 
@@ -76,11 +75,9 @@ func Predictable() Source {
 	}
 }
 
-// Gateway returns a Source for the exe.dev gateway. The gateway serves
-// Anthropic, OpenAI, Fireworks, and xAI but not Gemini; Gemini models must
-// come from an env-var or LLM-integration source. Any non-empty
-// explicit per-provider key overrides the gateway's implicit credential.
-func Gateway(gatewayURL, anthropicKey, openAIKey, fireworksKey string) Source {
+// Gateway returns a Source for the gateway's OpenAI Responses endpoint.
+// A non-empty explicit key overrides the gateway's implicit credential.
+func Gateway(gatewayURL, openAIKey string) Source {
 	key := func(k string) string {
 		if k != "" {
 			return k
@@ -90,14 +87,9 @@ func Gateway(gatewayURL, anthropicKey, openAIKey, fireworksKey string) Source {
 	return Source{
 		label: "exe.dev gateway",
 		providers: map[models.Provider]*providerConn{
-			models.ProviderAnthropic: {baseURL: gatewayURL + "/anthropic", apiKey: key(anthropicKey)},
-			models.ProviderOpenAI:    {baseURL: gatewayURL + "/openai", apiKey: key(openAIKey)},
-			models.ProviderFireworks: {baseURL: gatewayURL + "/fireworks/inference", apiKey: key(fireworksKey)},
-			// xAI is served by the gateway with an implicit (edge-injected)
-			// credential only. Direct XAI_API_KEY env support was removed.
-			models.ProviderXAI: {baseURL: gatewayURL + "/xai", apiKey: "implicit"},
+			models.ProviderOpenAI: {baseURL: gatewayURL + "/openai", apiKey: key(openAIKey)},
 		},
-		providerLabels: explicitEnvLabels(anthropicKey, openAIKey, fireworksKey),
+		providerLabels: explicitEnvLabels(openAIKey),
 	}
 }
 
@@ -108,7 +100,7 @@ func Gateway(gatewayURL, anthropicKey, openAIKey, fireworksKey string) Source {
 // new providers here. New models should be served through the exe.dev LLM
 // gateway or an exe.dev LLM integration (or added as DB-backed custom
 // models) rather than a new direct env-var credential.
-func Env(anthropicKey, openAIKey, geminiKey, fireworksKey string) Source {
+func Env(openAIKey string) Source {
 	prov := map[models.Provider]*providerConn{}
 	labels := map[models.Provider]string{}
 	add := func(p models.Provider, k, env string) {
@@ -118,10 +110,7 @@ func Env(anthropicKey, openAIKey, geminiKey, fireworksKey string) Source {
 		prov[p] = &providerConn{apiKey: k}
 		labels[p] = "$" + env
 	}
-	add(models.ProviderAnthropic, anthropicKey, "ANTHROPIC_API_KEY")
 	add(models.ProviderOpenAI, openAIKey, "OPENAI_API_KEY")
-	add(models.ProviderGemini, geminiKey, "GEMINI_API_KEY")
-	add(models.ProviderFireworks, fireworksKey, "FIREWORKS_API_KEY")
 	return Source{label: "env", providers: prov, providerLabels: labels}
 }
 
@@ -136,19 +125,11 @@ func LLMIntegration(integ *LLMIntegrationConfig, idSuffix string) Source {
 	}
 }
 
-// explicitEnvLabels returns providerLabels that overlay env-var-style
-// labels on top of a gateway source for any provider whose key was set
-// explicitly. Gemini is omitted because the gateway never serves it.
-func explicitEnvLabels(anthropic, openAI, fireworks string) map[models.Provider]string {
+// explicitEnvLabels overlays an env-var label when a key was set explicitly.
+func explicitEnvLabels(openAI string) map[models.Provider]string {
 	labels := map[models.Provider]string{}
-	if anthropic != "" {
-		labels[models.ProviderAnthropic] = "$ANTHROPIC_API_KEY"
-	}
 	if openAI != "" {
 		labels[models.ProviderOpenAI] = "$OPENAI_API_KEY"
-	}
-	if fireworks != "" {
-		labels[models.ProviderFireworks] = "$FIREWORKS_API_KEY"
 	}
 	return labels
 }
@@ -175,7 +156,7 @@ func Build(catalog []models.Model, sources []Source, httpc *http.Client, logger 
 				if m.ID == "" || seen[id] {
 					continue
 				}
-				apiType, svc, ok := buildIntegrationService(catalog, m, src.integration.URL, httpc)
+				apiType, chat, ok := buildIntegrationChat(catalog, m, src.integration.URL, httpc)
 				if !ok {
 					continue
 				}
@@ -185,7 +166,7 @@ func Build(catalog []models.Model, sources []Source, httpc *http.Client, logger 
 					DisplayName: id,
 					Provider:    models.Provider(m.Provider),
 					Source:      src.label,
-					Service:     svc,
+					Chat:        chat,
 					APIType:     apiType,
 					BaseURL:     src.integration.URL,
 				})
@@ -203,7 +184,11 @@ func Build(catalog []models.Model, sources []Source, httpc *http.Client, logger 
 				continue
 			}
 			seen[id] = true
-			svc := m.Build(conn.baseURL, conn.apiKey, httpc)
+			chat, err := m.Build(conn.baseURL, conn.apiKey, httpc)
+			if err != nil {
+				logger.Warn("Could not materialize model", "id", id, "source", src.labelFor(m.Provider), "error", err)
+				continue
+			}
 			label := src.labelFor(m.Provider)
 			baseURL := conn.baseURL
 			if baseURL == "" {
@@ -215,7 +200,7 @@ func Build(catalog []models.Model, sources []Source, httpc *http.Client, logger 
 				Provider:    m.Provider,
 				Tags:        m.Tags,
 				Source:      label,
-				Service:     svc,
+				Chat:        chat,
 				APIType:     m.APIType,
 				BaseURL:     baseURL,
 			})
@@ -305,40 +290,31 @@ func providerStrippedIntegrationID(id string) string {
 	return candidate
 }
 
-func buildIntegrationService(catalog []models.Model, model IntegrationModel, baseURL string, httpc *http.Client) (models.APIType, llm.Service, bool) {
-	modelName := model.apiModelName()
+func buildIntegrationChat(catalog []models.Model, integrationModel IntegrationModel, baseURL string, httpc *http.Client) (models.APIType, dmodel.Chat, bool) {
+	modelName := integrationModel.apiModelName()
 	if modelName == "" {
 		return "", nil, false
 	}
-	if catalogModel, ok := compatibleCatalogModel(catalog, model); ok {
-		return catalogModel.APIType, catalogModel.Build(baseURL, "implicit", httpc), true
+	if catalogModel, ok := compatibleCatalogModel(catalog, integrationModel); ok {
+		chat, err := catalogModel.Build(baseURL, "implicit", httpc)
+		return catalogModel.APIType, chat, err == nil
 	}
-	apiType, ok := integrationAPIType(model)
+	apiType, ok := integrationAPIType(integrationModel)
 	if !ok {
 		return "", nil, false
 	}
-	supportsImages := model.supportsImages()
-	switch apiType {
-	case models.APITypeAnthropicMessages:
-		return apiType, ant.NewNative("implicit", modelName, baseURL, httpc, ant.NativeOptions{
-			SupportsImages: supportsImages, SupportsReasoning: true,
-			ThinkingLevel: llm.ThinkingLevelMedium,
-		}), true
-	case models.APITypeOpenAIResponses:
-		return apiType, oai.NewNativeResponses("implicit", modelName, baseURL, httpc, oai.NativeResponsesOptions{
-			Provider: model.Provider, ContextWindow: 128000, MaxOutputTokens: oai.DefaultMaxTokens,
-			SupportsImages: supportsImages, MaxImageBytes: 20 * 1024 * 1024,
-			ThinkingLevel: llm.ThinkingLevelMedium,
-		}), true
-	case models.APITypeOpenAIChat:
-		return apiType, oai.NewNativeChat("implicit", modelName, baseURL+"/v1", httpc, oai.NativeChatOptions{
-			Provider: model.Provider, ContextWindow: 128000, MaxOutputTokens: oai.DefaultMaxTokens,
-			SupportsImages: supportsImages, SupportsReasoning: true,
-			ThinkingLevel: llm.ThinkingLevelMedium,
-		}), true
-	default:
+	if apiType != models.APITypeOpenAIResponses {
 		return "", nil, false
 	}
+	chat, err := models.NewOpenAIResponses("implicit", modelName, baseURL, httpc, models.OpenAIResponsesOptions{
+		ContextWindow: 128000, MaxOutputTokens: 32768,
+		SupportsImages: integrationModel.supportsImages(), SupportsWebSearch: true,
+		MaxImageBytes: 20 * 1024 * 1024, DefaultReasoningLevel: "medium",
+	})
+	if err != nil {
+		return "", nil, false
+	}
+	return apiType, chat, true
 }
 
 func compatibleCatalogModel(catalog []models.Model, integrationModel IntegrationModel) (models.Model, bool) {
@@ -354,32 +330,13 @@ func compatibleCatalogModel(catalog []models.Model, integrationModel Integration
 }
 
 func integrationAdvertisesAPI(model IntegrationModel, apiType models.APIType) bool {
-	var api string
-	switch apiType {
-	case models.APITypeAnthropicMessages:
-		api = "anthropic_messages"
-	case models.APITypeOpenAIResponses:
-		api = "openai_responses"
-	case models.APITypeOpenAIChat:
-		api = "openai_chat"
-	default:
-		return false
-	}
-	return slices.Contains(model.APIs, api)
+	return apiType == models.APITypeOpenAIResponses && slices.Contains(model.APIs, "openai_responses")
 }
 
-// integrationAPIType picks the wire protocol for an integration model.
-// Providers that serve multiple protocols (e.g. Fireworks) advertise both
-// OpenAI and Anthropic APIs; prefer the more common OpenAI protocol.
+// integrationAPIType accepts only the supported Responses protocol.
 func integrationAPIType(model IntegrationModel) (models.APIType, bool) {
 	if slices.Contains(model.APIs, "openai_responses") {
 		return models.APITypeOpenAIResponses, true
-	}
-	if slices.Contains(model.APIs, "openai_chat") {
-		return models.APITypeOpenAIChat, true
-	}
-	if slices.Contains(model.APIs, "anthropic_messages") {
-		return models.APITypeAnthropicMessages, true
 	}
 	return "", false
 }

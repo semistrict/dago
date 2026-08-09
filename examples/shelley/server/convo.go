@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	dmodel "github.com/semistrict/dago/model"
+	dtool "github.com/semistrict/dago/tool"
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
@@ -764,16 +766,16 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 // AcceptUserMessage enqueues a user message, ensuring the loop is ready first.
 // The message is recorded to the database immediately so it appears in the UI,
 // even if the loop is busy processing a previous request.
-func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service llm.Service, modelID string, message llm.Message) (bool, error) {
-	if service == nil {
-		return false, fmt.Errorf("llm service is required")
+func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, chat dmodel.Chat, modelID string, message llm.Message) (bool, error) {
+	if chat == nil {
+		return false, fmt.Errorf("chat model is required")
 	}
 
 	if err := cm.Hydrate(ctx); err != nil {
 		return false, err
 	}
 
-	if err := cm.ensureLoop(service, modelID); err != nil {
+	if err := cm.ensureLoop(chat, modelID); err != nil {
 		return false, err
 	}
 
@@ -908,9 +910,9 @@ var errNotRefusal = fmt.Errorf("latest message is not a refusal; nothing to cont
 // ch carries the model switch to apply before continuing; service/modelID name
 // the model to build the loop with (must match ch.NewModel when a switch is
 // requested). retryMu serializes this against concurrent retries/continues.
-func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, ch ModelSettingsChange, service llm.Service, modelID string) error {
-	if service == nil {
-		return fmt.Errorf("llm service is required")
+func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, ch ModelSettingsChange, chat dmodel.Chat, modelID string) error {
+	if chat == nil {
+		return fmt.Errorf("chat model is required")
 	}
 
 	cm.retryMu.Lock()
@@ -965,7 +967,7 @@ func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, ch Mode
 	if err := cm.Hydrate(ctx); err != nil {
 		return fmt.Errorf("failed to hydrate before continuing: %w", err)
 	}
-	if err := cm.ensureLoop(service, modelID); err != nil {
+	if err := cm.ensureLoop(chat, modelID); err != nil {
 		return fmt.Errorf("failed to build loop before continuing: %w", err)
 	}
 
@@ -1044,7 +1046,7 @@ func (cm *ConversationManager) QueueMessage(ctx context.Context, s *Server, mode
 // user row carrying its tool_result. Writing this pair at enqueue time,
 // mid-turn, would interleave it between the running turn's own tool_use and
 // tool_result rows — an invalid history that a post-crash rehydrate would
-// "repair" (insertMissingToolResults) into a corrupted turn, and whose DB
+// repair into a corrupted turn, and whose DB
 // order would diverge from the order the model actually saw. Persisting at
 // take time — the moment the pair enters the model-visible history — is the
 // only position where the log stays valid and rehydration is faithful.
@@ -1406,9 +1408,9 @@ restart:
 		}
 	}
 
-	svc, err := s.llmManager.GetService(modelID)
+	chat, err := s.llmManager.GetChat(modelID)
 	if err != nil {
-		cm.logger.Error("Failed to get LLM service for queued batch", "model", modelID, "error", err)
+		cm.logger.Error("Failed to get chat model for queued batch", "model", modelID, "error", err)
 		return
 	}
 
@@ -1428,7 +1430,7 @@ restart:
 			cm.logger.Error("Failed to hydrate for queued batches", "error", err)
 			return
 		}
-		if err := cm.ensureLoop(svc, modelID); err != nil {
+		if err := cm.ensureLoop(chat, modelID); err != nil {
 			cm.logger.Error("Failed to start loop for queued batches", "error", err)
 			return
 		}
@@ -1605,7 +1607,7 @@ func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generat
 }
 
 // toolDisplayData builds display data from a list of tools.
-func toolDisplayData(tools []*llm.Tool) map[string]any {
+func toolDisplayData(tools []dtool.Definition) map[string]any {
 	type toolDesc struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
@@ -1752,7 +1754,10 @@ func (cm *ConversationManager) logSystemPromptState(system []llm.SystemContent, 
 	cm.logger.Info("Loaded system prompt from database", "system_items", len(system), "total_length", length)
 }
 
-func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) error {
+func (cm *ConversationManager) ensureLoop(chat dmodel.Chat, modelID string) error {
+	if chat == nil {
+		return fmt.Errorf("model %s has no chat implementation", modelID)
+	}
 	cm.mu.Lock()
 	if cm.loop != nil {
 		existingModel := cm.modelID
@@ -1848,14 +1853,12 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 	sf := newStreamFlusher(cm, 50*time.Millisecond)
 
 	loopInstance := loop.NewLoop(loop.Config{
-		LLM:                service,
-		History:            history,
-		Tools:              toolSet.Tools(),
-		NativeTools:        toolSet.NativeTools(),
-		RequireNativeTools: true,
-		RequireNativeModel: serviceHasNativeChat(service),
-		ThinkingLevel:      llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),
-		RecordMessage:      recordMessage,
+		Model:         chat,
+		ModelID:       modelID,
+		History:       history,
+		Tools:         toolSet.NativeTools(),
+		ThinkingLevel: llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),
+		RecordMessage: recordMessage,
 		RecordWarning: func(ctx context.Context, text string) error {
 			return cm.recordWarning(ctx, text)
 		},

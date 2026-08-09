@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	dtool "github.com/semistrict/dago/tool"
 )
 
 func TestBashSlowOk(t *testing.T) {
@@ -14,43 +16,41 @@ func TestBashSlowOk(t *testing.T) {
 	t.Run("SlowOk Flag", func(t *testing.T) {
 		input := json.RawMessage(`{"command":"echo 'slow test'","slow_ok":true}`)
 
-		bashTool := (&BashTool{WorkingDir: NewMutableWorkingDir("/")}).Tool()
-		toolOut := bashTool.Run(context.Background(), input)
-		if toolOut.Error != nil {
-			t.Fatalf("Unexpected error: %v", toolOut.Error)
+		bashTool := (&BashTool{WorkingDir: NewMutableWorkingDir("/")}).NativeTool()
+		result, err := bashTool.Execute(context.Background(), input, dtool.Runtime{})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
 		}
-		result := toolOut.LLMContent
 
 		expected := "slow test\n"
-		if len(result) == 0 || result[0].Text != expected {
-			t.Errorf("Expected %q, got %q", expected, result[0].Text)
+		if len(result.Content) == 0 || result.Content[0].Text != expected {
+			t.Errorf("Expected %q, got %q", expected, result.Content[0].Text)
 		}
 	})
 }
 
 func TestBashTool(t *testing.T) {
 	bashTool := &BashTool{WorkingDir: NewMutableWorkingDir("/")}
-	tool := bashTool.Tool()
+	executable := bashTool.NativeTool()
 
 	// Test basic functionality
 	t.Run("Basic Command", func(t *testing.T) {
 		input := json.RawMessage(`{"command":"echo 'Hello, world!'"}`)
 
-		toolOut := tool.Run(context.Background(), input)
-		if toolOut.Error != nil {
-			t.Fatalf("Unexpected error: %v", toolOut.Error)
+		result, err := executable.Execute(context.Background(), input, dtool.Runtime{})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
 		}
-		result := toolOut.LLMContent
 
 		expected := "Hello, world!\n"
-		if len(result) == 0 || result[0].Text != expected {
-			t.Errorf("Expected %q, got %q", expected, result[0].Text)
+		if len(result.Content) == 0 || result.Content[0].Text != expected {
+			t.Errorf("Expected %q, got %q", expected, result.Content[0].Text)
 		}
 
 		// Verify Display data contains working directory
-		display, ok := toolOut.Display.(BashDisplayData)
-		if !ok {
-			t.Fatalf("Expected Display to be BashDisplayData, got %T", toolOut.Display)
+		var display BashDisplayData
+		if err := json.Unmarshal(result.Artifact, &display); err != nil {
+			t.Fatalf("decode display: %v", err)
 		}
 		if display.WorkingDir != "/" {
 			t.Errorf("Expected WorkingDir to be '/', got %q", display.WorkingDir)
@@ -61,15 +61,14 @@ func TestBashTool(t *testing.T) {
 	t.Run("Command With Arguments", func(t *testing.T) {
 		input := json.RawMessage(`{"command":"echo -n foo && echo -n bar"}`)
 
-		toolOut := tool.Run(context.Background(), input)
-		if toolOut.Error != nil {
-			t.Fatalf("Unexpected error: %v", toolOut.Error)
+		result, err := executable.Execute(context.Background(), input, dtool.Runtime{})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
 		}
-		result := toolOut.LLMContent
 
 		expected := "foobar"
-		if len(result) == 0 || result[0].Text != expected {
-			t.Errorf("Expected %q, got %q", expected, result[0].Text)
+		if len(result.Content) == 0 || result.Content[0].Text != expected {
+			t.Errorf("Expected %q, got %q", expected, result.Content[0].Text)
 		}
 	})
 
@@ -87,15 +86,14 @@ func TestBashTool(t *testing.T) {
 			t.Fatalf("Failed to marshal input: %v", err)
 		}
 
-		toolOut := tool.Run(context.Background(), inputJSON)
-		if toolOut.Error != nil {
-			t.Fatalf("Unexpected error: %v", toolOut.Error)
+		result, err := executable.Execute(context.Background(), inputJSON, dtool.Runtime{})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
 		}
-		result := toolOut.LLMContent
 
 		expected := "Completed\n"
-		if len(result) == 0 || result[0].Text != expected {
-			t.Errorf("Expected %q, got %q", expected, result[0].Text)
+		if len(result.Content) == 0 || result.Content[0].Text != expected {
+			t.Errorf("Expected %q, got %q", expected, result.Content[0].Text)
 		}
 	})
 
@@ -110,15 +108,15 @@ func TestBashTool(t *testing.T) {
 			WorkingDir: NewMutableWorkingDir("/"),
 			Timeouts:   customTimeouts,
 		}
-		tool := customBash.Tool()
+		tool := customBash.NativeTool()
 
 		input := json.RawMessage(`{"command":"sleep 0.5 && echo 'Should not see this'"}`)
 
-		toolOut := tool.Run(context.Background(), input)
-		if toolOut.Error == nil {
+		_, err := tool.Execute(context.Background(), input, dtool.Runtime{})
+		if err == nil {
 			t.Errorf("Expected timeout error, got none")
-		} else if !strings.Contains(toolOut.Error.Error(), "timed out") {
-			t.Errorf("Expected timeout error, got: %v", toolOut.Error)
+		} else if !strings.Contains(err.Error(), "timed out") {
+			t.Errorf("Expected timeout error, got: %v", err)
 		}
 	})
 
@@ -126,8 +124,8 @@ func TestBashTool(t *testing.T) {
 	t.Run("Failed Command", func(t *testing.T) {
 		input := json.RawMessage(`{"command":"exit 1"}`)
 
-		toolOut := tool.Run(context.Background(), input)
-		if toolOut.Error == nil {
+		_, err := executable.Execute(context.Background(), input, dtool.Runtime{})
+		if err == nil {
 			t.Errorf("Expected error for failed command, got none")
 		}
 	})
@@ -136,8 +134,8 @@ func TestBashTool(t *testing.T) {
 	t.Run("Invalid JSON Input", func(t *testing.T) {
 		input := json.RawMessage(`{"command":123}`) // Invalid JSON (command must be string)
 
-		toolOut := tool.Run(context.Background(), input)
-		if toolOut.Error == nil {
+		_, err := executable.Execute(context.Background(), input, dtool.Runtime{})
+		if err == nil {
 			t.Errorf("Expected error for invalid input, got none")
 		}
 	})

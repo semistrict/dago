@@ -1,14 +1,11 @@
 package browse
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 
 	dmessage "github.com/semistrict/dago/message"
 	dtool "github.com/semistrict/dago/tool"
-
-	"shelley.exe.dev/llm"
 )
 
 const (
@@ -50,31 +47,4 @@ func (execution browserExecution) dagoResult() (dtool.Result, error) {
 		}
 	}
 	return dtool.Result{Content: execution.Content, Artifact: artifact}, nil
-}
-
-func (execution browserExecution) legacyResult() llm.ToolOut {
-	content := make([]llm.Content, 0, len(execution.Content))
-	for _, block := range execution.Content {
-		switch block.Type {
-		case dmessage.BlockText:
-			content = append(content, llm.Content{Type: llm.ContentTypeText, Text: block.Text})
-		case dmessage.BlockImage:
-			var width, height int
-			_ = json.Unmarshal(block.Extra[browserImageWidthKey], &width)
-			_ = json.Unmarshal(block.Extra[browserImageHeightKey], &height)
-			content = append(content, llm.Content{
-				Type: llm.ContentTypeText, MediaType: block.MIMEType,
-				Data:         base64.StdEncoding.EncodeToString(block.Data),
-				DisplayWidth: width, DisplayHeight: height,
-			})
-		}
-	}
-	return llm.ToolOut{LLMContent: content, Display: execution.Display}
-}
-
-func legacyBrowserResult(execution browserExecution, err error) llm.ToolOut {
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	return execution.legacyResult()
 }

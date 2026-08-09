@@ -13,9 +13,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	dmodel "github.com/semistrict/dago/model"
+
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/exeenv"
-	"shelley.exe.dev/llm"
 	"shelley.exe.dev/loop"
 )
 
@@ -130,16 +131,14 @@ func TestModelSetupHintOnlyWhenNoModels(t *testing.T) {
 	}
 }
 
-// emptyLLMManager serves no models at all — the production state that
-// produced the bogus "Unsupported model: claude-sonnet-4.6" error. GetService
-// must fail for every id, like the real manager does with an empty catalog;
-// testLLMManager happily returns a service for any id, which would silently
-// hide exactly the 400s these tests are about.
+// emptyLLMManager serves no models at all — the production state that produced
+// the bogus unsupported-model error. GetChat must fail for every id, like the
+// real manager does with an empty catalog.
 type emptyLLMManager struct{ testLLMManager }
 
 func (m *emptyLLMManager) GetAvailableModels() []string { return nil }
 func (m *emptyLLMManager) HasModel(string) bool         { return false }
-func (m *emptyLLMManager) GetService(modelID string) (llm.Service, error) {
+func (m *emptyLLMManager) GetChat(modelID string) (dmodel.Chat, error) {
 	return nil, fmt.Errorf("unsupported model: %s", modelID)
 }
 

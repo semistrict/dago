@@ -19,7 +19,7 @@ func TestHandleModelRefreshReturnsRefreshedModels(t *testing.T) {
 				ID:       "old-built",
 				Provider: models.ProviderBuiltIn,
 				Source:   "old source",
-				Service:  loop.NewPredictableService(),
+				Chat:     loop.NewPredictableService(),
 			},
 		},
 		Logger: slog.Default(),
@@ -36,13 +36,13 @@ func TestHandleModelRefreshReturnsRefreshedModels(t *testing.T) {
 					ID:       "new-built",
 					Provider: models.ProviderBuiltIn,
 					Source:   "new source",
-					Service:  loop.NewPredictableService(),
+					Chat:     loop.NewPredictableService(),
 				},
 				{
 					ID:       models.Default().ID,
-					Provider: models.ProviderAnthropic,
+					Provider: models.ProviderOpenAI,
 					Source:   "new source",
-					Service:  loop.NewPredictableService(),
+					Chat:     loop.NewPredictableService(),
 				},
 			}, nil
 		},
@@ -73,8 +73,8 @@ func TestHandleModelRefreshReturnsRefreshedModels(t *testing.T) {
 func TestHandleModelsAssignsTiers(t *testing.T) {
 	mgr, err := models.NewManager(&models.Config{
 		Models: []models.Built{
-			{ID: "claude-opus-4.8", Provider: models.ProviderAnthropic, Service: loop.NewPredictableService()},
-			{ID: "claude-opus-4.7", Provider: models.ProviderAnthropic, Service: loop.NewPredictableService()},
+			{ID: "gpt-5.6-sol", Provider: models.ProviderOpenAI, Chat: loop.NewPredictableService()},
+			{ID: "gpt-5.5", Provider: models.ProviderOpenAI, Chat: loop.NewPredictableService()},
 		},
 		Logger: slog.Default(),
 	})
@@ -98,11 +98,11 @@ func TestHandleModelsAssignsTiers(t *testing.T) {
 	for _, m := range got {
 		tiers[m.ID] = m.Tier
 	}
-	if tiers["claude-opus-4.8"] != models.Tier1 {
-		t.Errorf("opus-4.8 tier = %d, want %d", tiers["claude-opus-4.8"], models.Tier1)
+	if tiers["gpt-5.6-sol"] != models.Tier1 {
+		t.Errorf("sol tier = %d, want %d", tiers["gpt-5.6-sol"], models.Tier1)
 	}
-	if tiers["claude-opus-4.7"] != models.Tier2 {
-		t.Errorf("opus-4.7 tier = %d, want %d", tiers["claude-opus-4.7"], models.Tier2)
+	if tiers["gpt-5.5"] != models.Tier2 {
+		t.Errorf("gpt-5.5 tier = %d, want %d", tiers["gpt-5.5"], models.Tier2)
 	}
 }
 

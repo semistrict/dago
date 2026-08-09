@@ -8,42 +8,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	dmessage "github.com/semistrict/dago/message"
+	dmodel "github.com/semistrict/dago/model"
+	dtool "github.com/semistrict/dago/tool"
 )
-
-// mockService implements Service interface for testing
-type mockService struct {
-	tokenContextWindow   int
-	maxImageDimension    int
-	useSimplifiedPatch   bool
-	implementsSimplified bool
-}
-
-func (m *mockService) Do(ctx context.Context, req *Request) (*Response, error) {
-	return &Response{}, nil
-}
-
-func (m *mockService) Provider() string { return "" }
-
-func (m *mockService) TokenContextWindow() int {
-	return m.tokenContextWindow
-}
-
-func (m *mockService) MaxImageDimension() int {
-	return m.maxImageDimension
-}
-
-func (m *mockService) MaxImageBytes() int {
-	return 0
-}
-
-// mockSimplifiedService implements both Service and SimplifiedPatcher interfaces
-type mockSimplifiedService struct {
-	mockService
-}
-
-func (m *mockSimplifiedService) UseSimplifiedPatch() bool {
-	return m.useSimplifiedPatch
-}
 
 func TestMustSchema(t *testing.T) {
 	tests := []struct {
@@ -112,45 +81,24 @@ func TestEmptySchema(t *testing.T) {
 
 func TestUseSimplifiedPatch(t *testing.T) {
 	tests := []struct {
-		name     string
-		service  Service
-		expected bool
+		name    string
+		profile dmodel.Profile
+		want    bool
 	}{
 		{
-			name: "service without SimplifiedPatcher",
-			service: &mockService{
-				implementsSimplified: false,
-				useSimplifiedPatch:   false,
-			},
-			expected: false,
+			name: "standard patch profile",
 		},
 		{
-			name: "service with SimplifiedPatcher returning false",
-			service: &mockSimplifiedService{
-				mockService: mockService{
-					implementsSimplified: true,
-					useSimplifiedPatch:   false,
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "service with SimplifiedPatcher returning true",
-			service: &mockSimplifiedService{
-				mockService: mockService{
-					implementsSimplified: true,
-					useSimplifiedPatch:   true,
-				},
-			},
-			expected: true,
+			name:    "simplified patch profile",
+			profile: dmodel.Profile{UseSimplifiedPatch: true},
+			want:    true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := UseSimplifiedPatch(tt.service)
-			if result != tt.expected {
-				t.Errorf("UseSimplifiedPatch() = %v, want %v", result, tt.expected)
+			if tt.profile.UseSimplifiedPatch != tt.want {
+				t.Errorf("UseSimplifiedPatch = %v, want %v", tt.profile.UseSimplifiedPatch, tt.want)
 			}
 		})
 	}
@@ -208,34 +156,32 @@ func TestUserStringMessage(t *testing.T) {
 }
 
 func TestErrorToolOut(t *testing.T) {
-	err := fmt.Errorf("test error")
-	toolOut := ErrorToolOut(err)
-
-	if toolOut.Error != err {
-		t.Errorf("ErrorToolOut().Error = %v, want %v", toolOut.Error, err)
+	want := fmt.Errorf("test error")
+	native := dtool.Func{
+		Spec: dtool.Definition{Name: "fail", Description: "fail", InputSchema: EmptySchema()},
+		Run: func(context.Context, json.RawMessage, dtool.Runtime) (dtool.Result, error) {
+			return dtool.Result{}, want
+		},
 	}
-
-	// Test panic with nil error
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("Expected panic when calling ErrorToolOut with nil error")
-		}
-	}()
-	ErrorToolOut(nil)
+	_, err := native.Execute(context.Background(), json.RawMessage(`{}`), dtool.Runtime{})
+	if !strings.Contains(err.Error(), want.Error()) {
+		t.Fatalf("native tool error = %v, want wrapped %v", err, want)
+	}
 }
 
 func TestErrorfToolOut(t *testing.T) {
 	format := "error: %s"
 	arg := "test"
-	toolOut := ErrorfToolOut(format, arg)
-
-	if toolOut.Error == nil {
-		t.Errorf("ErrorfToolOut().Error = nil, want error")
-	}
-
 	expected := fmt.Sprintf(format, arg)
-	if toolOut.Error.Error() != expected {
-		t.Errorf("ErrorfToolOut().Error = %v, want %v", toolOut.Error.Error(), expected)
+	native := dtool.Func{
+		Spec: dtool.Definition{Name: "fail", Description: "fail", InputSchema: EmptySchema()},
+		Run: func(context.Context, json.RawMessage, dtool.Runtime) (dtool.Result, error) {
+			return dtool.Result{}, fmt.Errorf(format, arg)
+		},
+	}
+	_, err := native.Execute(context.Background(), json.RawMessage(`{}`), dtool.Runtime{})
+	if err == nil || !strings.Contains(err.Error(), expected) {
+		t.Fatalf("native tool error = %v, want %q", err, expected)
 	}
 }
 
@@ -246,16 +192,26 @@ func TestRunJSON(t *testing.T) {
 
 	var gotCtx context.Context
 	var gotReq request
-	run := RunJSON(func(ctx context.Context, req request) ToolOut {
-		gotCtx = ctx
-		gotReq = req
-		return ToolOut{LLMContent: TextContent("hello " + req.Name)}
-	})
+	native := dtool.Func{
+		Spec: dtool.Definition{
+			Name: "greet", Description: "greet a person",
+			InputSchema: MustSchema(`{"type":"object","properties":{"name":{"type":"string"}}}`),
+		},
+		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var req request
+			if err := json.Unmarshal(raw, &req); err != nil {
+				return dtool.Result{}, fmt.Errorf("invalid tool input: %w", err)
+			}
+			gotCtx = ctx
+			gotReq = req
+			return dtool.TextResult("hello " + req.Name), nil
+		},
+	}
 
 	ctx := context.WithValue(context.Background(), struct{}{}, "ctx-value")
-	out := run(ctx, json.RawMessage(`{"name":"Ada"}`))
-	if out.Error != nil {
-		t.Fatalf("RunJSON returned error: %v", out.Error)
+	out, err := native.Execute(ctx, json.RawMessage(`{"name":"Ada"}`), dtool.Runtime{})
+	if err != nil {
+		t.Fatalf("native tool returned error: %v", err)
 	}
 	if gotCtx != ctx {
 		t.Fatal("RunJSON did not pass through context")
@@ -263,8 +219,8 @@ func TestRunJSON(t *testing.T) {
 	if gotReq.Name != "Ada" {
 		t.Fatalf("RunJSON decoded request %+v, want name Ada", gotReq)
 	}
-	if len(out.LLMContent) != 1 || out.LLMContent[0].Text != "hello Ada" {
-		t.Fatalf("RunJSON output = %+v", out.LLMContent)
+	if len(out.Content) != 1 || out.Content[0].Type != dmessage.BlockText || out.Content[0].Text != "hello Ada" {
+		t.Fatalf("native tool output = %+v", out.Content)
 	}
 }
 
@@ -274,14 +230,21 @@ func TestRunJSONInvalidJSON(t *testing.T) {
 	}
 
 	called := false
-	run := RunJSON(func(ctx context.Context, req request) ToolOut {
-		called = true
-		return ToolOut{}
-	})
+	native := dtool.Func{
+		Spec: dtool.Definition{Name: "greet", Description: "greet", InputSchema: EmptySchema()},
+		Run: func(_ context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+			var req request
+			if err := json.Unmarshal(raw, &req); err != nil {
+				return dtool.Result{}, fmt.Errorf("invalid tool input: %w", err)
+			}
+			called = true
+			return dtool.Result{}, nil
+		},
+	}
 
-	out := run(context.Background(), json.RawMessage(`{"name":123}`))
-	if out.Error == nil {
-		t.Fatal("RunJSON returned nil error for invalid input")
+	_, err := native.Execute(context.Background(), json.RawMessage(`{"name":123}`), dtool.Runtime{})
+	if err == nil {
+		t.Fatal("native tool returned nil error for invalid input")
 	}
 	if called {
 		t.Fatal("RunJSON called handler after invalid input")
@@ -683,5 +646,3 @@ func TestContentCallerCitationsOmitEmpty(t *testing.T) {
 		t.Errorf("reloaded Citations = %q, want nil", reloaded.Citations)
 	}
 }
-
-func (m *mockService) SupportsImages() bool { return true }

@@ -2,6 +2,8 @@ package loop
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -14,10 +16,9 @@ import (
 
 func TestLoopUsesNativeChatWithoutLegacyRoundTrip(t *testing.T) {
 	chat := &nativeRuntimeChat{}
-	service := &nativeRuntimeService{chat: chat}
 	var recorded []llm.Message
 	runtime := NewLoop(Config{
-		LLM: service, ThinkingLevel: llm.ThinkingLevelHigh,
+		Model: chat, ThinkingLevel: llm.ThinkingLevelHigh,
 		RecordMessage: func(_ context.Context, item llm.Message, _ llm.Usage, _ []llm.PurposedUsage) error {
 			recorded = append(recorded, item)
 			return nil
@@ -27,9 +28,6 @@ func TestLoopUsesNativeChatWithoutLegacyRoundTrip(t *testing.T) {
 	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if service.legacyCalls.Load() != 0 {
-		t.Fatalf("legacy Shelley model calls = %d, want 0", service.legacyCalls.Load())
-	}
 	if chat.calls.Load() != 1 {
 		t.Fatalf("native model calls = %d, want 1", chat.calls.Load())
 	}
@@ -38,21 +36,29 @@ func TestLoopUsesNativeChatWithoutLegacyRoundTrip(t *testing.T) {
 	}
 }
 
-type nativeRuntimeService struct {
-	chat        *nativeRuntimeChat
-	legacyCalls atomic.Int64
-}
+func TestNativeImageProjectionUsesBase64AndPreservesDimensions(t *testing.T) {
+	width, _ := json.Marshal(320)
+	height, _ := json.Marshal(180)
+	native := []dmessage.ContentBlock{{
+		Type: dmessage.BlockImage, MIMEType: "image/png", Data: []byte{0, 1, 2, 255},
+		Extra: map[string]json.RawMessage{displayWidthKey: width, displayHeightKey: height},
+	}}
 
-func (service *nativeRuntimeService) DagoChat() dmodel.Chat   { return service.chat }
-func (service *nativeRuntimeService) ModelID() string         { return "native-test" }
-func (service *nativeRuntimeService) Provider() string        { return "native-test" }
-func (service *nativeRuntimeService) TokenContextWindow() int { return 128000 }
-func (service *nativeRuntimeService) MaxImageDimension() int  { return 0 }
-func (service *nativeRuntimeService) MaxImageBytes() int      { return 0 }
-func (service *nativeRuntimeService) SupportsImages() bool    { return false }
-func (service *nativeRuntimeService) Do(context.Context, *llm.Request) (*llm.Response, error) {
-	service.legacyCalls.Add(1)
-	return nil, fmt.Errorf("legacy model path called")
+	projected := contentFromDago(native)
+	if len(projected) != 1 {
+		t.Fatalf("projected content = %#v", projected)
+	}
+	if projected[0].Data != base64.StdEncoding.EncodeToString(native[0].Data) {
+		t.Fatalf("projected data = %q", projected[0].Data)
+	}
+	if projected[0].DisplayWidth != 320 || projected[0].DisplayHeight != 180 {
+		t.Fatalf("projected dimensions = %dx%d", projected[0].DisplayWidth, projected[0].DisplayHeight)
+	}
+
+	roundTrip := contentToDago(projected)
+	if len(roundTrip) != 1 || string(roundTrip[0].Data) != string(native[0].Data) {
+		t.Fatalf("round-trip content = %#v", roundTrip)
+	}
 }
 
 type nativeRuntimeChat struct{ calls atomic.Int64 }

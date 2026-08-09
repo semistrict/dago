@@ -11,7 +11,6 @@ import (
 	dtool "github.com/semistrict/dago/tool"
 
 	"shelley.exe.dev/gitstate"
-	"shelley.exe.dev/llm"
 )
 
 // tildeReplace replaces the home directory prefix with ~ for display.
@@ -58,18 +57,7 @@ type changeDirInput struct {
 	Path string `json:"path"`
 }
 
-// Tool returns an llm.Tool for changing directories.
-func (c *ChangeDirTool) Tool() *llm.Tool {
-	return &llm.Tool{
-		Name:        changeDirName,
-		Description: changeDirDescription,
-		InputSchema: llm.MustSchema(changeDirInputSchema),
-		Run:         llm.RunJSON(c.run),
-	}
-}
-
-// NativeTool returns the production Dago implementation. Tool remains the
-// unchanged Shelley facade exercised by the pinned upstream tests.
+// NativeTool returns the production Dago implementation.
 func (c *ChangeDirTool) NativeTool() dtool.Tool {
 	return dtool.Func{
 		Spec: dtool.Definition{
@@ -88,15 +76,6 @@ func (c *ChangeDirTool) NativeTool() dtool.Tool {
 			return dtool.TextResult(text), nil
 		},
 	}
-}
-
-// run executes the change_dir tool.
-func (c *ChangeDirTool) run(ctx context.Context, req changeDirInput) llm.ToolOut {
-	text, err := c.execute(ctx, req)
-	if err != nil {
-		return llm.ErrorToolOut(err)
-	}
-	return llm.ToolOut{LLMContent: llm.TextContent(text)}
 }
 
 func (c *ChangeDirTool) execute(_ context.Context, req changeDirInput) (string, error) {
