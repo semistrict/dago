@@ -47,7 +47,7 @@ func TestSkillsLaterSourceWinsAndWarningsAreUntrusted(t *testing.T) {
 	}
 	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
 		prompt := request.Messages[0].TextContent()
-		if !strings.Contains(prompt, "research: project") || strings.Contains(prompt, "research: base") {
+		if !strings.Contains(prompt, "**research**: project") || strings.Contains(prompt, "**research**: base") {
 			return &skillTestError{"priority merge missing"}
 		}
 		if !strings.Contains(prompt, "<skill_load_warnings>") || !strings.Contains(prompt, "untrusted diagnostics") {
@@ -64,6 +64,94 @@ func TestSkillsLaterSourceWinsAndWarningsAreUntrusted(t *testing.T) {
 	}
 	if len(observedWarnings) == 0 {
 		t.Fatal("warning callback was not called")
+	}
+}
+
+func TestSkillsSkipDiscoveryWhenCheckpointedMetadataExists(t *testing.T) {
+	memory, err := backend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := SkillsMiddleware(SkillsOptions{Backend: memory, Sources: []string{"/skills"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, err := middleware.BeforeAgent(context.Background(), map[string]any{"skills": []Skill{}}, agent.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if update != nil {
+		t.Fatalf("update = %#v, want nil", update)
+	}
+}
+
+func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
+	memory, err := backend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := SkillsMiddleware(SkillsOptions{
+		Backend:        memory,
+		Sources:        []string{"/home/me/.agents/skills"},
+		LabeledSources: []SkillSource{{Path: "/project/skills", Label: "Project"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		prompt := request.Messages[0].TextContent()
+		for _, expected := range []string{
+			"**Agents Skills**: `/home/me/.agents/skills`",
+			"**Project Skills**: `/project/skills` (higher priority)",
+			"No skills available yet",
+			"/home/me/.agents/skills or /project/skills",
+		} {
+			if !strings.Contains(prompt, expected) {
+				return &skillTestError{"missing " + expected}
+			}
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("done")}})
+	compiled, err := agent.New(agent.Options{Model: script, Middleware: []agent.Middleware{middleware}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+		t.Fatal(err)
+	}
+
+	disabled := ""
+	middleware, err = SkillsMiddleware(SkillsOptions{Backend: memory, SystemPrompt: &disabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		if request.Messages[0].TextContent() != "go" {
+			return &skillTestError{"disabled skills prompt changed the request"}
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("done")}})
+	compiled, err = agent.New(agent.Options{Model: script, Middleware: []agent.Middleware{middleware}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSkillsCustomPromptRequiresProgressiveDisclosureSlots(t *testing.T) {
+	memory, err := backend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := "{skills_list}"
+	if _, err := SkillsMiddleware(SkillsOptions{Backend: memory, SystemPrompt: &invalid}); err == nil {
+		t.Fatal("expected missing prompt slots to fail")
+	}
+	valid := "Locations:\n{skills_locations}{skills_load_warnings}\nSkills:\n{skills_list}"
+	if _, err := SkillsMiddleware(SkillsOptions{Backend: memory, SystemPrompt: &valid}); err != nil {
+		t.Fatal(err)
 	}
 }
 

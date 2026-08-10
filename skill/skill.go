@@ -42,6 +42,7 @@ func (e *ValidationError) Error() string { return e.Message }
 // failures are errors; specification mismatches that do not prevent progressive
 // disclosure are returned as warnings, matching Deep Agents behavior.
 func ParseContent(content, filePath string) (Skill, []string, error) {
+	filePath = strings.ReplaceAll(filePath, `\`, "/")
 	parsed, err := decode(content, filePath)
 	if err != nil {
 		return Skill{}, nil, err
@@ -120,31 +121,40 @@ func NameViolation(name, directory string) string {
 // ExtractBody returns the markdown after a valid frontmatter envelope.
 func ExtractBody(content string) string {
 	content = strings.ReplaceAll(content, "\r\n", "\n")
-	if !strings.HasPrefix(content, "---\n") {
+	lines := strings.Split(content, "\n")
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "---" {
 		return ""
 	}
-	rest := strings.TrimPrefix(content, "---\n")
-	end := strings.Index(rest, "\n---")
-	if end < 0 {
-		return ""
+	for index := 1; index < len(lines); index++ {
+		if strings.TrimSpace(lines[index]) == "---" {
+			return strings.TrimSpace(strings.Join(lines[index+1:], "\n"))
+		}
 	}
-	body := strings.TrimPrefix(rest[end+len("\n---"):], "\n")
-	return strings.TrimSpace(body)
+	return ""
 }
 
 func decode(content, filePath string) (Skill, error) {
 	content = strings.ReplaceAll(content, "\r\n", "\n")
-	if !utf8.ValidString(content) || !strings.HasPrefix(content, "---\n") {
+	lines := strings.Split(content, "\n")
+	if !utf8.ValidString(content) || len(lines) < 2 || strings.TrimSpace(lines[0]) != "---" {
 		return Skill{}, &ValidationError{Message: "SKILL.md must start with valid YAML frontmatter (---)"}
 	}
-	rest := strings.TrimPrefix(content, "---\n")
-	end := strings.Index(rest, "\n---")
+	end := -1
+	for index := 1; index < len(lines); index++ {
+		if strings.TrimSpace(lines[index]) == "---" {
+			end = index
+			break
+		}
+	}
 	if end < 0 {
 		return Skill{}, &ValidationError{Message: "SKILL.md frontmatter not properly closed with ---"}
 	}
 	var data map[string]any
-	if err := yaml.Unmarshal([]byte(rest[:end]), &data); err != nil {
+	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &data); err != nil {
 		return Skill{}, &ValidationError{Message: "invalid YAML frontmatter: " + err.Error()}
+	}
+	if data == nil {
+		return Skill{}, &ValidationError{Message: "SKILL.md frontmatter must be a mapping"}
 	}
 	stringValue := func(key string) string {
 		value, exists := data[key]
@@ -162,7 +172,7 @@ func decode(content, filePath string) (Skill, error) {
 		Metadata:      parseMetadata(data["metadata"]),
 		AllowedTools:  parseAllowedTools(data["allowed-tools"]),
 		When:          stringValue("when"),
-		Body:          ExtractBody(content),
+		Body:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if parsed.Name == "" || parsed.Description == "" {
 		return Skill{}, &ValidationError{Message: "name and description are required"}

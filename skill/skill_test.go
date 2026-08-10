@@ -35,6 +35,23 @@ metadata:
 	}
 }
 
+func TestParseContentAcceptsWhitespaceDelimitersAndNormalizesWindowsPath(t *testing.T) {
+	parsed, warnings, err := ParseContent("---   \nname: café\ndescription: useful\n--- \nbody\n", `C:\skills\café\SKILL.md`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 || parsed.Path != "C:/skills/café/SKILL.md" || parsed.Body != "body" {
+		t.Fatalf("parsed = %#v, warnings = %#v", parsed, warnings)
+	}
+}
+
+func TestParseContentRejectsFalseClosingDelimiter(t *testing.T) {
+	_, _, err := ParseContent("---\nname: sample\ndescription: useful\n---not-a-delimiter\nbody\n", "/skills/sample/SKILL.md")
+	if err == nil {
+		t.Fatal("expected malformed frontmatter to fail")
+	}
+}
+
 func TestParseFileRejectsInvalidName(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "SKILL.md")
 	if err := os.WriteFile(filePath, []byte("---\nname: Bad_Name\ndescription: invalid\n---\n"), 0o644); err != nil {
