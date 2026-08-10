@@ -160,7 +160,8 @@ func (client *Client) Profile() model.Profile {
 		ToolCalling: true, ParallelToolCalls: true, StructuredOutput: true,
 		NativeStreaming: true, SupportsPromptCaching: true, SupportsReasoning: true,
 		ReasoningLevels: []string{"none", "low", "medium", "high", "xhigh"}, DefaultReasoningLevel: defaultReasoning,
-		SupportsImages: true, SupportsWebSearch: client.options.WebSearch,
+		SupportsImages: true, SupportsPDF: true, SupportsFiles: true,
+		SupportsWebSearch: client.options.WebSearch,
 	}
 }
 

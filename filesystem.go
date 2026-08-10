@@ -17,6 +17,7 @@ import (
 	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
 	"github.com/semistrict/dago/message"
+	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/state"
 	"github.com/semistrict/dago/tool"
 )
@@ -85,6 +86,8 @@ Here is a preview showing the head and tail of the content:
 
 %s
 `
+
+const readFilePathMetadata = "read_file_path"
 
 var filesystemToolOperations = map[string]FilesystemOperation{
 	"ls": FilesystemRead, "read_file": FilesystemRead, "glob": FilesystemRead, "grep": FilesystemRead,
@@ -357,6 +360,7 @@ func filesystemModelWrapper(options FilesystemOptions) agent.ModelWrapper {
 				}
 			}
 		}
+		request.Messages = scrubUnsupportedFilesystemMedia(request.Messages, request.Model)
 		processed, update, boundCtx, err := evictHumanMessages(ctx, options, request)
 		if err != nil {
 			return agent.ModelResponse{}, err
@@ -394,6 +398,86 @@ func filesystemModelWrapper(options FilesystemOptions) agent.ModelWrapper {
 		}
 		return response, nil
 	}
+}
+
+func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat) []message.Message {
+	profile := model.Profile{}
+	if chat != nil {
+		profile = chat.Profile()
+	}
+	result := make([]message.Message, len(messages))
+	for index, item := range messages {
+		result[index] = item.Clone()
+		if item.Role != message.RoleHuman && item.Role != message.RoleTool {
+			continue
+		}
+		inToolMessage := item.Role == message.RoleTool
+		changed := false
+		for blockIndex, block := range result[index].Content {
+			if filesystemMediaSupported(block, profile, inToolMessage) {
+				continue
+			}
+			path := filesystemMediaPath(block)
+			mimeType := block.MIMEType
+			if mimeType == "" {
+				mimeType = "unknown"
+			}
+			result[index].Content[blockIndex] = message.ContentBlock{Type: message.BlockText, Text: fmt.Sprintf(
+				"[read_file: %s was not attached because this model does not support %s content (%s).]",
+				path, block.Type, mimeType,
+			)}
+			changed = true
+		}
+		if !changed {
+			result[index] = item.Clone()
+		}
+	}
+	return result
+}
+
+func filesystemMediaSupported(block message.ContentBlock, profile model.Profile, inToolMessage bool) bool {
+	switch block.Type {
+	case message.BlockImage:
+		if inToolMessage && profile.SupportsImageToolMessages != nil && !*profile.SupportsImageToolMessages {
+			return false
+		}
+		return profile.Provider == "" || profile.SupportsImages
+	case message.BlockAudio:
+		return profile.Provider == "" || profile.SupportsAudio
+	case message.BlockVideo:
+		return profile.Provider == "" || profile.SupportsVideo
+	case message.BlockFile:
+		if len(block.Data) == 0 {
+			return true
+		}
+		if block.MIMEType != "application/pdf" {
+			return profile.SupportsFiles || filesystemProviderAcceptsFiles(profile.Provider)
+		}
+		if inToolMessage && profile.SupportsPDFToolMessages != nil && !*profile.SupportsPDFToolMessages {
+			return false
+		}
+		return profile.Provider == "" || profile.SupportsPDF
+	default:
+		return true
+	}
+}
+
+func filesystemProviderAcceptsFiles(provider string) bool {
+	provider = strings.ToLower(provider)
+	return provider == "openai" || provider == "azure-openai" || provider == "google" || provider == "google-genai"
+}
+
+func filesystemMediaPath(block message.ContentBlock) string {
+	if raw := block.Extra[readFilePathMetadata]; len(raw) > 0 {
+		var value string
+		if json.Unmarshal(raw, &value) == nil && value != "" {
+			return value
+		}
+	}
+	if block.Name != "" {
+		return block.Name
+	}
+	return "the requested file"
 }
 
 func evictHumanMessages(ctx context.Context, options FilesystemOptions, request agent.ModelRequest) (agent.ModelRequest, state.Values, context.Context, error) {
@@ -1461,7 +1545,11 @@ func mediaResult(ctx context.Context, value backend.Backend, filePath string, da
 	} else if strings.HasPrefix(mimeType, "video/") && strings.ToLower(path.Ext(filePath)) != ".mkv" {
 		blockType = message.BlockVideo
 	}
-	return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: "Read binary file " + filePath}, {Type: blockType, Data: raw, MIMEType: mimeType, Name: path.Base(filePath)}}}, nil
+	encodedPath, _ := json.Marshal(filePath)
+	return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: "Read binary file " + filePath}, {
+		Type: blockType, Data: raw, MIMEType: mimeType, Name: path.Base(filePath),
+		Extra: map[string]json.RawMessage{readFilePathMetadata: encodedPath},
+	}}}, nil
 }
 
 func binaryFileBytes(ctx context.Context, value backend.Backend, filePath string, data *backend.FileData) ([]byte, error) {
@@ -1504,6 +1592,16 @@ func videoResult(ctx context.Context, options FilesystemOptions, filePath string
 		message.ContentBlock{Type: message.BlockText, Text: fmt.Sprintf("Read video %s: sampled %d %s.", filePath, frameCount, frameLabel)},
 		message.ContentBlock{Type: message.BlockText, Text: videoWindowHeader(filePath, window)},
 	)
+	encodedPath, _ := json.Marshal(filePath)
+	for index := range blocks {
+		if blocks[index].Type == message.BlockText {
+			continue
+		}
+		if blocks[index].Extra == nil {
+			blocks[index].Extra = map[string]json.RawMessage{}
+		}
+		blocks[index].Extra[readFilePathMetadata] = encodedPath
+	}
 	content = append(content, blocks...)
 	return tool.Result{Content: content}, nil
 }

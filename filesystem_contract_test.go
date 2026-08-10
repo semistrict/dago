@@ -11,6 +11,8 @@ import (
 	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
 	"github.com/semistrict/dago/message"
+	"github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/model/modeltest"
 	memorystore "github.com/semistrict/dago/store"
 	"github.com/semistrict/dago/tool"
 )
@@ -249,6 +251,46 @@ func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
 	read, err := composite.Read(context.Background(), "/workspace/large_tool_results/evict.txt", 0, 100)
 	if err != nil || read.Data == nil || read.Data.Content != strings.Repeat("x", 50) {
 		t.Fatalf("offloaded file = %#v, %v", read, err)
+	}
+}
+
+func TestFilesystemScrubsOnlyUnsupportedModelFacingMedia(t *testing.T) {
+	pathMetadata, _ := json.Marshal("/report.pdf")
+	pdf := message.ContentBlock{
+		Type: message.BlockFile, MIMEType: "application/pdf", Data: []byte("pdf"),
+		Extra: map[string]json.RawMessage{readFilePathMetadata: pathMetadata},
+	}
+	original := message.Message{Role: message.RoleTool, ToolCallID: "read", Content: []message.ContentBlock{pdf}}
+	unknown := scrubUnsupportedFilesystemMedia([]message.Message{original}, modeltest.New(model.Profile{}))
+	if unknown[0].Content[0].Type != message.BlockFile {
+		t.Fatalf("unknown profile should preserve PDF: %#v", unknown)
+	}
+
+	falseValue := false
+	rejecting := modeltest.New(model.Profile{
+		Provider: "anthropic", SupportsPDF: true, SupportsPDFToolMessages: &falseValue,
+	})
+	scrubbed := scrubUnsupportedFilesystemMedia([]message.Message{original}, rejecting)
+	if block := scrubbed[0].Content[0]; block.Type != message.BlockText || !strings.Contains(block.Text, "/report.pdf") || !strings.Contains(block.Text, "does not support file content") {
+		t.Fatalf("scrubbed PDF = %#v", block)
+	}
+	if original.Content[0].Type != message.BlockFile || string(original.Content[0].Data) != "pdf" {
+		t.Fatalf("scrub mutated persisted input: %#v", original)
+	}
+
+	docx := pdf
+	docx.MIMEType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	if block := scrubUnsupportedFilesystemMedia([]message.Message{{Role: message.RoleTool, Content: []message.ContentBlock{docx}}}, modeltest.New(model.Profile{Provider: "anthropic"}))[0].Content[0]; block.Type != message.BlockText {
+		t.Fatalf("unsupported document = %#v", block)
+	}
+	if block := scrubUnsupportedFilesystemMedia([]message.Message{{Role: message.RoleTool, Content: []message.ContentBlock{docx}}}, modeltest.New(model.Profile{Provider: "openai", SupportsFiles: true}))[0].Content[0]; block.Type != message.BlockFile {
+		t.Fatalf("supported document = %#v", block)
+	}
+	reference := docx
+	reference.Data = nil
+	reference.URL = "https://example.test/file"
+	if block := scrubUnsupportedFilesystemMedia([]message.Message{{Role: message.RoleHuman, Content: []message.ContentBlock{reference}}}, modeltest.New(model.Profile{Provider: "anthropic"}))[0].Content[0]; block.Type != message.BlockFile {
+		t.Fatalf("provider-managed reference = %#v", block)
 	}
 }
 
