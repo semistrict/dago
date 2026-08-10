@@ -736,7 +736,18 @@ func (compiler *compiler) executeTool(ctx context.Context, call message.ToolCall
 }) {
 	executable := compiler.tools[call.Name]
 	if executable == nil {
-		result.err = fmt.Errorf("%w %q", ErrUnknownTool, call.Name)
+		if compiler.options.FailOnToolError {
+			result.err = fmt.Errorf("%w %q", ErrUnknownTool, call.Name)
+			return
+		}
+		names := make([]string, 0, len(compiler.tools))
+		for name := range compiler.tools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		result.message = message.Tool(call.ID, fmt.Sprintf("Error: %s is not a valid tool, try one of [%s].", call.Name, strings.Join(names, ", ")))
+		result.message.Name = call.Name
+		result.message.ToolStatus = message.ToolStatusError
 		return
 	}
 	request := ToolCallRequest{Call: call, Tool: executable, State: values.Clone(), Runtime: convertRuntime(runtime)}

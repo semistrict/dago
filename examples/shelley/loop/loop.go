@@ -709,35 +709,6 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 			}
 			return nil, nil
 		},
-		BeforeTools: func(_ context.Context, request dagent.ToolBatchRequest) (dagent.ToolBatchResponse, error) {
-			calls := make([]dmessage.ToolCall, 0, len(request.Calls))
-			var missing []dmessage.Message
-			for _, call := range request.Calls {
-				if request.Tools[call.Name] != nil {
-					calls = append(calls, call)
-					continue
-				}
-				exact := llm.Content{
-					Type: llm.ContentTypeToolResult, ToolUseID: call.ID, ToolError: true,
-					ToolResult: llm.TextContent(fmt.Sprintf("Tool '%s' not found", call.Name)),
-				}
-				artifact, err := json.Marshal(map[string]any{
-					"version": 1, "kind": "shelley.tool_result.v1", "content": exact,
-				})
-				if err != nil {
-					return dagent.ToolBatchResponse{}, err
-				}
-				message := dmessage.Tool(call.ID, exact.ToolResult[0].Text)
-				message.Name = call.Name
-				message.ToolStatus = dmessage.ToolStatusError
-				message.Artifact = artifact
-				missing = append(missing, message)
-			}
-			if len(missing) == 0 {
-				return dagent.ToolBatchResponse{}, nil
-			}
-			return dagent.ToolBatchResponse{Calls: calls, Messages: missing}, nil
-		},
 		WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
 			toolCtx := llm.WithToolUseID(ctx, request.Call.ID)
 			if l.onToolProgress != nil {

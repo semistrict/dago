@@ -82,6 +82,53 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 	}
 }
 
+func TestUnknownToolReturnsRecoverableToolMessage(t *testing.T) {
+	known := tool.Func{
+		Spec: tool.Definition{Name: "alpha", Description: "Known tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+			return tool.TextResult("ok"), nil
+		},
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "missing-1", Name: "missing", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			last := request.Messages[len(request.Messages)-1]
+			if last.Role != message.RoleTool || last.Name != "missing" || last.ToolCallID != "missing-1" || last.ToolStatus != message.ToolStatusError {
+				return fmt.Errorf("unknown tool result = %#v", last)
+			}
+			if last.TextContent() != "Error: missing is not a valid tool, try one of [alpha]." {
+				return fmt.Errorf("unknown tool text = %q", last.TextContent())
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("recovered")}},
+	)
+	compiled, err := New(Options{Model: script, Tools: []tool.Tool{known}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), Input{Messages: []message.Message{message.Human("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "recovered" {
+		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
+func TestUnknownToolCanRemainFatal(t *testing.T) {
+	script := modeltest.New(model.Profile{ToolCalling: true}, modeltest.Step{Response: model.Response{Message: message.Message{
+		Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "missing-1", Name: "missing", Arguments: json.RawMessage(`{}`)}},
+	}}})
+	compiled, err := New(Options{Model: script, FailOnToolError: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = compiled.Invoke(context.Background(), Input{Messages: []message.Message{message.Human("go")}})
+	if !errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestAgentMessageIDsAreAssignedAndStableAcrossCheckpoints(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	script := modeltest.New(model.Profile{},

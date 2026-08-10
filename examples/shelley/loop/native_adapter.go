@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	dmessage "github.com/semistrict/dago/message"
@@ -202,10 +203,17 @@ func toolResultFromDago(item dmessage.Message) (llm.Content, []llm.PurposedUsage
 			return artifact.Content, artifact.OtherUsage, nil
 		}
 	}
+	blocks := contentFromDago(item.Content)
+	// Dago follows the canonical tool-node contract for unknown tools. Preserve
+	// Shelley's established UI/database wording at this projection boundary.
+	if item.ToolStatus == dmessage.ToolStatusError && item.Name != "" && len(blocks) == 1 &&
+		strings.HasPrefix(blocks[0].Text, "Error: "+item.Name+" is not a valid tool, try one of [") {
+		blocks = llm.TextContent(fmt.Sprintf("Tool '%s' not found", item.Name))
+	}
 	content := llm.Content{
 		Type: llm.ContentTypeToolResult, ToolUseID: item.ToolCallID,
 		ToolError:  item.ToolStatus == dmessage.ToolStatusError,
-		ToolResult: contentFromDago(item.Content),
+		ToolResult: blocks,
 	}
 	return content, purposedUsageFromDago(item.OtherUsage), nil
 }
