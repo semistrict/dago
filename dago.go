@@ -27,6 +27,8 @@ type Options struct {
 	FilesystemTools      []string
 	Permissions          []FilesystemPermission
 	Subagents            []Subagent
+	AsyncSubagents       []AsyncSubagent
+	AsyncSubagentPrompt  string
 	DisableSubagents     bool
 	Skills               []string
 	Memory               []string
@@ -137,6 +139,13 @@ func New(options Options) (*DeepAgent, error) {
 		core = append(core, middleware)
 	}
 	core = append(core, PatchToolCallsMiddleware())
+	if len(options.AsyncSubagents) > 0 {
+		middleware, err := AsyncSubagentMiddleware(AsyncSubagentOptions{Subagents: options.AsyncSubagents, SystemPrompt: options.AsyncSubagentPrompt})
+		if err != nil {
+			return nil, err
+		}
+		core = append(core, middleware)
+	}
 	tail := append([]agent.Middleware(nil), profile.Middleware...)
 	tail = append(tail, agent.PromptCaching("prompt_caching", options.PromptCacheRetention, func(request agent.ModelRequest) string {
 		if request.Runtime.Config.ThreadID != "" {

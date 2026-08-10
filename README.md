@@ -3,7 +3,7 @@
 Dago is an idiomatic Go implementation of the Deep Agents SDK and the focused
 LangChain/LangGraph behavior it needs. It provides a provider-neutral tool loop,
 middleware, required delta channels, durable checkpoints, virtual filesystems,
-inline subagents, context compaction, skills, memory, and streaming without trying
+inline and background subagents, context compaction, skills, memory, and streaming without trying
 to reproduce either framework in full.
 
 The implementation targets the pinned Python releases recorded in
@@ -117,7 +117,7 @@ records are rejected with typed context instead of reconstructed.
 
 | Package | Purpose |
 |---|---|
-| `dago` | Deep Agent constructor and filesystem, subagent, summary, skill, memory, profile, and rubric middleware |
+| `dago` | Deep Agent constructor and filesystem, inline/background subagent, summary, skill, memory, profile, and rubric middleware |
 | `agent` | Provider-neutral model/tool graph, middleware lifecycle, approval, retry, todo, streaming, and checkpoint operations |
 | `message`, `model`, `tool`, `state` | Stable public contracts and reducers |
 | `model/modeltest` | Scripted and prompt-driven predictable model doubles for offline tests and examples |
