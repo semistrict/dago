@@ -150,6 +150,9 @@ func resolveProfiles(chat model.Chat, names []string, inline []Profile) (Profile
 			values = append(values, provider)
 		}
 		if modelProfile.Model != "" {
+			if builtin, exists := builtinEngineeringHarnessProfile(modelProfile.Provider, modelProfile.Model); exists {
+				values = append(values, builtin)
+			}
 			if exact, exists := LookupProfile(modelProfile.Provider + ":" + modelProfile.Model); exists && exact.Kind == ProfileHarness {
 				values = append(values, exact)
 			}
@@ -280,17 +283,26 @@ func applyProfilePrompt(profile Profile, user, authoredBase string) string {
 	if profile.BaseSystemPrompt != nil {
 		base = *profile.BaseSystemPrompt
 	}
-	suffix := ""
-	if profile.SystemPromptSuffix != nil {
-		suffix = *profile.SystemPromptSuffix
+	if profile.SystemPrompt != "" {
+		if base != "" {
+			base += "\n\n"
+		}
+		base += profile.SystemPrompt
 	}
-	parts := make([]string, 0, 4)
-	for _, value := range []string{user, base, profile.SystemPrompt, suffix} {
-		if value = strings.TrimSpace(value); value != "" {
-			parts = append(parts, value)
+	if profile.SystemPromptSuffix != nil {
+		if base != "" {
+			base += "\n\n" + *profile.SystemPromptSuffix
+		} else {
+			base = *profile.SystemPromptSuffix
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	if user == "" {
+		return base
+	}
+	if base == "" {
+		return user
+	}
+	return user + "\n\n" + base
 }
 
 func appendUnique(values []string, additions ...string) []string {

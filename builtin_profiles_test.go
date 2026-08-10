@@ -61,6 +61,31 @@ func TestBuiltinHarnessProfileResolvesFromModel(t *testing.T) {
 	}
 }
 
+func TestBuiltinEngineeringProfileAddsPlanningAndBehavior(t *testing.T) {
+	modelID := "gpt-5.2-" + "co" + "dex"
+	script := modeltest.New(model.Profile{Provider: "openai", Model: modelID}, modeltest.Step{
+		Check: func(request model.Request) error {
+			if request.Messages[0].Role != message.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "Engineering-Agent Behavior") {
+				return &profileTestError{value: request.Messages[0].TextContent()}
+			}
+			for _, definition := range request.Tools {
+				if definition.Name == "write_todos" {
+					return nil
+				}
+			}
+			return &profileTestError{value: "write_todos missing"}
+		},
+		Response: model.Response{Message: message.Assistant("done")},
+	})
+	compiled, err := New(Options{Model: script, DisableSubagents: true, DisableSummary: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBuiltinProviderProfiles(t *testing.T) {
 	openAI, err := ApplyProviderProfile("openai:any-model", nil, true)
 	if err != nil || openAI["use_responses_api"] != true {

@@ -175,4 +175,18 @@ func TestProfilesResolveFromModelAndMergeProviderWithExactModel(t *testing.T) {
 	}
 }
 
+func TestProfilePromptPreservesExplicitEmptySlots(t *testing.T) {
+	empty := ""
+	base := "base"
+	if got := applyProfilePrompt(Profile{BaseSystemPrompt: &empty}, "", "ignored"); got != "" {
+		t.Fatalf("empty base = %q", got)
+	}
+	if got := applyProfilePrompt(Profile{BaseSystemPrompt: &base, SystemPromptSuffix: &empty}, "", "ignored"); got != "base\n\n" {
+		t.Fatalf("empty suffix = %q", got)
+	}
+	if got := applyProfilePrompt(Profile{SystemPromptSuffix: stringPointer("suffix")}, "user", ""); got != "user\n\nsuffix" {
+		t.Fatalf("user and suffix = %q", got)
+	}
+}
+
 func stringPointer(value string) *string { return &value }
