@@ -20,7 +20,33 @@ const (
 	EventInterrupt EventMode = "interrupt"
 	EventCustom    EventMode = "custom"
 	EventToken     EventMode = "token"
+	EventChild     EventMode = "child"
 )
+
+type ChildEventPhase string
+
+const (
+	ChildStarted     ChildEventPhase = "started"
+	ChildEventUpdate ChildEventPhase = "event"
+	ChildCompleted   ChildEventPhase = "completed"
+	ChildFailed      ChildEventPhase = "failed"
+	ChildInterrupted ChildEventPhase = "interrupted"
+)
+
+// ChildEvent projects a nested agent run onto its parent's stream. Event is set
+// for the event phase; terminal phases carry the child's visible output.
+type ChildEvent struct {
+	Phase      ChildEventPhase   `json:"phase"`
+	Name       string            `json:"name"`
+	ToolCallID string            `json:"tool_call_id"`
+	Namespace  string            `json:"namespace,omitempty"`
+	Event      *Event            `json:"event,omitempty"`
+	Messages   []message.Message `json:"messages,omitempty"`
+	Structured json.RawMessage   `json:"structured,omitempty"`
+	State      state.Values      `json:"state,omitempty"`
+	Interrupts []Interrupt       `json:"interrupts,omitempty"`
+	Error      string            `json:"error,omitempty"`
+}
 
 // Event is a version-stable public execution event. Provider token chunks are
 // represented separately from graph lifecycle events in model streams.
@@ -34,12 +60,24 @@ type Event struct {
 	Interrupt *Interrupt      `json:"interrupt,omitempty"`
 	Custom    json.RawMessage `json:"custom,omitempty"`
 	Chunk     *model.Chunk    `json:"chunk,omitempty"`
+	Child     *ChildEvent     `json:"child,omitempty"`
 }
 
 // Stream is an owned, bounded agent execution stream.
 type Stream struct {
 	graph   *graph.Stream
 	private map[string]bool
+}
+
+// EncodeChildEvent creates the versioned custom-event envelope understood by
+// Stream.Next. Tool implementations use it to forward nested runs without
+// coupling the graph runtime to agent hierarchy.
+func EncodeChildEvent(event ChildEvent) (json.RawMessage, error) {
+	encoded, err := json.Marshal(streamEnvelope{Version: 1, Kind: "child", Child: &event})
+	if err != nil {
+		return nil, err
+	}
+	return encoded, nil
 }
 
 // Stream starts an invocation. Consumers that stop before io.EOF must call Close.
@@ -75,11 +113,18 @@ func (stream *Stream) Next(ctx context.Context) (Event, error) {
 	}
 	if event.Mode == graph.EventCustom && len(event.Custom) > 0 {
 		var envelope streamEnvelope
-		if json.Unmarshal(event.Custom, &envelope) == nil && envelope.Version == 1 && envelope.Kind == "token" {
-			result.Mode = EventToken
-			chunk := envelope.Chunk
-			result.Chunk = &chunk
-			result.Custom = nil
+		if json.Unmarshal(event.Custom, &envelope) == nil && envelope.Version == 1 {
+			switch envelope.Kind {
+			case "token":
+				result.Mode = EventToken
+				chunk := envelope.Chunk
+				result.Chunk = &chunk
+				result.Custom = nil
+			case "child":
+				result.Mode = EventChild
+				result.Child = envelope.Child
+				result.Custom = nil
+			}
 		}
 	}
 	return result, nil

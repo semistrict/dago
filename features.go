@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"mime"
 	"path"
 	"reflect"
@@ -27,6 +28,13 @@ import (
 // Runnable is the small invocation contract accepted by compiled subagents.
 type Runnable interface {
 	Invoke(context.Context, agent.Input) (agent.Result, error)
+}
+
+// StreamingRunnable lets a compiled subagent project its nested lifecycle onto
+// the parent stream. Runnable remains sufficient for invoke-only integrations.
+type StreamingRunnable interface {
+	Runnable
+	Stream(context.Context, agent.Input, int) *agent.Stream
 }
 
 type Subagent struct {
@@ -199,7 +207,7 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 			invocation.State = inherited
 			invocation.Messages = []message.Message{message.Human(input.Description)}
 		}
-		result, err := selected.Runnable.Invoke(ctx, invocation)
+		result, err := invokeSubagent(ctx, selected, invocation, runtime)
 		if err != nil {
 			return tool.Result{}, err
 		}
@@ -242,6 +250,70 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 		return toolResult, nil
 	}}
 	return agent.Middleware{Name: "subagents", Tools: []tool.Tool{taskTool}}, nil
+}
+
+func invokeSubagent(ctx context.Context, selected Subagent, invocation agent.Input, runtime tool.Runtime) (agent.Result, error) {
+	streaming, supportsStreaming := selected.Runnable.(StreamingRunnable)
+	if !supportsStreaming || runtime.Stream == nil {
+		return selected.Runnable.Invoke(ctx, invocation)
+	}
+	emit := func(event agent.ChildEvent) error {
+		encoded, err := agent.EncodeChildEvent(event)
+		if err != nil {
+			return err
+		}
+		return runtime.Stream.Write(ctx, encoded)
+	}
+	base := agent.ChildEvent{
+		Name: selected.Name, ToolCallID: runtime.CallID,
+		Namespace: invocation.Config.Namespace,
+	}
+	started := base
+	started.Phase = agent.ChildStarted
+	if err := emit(started); err != nil {
+		return agent.Result{}, err
+	}
+	stream := streaming.Stream(ctx, invocation, 16)
+	defer stream.Close()
+	for {
+		event, err := stream.Next(ctx)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			failed := base
+			failed.Phase = agent.ChildFailed
+			failed.Error = err.Error()
+			_ = emit(failed)
+			return agent.Result{}, err
+		}
+		forwarded := base
+		forwarded.Phase = agent.ChildEventUpdate
+		forwarded.Event = &event
+		if err := emit(forwarded); err != nil {
+			return agent.Result{}, err
+		}
+	}
+	result, err := stream.Result(ctx)
+	terminal := base
+	if err != nil {
+		terminal.Phase = agent.ChildFailed
+		terminal.Error = err.Error()
+		_ = emit(terminal)
+		return agent.Result{}, err
+	}
+	terminal.Phase = agent.ChildCompleted
+	if len(result.Interrupts) > 0 {
+		terminal.Phase = agent.ChildInterrupted
+	}
+	terminal.Messages = result.Messages
+	terminal.Structured = result.Structured
+	terminal.State = result.State
+	terminal.Interrupts = result.Interrupts
+	if err := emit(terminal); err != nil {
+		return agent.Result{}, err
+	}
+	return result, nil
 }
 
 type SummarizationOptions struct {

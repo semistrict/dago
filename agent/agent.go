@@ -442,7 +442,8 @@ func invokeModelStream(ctx context.Context, chat model.Chat, request model.Reque
 type streamEnvelope struct {
 	Version int         `json:"version"`
 	Kind    string      `json:"kind"`
-	Chunk   model.Chunk `json:"chunk"`
+	Chunk   model.Chunk `json:"chunk,omitempty"`
+	Child   *ChildEvent `json:"child,omitempty"`
 }
 
 func mergeModelChunk(response *model.Response, chunk model.Chunk) {

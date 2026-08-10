@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +59,69 @@ func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
 	}
 	if result.Messages[len(result.Messages)-1].TextContent() != "done" {
 		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
+func TestDeepAgentStreamProjectsNestedSubagentLifecycle(t *testing.T) {
+	echo := tool.Func{Spec: tool.Definition{
+		Name: "echo", Description: "Echo text", InputSchema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}`),
+	}, Run: func(_ context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+		var input struct {
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(raw, &input); err != nil {
+			return tool.Result{}, err
+		}
+		return tool.TextResult(input.Value), nil
+	}}
+	child := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "child-echo", Name: "echo", Arguments: json.RawMessage(`{"value":"nested"}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("child done")}},
+	)
+	parent := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "parent-task", Name: "task", Arguments: json.RawMessage(`{"description":"do work","subagent_type":"worker"}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("parent done")}},
+	)
+	compiled, err := New(Options{
+		Model: parent, DisableSummary: true,
+		Subagents: []Subagent{{Name: "worker", Description: "Worker", SystemPrompt: "Work.", Model: child, Tools: []tool.Tool{echo}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := compiled.Stream(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}, 32)
+	defer stream.Close()
+	var childEvents []agent.ChildEvent
+	for {
+		event, err := stream.Next(context.Background())
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Mode == agent.EventChild && event.Child != nil {
+			childEvents = append(childEvents, *event.Child)
+		}
+	}
+	if _, err := stream.Result(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(childEvents) < 3 || childEvents[0].Phase != agent.ChildStarted || childEvents[len(childEvents)-1].Phase != agent.ChildCompleted {
+		t.Fatalf("child lifecycle = %#v", childEvents)
+	}
+	terminal := childEvents[len(childEvents)-1]
+	if terminal.Name != "worker" || terminal.ToolCallID != "parent-task" || len(terminal.Messages) == 0 || terminal.Messages[len(terminal.Messages)-1].TextContent() != "child done" {
+		t.Fatalf("child terminal event = %#v", terminal)
+	}
+	foundToolUpdate := false
+	for _, childEvent := range childEvents {
+		if childEvent.Event != nil && childEvent.Event.Node == "tools" {
+			foundToolUpdate = true
+		}
+	}
+	if !foundToolUpdate {
+		t.Fatalf("nested tool events were not projected: %#v", childEvents)
 	}
 }
 
