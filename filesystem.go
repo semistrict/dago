@@ -730,6 +730,11 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if err := decodeArguments(raw, &input); err != nil {
 			return tool.Result{}, err
 		}
+		validatedPath, err := validateFilesystemToolPath(input.Path, false)
+		if err != nil {
+			return tool.Result{}, err
+		}
+		input.Path = validatedPath
 		result, err := options.Backend.List(ctx, input.Path)
 		if err != nil {
 			return tool.Result{}, err
@@ -766,6 +771,11 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if err := decodeArguments(raw, &input); err != nil {
 			return tool.Result{}, err
 		}
+		validatedPath, err := validateFilesystemToolPath(input.FilePath, false)
+		if err != nil {
+			return tool.Result{}, err
+		}
+		input.FilePath = validatedPath
 		limit := options.ReadLimit
 		if input.Limit != nil {
 			limit = *input.Limit
@@ -812,6 +822,11 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if err := decodeArguments(raw, &input); err != nil {
 			return tool.Result{}, err
 		}
+		validatedPath, err := validateFilesystemToolPath(input.FilePath, false)
+		if err != nil {
+			return tool.Result{}, err
+		}
+		input.FilePath = validatedPath
 		result, err := options.Backend.Write(ctx, input.FilePath, input.Content)
 		if err != nil {
 			return tool.Result{}, err
@@ -828,6 +843,11 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if err := decodeArguments(raw, &input); err != nil {
 			return tool.Result{}, err
 		}
+		validatedPath, err := validateFilesystemToolPath(input.FilePath, false)
+		if err != nil {
+			return tool.Result{}, err
+		}
+		input.FilePath = validatedPath
 		result, err := options.Backend.Edit(ctx, input.FilePath, input.Old, input.New, input.All)
 		if err != nil {
 			return tool.Result{}, err
@@ -841,6 +861,11 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if err := decodeArguments(raw, &input); err != nil {
 			return tool.Result{}, err
 		}
+		validatedPath, err := validateFilesystemToolPath(input.FilePath, false)
+		if err != nil {
+			return tool.Result{}, err
+		}
+		input.FilePath = validatedPath
 		result, err := options.Backend.Delete(ctx, input.FilePath)
 		if err != nil {
 			return tool.Result{}, err
@@ -853,6 +878,14 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 			Path    string `json:"path"`
 		}
 		if err := decodeArguments(raw, &input); err != nil {
+			return tool.Result{}, err
+		}
+		validatedPath, err := validateFilesystemToolPath(input.Path, true)
+		if err != nil {
+			return tool.Result{}, err
+		}
+		input.Path = validatedPath
+		if err := validateFilesystemGlob(input.Pattern); err != nil {
 			return tool.Result{}, err
 		}
 		select {
@@ -910,6 +943,16 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		}
 		if err := decodeArguments(raw, &input); err != nil {
 			return tool.Result{}, err
+		}
+		validatedPath, err := validateFilesystemToolPath(input.Path, true)
+		if err != nil {
+			return tool.Result{}, err
+		}
+		input.Path = validatedPath
+		if input.Glob != "" {
+			if err := validateFilesystemGlob(input.Glob); err != nil {
+				return tool.Result{}, err
+			}
 		}
 		if input.MaxCount == 0 {
 			input.MaxCount = options.GrepLimit
@@ -1467,6 +1510,40 @@ func decodeArguments(raw json.RawMessage, target any) error {
 	}
 	if err := json.Unmarshal(raw, target); err != nil {
 		return fmt.Errorf("%w: %v", tool.ErrInvalidArguments, err)
+	}
+	return nil
+}
+
+func validateFilesystemToolPath(value string, defaultRoot bool) (string, error) {
+	if value == "" && defaultRoot {
+		return "/", nil
+	}
+	if value == "" || strings.ContainsRune(value, '\x00') {
+		return "", fmt.Errorf("invalid filesystem path %q", value)
+	}
+	if len(value) >= 2 && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) && value[1] == ':' {
+		return "", fmt.Errorf("Windows absolute paths are not supported: %s; use a virtual path starting with /", value)
+	}
+	if strings.HasPrefix(value, "~") {
+		return "", fmt.Errorf("path traversal not allowed: %s", value)
+	}
+	posix := strings.ReplaceAll(value, "\\", "/")
+	for _, segment := range strings.Split(posix, "/") {
+		if segment == ".." {
+			return "", fmt.Errorf("path traversal not allowed: %s", value)
+		}
+	}
+	return path.Clean("/" + strings.TrimPrefix(posix, "/")), nil
+}
+
+func validateFilesystemGlob(pattern string) error {
+	if pattern == "" || strings.ContainsRune(pattern, '\x00') || strings.HasPrefix(pattern, "~") {
+		return fmt.Errorf("invalid filesystem glob %q", pattern)
+	}
+	for _, segment := range strings.Split(strings.ReplaceAll(pattern, "\\", "/"), "/") {
+		if segment == ".." {
+			return fmt.Errorf("path traversal not allowed in glob: %s", pattern)
+		}
 	}
 	return nil
 }

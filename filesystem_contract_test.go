@@ -75,6 +75,33 @@ func TestFilesystemToolSchemasDescribeEveryArgument(t *testing.T) {
 	}
 }
 
+func TestFilesystemToolsNormalizePathsAndRejectAmbiguousHostSyntax(t *testing.T) {
+	memory, err := backend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file")
+	if _, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"C:\\Users\\test.txt"}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "Windows absolute") {
+		t.Fatalf("Windows path error = %v", err)
+	}
+	edit := filesystemTool(t, FilesystemOptions{Backend: memory}, "edit_file")
+	if _, err := edit.Execute(context.Background(), json.RawMessage(`{"file_path":"./question/..","old_string":"a","new_string":"b"}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
+		t.Fatalf("traversal path error = %v", err)
+	}
+	glob := filesystemTool(t, FilesystemOptions{Backend: memory}, "glob")
+	if _, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"../*.txt"}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
+		t.Fatalf("traversal glob error = %v", err)
+	}
+	write := filesystemTool(t, FilesystemOptions{Backend: memory}, "write_file")
+	if _, err := write.Execute(context.Background(), json.RawMessage(`{"file_path":"notes/today.txt","content":"hello"}`), tool.Runtime{}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := memory.Read(context.Background(), "/notes/today.txt", 0, 10)
+	if err != nil || stored.Data == nil || stored.Data.Content != "hello" {
+		t.Fatalf("normalized write = %#v, %v", stored, err)
+	}
+}
+
 func TestFilesystemDescriptionsRespectVisibilityAndOverrides(t *testing.T) {
 	memory, err := backend.NewMemory(nil)
 	if err != nil {
