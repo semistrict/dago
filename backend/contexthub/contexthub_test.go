@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -96,6 +97,30 @@ func TestLazyPullReadPaginationAndLinkedEntries(t *testing.T) {
 	}
 	if client.pulls != 1 {
 		t.Fatalf("pulls = %d", client.pulls)
+	}
+}
+
+func TestReadAndEditUseSharedTextSemantics(t *testing.T) {
+	client := &fakeClient{tree: Tree{Entries: map[string]Entry{
+		"blank.md": {Kind: EntryFile, Content: " \r\n\t"},
+		"eof.md":   {Kind: EntryFile, Content: "one\r\ntwo"},
+	}}}
+	remote := newTestBackend(t, client)
+	ctx := context.Background()
+
+	blank, err := remote.Read(ctx, "/blank.md", 100, 0)
+	if err != nil || blank.Data.Content != " \r\n\t" || blank.NoLinesRequested {
+		t.Fatalf("blank read = %#v, %v", blank, err)
+	}
+	if _, err := remote.Read(ctx, "/eof.md", 2, 1); err == nil {
+		t.Fatal("out-of-range read succeeded")
+	}
+	if _, err := remote.Edit(ctx, "/eof.md", "two\n", "second\n", false); err == nil || !strings.Contains(err.Error(), "trailing newline removed") {
+		t.Fatalf("EOF edit error = %v", err)
+	}
+	edited, err := remote.Edit(ctx, "/eof.md", "one\ntwo", "done", false)
+	if err != nil || edited.Occurrences != 1 || client.pushes[len(client.pushes)-1].changes["eof.md"].Content != "done" {
+		t.Fatalf("normalized edit = %#v, %v", edited, err)
 	}
 }
 

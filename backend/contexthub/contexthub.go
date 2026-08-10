@@ -249,61 +249,7 @@ func (remote *Backend) Read(ctx context.Context, filePath string, offset, limit 
 	if !ok {
 		return backend.ReadResult{}, fmt.Errorf("path %q: file not found", virtual)
 	}
-	return sliceRead(content, offset, limit)
-}
-
-func sliceRead(content string, offset, limit int) (backend.ReadResult, error) {
-	data := &backend.FileData{Content: content, Encoding: backend.EncodingUTF8}
-	if content == "" || strings.TrimSpace(content) == "" {
-		return backend.ReadResult{Data: data}, nil
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	if limit < 0 {
-		limit = 0
-	}
-	if limit == 0 {
-		data.Content = ""
-		return backend.ReadResult{Data: data, NoLinesRequested: true}, nil
-	}
-	lines := splitLinesKeepEnds(content)
-	if offset >= len(lines) {
-		return backend.ReadResult{}, fmt.Errorf("line offset %d exceeds file length (%d lines)", offset, len(lines))
-	}
-	end := min(len(lines), offset+limit)
-	data.Content = strings.ReplaceAll(strings.ReplaceAll(strings.Join(lines[offset:end], ""), "\r\n", "\n"), "\r", "\n")
-	total, startLine, endLine := len(lines), offset+1, end
-	result := backend.ReadResult{Data: data, TotalLines: &total, StartLine: &startLine, EndLine: &endLine}
-	if end < total {
-		next := end
-		result.NextOffset = &next
-	}
-	return result, nil
-}
-
-func splitLinesKeepEnds(value string) []string {
-	if value == "" {
-		return nil
-	}
-	var result []string
-	start := 0
-	for index := 0; index < len(value); index++ {
-		if value[index] != '\n' && value[index] != '\r' {
-			continue
-		}
-		end := index + 1
-		if value[index] == '\r' && end < len(value) && value[end] == '\n' {
-			end++
-			index++
-		}
-		result = append(result, value[start:end])
-		start = end
-	}
-	if start < len(value) {
-		result = append(result, value[start:])
-	}
-	return result
+	return backend.SliceRead(backend.FileData{Content: content, Encoding: backend.EncodingUTF8}, offset, limit)
 }
 
 func (remote *Backend) Write(ctx context.Context, filePath, content string) (backend.WriteResult, error) {
@@ -342,20 +288,12 @@ func (remote *Backend) Edit(ctx context.Context, filePath, old, replacement stri
 	if !ok {
 		return backend.EditResult{}, fmt.Errorf("path %q: file not found", virtual)
 	}
-	count := strings.Count(content, old)
-	if count == 0 || (!replaceAll && count != 1) {
-		return backend.EditResult{}, fmt.Errorf("edit %q: old string occurs %d times", virtual, count)
-	}
-	limit := 1
-	if replaceAll {
-		limit = -1
-	}
-	updated := strings.Replace(content, old, replacement, limit)
-	if err := remote.commitLocked(ctx, map[string]*Entry{name: {Kind: EntryFile, Content: updated}}); err != nil {
+	updated, count, err := backend.ReplaceText(virtual, content, old, replacement, replaceAll)
+	if err != nil {
 		return backend.EditResult{}, err
 	}
-	if !replaceAll {
-		count = 1
+	if err := remote.commitLocked(ctx, map[string]*Entry{name: {Kind: EntryFile, Content: updated}}); err != nil {
+		return backend.EditResult{}, err
 	}
 	return backend.EditResult{Path: virtual, Occurrences: count}, nil
 }

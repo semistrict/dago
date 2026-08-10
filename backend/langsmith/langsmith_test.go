@@ -52,7 +52,7 @@ func TestBackendConformsAndUsesNativeFileTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if read.Data.Content != "two" || read.NextOffset == nil || *read.NextOffset != 2 {
+	if read.Data.Content != "two\n" || read.NextOffset == nil || *read.NextOffset != 2 {
 		t.Fatalf("read = %#v", read)
 	}
 	edit, err := remote.Edit(context.Background(), "/work/a.txt", "two", "second", false)
@@ -116,7 +116,11 @@ func TestRemotePathsRejectTraversalAndRootDelete(t *testing.T) {
 }
 
 func TestBinaryReadAndSizeLimit(t *testing.T) {
-	fake := &fakeSandbox{files: map[string][]byte{"/binary": {0xff, 0x00}, "/large": []byte("large")}}
+	fake := &fakeSandbox{files: map[string][]byte{
+		"/binary":    {0xff, 0x00},
+		"/large":     []byte("large"),
+		"/ascii.mkv": []byte("plain text bytes"),
+	}}
 	remote, _ := newBackend("sandbox", fake, Options{MaxFileSize: 4})
 	result, err := remote.Read(context.Background(), "/binary", 0, 10)
 	if err != nil || result.Data.Encoding != backend.EncodingBase64 || result.Data.Content != "/wA=" {
@@ -124,6 +128,34 @@ func TestBinaryReadAndSizeLimit(t *testing.T) {
 	}
 	if _, err := remote.Read(context.Background(), "/large", 0, 10); err == nil {
 		t.Fatal("large read should fail")
+	}
+	remote, _ = newBackend("sandbox", fake, Options{})
+	result, err = remote.Read(context.Background(), "/ascii.mkv", 99, 0)
+	if err != nil || result.Data.Encoding != backend.EncodingBase64 || result.NoLinesRequested {
+		t.Fatalf("extension-routed binary result = %#v, %v", result, err)
+	}
+}
+
+func TestReadAndEditUseSharedTextSemantics(t *testing.T) {
+	fake := &fakeSandbox{files: map[string][]byte{
+		"/blank.txt": []byte(" \r\n\t"),
+		"/eof.txt":   []byte("one\r\ntwo"),
+	}}
+	remote, _ := newBackend("sandbox", fake, Options{})
+
+	blank, err := remote.Read(context.Background(), "/blank.txt", 100, 0)
+	if err != nil || blank.Data.Content != " \r\n\t" || blank.NoLinesRequested {
+		t.Fatalf("blank read = %#v, %v", blank, err)
+	}
+	if _, err := remote.Read(context.Background(), "/eof.txt", 2, 1); err == nil {
+		t.Fatal("out-of-range read succeeded")
+	}
+	if _, err := remote.Edit(context.Background(), "/eof.txt", "two\n", "second\n", false); err == nil || !strings.Contains(err.Error(), "trailing newline removed") {
+		t.Fatalf("EOF edit error = %v", err)
+	}
+	edited, err := remote.Edit(context.Background(), "/eof.txt", "one\ntwo", "done", false)
+	if err != nil || edited.Occurrences != 1 || string(fake.files["/eof.txt"]) != "done" {
+		t.Fatalf("normalized edit = %#v, %v, content = %q", edited, err, fake.files["/eof.txt"])
 	}
 }
 

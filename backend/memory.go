@@ -80,12 +80,12 @@ func (memory *Memory) Read(ctx context.Context, name string, offset, limit int) 
 	if !ok {
 		return ReadResult{}, fmt.Errorf("path %q: file not found", name)
 	}
-	if data.Encoding == EncodingBase64 || isBinaryReadPath(name) {
+	if data.Encoding == EncodingBase64 || IsBinaryReadPath(name) {
 		copy := data
 		copy.Encoding = EncodingBase64
 		return ReadResult{Data: &copy}, nil
 	}
-	return sliceFileData(data, offset, limit)
+	return SliceRead(data, offset, limit)
 }
 
 func (memory *Memory) Write(ctx context.Context, name, content string) (WriteResult, error) {
@@ -127,26 +127,13 @@ func (memory *Memory) Edit(ctx context.Context, name, old, replacement string, r
 	if data.Encoding != EncodingUTF8 {
 		return EditResult{}, fmt.Errorf("edit %q: binary files are unsupported", name)
 	}
-	data.Content = normalizeNewlines(data.Content)
-	old = normalizeNewlines(old)
-	replacement = normalizeNewlines(replacement)
-	count := strings.Count(data.Content, old)
-	if count == 0 {
-		return EditResult{}, editNotFoundError(name, data.Content, old)
+	updated, count, err := ReplaceText(name, data.Content, old, replacement, replaceAll)
+	if err != nil {
+		return EditResult{}, err
 	}
-	if !replaceAll && count != 1 {
-		return EditResult{}, fmt.Errorf("edit %q: old string occurs %d times", name, count)
-	}
-	limit := 1
-	if replaceAll {
-		limit = -1
-	}
-	data.Content = strings.Replace(data.Content, old, replacement, limit)
+	data.Content = updated
 	data.ModifiedAt = memory.now().UTC()
 	memory.files[name] = data
-	if !replaceAll {
-		count = 1
-	}
 	return EditResult{Path: name, Occurrences: count}, nil
 }
 

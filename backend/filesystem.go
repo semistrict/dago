@@ -99,14 +99,14 @@ func (backend *Filesystem) Read(ctx context.Context, path string, offset, limit 
 		return ReadResult{}, normalizeFileError(path, err)
 	}
 	fileData := FileData{CreatedAt: info.ModTime().UTC(), ModifiedAt: info.ModTime().UTC()}
-	if isBinaryReadPath(path) || !utf8.Valid(data) {
+	if IsBinaryReadPath(path) || !utf8.Valid(data) {
 		fileData.Content = base64.StdEncoding.EncodeToString(data)
 		fileData.Encoding = EncodingBase64
 		return ReadResult{Data: &fileData}, nil
 	}
 	fileData.Content = string(data)
 	fileData.Encoding = EncodingUTF8
-	return sliceFileData(fileData, offset, limit)
+	return SliceRead(fileData, offset, limit)
 }
 
 func (backend *Filesystem) Write(ctx context.Context, path, content string) (WriteResult, error) {
@@ -141,26 +141,12 @@ func (backend *Filesystem) Edit(ctx context.Context, path, old, replacement stri
 	if !utf8.Valid(data) {
 		return EditResult{}, fmt.Errorf("edit %q: binary files are unsupported", path)
 	}
-	content := normalizeNewlines(string(data))
-	old = normalizeNewlines(old)
-	replacement = normalizeNewlines(replacement)
-	count := strings.Count(content, old)
-	if count == 0 {
-		return EditResult{}, editNotFoundError(path, content, old)
+	updated, count, err := ReplaceText(path, string(data), old, replacement, replaceAll)
+	if err != nil {
+		return EditResult{}, err
 	}
-	if !replaceAll && count != 1 {
-		return EditResult{}, fmt.Errorf("edit %q: old string occurs %d times", path, count)
-	}
-	limit := 1
-	if replaceAll {
-		limit = -1
-	}
-	updated := strings.Replace(content, old, replacement, limit)
 	if err := os.WriteFile(resolved, []byte(updated), info.Mode().Perm()); err != nil {
 		return EditResult{}, normalizeFileError(path, err)
-	}
-	if !replaceAll {
-		count = 1
 	}
 	return EditResult{Path: backend.display(resolved), Occurrences: count}, nil
 }
@@ -506,7 +492,7 @@ func readFile(ctx context.Context, path string, maxSize int64) ([]byte, os.FileI
 }
 
 func splitLines(value string) []string {
-	value = normalizeNewlines(value)
+	value = NormalizeNewlines(value)
 	if value == "" {
 		return nil
 	}
@@ -517,7 +503,9 @@ func splitLines(value string) []string {
 	return strings.Split(value, "\n")
 }
 
-func sliceFileData(data FileData, offset, limit int) (ReadResult, error) {
+// SliceRead applies the canonical text pagination contract shared by every
+// backend. Binary data must be returned by the caller without pagination.
+func SliceRead(data FileData, offset, limit int) (ReadResult, error) {
 	if strings.TrimSpace(data.Content) == "" {
 		copy := data
 		return ReadResult{Data: &copy}, nil
@@ -530,7 +518,7 @@ func sliceFileData(data FileData, offset, limit int) (ReadResult, error) {
 		copy.Content = ""
 		return ReadResult{Data: &copy, NoLinesRequested: true}, nil
 	}
-	normalized := normalizeNewlines(data.Content)
+	normalized := NormalizeNewlines(data.Content)
 	lines := strings.SplitAfter(normalized, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
@@ -551,8 +539,34 @@ func sliceFileData(data FileData, offset, limit int) (ReadResult, error) {
 	return result, nil
 }
 
-func normalizeNewlines(value string) string {
+// NormalizeNewlines applies Python universal-newline semantics.
+func NormalizeNewlines(value string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(value, "\r\n", "\n"), "\r", "\n")
+}
+
+// ReplaceText performs the backend edit contract consistently across storage
+// implementations, including newline normalization and actionable EOF errors.
+func ReplaceText(name, content, old, replacement string, replaceAll bool) (string, int, error) {
+	if old == "" || old == replacement {
+		return "", 0, fmt.Errorf("edit %q: old string must be non-empty and differ from replacement", name)
+	}
+	content = NormalizeNewlines(content)
+	old = NormalizeNewlines(old)
+	replacement = NormalizeNewlines(replacement)
+	count := strings.Count(content, old)
+	if count == 0 {
+		return "", 0, editNotFoundError(name, content, old)
+	}
+	if !replaceAll && count != 1 {
+		return "", 0, fmt.Errorf("edit %q: old string occurs %d times", name, count)
+	}
+	limit := 1
+	if replaceAll {
+		limit = -1
+	} else {
+		count = 1
+	}
+	return strings.Replace(content, old, replacement, limit), count, nil
 }
 
 func editNotFoundError(name, content, old string) error {
@@ -567,7 +581,9 @@ func editNotFoundError(name, content, old string) error {
 	return fmt.Errorf("edit %q: old string not found", name)
 }
 
-func isBinaryReadPath(name string) bool {
+// IsBinaryReadPath reports paths that are always routed as media or binary
+// data, even when their bytes happen to be valid UTF-8.
+func IsBinaryReadPath(name string) bool {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".png", ".jpeg", ".jpg", ".webp", ".gif", ".heic", ".heif",
 		".mp4", ".mpeg", ".mov", ".avi", ".flv", ".mpg", ".webm", ".wmv", ".3gpp", ".mkv",

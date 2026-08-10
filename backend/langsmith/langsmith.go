@@ -118,40 +118,19 @@ func (remote *Backend) Read(ctx context.Context, filePath string, offset, limit 
 	if err != nil {
 		return backend.ReadResult{}, err
 	}
-	if limit <= 0 {
-		return backend.ReadResult{Data: &backend.FileData{Content: "", Encoding: backend.EncodingUTF8}, NoLinesRequested: true}, nil
-	}
-	if offset < 0 {
-		offset = 0
-	}
 	data, err := remote.readRaw(ctx, filePath)
 	if err != nil {
 		return backend.ReadResult{}, err
 	}
 	fileData := backend.FileData{}
-	if !utf8.Valid(data) {
+	if backend.IsBinaryReadPath(filePath) || !utf8.Valid(data) {
 		fileData.Content = base64.StdEncoding.EncodeToString(data)
 		fileData.Encoding = backend.EncodingBase64
 		return backend.ReadResult{Data: &fileData}, nil
 	}
-	lines := splitLines(strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\r", "\n"))
-	total := len(lines)
-	if offset > total {
-		offset = total
-	}
-	end := min(total, offset+limit)
-	fileData.Content = strings.Join(lines[offset:end], "\n")
+	fileData.Content = string(data)
 	fileData.Encoding = backend.EncodingUTF8
-	if total == 0 || offset == end {
-		return backend.ReadResult{Data: &fileData}, nil
-	}
-	startLine, endLine := offset+1, end
-	result := backend.ReadResult{Data: &fileData, TotalLines: &total, StartLine: &startLine, EndLine: &endLine}
-	if end < total {
-		next := end
-		result.NextOffset = &next
-	}
-	return result, nil
+	return backend.SliceRead(fileData, offset, limit)
 }
 
 func (remote *Backend) Write(ctx context.Context, filePath, content string) (backend.WriteResult, error) {
@@ -183,22 +162,12 @@ func (remote *Backend) Edit(ctx context.Context, filePath, old, replacement stri
 	if !utf8.Valid(data) {
 		return backend.EditResult{}, fmt.Errorf("edit %q: binary files are unsupported", filePath)
 	}
-	count := strings.Count(string(data), old)
-	if count == 0 {
-		return backend.EditResult{}, fmt.Errorf("edit %q: old string not found", filePath)
+	updated, count, err := backend.ReplaceText(filePath, string(data), old, replacement, replaceAll)
+	if err != nil {
+		return backend.EditResult{}, err
 	}
-	if !replaceAll && count != 1 {
-		return backend.EditResult{}, fmt.Errorf("edit %q: old string occurs %d times", filePath, count)
-	}
-	limit := 1
-	if replaceAll {
-		limit = -1
-	}
-	if err := remote.sandbox.WriteFile(ctx, filePath, []byte(strings.Replace(string(data), old, replacement, limit))); err != nil {
+	if err := remote.sandbox.WriteFile(ctx, filePath, []byte(updated)); err != nil {
 		return backend.EditResult{}, fmt.Errorf("langsmith backend: edit %q: %w", filePath, err)
-	}
-	if !replaceAll {
-		count = 1
 	}
 	return backend.EditResult{Path: filePath, Occurrences: count}, nil
 }
