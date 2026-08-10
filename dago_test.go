@@ -302,6 +302,36 @@ func TestMemoryAndSkillsPromptInjection(t *testing.T) {
 	}
 }
 
+func TestExplicitEmptyMemoryAndSkillsStillInstallMiddleware(t *testing.T) {
+	script := modeltest.New(model.Profile{Provider: "anthropic", SupportsPromptCaching: true}, modeltest.Step{Check: func(request model.Request) error {
+		if len(request.Messages) == 0 || request.Messages[0].Role != message.RoleSystem {
+			return errors.New("system prompt missing")
+		}
+		prompt := request.Messages[0].TextContent()
+		if !strings.Contains(prompt, "Available Skills") || !strings.Contains(prompt, "No skills available") || !strings.Contains(prompt, "(No memory loaded)") {
+			return fmt.Errorf("empty middleware prompts missing: %q", prompt)
+		}
+		if len(request.Messages[0].Content) < 2 {
+			return fmt.Errorf("system content blocks = %#v", request.Messages[0].Content)
+		}
+		for index, block := range request.Messages[0].Content[len(request.Messages[0].Content)-2:] {
+			if _, ok := block.Extra["cache_control"]; !ok {
+				return fmt.Errorf("cache breakpoint %d missing: %#v", index, block)
+			}
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("done")}})
+	compiled, err := New(Options{
+		Model: script, Skills: []string{}, Memory: []string{}, DisableSubagents: true, DisableSummary: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("hi")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSubagentTaskUsesIsolatedInput(t *testing.T) {
 	childModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
 		if len(request.Messages) != 1 || request.Messages[0].TextContent() != "child work" {

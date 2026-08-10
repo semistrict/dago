@@ -19,11 +19,12 @@ var (
 
 // Definition is the model-visible description of a tool.
 type Definition struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
-	Strict      bool            `json:"strict,omitempty"`
-	Direct      bool            `json:"direct_return,omitempty"`
+	Name        string                     `json:"name"`
+	Description string                     `json:"description"`
+	InputSchema json.RawMessage            `json:"input_schema"`
+	Strict      bool                       `json:"strict,omitempty"`
+	Direct      bool                       `json:"direct_return,omitempty"`
+	Extra       map[string]json.RawMessage `json:"extras,omitempty"`
 }
 
 // Validate checks the common restrictions required by model providers and the agent
@@ -49,6 +50,11 @@ func (definition Definition) Validate() error {
 		var schemaType string
 		if err := json.Unmarshal(rawType, &schemaType); err != nil || schemaType != "object" {
 			return fmt.Errorf("%w: input schema type must be object", ErrInvalidDefinition)
+		}
+	}
+	for key, value := range definition.Extra {
+		if key == "" || !json.Valid(value) {
+			return fmt.Errorf("%w: extra %q is not valid JSON", ErrInvalidDefinition, key)
 		}
 	}
 	return nil
@@ -117,6 +123,7 @@ type Func struct {
 func (function Func) Definition() Definition {
 	definition := function.Spec
 	definition.InputSchema = cloneRaw(definition.InputSchema)
+	definition.Extra = cloneRawMap(definition.Extra)
 	return definition
 }
 
@@ -186,4 +193,15 @@ func cloneRaw(value json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage{}, value...)
+}
+
+func cloneRawMap(value map[string]json.RawMessage) map[string]json.RawMessage {
+	if value == nil {
+		return nil
+	}
+	result := make(map[string]json.RawMessage, len(value))
+	for key, item := range value {
+		result[key] = cloneRaw(item)
+	}
+	return result
 }

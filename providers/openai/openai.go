@@ -1141,6 +1141,18 @@ func cloneDefinitions(values []tool.Definition) []tool.Definition {
 	for index, value := range values {
 		result[index] = value
 		result[index].InputSchema = append(json.RawMessage(nil), value.InputSchema...)
+		result[index].Extra = cloneRawMap(value.Extra)
+	}
+	return result
+}
+
+func cloneRawMap(value map[string]json.RawMessage) map[string]json.RawMessage {
+	if value == nil {
+		return nil
+	}
+	result := make(map[string]json.RawMessage, len(value))
+	for key, item := range value {
+		result[key] = append(json.RawMessage(nil), item...)
 	}
 	return result
 }

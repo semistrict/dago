@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/semistrict/dago/message"
@@ -291,7 +292,8 @@ func JumpUpdate(destination string) state.Values {
 }
 
 // PromptCaching adds a cache hint only when the selected model advertises prompt
-// caching. The adapter remains responsible for translating it to provider fields.
+// caching. Anthropic requests also receive the provider's explicit cache
+// breakpoints on the final system content block and final tool definition.
 func PromptCaching(name, retention string, key func(ModelRequest) string) Middleware {
 	if name == "" {
 		name = "prompt_caching"
@@ -303,7 +305,50 @@ func PromptCaching(name, retention string, key func(ModelRequest) string) Middle
 				cacheKey = key(request.Clone())
 			}
 			request.PromptCache = &model.PromptCache{Key: cacheKey, Retention: retention}
+			if strings.EqualFold(request.Model.Profile().Provider, "anthropic") {
+				request = addAnthropicCacheBreakpoints(request, retention)
+			}
 		}
 		return next(ctx, request)
 	}}
+}
+
+type definitionOverrideTool struct {
+	tool.Tool
+	definition tool.Definition
+}
+
+func (wrapped definitionOverrideTool) Definition() tool.Definition {
+	definition := wrapped.definition
+	definition.InputSchema = append(json.RawMessage(nil), definition.InputSchema...)
+	definition.Extra = cloneRawMap(definition.Extra)
+	return definition
+}
+
+func addAnthropicCacheBreakpoints(request ModelRequest, retention string) ModelRequest {
+	cacheControl := map[string]string{"type": "ephemeral", "ttl": "5m"}
+	if retention == "1h" {
+		cacheControl["ttl"] = "1h"
+	}
+	raw, _ := json.Marshal(cacheControl)
+	if request.SystemMessage != nil && len(request.SystemMessage.Content) > 0 {
+		system := request.SystemMessage.Clone()
+		last := len(system.Content) - 1
+		if system.Content[last].Extra == nil {
+			system.Content[last].Extra = map[string]json.RawMessage{}
+		}
+		system.Content[last].Extra["cache_control"] = append(json.RawMessage(nil), raw...)
+		request.SystemMessage = &system
+	}
+	if len(request.Tools) > 0 {
+		request.Tools = append([]tool.Tool(nil), request.Tools...)
+		last := len(request.Tools) - 1
+		definition := request.Tools[last].Definition()
+		if definition.Extra == nil {
+			definition.Extra = map[string]json.RawMessage{}
+		}
+		definition.Extra["cache_control"] = append(json.RawMessage(nil), raw...)
+		request.Tools[last] = definitionOverrideTool{Tool: request.Tools[last], definition: definition}
+	}
+	return request
 }

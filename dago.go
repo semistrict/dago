@@ -95,7 +95,7 @@ func New(options Options) (*DeepAgent, error) {
 	if options.EnableTodo && !options.DisableTodo {
 		core = append(core, agent.TodoList())
 	}
-	if len(options.Skills) > 0 {
+	if options.Skills != nil {
 		middleware, err := SkillsMiddleware(SkillsOptions{Backend: options.Backend, Sources: options.Skills})
 		if err != nil {
 			return nil, err
@@ -162,8 +162,8 @@ func New(options Options) (*DeepAgent, error) {
 		}
 		return request.Runtime.TaskID
 	}))
-	if len(options.Memory) > 0 {
-		middleware, err := MemoryMiddleware(MemoryOptions{Backend: options.Backend, Sources: options.Memory})
+	if options.Memory != nil {
+		middleware, err := MemoryMiddleware(MemoryOptions{Backend: options.Backend, Sources: options.Memory, AddCacheControl: true})
 		if err != nil {
 			return nil, err
 		}
@@ -394,7 +394,7 @@ func buildGeneralSubagent(options Options, filesystem agent.Middleware, profile 
 		middleware = append(middleware, compact)
 	}
 	middleware = append(middleware, PatchToolCallsMiddleware())
-	if len(options.Skills) > 0 {
+	if options.Skills != nil {
 		skills, err := SkillsMiddleware(SkillsOptions{Backend: options.Backend, Sources: options.Skills})
 		if err != nil {
 			return nil, err

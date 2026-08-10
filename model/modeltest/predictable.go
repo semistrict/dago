@@ -348,6 +348,7 @@ func cloneModelRequest(request model.Request) model.Request {
 	copy.Tools = append([]tool.Definition(nil), request.Tools...)
 	for index := range copy.Tools {
 		copy.Tools[index].InputSchema = append(json.RawMessage(nil), request.Tools[index].InputSchema...)
+		copy.Tools[index].Extra = cloneRawMap(request.Tools[index].Extra)
 	}
 	if request.ToolChoice != nil {
 		value := *request.ToolChoice
@@ -371,6 +372,17 @@ func cloneModelRequest(request model.Request) model.Request {
 	copy.Tags = append([]string(nil), request.Tags...)
 	copy.Stop = append([]string(nil), request.Stop...)
 	return copy
+}
+
+func cloneRawMap(value map[string]json.RawMessage) map[string]json.RawMessage {
+	if value == nil {
+		return nil
+	}
+	result := make(map[string]json.RawMessage, len(value))
+	for key, item := range value {
+		result[key] = append(json.RawMessage(nil), item...)
+	}
+	return result
 }
 
 type predictableStream struct {

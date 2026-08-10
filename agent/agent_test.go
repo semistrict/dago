@@ -516,6 +516,70 @@ func TestPromptCachingOnlyTargetsCapableModels(t *testing.T) {
 	}
 }
 
+func TestPromptCachingAddsAnthropicBreakpointsWithoutMutatingInputs(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	firstTool := tool.Func{Spec: tool.Definition{Name: "first", Description: "First tool", InputSchema: schema}}
+	secondTool := tool.Func{Spec: tool.Definition{
+		Name:        "second",
+		Description: "Second tool",
+		InputSchema: schema,
+		Extra:       map[string]json.RawMessage{"existing": json.RawMessage(`true`)},
+	}}
+	system := message.Message{Role: message.RoleSystem, Content: []message.ContentBlock{
+		{Type: message.BlockText, Text: "first"},
+		{Type: message.BlockText, Text: "second", Extra: map[string]json.RawMessage{"existing": json.RawMessage(`true`)}},
+	}}
+	chat := modeltest.New(model.Profile{Provider: "Anthropic", SupportsPromptCaching: true})
+	middleware := PromptCaching("", "24h", nil)
+	_, err := middleware.WrapModelCall(context.Background(), ModelRequest{
+		Model: chat, SystemMessage: &system, Tools: []tool.Tool{firstTool, secondTool},
+	}, func(_ context.Context, request ModelRequest) (ModelResponse, error) {
+		if request.PromptCache == nil || request.PromptCache.Retention != "24h" {
+			return ModelResponse{}, fmt.Errorf("cache hint = %#v", request.PromptCache)
+		}
+		if _, ok := request.SystemMessage.Content[0].Extra["cache_control"]; ok {
+			return ModelResponse{}, errors.New("first system block has cache breakpoint")
+		}
+		want := `{"ttl":"5m","type":"ephemeral"}`
+		if got := string(request.SystemMessage.Content[1].Extra["cache_control"]); got != want {
+			return ModelResponse{}, fmt.Errorf("system cache control = %s, want %s", got, want)
+		}
+		if _, ok := request.Tools[0].Definition().Extra["cache_control"]; ok {
+			return ModelResponse{}, errors.New("first tool has cache breakpoint")
+		}
+		definition := request.Tools[1].Definition()
+		if got := string(definition.Extra["cache_control"]); got != want || string(definition.Extra["existing"]) != "true" {
+			return ModelResponse{}, fmt.Errorf("tool extras = %#v", definition.Extra)
+		}
+		return ModelResponse{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := system.Content[1].Extra["cache_control"]; ok {
+		t.Fatal("prompt caching mutated the source system message")
+	}
+	if _, ok := secondTool.Definition().Extra["cache_control"]; ok {
+		t.Fatal("prompt caching mutated the source tool definition")
+	}
+}
+
+func TestPromptCachingUsesOneHourAnthropicTTL(t *testing.T) {
+	system := message.System("system")
+	chat := modeltest.New(model.Profile{Provider: "anthropic", SupportsPromptCaching: true})
+	middleware := PromptCaching("", "1h", nil)
+	_, err := middleware.WrapModelCall(context.Background(), ModelRequest{Model: chat, SystemMessage: &system}, func(_ context.Context, request ModelRequest) (ModelResponse, error) {
+		want := `{"ttl":"1h","type":"ephemeral"}`
+		if got := string(request.SystemMessage.Content[0].Extra["cache_control"]); got != want {
+			return ModelResponse{}, fmt.Errorf("cache control = %s, want %s", got, want)
+		}
+		return ModelResponse{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestModelWrapperControlsProviderReasoning(t *testing.T) {
 	script := modeltest.New(model.Profile{SupportsReasoning: true}, modeltest.Step{
 		Check: func(request model.Request) error {

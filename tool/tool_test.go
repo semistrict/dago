@@ -24,6 +24,26 @@ func TestDefinitionValidate(t *testing.T) {
 	if err := invalid.Validate(); !errors.Is(err, ErrInvalidDefinition) {
 		t.Fatalf("Validate() error = %v, want %v", err, ErrInvalidDefinition)
 	}
+	invalid = valid
+	invalid.Extra = map[string]json.RawMessage{"cache_control": json.RawMessage(`{`)}
+	if err := invalid.Validate(); !errors.Is(err, ErrInvalidDefinition) {
+		t.Fatalf("Validate() invalid extra error = %v, want %v", err, ErrInvalidDefinition)
+	}
+}
+
+func TestFuncDefinitionDeepClonesExtras(t *testing.T) {
+	function := Func{Spec: Definition{
+		Name:        "lookup",
+		Description: "Look up a value.",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Extra:       map[string]json.RawMessage{"cache_control": json.RawMessage(`{"type":"ephemeral"}`)},
+	}}
+	definition := function.Definition()
+	definition.InputSchema[0] = '['
+	definition.Extra["cache_control"][0] = '['
+	if !json.Valid(function.Spec.InputSchema) || !json.Valid(function.Spec.Extra["cache_control"]) {
+		t.Fatalf("Definition() mutated source: %#v", function.Spec)
+	}
 }
 
 func TestStructuredDecodesAndInjectsRuntime(t *testing.T) {
