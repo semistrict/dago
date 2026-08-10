@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -211,8 +212,13 @@ func (backend *Store) Delete(ctx context.Context, path string) (DeleteResult, er
 	if err != nil {
 		return DeleteResult{}, err
 	}
+	operations := make([]store.Operation, 0, len(before))
 	for name := range before {
-		if err := values.Delete(ctx, namespace, name); err != nil {
+		operations = append(operations, store.Operation{Namespace: namespace, Key: name, Delete: true})
+	}
+	sort.Slice(operations, func(i, j int) bool { return operations[i].Key < operations[j].Key })
+	if len(operations) > 0 {
+		if _, err := values.Batch(ctx, operations); err != nil {
 			return DeleteResult{}, err
 		}
 	}
@@ -261,9 +267,34 @@ func fileDataMap(data FileData) map[string]any {
 	return map[string]any{"content": data.Content, "encoding": string(data.Encoding), "created_at": data.CreatedAt.Format(time.RFC3339Nano), "modified_at": data.ModifiedAt.Format(time.RFC3339Nano)}
 }
 func fileDataFromMap(value map[string]any) (FileData, error) {
-	content, contentOK := value["content"].(string)
-	encoding, encodingOK := value["encoding"].(string)
-	if !contentOK || !encodingOK || (Encoding(encoding) != EncodingUTF8 && Encoding(encoding) != EncodingBase64) {
+	var content string
+	switch raw := value["content"].(type) {
+	case string:
+		content = raw
+	case []string:
+		content = strings.Join(raw, "\n")
+	case []any:
+		lines := make([]string, len(raw))
+		for index, item := range raw {
+			line, ok := item.(string)
+			if !ok {
+				return FileData{}, fmt.Errorf("legacy content item %d has type %T", index, item)
+			}
+			lines[index] = line
+		}
+		content = strings.Join(lines, "\n")
+	default:
+		return FileData{}, fmt.Errorf("invalid content type %T", value["content"])
+	}
+	encoding := string(EncodingUTF8)
+	if raw, exists := value["encoding"]; exists {
+		var ok bool
+		encoding, ok = raw.(string)
+		if !ok {
+			return FileData{}, fmt.Errorf("invalid encoding type %T", raw)
+		}
+	}
+	if Encoding(encoding) != EncodingUTF8 && Encoding(encoding) != EncodingBase64 {
 		return FileData{}, fmt.Errorf("invalid content or encoding")
 	}
 	result := FileData{Content: content, Encoding: Encoding(encoding)}

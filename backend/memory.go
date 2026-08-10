@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -66,9 +67,6 @@ func (memory *Memory) List(ctx context.Context, directory string) (ListResult, e
 }
 
 func (memory *Memory) Read(ctx context.Context, name string, offset, limit int) (ReadResult, error) {
-	if limit <= 0 {
-		return ReadResult{Data: &FileData{Content: "", Encoding: EncodingUTF8}, NoLinesRequested: true}, nil
-	}
 	name, err := normalizeVirtual(name)
 	if err != nil {
 		return ReadResult{}, err
@@ -82,31 +80,12 @@ func (memory *Memory) Read(ctx context.Context, name string, offset, limit int) 
 	if !ok {
 		return ReadResult{}, fmt.Errorf("path %q: file not found", name)
 	}
-	if data.Encoding == EncodingBase64 {
+	if data.Encoding == EncodingBase64 || isBinaryReadPath(name) {
 		copy := data
+		copy.Encoding = EncodingBase64
 		return ReadResult{Data: &copy}, nil
 	}
-	if offset < 0 {
-		offset = 0
-	}
-	lines := splitLines(data.Content)
-	total := len(lines)
-	if offset > total {
-		offset = total
-	}
-	end := min(total, offset+limit)
-	copy := data
-	copy.Content = strings.Join(lines[offset:end], "\n")
-	if total == 0 || offset == end {
-		return ReadResult{Data: &copy}, nil
-	}
-	startLine, endLine := offset+1, end
-	result := ReadResult{Data: &copy, TotalLines: &total, StartLine: &startLine, EndLine: &endLine}
-	if end < total {
-		next := end
-		result.NextOffset = &next
-	}
-	return result, nil
+	return sliceFileData(data, offset, limit)
 }
 
 func (memory *Memory) Write(ctx context.Context, name, content string) (WriteResult, error) {
@@ -148,8 +127,14 @@ func (memory *Memory) Edit(ctx context.Context, name, old, replacement string, r
 	if data.Encoding != EncodingUTF8 {
 		return EditResult{}, fmt.Errorf("edit %q: binary files are unsupported", name)
 	}
+	data.Content = normalizeNewlines(data.Content)
+	old = normalizeNewlines(old)
+	replacement = normalizeNewlines(replacement)
 	count := strings.Count(data.Content, old)
-	if count == 0 || (!replaceAll && count != 1) {
+	if count == 0 {
+		return EditResult{}, editNotFoundError(name, data.Content, old)
+	}
+	if !replaceAll && count != 1 {
 		return EditResult{}, fmt.Errorf("edit %q: old string occurs %d times", name, count)
 	}
 	limit := 1
@@ -233,9 +218,9 @@ func (memory *Memory) Grep(ctx context.Context, pattern string, options GrepOpti
 	if err != nil {
 		return GrepResult{}, err
 	}
-	var matcher interface{ MatchString(string) bool }
+	var matcher *regexp.Regexp
 	if options.Glob != "" {
-		matcher, err = compileGlob(options.Glob)
+		matcher, err = compileIncludeGlob(options.Glob)
 		if err != nil {
 			return GrepResult{}, err
 		}
@@ -256,7 +241,7 @@ func (memory *Memory) Grep(ctx context.Context, pattern string, options GrepOpti
 			continue
 		}
 		relative := strings.TrimPrefix(name, prefix)
-		if matcher != nil && !matcher.MatchString(relative) {
+		if matcher != nil && !matchIncludeGlob(matcher, options.Glob, relative) {
 			continue
 		}
 		lines := splitLines(data.Content)

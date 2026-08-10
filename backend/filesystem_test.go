@@ -28,11 +28,14 @@ func TestFilesystemCRUDPaginationGlobAndGrep(t *testing.T) {
 		t.Fatal(err)
 	}
 	read, err := backend.Read(ctx, "/docs/a.txt", 1, 2)
-	if err != nil || read.Data.Content != "target\nthree" || *read.StartLine != 2 || *read.EndLine != 3 || *read.NextOffset != 3 {
+	if err != nil || read.Data.Content != "target\nthree\n" || *read.StartLine != 2 || *read.EndLine != 3 || *read.NextOffset != 3 {
 		t.Fatalf("Read = %#v, %v", read, err)
 	}
-	zero, err := backend.Read(ctx, "/missing", 0, 0)
-	if err != nil || !zero.NoLinesRequested {
+	if _, err := backend.Read(ctx, "/missing", 0, 0); err == nil {
+		t.Fatal("zero-limit missing Read succeeded")
+	}
+	zero, err := backend.Read(ctx, "/docs/a.txt", 0, 0)
+	if err != nil || !zero.NoLinesRequested || zero.Data == nil || zero.Data.Content != "" {
 		t.Fatalf("zero Read = %#v, %v", zero, err)
 	}
 	edit, err := backend.Edit(ctx, "/docs/a.txt", "target", "match", true)

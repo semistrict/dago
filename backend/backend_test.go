@@ -2,7 +2,10 @@ package backend
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +21,7 @@ func backendContract(t *testing.T, value Backend) {
 		t.Fatal(err)
 	}
 	read, err := value.Read(ctx, "/dir/a.txt", 0, 2)
-	if err != nil || read.Data == nil || read.Data.Content != "alpha\nneedle" {
+	if err != nil || read.Data == nil || read.Data.Content != "alpha\nneedle\n" {
 		t.Fatalf("Read = %#v, %v", read, err)
 	}
 	if _, err := value.Edit(ctx, "/dir/a.txt", "alpha", "first", false); err != nil {
@@ -59,6 +62,109 @@ func TestMemoryAndStoreBackendsShareContract(t *testing.T) {
 	read, err := reopened.Read(context.Background(), "/persist", 0, 10)
 	if err != nil || read.Data.Content != "value" {
 		t.Fatalf("reopened Read = %#v, %v", read, err)
+	}
+}
+
+func TestBackendsPreserveCanonicalReadWindowsAndLegacyFiles(t *testing.T) {
+	memory, _ := NewMemory(nil)
+	root := t.TempDir()
+	filesystem, err := NewFilesystem(FilesystemOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]Backend{"memory": memory, "filesystem": filesystem} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := value.Write(context.Background(), "/lines.txt", "one\r\ntwo\rthree\n"); err != nil {
+				t.Fatal(err)
+			}
+			read, err := value.Read(context.Background(), "/lines.txt", 1, 1)
+			if err != nil || read.Data == nil || read.Data.Content != "two\n" || read.TotalLines == nil || *read.TotalLines != 3 || read.NextOffset == nil || *read.NextOffset != 2 {
+				t.Fatalf("window Read = %#v, %v", read, err)
+			}
+			if _, err := value.Read(context.Background(), "/lines.txt", 3, 1); err == nil || !strings.Contains(err.Error(), "exceeds file length") {
+				t.Fatalf("past-EOF Read error = %v", err)
+			}
+			if _, err := value.Write(context.Background(), "/blank.txt", " \r\n"); err != nil {
+				t.Fatal(err)
+			}
+			read, err = value.Read(context.Background(), "/blank.txt", 0, 0)
+			if err != nil || read.Data == nil || read.Data.Content != " \r\n" || read.NoLinesRequested {
+				t.Fatalf("blank zero-limit Read = %#v, %v", read, err)
+			}
+		})
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "image.png"), []byte("ascii-image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read, err := filesystem.Read(context.Background(), "/image.png", 100, 0)
+	if err != nil || read.Data == nil || read.Data.Encoding != EncodingBase64 || read.Data.Content != base64.StdEncoding.EncodeToString([]byte("ascii-image")) || read.NoLinesRequested {
+		t.Fatalf("binary Read = %#v, %v", read, err)
+	}
+
+	values := memorystore.NewMemory()
+	if err := values.Put(context.Background(), memorystore.Namespace{"files"}, "/legacy.txt", map[string]any{"content": []any{"one", "two"}}); err != nil {
+		t.Fatal(err)
+	}
+	persistent, err := NewStore(values, memorystore.Namespace{"files"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err = persistent.Read(context.Background(), "/legacy.txt", 0, 10)
+	if err != nil || read.Data == nil || read.Data.Content != "one\ntwo" || read.Data.Encoding != EncodingUTF8 {
+		t.Fatalf("legacy Store.Read = %#v, %v", read, err)
+	}
+	if _, err := persistent.Write(context.Background(), "/legacy.txt", "modern"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := values.Get(context.Background(), memorystore.Namespace{"files"}, "/legacy.txt")
+	if err != nil || item == nil || item.Value["content"] != "modern" {
+		t.Fatalf("migrated store item = %#v, %v", item, err)
+	}
+}
+
+func TestFilesystemDeleteDoesNotFollowSymlinksAndRejectsMissing(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	filesystem, err := NewFilesystem(FilesystemOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filesystem.Delete(context.Background(), "/link"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("symlink target was removed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "link")); !os.IsNotExist(err) {
+		t.Fatalf("symlink still exists: %v", err)
+	}
+	if _, err := filesystem.Delete(context.Background(), "/missing"); err == nil {
+		t.Fatal("missing delete succeeded")
+	}
+}
+
+func TestMemoryGlobAndGrepFollowRecursiveIncludeSemantics(t *testing.T) {
+	memory, _ := NewMemory(nil)
+	for name := range map[string]string{"/root.go": "needle", "/nested/code.py": "needle", "/nested/skip.md": "needle"} {
+		if _, err := memory.Write(context.Background(), name, "needle"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	glob, err := memory.Glob(context.Background(), "{*.go,*.py}", "/")
+	if err != nil || len(glob.Matches) != 2 || glob.Matches[0].Path != "/nested/code.py" || glob.Matches[1].Path != "/root.go" {
+		t.Fatalf("recursive brace Glob = %#v, %v", glob, err)
+	}
+	grep, err := memory.Grep(context.Background(), "needle", GrepOptions{Path: "/", Glob: "*.py"})
+	if err != nil || len(grep.Matches) != 1 || grep.Matches[0].Path != "/nested/code.py" {
+		t.Fatalf("basename Grep include = %#v, %v", grep, err)
 	}
 }
 

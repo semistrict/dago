@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -89,12 +90,6 @@ func (backend *Filesystem) List(ctx context.Context, path string) (ListResult, e
 }
 
 func (backend *Filesystem) Read(ctx context.Context, path string, offset, limit int) (ReadResult, error) {
-	if limit <= 0 {
-		return ReadResult{Data: &FileData{Content: "", Encoding: EncodingUTF8}, NoLinesRequested: true}, nil
-	}
-	if offset < 0 {
-		offset = 0
-	}
 	resolved, err := backend.resolve(path, false)
 	if err != nil {
 		return ReadResult{}, err
@@ -104,32 +99,14 @@ func (backend *Filesystem) Read(ctx context.Context, path string, offset, limit 
 		return ReadResult{}, normalizeFileError(path, err)
 	}
 	fileData := FileData{CreatedAt: info.ModTime().UTC(), ModifiedAt: info.ModTime().UTC()}
-	if !utf8.Valid(data) {
+	if isBinaryReadPath(path) || !utf8.Valid(data) {
 		fileData.Content = base64.StdEncoding.EncodeToString(data)
 		fileData.Encoding = EncodingBase64
 		return ReadResult{Data: &fileData}, nil
 	}
-	lines := splitLines(string(data))
-	total := len(lines)
-	if offset > total {
-		offset = total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	fileData.Content = strings.Join(lines[offset:end], "\n")
+	fileData.Content = string(data)
 	fileData.Encoding = EncodingUTF8
-	if total == 0 || offset == end {
-		return ReadResult{Data: &fileData}, nil
-	}
-	startLine, endLine := offset+1, end
-	result := ReadResult{Data: &fileData, TotalLines: &total, StartLine: &startLine, EndLine: &endLine}
-	if end < total {
-		next := end
-		result.NextOffset = &next
-	}
-	return result, nil
+	return sliceFileData(fileData, offset, limit)
 }
 
 func (backend *Filesystem) Write(ctx context.Context, path, content string) (WriteResult, error) {
@@ -164,9 +141,12 @@ func (backend *Filesystem) Edit(ctx context.Context, path, old, replacement stri
 	if !utf8.Valid(data) {
 		return EditResult{}, fmt.Errorf("edit %q: binary files are unsupported", path)
 	}
-	count := strings.Count(string(data), old)
+	content := normalizeNewlines(string(data))
+	old = normalizeNewlines(old)
+	replacement = normalizeNewlines(replacement)
+	count := strings.Count(content, old)
 	if count == 0 {
-		return EditResult{}, fmt.Errorf("edit %q: old string not found", path)
+		return EditResult{}, editNotFoundError(path, content, old)
 	}
 	if !replaceAll && count != 1 {
 		return EditResult{}, fmt.Errorf("edit %q: old string occurs %d times", path, count)
@@ -175,7 +155,7 @@ func (backend *Filesystem) Edit(ctx context.Context, path, old, replacement stri
 	if replaceAll {
 		limit = -1
 	}
-	updated := strings.Replace(string(data), old, replacement, limit)
+	updated := strings.Replace(content, old, replacement, limit)
 	if err := os.WriteFile(resolved, []byte(updated), info.Mode().Perm()); err != nil {
 		return EditResult{}, normalizeFileError(path, err)
 	}
@@ -189,12 +169,15 @@ func (backend *Filesystem) Delete(ctx context.Context, path string) (DeleteResul
 	if err := ctx.Err(); err != nil {
 		return DeleteResult{}, err
 	}
-	resolved, err := backend.resolve(path, false)
+	resolved, err := backend.resolveDelete(path)
 	if err != nil {
 		return DeleteResult{}, err
 	}
 	if backend.virtual && resolved == backend.root {
 		return DeleteResult{}, fmt.Errorf("delete virtual root is not allowed")
+	}
+	if _, err := os.Lstat(resolved); err != nil {
+		return DeleteResult{}, normalizeFileError(path, err)
 	}
 	if err := os.RemoveAll(resolved); err != nil {
 		return DeleteResult{}, normalizeFileError(path, err)
@@ -265,7 +248,7 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 	}
 	var matcher *regexp.Regexp
 	if options.Glob != "" {
-		matcher, err = compileGlob(options.Glob)
+		matcher, err = compileIncludeGlob(options.Glob)
 		if err != nil {
 			return GrepResult{}, err
 		}
@@ -286,7 +269,7 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 			return nil
 		}
 		relative, _ := filepath.Rel(root, path)
-		if matcher != nil && !matcher.MatchString(filepath.ToSlash(relative)) {
+		if matcher != nil && !matchIncludeGlob(matcher, options.Glob, filepath.ToSlash(relative)) {
 			return nil
 		}
 		data, _, err := readFile(ctx, path, backend.maxFileSize)
@@ -333,6 +316,40 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 		return result.Matches[i].Line < result.Matches[j].Line
 	})
 	return result, nil
+}
+
+func (backend *Filesystem) resolveDelete(value string) (string, error) {
+	if strings.ContainsRune(value, '\x00') || value == "" {
+		return "", fmt.Errorf("invalid path %q", value)
+	}
+	if !backend.virtual {
+		if filepath.IsAbs(value) {
+			return filepath.Clean(value), nil
+		}
+		return filepath.Join(backend.root, value), nil
+	}
+	if strings.HasPrefix(value, "~") {
+		return "", fmt.Errorf("invalid virtual path %q", value)
+	}
+	for _, segment := range strings.FieldsFunc(filepath.ToSlash(value), func(r rune) bool { return r == '/' }) {
+		if segment == ".." {
+			return "", fmt.Errorf("path traversal is not allowed: %q", value)
+		}
+	}
+	clean := filepath.Clean("/" + filepath.ToSlash(value))
+	candidate := filepath.Join(backend.root, filepath.FromSlash(strings.TrimPrefix(clean, "/")))
+	if candidate == backend.root {
+		return candidate, nil
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(candidate))
+	if err != nil {
+		return "", normalizeFileError(value, err)
+	}
+	relative, err := filepath.Rel(backend.root, parent)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes virtual root", value)
+	}
+	return filepath.Join(parent, filepath.Base(candidate)), nil
 }
 
 func (backend *Filesystem) Upload(ctx context.Context, uploads []Upload) []UploadResult {
@@ -489,6 +506,7 @@ func readFile(ctx context.Context, path string, maxSize int64) ([]byte, os.FileI
 }
 
 func splitLines(value string) []string {
+	value = normalizeNewlines(value)
 	if value == "" {
 		return nil
 	}
@@ -499,13 +517,103 @@ func splitLines(value string) []string {
 	return strings.Split(value, "\n")
 }
 
+func sliceFileData(data FileData, offset, limit int) (ReadResult, error) {
+	if strings.TrimSpace(data.Content) == "" {
+		copy := data
+		return ReadResult{Data: &copy}, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		copy := data
+		copy.Content = ""
+		return ReadResult{Data: &copy, NoLinesRequested: true}, nil
+	}
+	normalized := normalizeNewlines(data.Content)
+	lines := strings.SplitAfter(normalized, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	total := len(lines)
+	if offset >= total {
+		return ReadResult{}, fmt.Errorf("line offset %d exceeds file length (%d lines)", offset, total)
+	}
+	end := min(total, offset+limit)
+	copy := data
+	copy.Content = strings.Join(lines[offset:end], "")
+	startLine, endLine := offset+1, end
+	result := ReadResult{Data: &copy, TotalLines: &total, StartLine: &startLine, EndLine: &endLine}
+	if end < total {
+		next := end
+		result.NextOffset = &next
+	}
+	return result, nil
+}
+
+func normalizeNewlines(value string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(value, "\r\n", "\n"), "\r", "\n")
+}
+
+func editNotFoundError(name, content, old string) error {
+	if len(old) > 1 && strings.HasSuffix(old, "\n") && strings.HasSuffix(content, strings.TrimSuffix(old, "\n")) {
+		withoutNewline := strings.TrimSuffix(old, "\n")
+		count := strings.Count(content, withoutNewline)
+		if count == 1 {
+			return fmt.Errorf("edit %q: old string ends with a newline, but the file does not; retry with the trailing newline removed from old and replacement strings", name)
+		}
+		return fmt.Errorf("edit %q: old string ends with a newline, but the file does not; without it the string occurs %d times, so add surrounding context", name, count)
+	}
+	return fmt.Errorf("edit %q: old string not found", name)
+}
+
+func isBinaryReadPath(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".png", ".jpeg", ".jpg", ".webp", ".gif", ".heic", ".heif",
+		".mp4", ".mpeg", ".mov", ".avi", ".flv", ".mpg", ".webm", ".wmv", ".3gpp", ".mkv",
+		".wav", ".mp3", ".aiff", ".aac", ".ogg", ".flac", ".pdf", ".ppt", ".pptx":
+		return true
+	default:
+		return false
+	}
+}
+
 func compileGlob(pattern string) (*regexp.Regexp, error) {
 	if pattern == "" {
 		return nil, fmt.Errorf("glob pattern is required")
 	}
 	pattern = filepath.ToSlash(strings.TrimPrefix(pattern, "/"))
+	if !strings.HasPrefix(pattern, "**/") {
+		pattern = "**/" + pattern
+	}
+	return compileGlobExpression(pattern)
+}
+
+func compileIncludeGlob(pattern string) (*regexp.Regexp, error) {
+	if pattern == "" {
+		return nil, fmt.Errorf("glob pattern is required")
+	}
+	return compileGlobExpression(filepath.ToSlash(strings.TrimPrefix(pattern, "/")))
+}
+
+func compileGlobExpression(pattern string) (*regexp.Regexp, error) {
 	var expression strings.Builder
-	expression.WriteString("^")
+	expression.WriteString("^(?:")
+	for patternIndex, expanded := range expandGlobBraces(pattern) {
+		if patternIndex > 0 {
+			expression.WriteByte('|')
+		}
+		writeGlobPattern(&expression, expanded)
+	}
+	expression.WriteString(")$")
+	compiled, err := regexp.Compile(expression.String())
+	if err != nil {
+		return nil, fmt.Errorf("invalid glob %q: %w", pattern, err)
+	}
+	return compiled, nil
+}
+
+func writeGlobPattern(expression *strings.Builder, pattern string) {
 	for index := 0; index < len(pattern); index++ {
 		switch pattern[index] {
 		case '*':
@@ -528,12 +636,36 @@ func compileGlob(pattern string) (*regexp.Regexp, error) {
 			expression.WriteString(regexp.QuoteMeta(string(pattern[index])))
 		}
 	}
-	expression.WriteString("$")
-	compiled, err := regexp.Compile(expression.String())
-	if err != nil {
-		return nil, fmt.Errorf("invalid glob %q: %w", pattern, err)
+}
+
+func expandGlobBraces(pattern string) []string {
+	start := strings.IndexByte(pattern, '{')
+	if start < 0 {
+		return []string{pattern}
 	}
-	return compiled, nil
+	endOffset := strings.IndexByte(pattern[start+1:], '}')
+	if endOffset < 0 {
+		return []string{pattern}
+	}
+	end := start + 1 + endOffset
+	choices := strings.Split(pattern[start+1:end], ",")
+	if len(choices) < 2 {
+		return []string{pattern}
+	}
+	var result []string
+	for _, choice := range choices {
+		for _, expanded := range expandGlobBraces(pattern[:start] + choice + pattern[end+1:]) {
+			result = append(result, expanded)
+		}
+	}
+	return result
+}
+
+func matchIncludeGlob(matcher *regexp.Regexp, pattern, relative string) bool {
+	if strings.Contains(filepath.ToSlash(pattern), "/") {
+		return matcher.MatchString(relative)
+	}
+	return matcher.MatchString(path.Base(relative))
 }
 
 func normalizeFileError(path string, err error) error {
