@@ -544,6 +544,8 @@ and fail explicitly on Python-specific values without corrupting the database.
   and runtime types.
 - [x] Define the middleware lifecycle: before agent, before model, model wrapper,
   after model, tool wrapper, and after agent.
+- [x] Honor controlled after-agent model re-entry for one-shot validation and repair
+  middleware without exposing internal graph commands.
 - [x] Specify and test exact middleware nesting and response ordering for both model
   and tool wrappers.
 - [x] Merge middleware state fields and reducers while detecting incompatible

@@ -23,6 +23,7 @@ const (
 	StructuredResponseKey = "structured_response"
 	toolDirectKey         = "__agent_tool_direct"
 	structuredRetryKey    = "__agent_structured_retry"
+	jumpToKey             = "__agent_jump_to"
 )
 
 var (

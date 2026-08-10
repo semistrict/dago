@@ -208,7 +208,7 @@ func HumanApproval(rules []ApprovalRule) Middleware {
 // JumpUpdate is reserved for middleware that records an explicit loop decision in
 // state without exposing internal graph types.
 func JumpUpdate(destination string) state.Values {
-	return state.Values{"jump_to": destination}
+	return state.Values{jumpToKey: destination}
 }
 
 // PromptCaching adds a cache hint only when the selected model advertises prompt

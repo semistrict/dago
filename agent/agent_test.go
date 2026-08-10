@@ -237,6 +237,67 @@ func TestMiddlewareLifecycleAndWrapperNesting(t *testing.T) {
 	}
 }
 
+func TestAfterAgentCanJumpBackToModel(t *testing.T) {
+	calls := 0
+	middleware := Middleware{
+		Name: "one_rewrite",
+		Fields: map[string]StateField{"rewritten": {
+			Kind: FieldLast, Contract: "test.rewritten.v1", Private: true, Clone: identityClone,
+		}},
+		WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
+			calls++
+			return next(ctx, request)
+		},
+		AfterAgent: func(_ context.Context, values state.Values, _ Runtime) (state.Values, error) {
+			if calls != 1 {
+				return nil, nil
+			}
+			update := JumpUpdate("model")
+			update[MessagesKey] = []message.Message{message.Human("Rewrite with concrete detail.")}
+			update["rewritten"] = true
+			return update, nil
+		},
+	}
+	script := modeltest.New(model.Profile{},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("Done.")}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if request.Messages[len(request.Messages)-1].TextContent() != "Rewrite with concrete detail." {
+				return fmt.Errorf("rewrite nudge missing: %#v", request.Messages)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("Created issue 42.")}},
+	)
+	compiled, err := New(Options{Model: script, Middleware: []Middleware{middleware}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), Input{Messages: []message.Message{message.Human("Create the issue.")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || result.Messages[len(result.Messages)-1].TextContent() != "Created issue 42." {
+		t.Fatalf("calls = %d, messages = %#v", calls, result.Messages)
+	}
+	if _, exposed := result.State["rewritten"]; exposed {
+		t.Fatalf("private guard state leaked: %#v", result.State)
+	}
+}
+
+func TestAfterAgentRejectsUnknownJumpDestination(t *testing.T) {
+	middleware := Middleware{Name: "bad_jump", AfterAgent: func(context.Context, state.Values, Runtime) (state.Values, error) {
+		return JumpUpdate("tools"), nil
+	}}
+	script := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}})
+	compiled, err := New(Options{Model: script, Middleware: []Middleware{middleware}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = compiled.Invoke(context.Background(), Input{Messages: []message.Message{message.Human("go")}})
+	if err == nil || !strings.Contains(err.Error(), "jump destination") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestToolWrapperNestingAndErrorMessage(t *testing.T) {
 	var events []string
 	wrap := func(name string) Middleware {

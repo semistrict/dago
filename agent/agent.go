@@ -266,7 +266,16 @@ func (compiler *compiler) afterAgent(ctx context.Context, values state.Values, r
 		}
 		mergeUpdate(current, update, result)
 	}
-	return graph.Command{Update: update}, nil
+	command := graph.Command{Update: update}
+	if destination, exists := update[jumpToKey]; exists {
+		name, ok := destination.(string)
+		if !ok || name != "model" {
+			return graph.Command{}, fmt.Errorf("after-agent jump destination must be model, got %v", destination)
+		}
+		delete(update, jumpToKey)
+		command.Goto = []string{name}
+	}
+	return command, nil
 }
 
 func (compiler *compiler) model(ctx context.Context, values state.Values, runtime graph.Runtime) (graph.Command, error) {
