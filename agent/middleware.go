@@ -112,7 +112,7 @@ func TodoListWithOptions(options TodoListOptions) Middleware {
 		},
 	}
 	return Middleware{
-		Name: "todo_list", Tools: []tool.Tool{write},
+		Name: "todo_list", SerializedName: "TodoListMiddleware", Tools: []tool.Tool{write},
 		Fields: map[string]StateField{"todos": {Kind: FieldLast, Contract: "dago.todos.v1", Clone: cloneTodoState}},
 		WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
 			if options.SystemPrompt != "" {
@@ -288,7 +288,7 @@ func ValidateApprovalRules(rules []ApprovalRule) error {
 // HumanApproval pauses before any matching tool executes and supports approve,
 // edit, reject, and respond decisions, including several pending calls in one interrupt.
 func HumanApproval(rules []ApprovalRule) Middleware {
-	return Middleware{Name: "human_approval", BeforeTools: func(_ context.Context, request ToolBatchRequest) (ToolBatchResponse, error) {
+	return Middleware{Name: "human_approval", SerializedName: "HumanInTheLoopMiddleware", BeforeTools: func(_ context.Context, request ToolBatchRequest) (ToolBatchResponse, error) {
 		if err := ValidateApprovalRules(rules); err != nil {
 			return ToolBatchResponse{}, err
 		}

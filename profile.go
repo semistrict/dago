@@ -231,8 +231,20 @@ func validateProfile(profile Profile) error {
 		if strings.Contains(name, ":") {
 			return fmt.Errorf("profile %q middleware exclusion %q must be a public name, not a class path", profile.Name, name)
 		}
+		if isRequiredMiddlewareExclusion(name) {
+			return fmt.Errorf("profile %q cannot exclude required middleware %q", profile.Name, name)
+		}
 	}
 	return nil
+}
+
+func isRequiredMiddlewareExclusion(name string) bool {
+	switch name {
+	case "filesystem", "FilesystemMiddleware", "subagents", "SubAgentMiddleware":
+		return true
+	default:
+		return false
+	}
 }
 
 func mergeMiddlewareByName(base, override []agent.Middleware) []agent.Middleware {
@@ -243,6 +255,9 @@ func mergeMiddlewareByName(base, override []agent.Middleware) []agent.Middleware
 	}
 	for _, item := range override {
 		if index, exists := positions[item.Name]; exists {
+			if item.SerializedName == "" {
+				item.SerializedName = result[index].SerializedName
+			}
 			result[index] = item
 			continue
 		}

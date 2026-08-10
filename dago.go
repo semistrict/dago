@@ -93,6 +93,7 @@ func New(options Options) (*DeepAgent, error) {
 	if err != nil {
 		return nil, err
 	}
+	profileExclusionMatches := map[string]bool{}
 	inheritedTools := append([]tool.Tool(nil), options.Tools...)
 	if options.SystemMessage != nil {
 		copy := options.SystemMessage.Clone()
@@ -140,7 +141,7 @@ func New(options Options) (*DeepAgent, error) {
 		}
 		generalEnabled := profile.GeneralPurpose == nil || profile.GeneralPurpose.Enabled == nil || *profile.GeneralPurpose.Enabled
 		if generalEnabled && !hasSubagent(subagents, "general-purpose") {
-			general, err := buildGeneralSubagent(options, filesystem, profile)
+			general, err := buildGeneralSubagent(options, filesystem, profile, profileExclusionMatches)
 			if err != nil {
 				return nil, err
 			}
@@ -212,28 +213,10 @@ func New(options Options) (*DeepAgent, error) {
 		tail = append(tail, agent.HumanApproval(options.InterruptOn))
 	}
 	middleware := mergeMiddleware(core, tail, options.Middleware)
-	excludedMiddleware := map[string]bool{}
-	for _, name := range profile.ExcludeMiddleware {
-		if name == "filesystem" || name == "subagents" {
-			return nil, fmt.Errorf("profile cannot exclude required middleware %q", name)
-		}
-		excludedMiddleware[name] = true
+	middleware, err = filterProfileMiddleware(middleware, profile, profileExclusionMatches, true)
+	if err != nil {
+		return nil, err
 	}
-	filteredMiddleware := make([]agent.Middleware, 0, len(middleware))
-	for _, item := range middleware {
-		if excludedMiddleware[item.Name] {
-			delete(excludedMiddleware, item.Name)
-			continue
-		}
-		item.Tools = applyToolProfile(item.Tools, profile.ToolDescriptions, nil)
-		filteredMiddleware = append(filteredMiddleware, item)
-	}
-	if len(excludedMiddleware) > 0 {
-		for name := range excludedMiddleware {
-			return nil, fmt.Errorf("profile middleware exclusion %q matched no assembled middleware", name)
-		}
-	}
-	middleware = filteredMiddleware
 	if len(profile.ExcludeTools) > 0 {
 		middleware = append(middleware, ToolExclusionMiddleware(profile.ExcludeTools))
 	}
@@ -345,7 +328,7 @@ func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]S
 			tail = append(tail, agent.HumanApproval(interruptOn))
 		}
 		middleware := mergeMiddleware(core, tail, spec.Middleware)
-		middleware, err = filterProfileMiddleware(middleware, profile, true)
+		middleware, err = filterProfileMiddleware(middleware, profile, map[string]bool{}, true)
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q middleware: %w", spec.Name, err)
 		}
@@ -414,7 +397,7 @@ const defaultGeneralSubagentDescription = "General-purpose agent for researching
 
 const defaultGeneralSubagentPrompt = "In order to complete the objective that the user asks of you, you have access to a number of standard tools.\n\nThe calling agent only sees your final assistant message, not your intermediate work, tool results, or status tracking. Ensure your final response contains the complete answer."
 
-func buildGeneralSubagent(options Options, filesystem agent.Middleware, profile Profile) (*agent.Agent, error) {
+func buildGeneralSubagent(options Options, filesystem agent.Middleware, profile Profile, exclusionMatches map[string]bool) (*agent.Agent, error) {
 	middleware := []agent.Middleware{}
 	middleware = append(middleware, filesystem)
 	if !options.DisableSummary {
@@ -455,12 +438,15 @@ func buildGeneralSubagent(options Options, filesystem agent.Middleware, profile 
 	for _, custom := range options.Middleware {
 		for index, current := range middleware {
 			if current.Name == custom.Name {
+				if custom.SerializedName == "" {
+					custom.SerializedName = current.SerializedName
+				}
 				middleware[index] = custom
 				break
 			}
 		}
 	}
-	filtered, err := filterProfileMiddleware(middleware, profile, false)
+	filtered, err := filterProfileMiddleware(middleware, profile, exclusionMatches, false)
 	if err != nil {
 		return nil, err
 	}
@@ -500,6 +486,9 @@ func mergeMiddleware(core, tail, custom []agent.Middleware) []agent.Middleware {
 	var additions []agent.Middleware
 	for _, item := range custom {
 		if index, exists := positions[item.Name]; exists {
+			if item.SerializedName == "" {
+				item.SerializedName = result[index].SerializedName
+			}
 			result[index] = item
 		} else {
 			additions = append(additions, item)
@@ -530,25 +519,38 @@ func stringSet(values []string) map[string]bool {
 	return result
 }
 
-func filterProfileMiddleware(values []agent.Middleware, profile Profile, verify bool) ([]agent.Middleware, error) {
-	excluded := stringSet(profile.ExcludeMiddleware)
-	for name := range excluded {
-		if name == "filesystem" || name == "subagents" {
+func filterProfileMiddleware(values []agent.Middleware, profile Profile, matched map[string]bool, verify bool) ([]agent.Middleware, error) {
+	if matched == nil {
+		matched = map[string]bool{}
+	}
+	for _, name := range profile.ExcludeMiddleware {
+		if isRequiredMiddlewareExclusion(name) {
 			return nil, fmt.Errorf("profile cannot exclude required middleware %q", name)
 		}
 	}
 	result := make([]agent.Middleware, 0, len(values))
 	for _, value := range values {
-		if excluded[value.Name] {
-			delete(excluded, value.Name)
+		matching := ""
+		for _, excluded := range profile.ExcludeMiddleware {
+			if excluded == value.Name || (value.SerializedName != "" && excluded == value.SerializedName) {
+				if matching != "" && matching != excluded {
+					return nil, fmt.Errorf("middleware %q matched multiple profile exclusions %q and %q", value.Name, matching, excluded)
+				}
+				matching = excluded
+			}
+		}
+		if matching != "" {
+			matched[matching] = true
 			continue
 		}
 		value.Tools = applyToolProfile(value.Tools, profile.ToolDescriptions, nil)
 		result = append(result, value)
 	}
-	if verify && len(excluded) > 0 {
-		for name := range excluded {
-			return nil, fmt.Errorf("profile middleware exclusion %q matched no assembled middleware", name)
+	if verify {
+		for _, name := range profile.ExcludeMiddleware {
+			if !matched[name] {
+				return nil, fmt.Errorf("profile middleware exclusion %q matched no assembled middleware", name)
+			}
 		}
 	}
 	return result, nil

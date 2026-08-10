@@ -46,8 +46,7 @@ func (config HarnessProfileConfig) Validate() error {
 		if err := validateProfileMiddlewareExclusion(name); err != nil {
 			return err
 		}
-		switch name {
-		case "filesystem", "subagents", "FilesystemMiddleware", "SubAgentMiddleware":
+		if isRequiredMiddlewareExclusion(name) {
 			return fmt.Errorf("excluded_middleware cannot remove required scaffolding %q", name)
 		}
 	}

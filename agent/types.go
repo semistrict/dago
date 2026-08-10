@@ -195,16 +195,17 @@ func (field StateField) validate(name string) error {
 // wrapper is outermost; before hooks run in registration order and after hooks run
 // in reverse order.
 type Middleware struct {
-	Name          string
-	Fields        map[string]StateField
-	Tools         []tool.Tool
-	BeforeAgent   Hook
-	BeforeModel   Hook
-	WrapModelCall ModelWrapper
-	AfterModel    Hook
-	BeforeTools   ToolBatchHook
-	WrapToolCall  ToolWrapper
-	AfterAgent    Hook
+	Name           string
+	SerializedName string
+	Fields         map[string]StateField
+	Tools          []tool.Tool
+	BeforeAgent    Hook
+	BeforeModel    Hook
+	WrapModelCall  ModelWrapper
+	AfterModel     Hook
+	BeforeTools    ToolBatchHook
+	WrapToolCall   ToolWrapper
+	AfterAgent     Hook
 }
 
 type StructuredStrategy string

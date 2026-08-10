@@ -110,7 +110,7 @@ func AsyncSubagentMiddleware(options AsyncSubagentOptions) (agent.Middleware, er
 		asyncListTool(byName, options.Now),
 	}
 	middleware := agent.Middleware{
-		Name: "async_subagents",
+		Name: "async_subagents", SerializedName: "AsyncSubAgentMiddleware",
 		Fields: map[string]agent.StateField{AsyncTasksKey: {
 			Kind: agent.FieldDelta, Contract: "dago.async_tasks.delta.v1", SnapshotFrequency: 100,
 			Initial: func() any { return map[string]any{} }, Reduce: reduceAsyncTasks, Clone: cloneAsyncTasks,

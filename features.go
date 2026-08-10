@@ -58,7 +58,7 @@ type Subagent struct {
 // history that providers reject because a requested tool was never answered.
 func PatchToolCallsMiddleware() agent.Middleware {
 	return agent.Middleware{
-		Name: "patch_tool_calls",
+		Name: "patch_tool_calls", SerializedName: "PatchToolCallsMiddleware",
 		BeforeAgent: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
 			messages, err := featureMessages(values[agent.MessagesKey])
 			if err != nil {
@@ -249,7 +249,7 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 		}
 		return toolResult, nil
 	}}
-	return agent.Middleware{Name: "subagents", Tools: []tool.Tool{taskTool}}, nil
+	return agent.Middleware{Name: "subagents", SerializedName: "SubAgentMiddleware", Tools: []tool.Tool{taskTool}}, nil
 }
 
 func invokeSubagent(ctx context.Context, selected Subagent, invocation agent.Input, runtime tool.Runtime) (agent.Result, error) {
@@ -457,7 +457,7 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		update[agent.MessagesKey] = state.Overwrite{Value: replacement}
 		return update, nil
 	}
-	middleware := agent.Middleware{Name: "summarization", BeforeModel: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
+	middleware := agent.Middleware{Name: "summarization", SerializedName: "SummarizationMiddleware", BeforeModel: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
 		messages, err := featureMessages(values[agent.MessagesKey])
 		if err != nil {
 			return nil, err
@@ -692,7 +692,7 @@ func MemoryMiddleware(options MemoryOptions) (agent.Middleware, error) {
 		return agent.Middleware{}, fmt.Errorf("memory system prompt must contain the {agent_memory} slot")
 	}
 	commentRE := regexp.MustCompile(`(?s)<!--.*?-->`)
-	return agent.Middleware{Name: "memory", Fields: map[string]agent.StateField{"memory_contents": {Kind: agent.FieldLast, Contract: "dago.memory.v1", Private: true, Clone: cloneStringMap}}, BeforeAgent: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
+	return agent.Middleware{Name: "memory", SerializedName: "MemoryMiddleware", Fields: map[string]agent.StateField{"memory_contents": {Kind: agent.FieldLast, Contract: "dago.memory.v1", Private: true, Clone: cloneStringMap}}, BeforeAgent: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
 		if _, loaded := values["memory_contents"]; loaded {
 			return nil, nil
 		}
@@ -903,7 +903,7 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 		sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 		return result, warnings, nil
 	}
-	return agent.Middleware{Name: "skills", Fields: map[string]agent.StateField{
+	return agent.Middleware{Name: "skills", SerializedName: "SkillsMiddleware", Fields: map[string]agent.StateField{
 		"skills":             {Kind: agent.FieldLast, Contract: "dago.skills.v1", Private: true, Clone: cloneSkillState},
 		"skills_load_errors": {Kind: agent.FieldLast, Contract: "dago.skills.errors.v1", Private: true, Clone: cloneStrings},
 	}, BeforeAgent: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {

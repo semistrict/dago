@@ -268,7 +268,7 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 		selected = append(selected, executable)
 	}
 	selected = describeFilesystemTools(selected, options.ToolDescriptions)
-	middleware := agent.Middleware{Name: "filesystem", Tools: selected}
+	middleware := agent.Middleware{Name: "filesystem", SerializedName: "FilesystemMiddleware", Tools: selected}
 	if fields := backend.RuntimeStateFields(options.Backend); len(fields) > 0 {
 		middleware.Fields = make(map[string]agent.StateField, len(fields))
 		for _, field := range fields {

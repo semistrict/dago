@@ -11,6 +11,7 @@ import (
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
+	"github.com/semistrict/dago/state"
 	"github.com/semistrict/dago/tool"
 )
 
@@ -109,6 +110,42 @@ func TestProfileCannotExcludeRequiredFilesystem(t *testing.T) {
 	_, err := New(Options{Model: modeltest.New(model.Profile{}), Profiles: []Profile{{Name: "bad", Kind: ProfileHarness, ExcludeMiddleware: []string{"filesystem"}}}})
 	if err == nil || !strings.Contains(err.Error(), "required middleware") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestProfileUsesCanonicalSerializedMiddlewareNames(t *testing.T) {
+	called := false
+	replacement := agent.Middleware{Name: "summarization", BeforeModel: func(context.Context, state.Values, agent.Runtime) (state.Values, error) {
+		called = true
+		return nil, nil
+	}}
+	compiled, err := New(Options{
+		Model: modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}}),
+		Profiles: []Profile{{
+			Name: "canonical-middleware-name", Kind: ProfileHarness,
+			ExcludeMiddleware: []string{"SummarizationMiddleware"},
+		}},
+		Middleware: []agent.Middleware{replacement}, DisableSubagents: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("canonical exclusion did not remove the replaced summarization slot")
+	}
+}
+
+func TestProfileRejectsCanonicalRequiredMiddlewareNames(t *testing.T) {
+	for _, name := range []string{"FilesystemMiddleware", "SubAgentMiddleware"} {
+		_, err := New(Options{Model: modeltest.New(model.Profile{}), Profiles: []Profile{{
+			Name: "required-" + name, Kind: ProfileHarness, ExcludeMiddleware: []string{name},
+		}}})
+		if err == nil || !strings.Contains(err.Error(), "required middleware") {
+			t.Fatalf("exclusion %q error = %v", name, err)
+		}
 	}
 }
 
