@@ -186,17 +186,56 @@ func TestLocalShellIsExplicitBoundedAndCancelable(t *testing.T) {
 		t.Fatal("local shell does not advertise execute")
 	}
 	result, err := shell.Execute(context.Background(), "printf 123456", time.Second)
-	if err != nil || result.Output != "1234" || !result.Truncated || result.ExitCode == nil || *result.ExitCode != 0 {
+	if err != nil || result.Output != "1234\n\n... Output truncated at 4 bytes." || !result.Truncated || result.ExitCode == nil || *result.ExitCode != 0 {
 		t.Fatalf("Execute = %#v, %v", result, err)
 	}
 	result, err = shell.Execute(context.Background(), "printf failure; exit 7", time.Second)
-	if err != nil || result.ExitCode == nil || *result.ExitCode != 7 || !strings.HasPrefix(result.Output, "fail") {
+	if err != nil || result.ExitCode == nil || *result.ExitCode != 7 || result.Output != "fail\n\n... Output truncated at 4 bytes.\n\nExit code: 7" {
 		t.Fatalf("failed Execute = %#v, %v", result, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := shell.Execute(ctx, "sleep 1", time.Second); err == nil {
 		t.Fatal("canceled Execute succeeded")
+	}
+}
+
+func TestLocalShellUsesExplicitEnvironmentAndLabelsStderr(t *testing.T) {
+	t.Setenv("DAGO_SHELL_INHERITED", "parent")
+	root := t.TempDir()
+	shell, err := NewLocalShell(LocalShellOptions{
+		Filesystem: FilesystemOptions{Root: root},
+		Env:        map[string]string{"DAGO_SHELL_EXPLICIT": "child"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := shell.Execute(context.Background(), `printf '%s/%s' "$DAGO_SHELL_EXPLICIT" "${DAGO_SHELL_INHERITED-unset}"; printf 'problem\nsecond' >&2`, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "child/unset\n[stderr] problem\n[stderr] second" || result.ExitCode == nil || *result.ExitCode != 0 {
+		t.Fatalf("explicit environment Execute = %#v", result)
+	}
+
+	inherited, err := NewLocalShell(LocalShellOptions{
+		Filesystem: FilesystemOptions{Root: root},
+		Env:        map[string]string{"DAGO_SHELL_INHERITED": "override"},
+		InheritEnv: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = inherited.Execute(context.Background(), `printf '%s/%s' "$DAGO_SHELL_INHERITED" "$PATH"`, time.Second)
+	if err != nil || !strings.HasPrefix(result.Output, "override/") || result.Output == "override/" {
+		t.Fatalf("inherited environment Execute = %#v, %v", result, err)
+	}
+
+	if _, err := NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: root}, Env: map[string]string{"BAD=NAME": "value"}}); err == nil {
+		t.Fatal("invalid environment variable name accepted")
+	}
+	if _, err := NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: root}, Env: map[string]string{"BAD": "value\x00"}}); err == nil {
+		t.Fatal("NUL environment value accepted")
 	}
 }
 
@@ -212,7 +251,7 @@ func TestLocalShellDrainsRunawayOutputAndReportsTimeouts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Output) != 1_000 || !result.Truncated || result.ExitCode == nil || *result.ExitCode != 0 {
+	if !strings.HasSuffix(result.Output, "... Output truncated at 1000 bytes.") || len(strings.SplitN(result.Output, "\n\n...", 2)[0]) != 1_000 || !result.Truncated || result.ExitCode == nil || *result.ExitCode != 0 {
 		t.Fatalf("runaway Execute = %#v", result)
 	}
 
