@@ -857,7 +857,6 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 					return nil, warnings, ctx.Err()
 				}
 				warn(fmt.Sprintf("cannot load skills from %q: %v", root, err))
-				continue
 			}
 			var skillPaths []string
 			for _, entry := range listing.Entries {
@@ -867,7 +866,11 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 				directory := strings.TrimSuffix(strings.ReplaceAll(entry.Path, `\`, "/"), "/")
 				skillPaths = append(skillPaths, directory+"/SKILL.md")
 			}
-			for index, download := range options.Backend.Download(ctx, skillPaths) {
+			downloads := options.Backend.Download(ctx, skillPaths)
+			if len(downloads) != len(skillPaths) {
+				return nil, warnings, fmt.Errorf("skills backend returned %d downloads for %d paths", len(downloads), len(skillPaths))
+			}
+			for index, download := range downloads {
 				skillPath := skillPaths[index]
 				if download.Error != "" {
 					if download.Error != "file_not_found" {

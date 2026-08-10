@@ -2,6 +2,7 @@ package dago
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -65,6 +66,43 @@ func TestSkillsLaterSourceWinsAndWarningsAreUntrusted(t *testing.T) {
 	}
 	if len(observedWarnings) == 0 {
 		t.Fatal("warning callback was not called")
+	}
+}
+
+type partialSkillsBackend struct {
+	backend.Backend
+	listing backend.ListResult
+	err     error
+}
+
+func (partial partialSkillsBackend) List(context.Context, string) (backend.ListResult, error) {
+	return partial.listing, partial.err
+}
+
+func TestSkillsRetainPartialListingResults(t *testing.T) {
+	memory, err := backend.NewMemory(map[string]backend.FileData{
+		"/skills/research/SKILL.md": {Content: "---\nname: research\ndescription: found despite warning\n---\nbody", Encoding: backend.EncodingUTF8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := partialSkillsBackend{
+		Backend: memory,
+		listing: backend.ListResult{Entries: []backend.FileInfo{{Path: "/skills/research/", IsDir: true}}},
+		err:     errors.New("one directory could not be inspected"),
+	}
+	middleware, err := SkillsMiddleware(SkillsOptions{Backend: partial, Sources: []string{"/skills"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, err := middleware.BeforeAgent(context.Background(), map[string]any{}, agent.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk := skillsFromState(update["skills"])
+	warnings := stringsFromState(update["skills_load_errors"])
+	if len(sk) != 1 || sk[0].Name != "research" || len(warnings) != 1 || !strings.Contains(warnings[0], "could not be inspected") {
+		t.Fatalf("skills = %#v, warnings = %#v", sk, warnings)
 	}
 }
 
