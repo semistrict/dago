@@ -183,6 +183,9 @@ const TOOL_COMPONENTS: Record<string, any> = {
   shell: BashTool,
   execute: BashTool,
   patch: PatchTool,
+  write_file: PatchTool,
+  edit_file: PatchTool,
+  delete: PatchTool,
   browser: BrowserTool,
   screenshot: ScreenshotTool,
   read_image: ReadImageTool,
@@ -225,7 +228,7 @@ const toolComponentProps = computed<Record<string, unknown>>(() => {
     executionTime: executionTime.value,
     display: props.display,
   };
-  if (props.toolName === "patch" && props.onCommentTextChange) {
+  if (["patch", "write_file", "edit_file", "delete"].includes(props.toolName) && props.onCommentTextChange) {
     base.onCommentTextChange = props.onCommentTextChange;
   }
   if (streamingOutput.value !== undefined) {

@@ -311,10 +311,10 @@ const path = computed(() => {
   if (
     typeof ti === "object" &&
     ti !== null &&
-    "path" in ti &&
-    typeof (ti as { path: unknown }).path === "string"
+    (("path" in ti && typeof (ti as { path: unknown }).path === "string") ||
+      ("file_path" in ti && typeof (ti as { file_path: unknown }).file_path === "string"))
   ) {
-    return (ti as { path: string }).path;
+    return "path" in ti ? (ti as { path: string }).path : (ti as { file_path: string }).file_path;
   }
   return typeof ti === "string" ? ti : "";
 });

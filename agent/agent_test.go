@@ -82,6 +82,55 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 	}
 }
 
+func TestToolParentHandoffIsCommittedAndReturned(t *testing.T) {
+	transfer := tool.Func{
+		Spec: tool.Definition{Name: "transfer", Description: "Transfer to a sibling agent", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+			result := tool.TextResult("transferred")
+			result.Update = map[string]any{"owner": "agent_b"}
+			result.Handoff = &tool.Handoff{Destination: "agent_b"}
+			return result, nil
+		},
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true}, modeltest.Step{Response: model.Response{Message: message.Message{
+		Role:      message.RoleAssistant,
+		ToolCalls: []message.ToolCall{{ID: "call-transfer", Name: "transfer", Arguments: json.RawMessage(`{}`)}},
+	}}})
+	compiled, err := New(Options{Model: script, Tools: []tool.Tool{transfer}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), Input{Messages: []message.Message{message.Human("transfer")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Handoff == nil || result.Handoff.Destination != "agent_b" {
+		t.Fatalf("handoff = %#v", result.Handoff)
+	}
+	if result.State["owner"] != "agent_b" {
+		t.Fatalf("state = %#v", result.State)
+	}
+	last := result.Messages[len(result.Messages)-1]
+	if last.Role != message.RoleTool || last.ToolCallID != "call-transfer" || last.TextContent() != "transferred" {
+		t.Fatalf("tool result = %#v", last)
+	}
+	if script.Remaining() != 0 {
+		t.Fatalf("remaining model steps = %d", script.Remaining())
+	}
+}
+
+func TestTerminalHandoffDoesNotLeakAcrossUserTurns(t *testing.T) {
+	handoff, _ := json.Marshal(tool.Handoff{Destination: "agent_b"})
+	toolMessage := message.Tool("call-transfer", "transferred")
+	toolMessage.ResponseMetadata = map[string]json.RawMessage{handoffMetadataKey: handoff}
+	if got := terminalHandoff([]message.Message{message.Human("first"), toolMessage}); got == nil || got.Destination != "agent_b" {
+		t.Fatalf("terminal handoff = %#v", got)
+	}
+	if got := terminalHandoff([]message.Message{message.Human("first"), toolMessage, message.Human("next"), message.Assistant("done")}); got != nil {
+		t.Fatalf("stale handoff = %#v", got)
+	}
+}
+
 func TestUnknownToolReturnsRecoverableToolMessage(t *testing.T) {
 	known := tool.Func{
 		Spec: tool.Definition{Name: "alpha", Description: "Known tool", InputSchema: json.RawMessage(`{"type":"object"}`)},

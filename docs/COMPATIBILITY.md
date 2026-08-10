@@ -9,7 +9,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Parallel tool calls and deterministic reduction | verified | agent and graph tests |
 | Provider and synthetic-tool structured output | verified | schema validation and retry tests |
 | Mandatory delta state and message channels | verified | channel, graph, memory saver, SQLite, remove-all reset, and pre-checkpoint stable-message-ID tests |
-| Graph routing, sends, retry, interrupt, resume | verified | graph tests plus agent after-hook model re-entry and invalid-destination guards |
+| Graph routing, sends, retry, interrupt, resume, and parent handoff preservation | verified | graph tests plus agent after-hook model re-entry, invalid-destination guards, and typed terminal handoff tests |
 | Replay by checkpoint and thread fork | verified | public history/replay/fork helpers and saver copy/replay tests |
 | SQLite standard schema and saver behavior | verified | schema, conflict, history, copy, prune, restart tests |
 | PostgreSQL migrations 0–9 and saver behavior | verified | migration tests and live saver integration gate |
@@ -20,7 +20,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Context Hub persistent agent repository | verified | lazy pull, commit chaining, linked entries, cache recovery, batch transfer, and LangSmith SDK transport tests |
 | Filesystem tools and permission approval | verified | root vertical-slice tests |
 | Declarative and precompiled subagents, isolation, state propagation, and nested approval resume | verified | root and agent tests |
-| Summarization, offload, and compaction | verified | threshold, valid-cutoff, thread-aware offload, and state-update tests |
+| Summarization, offload, and compaction | verified | AND/OR/fraction threshold clauses, valid cutoffs, thread-aware offload, and state-update tests |
 | Skills and memory prompt injection | verified | safe YAML, deterministic discovery, warning, ordering, and prompt tests |
 | Provider and harness profiles | verified | built-in Anthropic and Nemotron harness overlays plus OpenAI/NVIDIA/OpenRouter construction defaults; active repair, retry, budget, policy, entity, follow-up, and final-answer contracts; additive registration and override tests |
 | Token/update/task/interrupt/custom streaming | verified | graph, agent, and provider stream tests |
@@ -47,8 +47,9 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 - Python package-version inspection is not applied to Go provider adapters. Canonical
   Dago messages already preserve tool-call and tool-result identity, so the Nemotron
   pre-serialization compatibility layer is an explicit no-op at the core boundary.
-- Parent-graph commands and a public general-purpose graph builder are deferred. The
-  internal command/send surface implements only the routing used by the agent factory.
+- A tool command targeting its parent is returned as a typed terminal handoff for the
+  enclosing Go orchestrator to route. Dago does not expose a general-purpose public
+  graph builder merely to reproduce Python's graph-composition syntax.
 - Video decoding is an opt-in extractor capability. The supplied FFmpeg adapter is
   subprocess-isolated by context and output limits; opaque media behavior remains
   the default and no decoder library is a core dependency.

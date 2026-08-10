@@ -93,6 +93,14 @@ type Interrupt struct {
 	Value any
 }
 
+// Handoff asks the enclosing orchestrator to continue at Destination after the
+// current agent commits the tool result and state update. This is the Go-native
+// equivalent of a parent-graph command; the agent terminates and returns the
+// handoff instead of trying to resolve a node that belongs to its caller.
+type Handoff struct {
+	Destination string `json:"destination"`
+}
+
 // Result is normalized tool output. Update is merged into graph state by reducers;
 // it is not exposed to the model directly.
 type Result struct {
@@ -101,6 +109,7 @@ type Result struct {
 	OtherUsage []message.PurposedUsage `json:"other_usage,omitempty"`
 	Update     map[string]any          `json:"-"`
 	Interrupt  *Interrupt              `json:"-"`
+	Handoff    *Handoff                `json:"-"`
 }
 
 // TextResult creates a text-only tool result.

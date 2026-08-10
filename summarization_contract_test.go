@@ -190,6 +190,47 @@ func TestSummarizationSupportsMessageTriggersAndTokenKeepWindows(t *testing.T) {
 	}
 }
 
+func TestSummarizationTriggerClausesUseAndWithinOrAcross(t *testing.T) {
+	chat := modeltest.New(model.Profile{ContextWindow: 1_000})
+	options, err := normalizeSummarizationOptions(SummarizationOptions{
+		Model: chat,
+		TriggerClauses: []SummarizationTriggerClause{
+			{Messages: 10, Tokens: 400},
+			{Fraction: 0.8},
+		},
+		KeepFraction:              0.1,
+		DisableArgumentTruncation: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.KeepTokens != 100 {
+		t.Fatalf("keep tokens = %d", options.KeepTokens)
+	}
+	if summarizationTriggered(options.triggerClauses, 10, 399, 1) {
+		t.Fatal("AND trigger matched without its token threshold")
+	}
+	if !summarizationTriggered(options.triggerClauses, 10, 400, 1) {
+		t.Fatal("AND trigger did not match both thresholds")
+	}
+	if !summarizationTriggered(options.triggerClauses, 1, 800, 1) {
+		t.Fatal("fraction trigger did not form an independent OR clause")
+	}
+	if !summarizationTriggered(options.triggerClauses, 5, 200, 2) {
+		t.Fatal("manual compaction did not use half of every clause threshold")
+	}
+}
+
+func TestSummarizationFractionsRequireKnownContextWindow(t *testing.T) {
+	chat := modeltest.New(model.Profile{})
+	_, err := normalizeSummarizationOptions(SummarizationOptions{
+		Model: chat, TriggerClauses: []SummarizationTriggerClause{{Fraction: 0.8}}, KeepMessages: 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "context window") {
+		t.Fatalf("fraction error = %v", err)
+	}
+}
+
 func TestSummarizationTriggerCountsSystemPrompt(t *testing.T) {
 	memory, _ := backend.NewMemory(nil)
 	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("system-aware summary")}})

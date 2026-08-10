@@ -392,7 +392,7 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	}
 	options := dago.Options{
 		Name: "Shelley", Model: model,
-		Tools: dagoTools, SystemPrompt: runtimeSystemPrompt(system), Middleware: []dagent.Middleware{l.runtimeMiddleware()},
+		Tools: dagoTools, SystemPrompt: runtimeSystemPrompt(system), Middleware: []dagent.Middleware{l.runtimeMiddleware(harnessBackend)},
 		Backend: harnessBackend,
 		Saver:   l.saver, MaxConcurrency: 1, FailOnToolError: false,
 		StateFields: map[string]dagent.StateField{
@@ -525,46 +525,132 @@ func isPredictableModel(chat dmodel.Chat) bool {
 }
 
 func predictableFilesystemAliases(files dbackend.Backend, selected []string) ([]dtool.Tool, error) {
-	if selected != nil {
-		found := false
-		for _, name := range selected {
-			if name == "execute" {
-				found = true
-				break
+	selectedNames := make(map[string]bool, len(selected))
+	for _, name := range selected {
+		selectedNames[name] = true
+	}
+	enabled := func(name string) bool { return selected == nil || selectedNames[name] }
+	wanted := make([]string, 0, 3)
+	for _, name := range []string{"execute", "write_file", "edit_file"} {
+		if enabled(name) {
+			wanted = append(wanted, name)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+	middleware, err := dago.FilesystemMiddleware(dago.FilesystemOptions{Backend: files, Tools: wanted})
+	if err != nil {
+		return nil, fmt.Errorf("create predictable filesystem alias: %w", err)
+	}
+	byName := make(map[string]dtool.Tool, len(middleware.Tools))
+	for _, item := range middleware.Tools {
+		byName[item.Definition().Name] = item
+	}
+	result := make([]dtool.Tool, 0, 2)
+	if execute := byName["execute"]; execute != nil {
+		alias, aliasErr := dtool.Alias(execute, "bash")
+		if aliasErr != nil {
+			return nil, fmt.Errorf("create predictable filesystem alias: %w", aliasErr)
+		}
+		// The deterministic fixture predates execute's explicit exit-status footer.
+		// Keep its historical exact-output assertions while still executing through
+		// the canonical Dago backend and schema.
+		result = append(result, dtool.Func{Spec: alias.Definition(), Run: func(ctx context.Context, raw json.RawMessage, runtime dtool.Runtime) (dtool.Result, error) {
+			output, executeErr := alias.Execute(ctx, raw, runtime)
+			if executeErr != nil {
+				return output, executeErr
 			}
+			const successFooter = "\n[Command succeeded with exit code 0]"
+			for index := range output.Content {
+				if output.Content[index].Type == dmessage.BlockText && strings.HasSuffix(output.Content[index].Text, successFooter) {
+					output.Content[index].Text = strings.TrimSuffix(strings.TrimSuffix(output.Content[index].Text, successFooter), "\n")
+				}
+			}
+			return output, nil
+		}})
+	}
+	if write := byName["write_file"]; write != nil {
+		result = append(result, predictablePatchAlias(files, write, byName["edit_file"]))
+	}
+	return result, nil
+}
+
+// predictablePatchAlias translates Shelley's historical deterministic fixture
+// into Dago's canonical write_file/edit_file calls. It is not part of the
+// production model tool surface: real models receive only the canonical tools.
+func predictablePatchAlias(files dbackend.Backend, write, edit dtool.Tool) dtool.Tool {
+	return dtool.Func{Spec: dtool.Definition{
+		Name: "patch", Description: "Compatibility adapter for deterministic Shelley fixtures.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"patches":{"type":"array","items":{"type":"object","properties":{"operation":{"type":"string"},"oldText":{"type":"string"},"newText":{"type":"string"}},"required":["operation"]}}},"required":["path","patches"]}`),
+	}, Run: func(ctx context.Context, raw json.RawMessage, runtime dtool.Runtime) (dtool.Result, error) {
+		var input struct {
+			Path    string `json:"path"`
+			Patches []struct {
+				Operation string `json:"operation"`
+				OldText   string `json:"oldText"`
+				NewText   string `json:"newText"`
+			} `json:"patches"`
 		}
-		if !found {
-			return nil, nil
+		if err := json.Unmarshal(raw, &input); err != nil {
+			return dtool.Result{}, fmt.Errorf("decode patch arguments: %w", err)
 		}
-	}
-	middleware, err := dago.FilesystemMiddleware(dago.FilesystemOptions{Backend: files, Tools: []string{"execute"}})
-	if err != nil {
-		return nil, fmt.Errorf("create predictable filesystem alias: %w", err)
-	}
-	if len(middleware.Tools) != 1 {
-		return nil, fmt.Errorf("create predictable filesystem alias: execute is unavailable")
-	}
-	alias, err := dtool.Alias(middleware.Tools[0], "bash")
-	if err != nil {
-		return nil, fmt.Errorf("create predictable filesystem alias: %w", err)
-	}
-	// The deterministic fixture predates execute's explicit exit-status footer.
-	// Keep its historical exact-output assertions while still executing through
-	// the canonical Dago backend and schema.
-	fixtureAlias := dtool.Func{Spec: alias.Definition(), Run: func(ctx context.Context, raw json.RawMessage, runtime dtool.Runtime) (dtool.Result, error) {
-		result, err := alias.Execute(ctx, raw, runtime)
+		if input.Path == "" || len(input.Patches) == 0 {
+			return dtool.Result{}, fmt.Errorf("patch requires path and at least one operation")
+		}
+		before := predictableFileContents(ctx, files, input.Path)
+		var content []dmessage.ContentBlock
+		for _, patch := range input.Patches {
+			var executable dtool.Tool
+			var arguments []byte
+			switch patch.Operation {
+			case "overwrite":
+				executable = write
+				arguments, _ = json.Marshal(map[string]any{"file_path": input.Path, "content": patch.NewText})
+			case "replace":
+				if edit == nil {
+					return dtool.Result{}, fmt.Errorf("patch replace requires edit_file")
+				}
+				executable = edit
+				arguments, _ = json.Marshal(map[string]any{"file_path": input.Path, "old_string": patch.OldText, "new_string": patch.NewText, "replace_all": false})
+			default:
+				return dtool.Result{}, fmt.Errorf("unsupported patch operation %q", patch.Operation)
+			}
+			output, err := executable.Execute(ctx, arguments, runtime)
+			if err != nil {
+				return dtool.Result{}, err
+			}
+			content = append(content, output.Content...)
+		}
+		after, err := readPredictableFileContents(ctx, files, input.Path)
 		if err != nil {
-			return result, err
+			return dtool.Result{}, err
 		}
-		const successFooter = "\n[Command succeeded with exit code 0]"
-		for index := range result.Content {
-			if result.Content[index].Type == dmessage.BlockText && strings.HasSuffix(result.Content[index].Text, successFooter) {
-				result.Content[index].Text = strings.TrimSuffix(strings.TrimSuffix(result.Content[index].Text, successFooter), "\n")
-			}
+		artifact, err := json.Marshal(map[string]any{"path": input.Path, "oldContent": before, "newContent": after})
+		if err != nil {
+			return dtool.Result{}, err
 		}
-		return result, nil
+		return dtool.Result{Content: content, Artifact: artifact}, nil
 	}}
-	return []dtool.Tool{fixtureAlias}, nil
+}
+
+func predictableFileContents(ctx context.Context, files dbackend.Backend, path string) string {
+	content, _ := readPredictableFileContents(ctx, files, path)
+	return content
+}
+
+func readPredictableFileContents(ctx context.Context, files dbackend.Backend, path string) (string, error) {
+	result, err := files.Read(ctx, path, 0, 1_000_000)
+	if err != nil {
+		return "", err
+	}
+	if result.Data == nil {
+		return "", fmt.Errorf("read patched file %q returned no data", path)
+	}
+	if result.Data.Encoding != dbackend.EncodingUTF8 {
+		return "", fmt.Errorf("patched file %q is not UTF-8 text", path)
+	}
+	return result.Data.Content, nil
 }
 
 // ResolveCancellation durably appends cancellation messages and clears any
@@ -619,7 +705,7 @@ func (l *Loop) checkpointConfig() checkpoint.Config {
 	return checkpoint.Config{ThreadID: l.threadID, Namespace: l.namespace}
 }
 
-func (l *Loop) runtimeMiddleware() dagent.Middleware {
+func (l *Loop) runtimeMiddleware(files dbackend.Backend) dagent.Middleware {
 	return dagent.Middleware{
 		Name: "shelley_runtime",
 		BeforeModel: func(ctx context.Context, _ state.Values, _ dagent.Runtime) (state.Values, error) {
@@ -713,6 +799,11 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 			toolCtx = llm.WithModelProfile(toolCtx, l.model.Profile())
 			var usage llmhttp.UsageAccumulator
 			toolCtx = llmhttp.WithUsageCollector(toolCtx, usage.Collect)
+			changePath := dagoFileChangePath(request.Call)
+			before := ""
+			if changePath != "" {
+				before = predictableFileContents(toolCtx, files, changePath)
+			}
 			started := time.Now()
 			response, err := next(toolCtx, request)
 			finished := time.Now()
@@ -724,7 +815,16 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 				return response, nil
 			}
 			var display any
-			if len(response.Result.Artifact) > 0 {
+			if changePath != "" {
+				after := ""
+				if request.Call.Name != "delete" {
+					after, err = readPredictableFileContents(toolCtx, files, changePath)
+					if err != nil {
+						return response, fmt.Errorf("read %s display data: %w", request.Call.Name, err)
+					}
+				}
+				display = map[string]any{"path": changePath, "oldContent": before, "newContent": after}
+			} else if len(response.Result.Artifact) > 0 {
 				display = append(json.RawMessage(nil), response.Result.Artifact...)
 			}
 			exact := llm.Content{
@@ -743,6 +843,19 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 			return response, nil
 		},
 	}
+}
+
+func dagoFileChangePath(call dmessage.ToolCall) string {
+	if call.Name != "write_file" && call.Name != "edit_file" && call.Name != "delete" {
+		return ""
+	}
+	var input struct {
+		FilePath string `json:"file_path"`
+	}
+	if json.Unmarshal(call.Arguments, &input) != nil {
+		return ""
+	}
+	return input.FilePath
 }
 
 func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update state.Values) error {

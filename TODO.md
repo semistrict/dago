@@ -21,9 +21,11 @@ and release gates.
 
 The following integrations were deliberately evaluated and deferred because they are
 not required by the pinned local Deep Agents contract: a public general-purpose graph
-API, parent-graph routing, general tracing/deployment integrations, ACP, and a
+API, general tracing/deployment integrations, ACP, and a
 general-purpose CLI. Hosted asynchronous subagents, the remote Agent Protocol client,
 and opt-in video frame extraction are implemented without becoming core dependencies.
+Tool-issued parent routing is preserved as a typed terminal handoff for an enclosing
+Go orchestrator.
 The Shelley application is included as a complete example rather than a supported
 hosted service.
 
@@ -478,9 +480,9 @@ deterministic and cancellable, and no provider-specific type leaks into the core
   snapshot creation, saver history queries, and compaction-safe ancestry.
 - [x] Implement nodes, edges, conditional routing, start/end, graph validation, and
   compilation.
-- [x] Implement commands, sends, update aggregation, and deterministic parallel result
-  ordering. Parent-graph routing is intentionally deferred because the pinned Deep
-  Agents execution path does not consume it.
+- [x] Implement commands, sends, update aggregation, deterministic parallel result
+  ordering, and preservation of tool-issued parent handoffs for an enclosing Go
+  orchestrator.
 - [x] Implement the superstep runner with recursion limits, retries, cancellation,
   panic containment, resource cleanup, and explicit task errors.
 - [x] Implement runtime context, stream writer, store/cache access, and previous state.

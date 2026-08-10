@@ -179,6 +179,9 @@ function componentForTool(toolName: string) {
     case "execute":
       return BashTool;
     case "patch":
+    case "write_file":
+    case "edit_file":
+    case "delete":
       return PatchTool;
     case "browser":
       return BrowserTool;

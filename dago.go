@@ -1,6 +1,7 @@
 package dago
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -61,6 +62,9 @@ type Options struct {
 	RecursionLimit             int
 	MaxConcurrency             int
 	FailOnToolError            bool
+	Metadata                   map[string]json.RawMessage
+	Tags                       []string
+	Debug                      bool
 }
 
 // DeepAgent is a compiled agent with the standard filesystem, subagent,
@@ -232,11 +236,24 @@ func New(options Options) (*DeepAgent, error) {
 		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Context: options.Context,
 		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
+		Metadata:        mergeAgentMetadata(options.Metadata, options.Name), Tags: options.Tags, Debug: options.Debug,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &DeepAgent{Agent: compiled}, nil
+}
+
+func mergeAgentMetadata(values map[string]json.RawMessage, name string) map[string]json.RawMessage {
+	result := map[string]json.RawMessage{"ls_integration": json.RawMessage(`"deepagents"`)}
+	for key, value := range values {
+		result[key] = append(json.RawMessage(nil), value...)
+	}
+	if name != "" {
+		encoded, _ := json.Marshal(name)
+		result["lc_agent_name"] = encoded
+	}
+	return result
 }
 
 func privateStateFields(base map[string]agent.StateField, middleware []agent.Middleware) map[string]bool {
@@ -347,6 +364,7 @@ func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]S
 			Store: options.Store, Cache: options.Cache, Context: options.Context,
 			RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 			FailOnToolError: options.FailOnToolError,
+			Metadata:        mergeAgentMetadata(options.Metadata, spec.Name), Tags: options.Tags, Debug: options.Debug,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q: %w", spec.Name, err)
@@ -470,6 +488,7 @@ func buildGeneralSubagent(options Options, filesystem agent.Middleware, profile 
 		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Context: options.Context,
 		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
+		Metadata:        mergeAgentMetadata(options.Metadata, "general-purpose"), Tags: options.Tags, Debug: options.Debug,
 	})
 }
 

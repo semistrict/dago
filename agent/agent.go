@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -36,6 +37,9 @@ type Options struct {
 	RecursionLimit   int
 	MaxConcurrency   int
 	FailOnToolError  bool
+	Metadata         map[string]json.RawMessage
+	Tags             []string
+	Debug            bool
 }
 
 // Agent is a compiled provider-neutral model/tool graph.
@@ -60,6 +64,7 @@ type Result struct {
 	Structured json.RawMessage
 	State      state.Values
 	Interrupts []Interrupt
+	Handoff    *tool.Handoff
 	Steps      int
 }
 
@@ -84,6 +89,8 @@ func New(options Options) (*Agent, error) {
 		copy := options.SystemMessage.Clone()
 		options.SystemMessage = &copy
 	}
+	options.Metadata = cloneRawMap(options.Metadata)
+	options.Tags = append([]string(nil), options.Tags...)
 	structuredOutput, err := prepareStructuredOutput(options.StructuredOutput)
 	if err != nil {
 		return nil, err
@@ -138,6 +145,7 @@ func New(options Options) (*Agent, error) {
 	runtimeGraph, err := builder.Compile(graph.CompileOptions{
 		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Context: options.Context,
 		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
+		Writer: debugGraphWriter(options.Debug),
 	})
 	if err != nil {
 		return nil, err
@@ -149,6 +157,20 @@ func New(options Options) (*Agent, error) {
 		}
 	}
 	return &Agent{graph: runtimeGraph, saver: options.Saver, private: private}, nil
+}
+
+type debugEventWriter struct{}
+
+func debugGraphWriter(enabled bool) graph.EventWriter {
+	if !enabled {
+		return nil
+	}
+	return debugEventWriter{}
+}
+
+func (debugEventWriter) Write(ctx context.Context, event graph.Event) error {
+	slog.DebugContext(ctx, "agent graph event", "mode", event.Mode, "step", event.Step, "node", event.Node, "task_id", event.TaskID)
+	return nil
 }
 
 func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
@@ -208,7 +230,27 @@ func resultFromExecution(execution graph.Execution, private map[string]bool) (Re
 	for _, interrupt := range execution.Interrupts {
 		result.Interrupts = append(result.Interrupts, Interrupt{ID: interrupt.ID, Value: interrupt.Value})
 	}
+	result.Handoff = terminalHandoff(messages)
 	return result, nil
+}
+
+const handoffMetadataKey = "dago_handoff"
+
+func terminalHandoff(messages []message.Message) *tool.Handoff {
+	for index := len(messages) - 1; index >= 0; index-- {
+		item := messages[index]
+		if item.Role == message.RoleHuman {
+			return nil
+		}
+		if item.Role != message.RoleTool || len(item.ResponseMetadata[handoffMetadataKey]) == 0 {
+			continue
+		}
+		var handoff tool.Handoff
+		if json.Unmarshal(item.ResponseMetadata[handoffMetadataKey], &handoff) == nil && handoff.Destination != "" {
+			return &handoff
+		}
+	}
+	return nil
 }
 
 func publicState(values state.Values, private map[string]bool) state.Values {
@@ -312,7 +354,8 @@ func (compiler *compiler) model(ctx context.Context, values state.Values, runtim
 	}
 	request := ModelRequest{
 		Model: compiler.options.Model, Messages: messages, Tools: toolsSlice(compiler.tools),
-		State: current.Clone(), Runtime: convertRuntime(runtime),
+		State: current.Clone(), Runtime: convertRuntime(runtime), Metadata: cloneRawMap(compiler.options.Metadata),
+		Tags: append([]string(nil), compiler.options.Tags...),
 	}
 	if compiler.options.SystemMessage != nil {
 		system := compiler.options.SystemMessage.Clone()
@@ -599,6 +642,7 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 		message   message.Message
 		update    state.Values
 		direct    bool
+		handoff   *tool.Handoff
 		interrupt *Interrupt
 		err       error
 	}
@@ -649,6 +693,7 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 		pendingInterrupt.Value = append(current, additional...)
 	}
 	update := state.Values{}
+	var handoff *tool.Handoff
 	byCallID := make(map[string]message.Message, len(prefilled)+len(results))
 	var unassociated []message.Message
 	for _, item := range messages[assistantIndex+1:] {
@@ -674,6 +719,14 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 		}
 		byCallID[result.message.ToolCallID] = result.message
 		if result.direct {
+			update[toolDirectKey] = true
+		}
+		if result.handoff != nil {
+			if handoff != nil {
+				return graph.Command{}, fmt.Errorf("multiple tools requested parent handoffs to %q and %q", handoff.Destination, result.handoff.Destination)
+			}
+			value := *result.handoff
+			handoff = &value
 			update[toolDirectKey] = true
 		}
 		for key, value := range result.update {
@@ -731,6 +784,7 @@ func (compiler *compiler) executeTool(ctx context.Context, call message.ToolCall
 	message   message.Message
 	update    state.Values
 	direct    bool
+	handoff   *tool.Handoff
 	interrupt *Interrupt
 	err       error
 }) {
@@ -797,6 +851,20 @@ func (compiler *compiler) executeTool(ctx context.Context, call message.ToolCall
 	}
 	result.update = state.Values(response.Result.Update)
 	result.direct = executable.Definition().Direct
+	if response.Result.Handoff != nil {
+		if strings.TrimSpace(response.Result.Handoff.Destination) == "" {
+			result.err = fmt.Errorf("tool %q returned a handoff with an empty destination", call.Name)
+			return
+		}
+		value := *response.Result.Handoff
+		result.handoff = &value
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			result.err = fmt.Errorf("encode tool %q handoff: %w", call.Name, err)
+			return
+		}
+		result.message.ResponseMetadata = map[string]json.RawMessage{handoffMetadataKey: encoded}
+	}
 	return
 }
 

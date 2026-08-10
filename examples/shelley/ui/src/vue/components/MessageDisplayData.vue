@@ -4,7 +4,7 @@
      screenshot displays (handled by tool_result rendering). -->
 <template>
   <PatchTool
-    v-if="inferredToolName === 'patch' && typeof display === 'string'"
+    v-if="isFileChange && typeof display === 'string'"
     :tool-input="{}"
     :is-running="false"
     :tool-result="stringPatchResult"
@@ -12,7 +12,7 @@
     :on-comment-text-change="onCommentTextChange"
   />
   <PatchTool
-    v-else-if="inferredToolName === 'patch'"
+    v-else-if="isFileChange"
     :tool-input="{}"
     :is-running="false"
     :tool-result="emptyPatchResult"
@@ -49,6 +49,9 @@ const props = defineProps<{
 }>();
 
 const display = computed(() => props.toolDisplay.display);
+const isFileChange = computed(() =>
+  ["patch", "write_file", "edit_file", "delete"].includes(inferredToolName.value || ""),
+);
 
 const isScreenshot = computed(() => {
   const d = display.value;

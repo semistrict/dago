@@ -65,6 +65,28 @@ func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
 	}
 }
 
+func TestDeepAgentAddsConstructionMetadataAndTags(t *testing.T) {
+	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		if string(request.Metadata["ls_integration"]) != `"deepagents"` || string(request.Metadata["lc_agent_name"]) != `"researcher"` || string(request.Metadata["tenant"]) != `"alpha"` {
+			return fmt.Errorf("metadata = %#v", request.Metadata)
+		}
+		if len(request.Tags) != 1 || request.Tags[0] != "integration" {
+			return fmt.Errorf("tags = %#v", request.Tags)
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("done")}})
+	compiled, err := New(Options{
+		Name: "researcher", Model: script, DisableSubagents: true, DisableSummary: true,
+		Metadata: map[string]json.RawMessage{"tenant": json.RawMessage(`"alpha"`)}, Tags: []string{"integration"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDeepAgentBindsRuntimeScopedStoreBackend(t *testing.T) {
 	values := store.NewMemory()
 	files, err := backend.NewStoreWithOptions(backend.StoreOptions{Namespace: func(runtime *backend.Runtime) (store.Namespace, error) {

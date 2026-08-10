@@ -355,12 +355,17 @@ func invokeSubagent(ctx context.Context, selected Subagent, invocation agent.Inp
 }
 
 type SummarizationOptions struct {
-	Model                     model.Chat
-	Backend                   backend.Backend
+	Model   model.Chat
+	Backend backend.Backend
+	// TriggerClauses are ORed together; every non-zero threshold within one
+	// clause must match. This represents Deep Agents' list-of-trigger-clauses
+	// contract without Python tuple/dict unions.
+	TriggerClauses            []SummarizationTriggerClause
 	TriggerTokens             int
 	TriggerMessages           int
 	KeepMessages              int
 	KeepTokens                int
+	KeepFraction              float64
 	HistoryRoot               string
 	MediaRoot                 string
 	OverflowClipTokens        int
@@ -368,13 +373,22 @@ type SummarizationOptions struct {
 	SummaryPrompt             string
 	ArgumentTruncation        *ArgumentTruncationOptions
 	DisableArgumentTruncation bool
+	triggerClauses            []SummarizationTriggerClause
+}
+
+type SummarizationTriggerClause struct {
+	Tokens   int
+	Messages int
+	Fraction float64
 }
 
 type ArgumentTruncationOptions struct {
 	TriggerTokens   int
 	TriggerMessages int
+	TriggerFraction float64
 	KeepTokens      int
 	KeepMessages    int
+	KeepFraction    float64
 	MaxLength       int
 	PreviewLength   int
 	TruncationText  string
@@ -403,10 +417,7 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		prepared := request.Clone()
 		prepared.Messages = truncated
 
-		shouldSummarize := options.TriggerMessages > 0 && len(truncated) >= options.TriggerMessages
-		if options.TriggerTokens > 0 && requestTokenCount(ctx, prepared) >= options.TriggerTokens {
-			shouldSummarize = true
-		}
+		shouldSummarize := summarizationTriggered(options.triggerClauses, len(truncated), requestTokenCount(ctx, prepared), 1)
 		overflow := false
 		if !shouldSummarize {
 			response, callErr := next(ctx, prepared)
@@ -442,19 +453,40 @@ func normalizeSummarizationOptions(options SummarizationOptions) (SummarizationO
 		return SummarizationOptions{}, fmt.Errorf("summarization model is required")
 	}
 	profileWindow := options.Model.Profile().ContextWindow
-	if options.TriggerTokens <= 0 && options.TriggerMessages <= 0 {
+	if len(options.TriggerClauses) == 0 && options.TriggerTokens <= 0 && options.TriggerMessages <= 0 {
 		if profileWindow > 0 {
-			options.TriggerTokens = profileWindow * 85 / 100
+			options.TriggerClauses = []SummarizationTriggerClause{{Fraction: 0.85}}
 		} else {
-			options.TriggerTokens = 170_000
+			options.TriggerClauses = []SummarizationTriggerClause{{Tokens: 170_000}}
 		}
 	}
-	if options.KeepMessages <= 0 && options.KeepTokens <= 0 {
+	clauses := append([]SummarizationTriggerClause(nil), options.TriggerClauses...)
+	if options.TriggerTokens > 0 || options.TriggerMessages > 0 {
+		clauses = append(clauses, SummarizationTriggerClause{Tokens: options.TriggerTokens, Messages: options.TriggerMessages})
+	}
+	for index := range clauses {
+		clause, clauseErr := normalizeSummarizationClause(clauses[index], profileWindow)
+		if clauseErr != nil {
+			return SummarizationOptions{}, fmt.Errorf("summarization trigger clause %d: %w", index, clauseErr)
+		}
+		clauses[index] = clause
+	}
+	options.triggerClauses = clauses
+	if options.KeepMessages <= 0 && options.KeepTokens <= 0 && options.KeepFraction == 0 {
 		if profileWindow > 0 {
-			options.KeepTokens = max(profileWindow/10, 1)
+			options.KeepFraction = 0.10
 		} else {
 			options.KeepMessages = 6
 		}
+	}
+	if options.KeepFraction != 0 {
+		if options.KeepFraction <= 0 || options.KeepFraction > 1 || profileWindow <= 0 {
+			return SummarizationOptions{}, fmt.Errorf("summarization keep fraction requires a model context window and a value in (0, 1]")
+		}
+		if options.KeepMessages > 0 || options.KeepTokens > 0 {
+			return SummarizationOptions{}, fmt.Errorf("summarization keep policy must select messages, tokens, or fraction")
+		}
+		options.KeepTokens = max(int(float64(profileWindow)*options.KeepFraction), 1)
 	}
 	if options.HistoryRoot == "" {
 		options.HistoryRoot = backend.ArtifactPath(options.Backend, "conversation_history")
@@ -473,7 +505,7 @@ func normalizeSummarizationOptions(options SummarizationOptions) (SummarizationO
 	}
 	if options.ArgumentTruncation == nil && !options.DisableArgumentTruncation {
 		if profileWindow > 0 {
-			options.ArgumentTruncation = &ArgumentTruncationOptions{TriggerTokens: profileWindow * 85 / 100, KeepTokens: profileWindow / 10}
+			options.ArgumentTruncation = &ArgumentTruncationOptions{TriggerFraction: 0.85, KeepFraction: 0.10}
 		} else {
 			options.ArgumentTruncation = &ArgumentTruncationOptions{TriggerMessages: 20, KeepMessages: 20}
 		}
@@ -489,15 +521,68 @@ func normalizeSummarizationOptions(options SummarizationOptions) (SummarizationO
 		if settings.TruncationText == "" {
 			settings.TruncationText = "...(argument truncated)"
 		}
-		if settings.TriggerTokens <= 0 && settings.TriggerMessages <= 0 {
-			return SummarizationOptions{}, fmt.Errorf("argument truncation requires a token or message trigger")
+		if settings.TriggerTokens <= 0 && settings.TriggerMessages <= 0 && settings.TriggerFraction == 0 {
+			return SummarizationOptions{}, fmt.Errorf("argument truncation requires a trigger threshold")
 		}
-		if settings.KeepTokens <= 0 && settings.KeepMessages <= 0 {
-			return SummarizationOptions{}, fmt.Errorf("argument truncation requires a token or message keep policy")
+		if settings.TriggerFraction != 0 {
+			if settings.TriggerFraction <= 0 || settings.TriggerFraction > 1 || profileWindow <= 0 || settings.TriggerTokens > 0 || settings.TriggerMessages > 0 {
+				return SummarizationOptions{}, fmt.Errorf("argument truncation trigger fraction requires a model context window, a value in (0, 1], and no other trigger")
+			}
+			settings.TriggerTokens = max(int(float64(profileWindow)*settings.TriggerFraction), 1)
+		}
+		if settings.KeepTokens <= 0 && settings.KeepMessages <= 0 && settings.KeepFraction == 0 {
+			return SummarizationOptions{}, fmt.Errorf("argument truncation requires a keep policy")
+		}
+		if settings.KeepFraction != 0 {
+			if settings.KeepFraction <= 0 || settings.KeepFraction > 1 || profileWindow <= 0 || settings.KeepTokens > 0 || settings.KeepMessages > 0 {
+				return SummarizationOptions{}, fmt.Errorf("argument truncation keep fraction requires a model context window, a value in (0, 1], and no other keep policy")
+			}
+			settings.KeepTokens = max(int(float64(profileWindow)*settings.KeepFraction), 1)
 		}
 		options.ArgumentTruncation = &settings
 	}
 	return options, nil
+}
+
+func normalizeSummarizationClause(clause SummarizationTriggerClause, contextWindow int) (SummarizationTriggerClause, error) {
+	if clause.Tokens < 0 || clause.Messages < 0 {
+		return SummarizationTriggerClause{}, fmt.Errorf("token and message thresholds cannot be negative")
+	}
+	if clause.Fraction != 0 {
+		if clause.Fraction <= 0 || clause.Fraction > 1 || contextWindow <= 0 {
+			return SummarizationTriggerClause{}, fmt.Errorf("fraction requires a model context window and a value in (0, 1]")
+		}
+		fractionTokens := max(int(float64(contextWindow)*clause.Fraction), 1)
+		if clause.Tokens > 0 {
+			clause.Tokens = max(clause.Tokens, fractionTokens)
+		} else {
+			clause.Tokens = fractionTokens
+		}
+		clause.Fraction = 0
+	}
+	if clause.Tokens == 0 && clause.Messages == 0 {
+		return SummarizationTriggerClause{}, fmt.Errorf("at least one threshold is required")
+	}
+	return clause, nil
+}
+
+func summarizationTriggered(clauses []SummarizationTriggerClause, messages, tokens, divisor int) bool {
+	if divisor <= 0 {
+		divisor = 1
+	}
+	for _, clause := range clauses {
+		matched := true
+		if clause.Messages > 0 && messages < max(clause.Messages/divisor, 1) {
+			matched = false
+		}
+		if clause.Tokens > 0 && tokens < max(clause.Tokens/divisor, 1) {
+			matched = false
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 type summarizedModelView struct {
@@ -731,10 +816,7 @@ func SummarizationToolMiddleware(toolOptions SummarizationToolOptions) (agent.Mi
 		}
 		previousEvent, _ := runtime.State.Get(summarizationEventKey)
 		effective := applySummarizationEvent(messages, previousEvent)
-		eligible := options.TriggerMessages > 0 && len(effective) >= max(options.TriggerMessages/2, 1)
-		if options.TriggerTokens > 0 && approximateTokens(effective) >= max(options.TriggerTokens/2, 1) {
-			eligible = true
-		}
+		eligible := summarizationTriggered(options.triggerClauses, len(effective), approximateTokens(effective), 2)
 		if !eligible {
 			return tool.TextResult("Nothing to compact yet — conversation is within the token budget."), nil
 		}
