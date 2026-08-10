@@ -114,6 +114,24 @@ type Tool interface {
 	Execute(ctx context.Context, arguments json.RawMessage, runtime Runtime) (Result, error)
 }
 
+// Alias exposes an existing tool under another model-visible name while
+// preserving its schema, execution authority, runtime injection, and result
+// semantics. It is useful at application boundaries that are migrating a
+// stable tool name onto a canonical implementation.
+func Alias(target Tool, name string) (Tool, error) {
+	if target == nil {
+		return nil, fmt.Errorf("alias tool: target is required")
+	}
+	definition := target.Definition()
+	definition.Name = name
+	if err := definition.Validate(); err != nil {
+		return nil, fmt.Errorf("alias tool: %w", err)
+	}
+	return Func{Spec: definition, Run: func(ctx context.Context, arguments json.RawMessage, runtime Runtime) (Result, error) {
+		return target.Execute(ctx, arguments, runtime)
+	}}, nil
+}
+
 // Func adapts a function to Tool.
 type Func struct {
 	Spec Definition

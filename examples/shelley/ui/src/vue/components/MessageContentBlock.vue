@@ -176,6 +176,7 @@ function componentForTool(toolName: string) {
   switch (toolName) {
     case "bash":
     case "shell":
+    case "execute":
       return BashTool;
     case "patch":
       return PatchTool;
@@ -187,6 +188,8 @@ function componentForTool(toolName: string) {
     case "change_dir":
       return ChangeDirTool;
     case "keyword_search":
+    case "grep":
+    case "glob":
       return KeywordSearchTool;
     case "read_image":
       return ReadImageTool;
@@ -235,7 +238,7 @@ const toolDispatch = computed<{ is: unknown; props: Record<string, unknown> } | 
     const name = c.ToolName || "Unknown Tool";
     const comp = componentForTool(name);
     const base: Record<string, unknown> = { toolInput: c.ToolInput, isRunning: true };
-    if (name === "bash" || name === "shell") {
+    if (name === "bash" || name === "shell" || name === "execute") {
       base.streamingOutput = streamingOutput.value;
     }
     if (name === "patch") {

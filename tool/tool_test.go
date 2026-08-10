@@ -46,6 +46,27 @@ func TestFuncDefinitionDeepClonesExtras(t *testing.T) {
 	}
 }
 
+func TestAliasPreservesSchemaAndDelegatesRuntime(t *testing.T) {
+	target := Func{Spec: Definition{
+		Name: "execute", Description: "Run a command.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`),
+	}, Run: func(_ context.Context, raw json.RawMessage, runtime Runtime) (Result, error) {
+		return TextResult(runtime.CallID + ":" + string(raw)), nil
+	}}
+	alias, err := Alias(target, "bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := alias.Definition()
+	if definition.Name != "bash" || !strings.Contains(string(definition.InputSchema), "command") {
+		t.Fatalf("alias definition = %#v", definition)
+	}
+	result, err := alias.Execute(context.Background(), json.RawMessage(`{"command":"pwd"}`), Runtime{CallID: "call-1"})
+	if err != nil || result.Content[0].Text != `call-1:{"command":"pwd"}` {
+		t.Fatalf("alias result = %#v, %v", result, err)
+	}
+}
+
 func TestStructuredDecodesAndInjectsRuntime(t *testing.T) {
 	type input struct {
 		Key string `json:"key"`

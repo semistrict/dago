@@ -45,8 +45,12 @@ export function toolEmoji(name: string | undefined | null, input?: unknown): str
   switch (name) {
     case "bash":
     case "shell":
+    case "execute":
       return "🛠️";
     case "patch":
+    case "write_file":
+    case "edit_file":
+    case "delete":
       return "🖋️";
     case "screenshot":
     case "browser_take_screenshot":
@@ -60,7 +64,12 @@ export function toolEmoji(name: string | undefined | null, input?: unknown): str
     case "subagent":
       return "⚡";
     case "keyword_search":
+    case "grep":
+    case "glob":
       return "🔍";
+    case "ls":
+    case "read_file":
+      return "📄";
     case "browser_recent_console_logs":
     case "browser_clear_console_logs":
       return "📋";
@@ -102,7 +111,15 @@ export const HEADLINE_BUDGET_NARROW = 24;
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
   bash: "Shell command",
   shell: "Shell command",
+  execute: "Shell command",
   patch: "File edit",
+  write_file: "Write file",
+  edit_file: "Edit file",
+  delete: "Delete file",
+  ls: "List files",
+  read_file: "Read file",
+  glob: "Find files",
+  grep: "Search files",
   change_dir: "Change directory",
   read_image: "Read image",
   keyword_search: "Keyword search",
@@ -354,8 +371,13 @@ export function toolHeadline(
   switch (n) {
     case "bash":
     case "shell":
+    case "execute":
       return bashHeadline(summary, maxLen);
     case "patch":
+    case "write_file":
+    case "edit_file":
+    case "delete":
+    case "read_file":
       return summary ? basename(summary) : n;
     case "change_dir":
       return summary || n;
@@ -364,6 +386,8 @@ export function toolHeadline(
     case "read_image":
     case "browser_navigate":
     case "keyword_search":
+    case "grep":
+    case "glob":
       return summary || n;
     default: {
       if (!summary) return n;
@@ -389,9 +413,17 @@ function inputSummary(name: string | undefined | null, input: unknown): string {
   switch (name) {
     case "bash":
     case "shell":
+    case "execute":
       return pick("command");
     case "patch":
     case "change_dir":
+      return pick("path");
+    case "write_file":
+    case "edit_file":
+    case "delete":
+    case "read_file":
+      return pick("file_path");
+    case "ls":
       return pick("path");
     case "screenshot":
     case "browser_take_screenshot":
@@ -401,8 +433,10 @@ function inputSummary(name: string | undefined | null, input: unknown): string {
     case "browser_navigate":
       return pick("url");
     case "keyword_search":
+    case "grep":
+    case "glob":
     case "web_search":
-      return pick("query");
+      return pick("query", "pattern");
     case "subagent":
       return pick("slug", "prompt");
     case "llm_one_shot": {

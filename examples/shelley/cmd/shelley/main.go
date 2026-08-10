@@ -411,6 +411,7 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 		LLMProvider:          llmProvider,
 		EnableJITInstall:     claudetool.EnableBashToolJITInstall,
 		EnableBrowser:        true,
+		EnableDagoHarness:    true,
 		BuildAvailableModels: buildAvailableModels,
 	}
 }

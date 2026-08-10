@@ -1845,6 +1845,7 @@ func (cm *ConversationManager) ensureLoop(chat dmodel.Chat, modelID string) erro
 	toolSetConfig.ToolOverrides = conversationOpts.ToolOverrides
 	toolSetConfig.DisableAllTools = conversationOpts.DisableAllTools
 	toolSetConfig.ReasoningLevel = conversationOpts.ThinkingLevel
+	toolSetConfig.EnableDagoHarness = true
 	toolSet := claudetool.NewToolSet(processCtx, toolSetConfig)
 
 	// streamFlusher batches LLM stream deltas and flushes them periodically
@@ -1883,6 +1884,7 @@ func (cm *ConversationManager) ensureLoop(chat dmodel.Chat, modelID string) erro
 		ThreadID:          conversationID,
 		Namespace:         checkpointNamespace,
 		EnableDagoHarness: true,
+		FilesystemTools:   toolSet.FilesystemTools(),
 	})
 
 	cm.mu.Lock()

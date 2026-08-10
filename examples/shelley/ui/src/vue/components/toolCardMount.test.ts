@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { toolCardPlaceholderKind } from "./toolCardMount";
 
 assert.equal(toolCardPlaceholderKind("bash"), "bash");
+assert.equal(toolCardPlaceholderKind("execute"), "bash");
 assert.equal(toolCardPlaceholderKind("patch"), "patch");
 assert.equal(toolCardPlaceholderKind("output_iframe"), "output-iframe");
 assert.equal(toolCardPlaceholderKind("browser", { action: "screenshot" }), "media");

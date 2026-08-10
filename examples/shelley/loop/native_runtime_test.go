@@ -105,10 +105,13 @@ func (*harnessSurfaceChat) Invoke(_ context.Context, request dmodel.Request) (dm
 	for _, definition := range request.Tools {
 		names[definition.Name] = true
 	}
-	for _, required := range []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute", "task", "compact_conversation"} {
+	for _, required := range []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute", "compact_conversation"} {
 		if !names[required] {
 			return dmodel.Response{}, fmt.Errorf("missing Dago harness tool %q", required)
 		}
+	}
+	if names["task"] {
+		return dmodel.Response{}, fmt.Errorf("generic task tool overlaps Shelley's Dago-owned conversation subagent")
 	}
 	return dmodel.Response{Message: dmessage.Assistant("done")}, nil
 }

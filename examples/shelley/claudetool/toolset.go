@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	dago "github.com/semistrict/dago"
+	dbackend "github.com/semistrict/dago/backend"
 	dmodel "github.com/semistrict/dago/model"
 	dtool "github.com/semistrict/dago/tool"
 
@@ -93,6 +95,10 @@ type ToolSetConfig struct {
 	ToolOverrides map[string]string
 	// DisableAllTools disables every tool by default; ToolOverrides with "on" re-enable.
 	DisableAllTools bool
+	// EnableDagoHarness delegates shell, file editing, and file discovery to
+	// Dago's canonical filesystem middleware instead of registering Shelley's
+	// overlapping bash, patch, and keyword-search executables.
+	EnableDagoHarness bool
 }
 
 // ToolSet holds a set of tools for a single conversation.
@@ -100,6 +106,7 @@ type ToolSetConfig struct {
 type ToolSet struct {
 	definitions []dtool.Definition
 	nativeTools []dtool.Tool
+	filesystem  []string
 	cleanup     func()
 	wd          *MutableWorkingDir
 }
@@ -113,6 +120,17 @@ func (ts *ToolSet) Tools() []dtool.Definition {
 // callers from changing the tool set after construction.
 func (ts *ToolSet) NativeTools() []dtool.Tool {
 	return append([]dtool.Tool(nil), ts.nativeTools...)
+}
+
+// FilesystemTools returns the canonical Dago filesystem tool names selected by
+// Shelley's user-facing tool settings.
+func (ts *ToolSet) FilesystemTools() []string {
+	if ts.filesystem == nil {
+		return nil
+	}
+	result := make([]string, len(ts.filesystem))
+	copy(result, ts.filesystem)
+	return result
 }
 
 // Cleanup releases resources held by the tools (e.g., browser).
@@ -160,23 +178,6 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	env := cfg.Env
 	env.ConversationID = cfg.ConversationID
 
-	bashTool := &BashTool{
-		WorkingDir:       wd,
-		LLMProvider:      cfg.LLMProvider,
-		EnableJITInstall: cfg.EnableJITInstall,
-		Env:              env,
-	}
-
-	// Use simplified patch schema for weaker models, full schema for sonnet/opus
-	simplified := !isStrongModel(cfg.ModelID)
-	patchTool := &PatchTool{
-		Simplified:       simplified,
-		WorkingDir:       wd,
-		ClipboardEnabled: true,
-	}
-
-	keywordTool := NewKeywordToolWithWorkingDir(cfg.LLMProvider, wd)
-
 	changeDirTool := &ChangeDirTool{
 		WorkingDir: wd,
 		OnChange:   cfg.OnWorkingDirChange,
@@ -184,17 +185,31 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 
 	outputIframeTool := &OutputIframeTool{WorkingDir: wd}
 
-	shellTool := &ShellTool{
-		WorkingDir:       wd,
-		LLMProvider:      cfg.LLMProvider,
-		EnableJITInstall: cfg.EnableJITInstall,
-		Env:              env,
-		BackgroundCtx:    ctx,
-	}
-
-	nativeTools := []dtool.Tool{
-		bashTool.NativeTool(), shellTool.NativeTool(), patchTool.NativeTool(),
-		keywordTool.NativeTool(), changeDirTool.NativeTool(), outputIframeTool.NativeTool(),
+	var nativeTools []dtool.Tool
+	var filesystemTools []string
+	if cfg.EnableDagoHarness {
+		nativeTools = append(nativeTools, changeDirTool.NativeTool(), outputIframeTool.NativeTool())
+		filesystemTools = selectedDagoFilesystemTools(cfg.ToolOverrides, cfg.DisableAllTools)
+		// Shelley's yielding shell remains an application-specific opt-in. The
+		// ordinary command path is Dago's execute tool.
+		if IsToolEnabled("shell", cfg.ToolOverrides, cfg.DisableAllTools) {
+			nativeTools = append(nativeTools, (&ShellTool{
+				WorkingDir: wd, LLMProvider: cfg.LLMProvider, EnableJITInstall: cfg.EnableJITInstall,
+				Env: env, BackgroundCtx: ctx,
+			}).NativeTool())
+		}
+	} else {
+		bashTool := &BashTool{WorkingDir: wd, LLMProvider: cfg.LLMProvider, EnableJITInstall: cfg.EnableJITInstall, Env: env}
+		patchTool := &PatchTool{Simplified: !isStrongModel(cfg.ModelID), WorkingDir: wd, ClipboardEnabled: true}
+		keywordTool := NewKeywordToolWithWorkingDir(cfg.LLMProvider, wd)
+		shellTool := &ShellTool{
+			WorkingDir: wd, LLMProvider: cfg.LLMProvider, EnableJITInstall: cfg.EnableJITInstall,
+			Env: env, BackgroundCtx: ctx,
+		}
+		nativeTools = append(nativeTools,
+			bashTool.NativeTool(), shellTool.NativeTool(), patchTool.NativeTool(), keywordTool.NativeTool(),
+			changeDirTool.NativeTool(), outputIframeTool.NativeTool(),
+		)
 	}
 
 	// Build the available models list (shared by subagent and llm_one_shot tools).
@@ -273,6 +288,9 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	for _, item := range nativeTools {
 		definitions = append(definitions, item.Definition())
 	}
+	if cfg.EnableDagoHarness {
+		definitions = append(definitions, dagoFilesystemDefinitions(workingDir, filesystemTools)...)
+	}
 
 	// Add provider-hosted tools to display metadata. They are configured on the
 	// model and are not dispatched through the local tool executor.
@@ -288,7 +306,53 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	return &ToolSet{
 		definitions: definitions,
 		nativeTools: nativeTools,
+		filesystem:  filesystemTools,
 		cleanup:     cleanup,
 		wd:          wd,
 	}
+}
+
+func selectedDagoFilesystemTools(overrides map[string]string, disableAll bool) []string {
+	aliases := map[string]string{
+		"execute":    "bash",
+		"write_file": "patch", "edit_file": "patch", "delete": "patch",
+		"glob": "keyword_search", "grep": "keyword_search",
+	}
+	names := []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+	selected := make([]string, 0, len(names))
+	for _, name := range names {
+		if value, exists := overrides[name]; exists && (value == "on" || value == "off") {
+			if value == "on" {
+				selected = append(selected, name)
+			}
+			continue
+		}
+		alias := aliases[name]
+		if alias != "" {
+			if IsToolEnabled(alias, overrides, disableAll) {
+				selected = append(selected, name)
+			}
+			continue
+		}
+		if !disableAll {
+			selected = append(selected, name)
+		}
+	}
+	return selected
+}
+
+func dagoFilesystemDefinitions(root string, names []string) []dtool.Definition {
+	files, err := dbackend.NewLocalShell(dbackend.LocalShellOptions{Filesystem: dbackend.FilesystemOptions{Root: root}})
+	if err != nil {
+		return nil
+	}
+	middleware, err := dago.FilesystemMiddleware(dago.FilesystemOptions{Backend: files, Tools: names})
+	if err != nil {
+		return nil
+	}
+	result := make([]dtool.Definition, 0, len(middleware.Tools))
+	for _, executable := range middleware.Tools {
+		result = append(result, executable.Definition())
+	}
+	return result
 }

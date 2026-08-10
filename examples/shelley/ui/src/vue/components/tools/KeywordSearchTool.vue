@@ -78,10 +78,10 @@ const query = computed(() => {
   if (
     typeof ti === "object" &&
     ti !== null &&
-    "query" in ti &&
-    typeof (ti as { query: unknown }).query === "string"
+    ("query" in ti || "pattern" in ti) &&
+    typeof ((ti as { query?: unknown }).query ?? (ti as { pattern?: unknown }).pattern) === "string"
   ) {
-    return (ti as { query: string }).query;
+    return ((ti as { query?: string }).query ?? (ti as { pattern?: string }).pattern) || "";
   }
   return "";
 });

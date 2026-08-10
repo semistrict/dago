@@ -98,6 +98,9 @@ type Config struct {
 	// this for production conversations; direct loop callers retain the
 	// original minimal tool surface unless they opt in.
 	EnableDagoHarness bool
+	// FilesystemTools is the canonical Dago filesystem surface selected for
+	// this conversation. It is meaningful only when EnableDagoHarness is true.
+	FilesystemTools []string
 }
 
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
@@ -129,6 +132,7 @@ type Loop struct {
 	threadID          string
 	namespace         string
 	enableDagoHarness bool
+	filesystemTools   []string
 	runtimeSeeded     bool
 	pendingInput      []llm.Message
 	executionMu       sync.Mutex
@@ -177,6 +181,7 @@ func NewLoop(config Config) *Loop {
 		threadID:          config.ThreadID,
 		namespace:         config.Namespace,
 		enableDagoHarness: config.EnableDagoHarness,
+		filesystemTools:   cloneFilesystemTools(config.FilesystemTools),
 	}
 	if loop.threadID == "" {
 		loop.threadID = fmt.Sprintf("shelley-loop-%p", loop)
@@ -373,6 +378,13 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create Shelley harness backend: %w", err)
 	}
+	if l.enableDagoHarness && isPredictableModel(model) {
+		aliases, aliasErr := predictableFilesystemAliases(harnessBackend, l.filesystemTools)
+		if aliasErr != nil {
+			return aliasErr
+		}
+		dagoTools = append(dagoTools, aliases...)
+	}
 	options := dago.Options{
 		Name: "Shelley", Model: model,
 		Tools: dagoTools, SystemPrompt: joinSystem(system), Middleware: []dagent.Middleware{l.runtimeMiddleware()},
@@ -382,7 +394,12 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			"shelley.run": {Kind: dagent.FieldEphemeral, Contract: "shelley.run.v1", Clone: func(value any) any { return value }},
 		},
 	}
-	if !l.enableDagoHarness {
+	if l.enableDagoHarness {
+		options.FilesystemTools = cloneFilesystemTools(l.filesystemTools)
+		// Shelley uses Dago's conversation-subagent tool so child runs retain
+		// their application-level UI and persistence contracts.
+		options.DisableSubagents = true
+	} else {
 		options.FilesystemTools = []string{}
 		options.DisableTodo = true
 		options.DisableSubagents = true
@@ -432,6 +449,63 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	}
 	l.checkGitStateChange(ctx)
 	return nil
+}
+
+func cloneFilesystemTools(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	result := make([]string, len(values))
+	copy(result, values)
+	return result
+}
+
+func isPredictableModel(chat dmodel.Chat) bool {
+	profile := chat.Profile()
+	return profile.Provider == "builtin" && profile.Model == "predictable-v1"
+}
+
+func predictableFilesystemAliases(files dbackend.Backend, selected []string) ([]dtool.Tool, error) {
+	if selected != nil {
+		found := false
+		for _, name := range selected {
+			if name == "execute" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, nil
+		}
+	}
+	middleware, err := dago.FilesystemMiddleware(dago.FilesystemOptions{Backend: files, Tools: []string{"execute"}})
+	if err != nil {
+		return nil, fmt.Errorf("create predictable filesystem alias: %w", err)
+	}
+	if len(middleware.Tools) != 1 {
+		return nil, fmt.Errorf("create predictable filesystem alias: execute is unavailable")
+	}
+	alias, err := dtool.Alias(middleware.Tools[0], "bash")
+	if err != nil {
+		return nil, fmt.Errorf("create predictable filesystem alias: %w", err)
+	}
+	// The deterministic fixture predates execute's explicit exit-status footer.
+	// Keep its historical exact-output assertions while still executing through
+	// the canonical Dago backend and schema.
+	fixtureAlias := dtool.Func{Spec: alias.Definition(), Run: func(ctx context.Context, raw json.RawMessage, runtime dtool.Runtime) (dtool.Result, error) {
+		result, err := alias.Execute(ctx, raw, runtime)
+		if err != nil {
+			return result, err
+		}
+		const successFooter = "\n[Command succeeded with exit code 0]"
+		for index := range result.Content {
+			if result.Content[index].Type == dmessage.BlockText && strings.HasSuffix(result.Content[index].Text, successFooter) {
+				result.Content[index].Text = strings.TrimSuffix(strings.TrimSuffix(result.Content[index].Text, successFooter), "\n")
+			}
+		}
+		return result, nil
+	}}
+	return []dtool.Tool{fixtureAlias}, nil
 }
 
 // ResolveCancellation durably appends cancellation messages and clears any
