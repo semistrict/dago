@@ -715,6 +715,9 @@ consumers cannot leak goroutines or silently lose terminal errors.
 - [x] Keep provider-specific compatibility shims isolated and optional.
 - [x] Register the applicable built-in Anthropic harness overlays and
   OpenAI/NVIDIA/OpenRouter construction defaults before user layering.
+- [x] Port the Nemotron 3 Ultra model profiles, prompt/tool overrides, textual
+  tool-call repair, scoped retries, progress budgets, policy nudges, entity binding,
+  follow-up discipline, and final-answer completeness guards.
 
 Exit gate: core behavior is provider-neutral, selected adapters pass the same model
 contract, and profile behavior is reproducible from fixtures.

@@ -22,7 +22,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Declarative and precompiled subagents, isolation, state propagation, and nested approval resume | verified | root and agent tests |
 | Summarization, offload, and compaction | verified | threshold, valid-cutoff, thread-aware offload, and state-update tests |
 | Skills and memory prompt injection | verified | safe YAML, deterministic discovery, warning, ordering, and prompt tests |
-| Provider and harness profiles | verified | built-in Anthropic harness and OpenAI/NVIDIA/OpenRouter construction overlays; additive registration, provider/exact resolution, hook/factory chaining, option precedence, prompt composition, exclusions, and worker overrides |
+| Provider and harness profiles | verified | built-in Anthropic and Nemotron harness overlays plus OpenAI/NVIDIA/OpenRouter construction defaults; active repair, retry, budget, policy, entity, follow-up, and final-answer contracts; additive registration and override tests |
 | Token/update/task/interrupt/custom streaming | verified | graph, agent, and provider stream tests |
 | API-key and subscription OAuth model access | verified | request, PKCE, refresh, persistence, and stream tests |
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
@@ -44,6 +44,9 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
   credentials from another application are never discovered or copied.
 - Python's in-process ASGI transport for remote subagents is not applicable in Go;
   async subagents require an HTTP URL or a caller-supplied runner.
+- Python package-version inspection is not applied to Go provider adapters. Canonical
+  Dago messages already preserve tool-call and tool-result identity, so the Nemotron
+  pre-serialization compatibility layer is an explicit no-op at the core boundary.
 - Parent-graph commands and a public general-purpose graph builder are deferred. The
   internal command/send surface implements only the routing used by the agent factory.
 - Video decoding is an opt-in extractor capability. The supplied FFmpeg adapter is

@@ -80,6 +80,12 @@ available when the caller needs a completely custom graph. Human approval, inclu
 approval inside a subagent, requires a checkpoint saver so the exact pending tool call
 can resume without replaying completed sibling tools.
 
+Applicable built-in harness profiles resolve from the model's provider and identifier.
+They include Anthropic prompt overlays and the full Nemotron 3 Ultra repair, retry,
+progress-budget, tool-selection, entity-resolution, and answer-completeness stack.
+Provider construction defaults for OpenAI, NVIDIA, and OpenRouter can be layered with
+caller registrations through `ApplyProviderProfile`.
+
 ## OpenAI adapter
 
 The focused Responses API adapter supports text and multimodal messages, tool calls,
