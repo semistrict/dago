@@ -17,6 +17,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Bidirectional Python payload fixtures | verified | SQLite and PostgreSQL are generated, read, and continued in both directions |
 | State, memory, store, filesystem, composite, local shell | verified | shared backend and thread-scoped delta-state tests |
 | LangSmith remote sandbox | verified | SDK adapter tests; live test is credential-gated |
+| Context Hub persistent agent repository | verified | lazy pull, commit chaining, linked entries, cache recovery, batch transfer, and LangSmith SDK transport tests |
 | Filesystem tools and permission approval | verified | root vertical-slice tests |
 | Declarative and precompiled subagents, isolation, state propagation, and nested approval resume | verified | root and agent tests |
 | Summarization, offload, and compaction | verified | threshold, valid-cutoff, thread-aware offload, and state-update tests |

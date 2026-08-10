@@ -123,6 +123,7 @@ records are rejected with typed context instead of reconstructed.
 | `model/modeltest` | Scripted and prompt-driven predictable model doubles for offline tests and examples |
 | `backend` | State, memory, host filesystem, namespaced store, composite, and explicit local-shell backends |
 | `backend/langsmith` | Adapter for an existing LangSmith sandbox using `langsmith-go` |
+| `backend/contexthub` | Persistent Context Hub agent-repository files with linked-entry and parent-commit support |
 | `checkpoint` | Saver contract and in-memory implementation |
 | `checkpoint/sqlite`, `checkpoint/postgres` | Python-schema-compatible durable savers |
 | `store`, `store/sqlite`, `cache` | Namespaced data store and cache contracts and implementations |

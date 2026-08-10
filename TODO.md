@@ -14,9 +14,10 @@ by the evidence summarized in `docs/COMPATIBILITY.md`.
 ## Implementation status
 
 The core port is implemented: public Deep Agent construction, the focused agent and
-graph substrate, mandatory delta channels, state/filesystem/store/composite/shell and
-LangSmith backends, SQLite and PostgreSQL savers, safe cross-language checkpoint
-fixtures, middleware features, OpenAI access, examples, and release gates.
+graph substrate, mandatory delta channels, state/filesystem/store/composite/shell,
+LangSmith sandbox, and Context Hub backends, SQLite and PostgreSQL savers, safe
+cross-language checkpoint fixtures, middleware features, OpenAI access, examples,
+and release gates.
 
 The following integrations were deliberately evaluated and deferred because they are
 not required by the pinned local Deep Agents contract: a public general-purpose graph
@@ -721,7 +722,8 @@ contract, and profile behavior is reproducible from fixtures.
 - [x] Defer video decoding and heavy media dependencies. Video/file blocks and
   backend offload remain supported as opaque media records.
 - [x] Keep hosted sandbox, tracing, context-hub, and deployment integrations as
-  separate adapters; include only the existing LangSmith sandbox connector.
+  separate adapters; include the LangSmith sandbox and persistent Context Hub
+  connectors without making either a core runtime dependency.
 - [x] Keep ACP and a general CLI downstream. Include Shelley as an end-to-end example
   application with its own documented single-user security boundary.
 - [x] Port only the evaluation scenarios needed to measure agent quality and parity;
