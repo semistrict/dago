@@ -140,9 +140,10 @@ type ToolBatchRequest struct {
 // ToolBatchResponse may edit calls, synthesize rejected-call messages, or interrupt
 // the graph. Calls omitted from the response keep their original value.
 type ToolBatchResponse struct {
-	Calls     []message.ToolCall
-	Messages  []message.Message
-	Interrupt *Interrupt
+	Calls          []message.ToolCall
+	Messages       []message.Message
+	Interrupt      *Interrupt
+	ResumeConsumed bool
 }
 
 type ToolBatchHook func(context.Context, ToolBatchRequest) (ToolBatchResponse, error)

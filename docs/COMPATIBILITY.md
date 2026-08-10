@@ -18,7 +18,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | State, memory, store, filesystem, composite, local shell | verified | shared backend and thread-scoped delta-state tests |
 | LangSmith remote sandbox | verified | SDK adapter tests; live test is credential-gated |
 | Filesystem tools and permission approval | verified | root vertical-slice tests |
-| Inline subagents and isolation | verified | root tests |
+| Declarative and precompiled subagents, isolation, state propagation, and nested approval resume | verified | root and agent tests |
 | Summarization, offload, and compaction | verified | threshold, valid-cutoff, thread-aware offload, and state-update tests |
 | Skills and memory prompt injection | verified | safe YAML, deterministic discovery, warning, ordering, and prompt tests |
 | Token/update/task/interrupt/custom streaming | verified | graph, agent, and provider stream tests |

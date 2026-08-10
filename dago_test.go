@@ -272,7 +272,7 @@ func TestSubagentTaskUsesIsolatedInput(t *testing.T) {
 		}
 		return nil
 	}, Response: model.Response{Message: message.Assistant("parent done")}})
-	compiled, err := New(Options{Model: parentModel, Subagents: []Subagent{{Name: "special", Description: "Specialized", Runnable: child}}, DisableSummary: true})
+	compiled, err := New(Options{Model: parentModel, Subagents: []Subagent{{Name: "special", Description: "Specialized", Runnable: child, InheritedState: []string{agent.MessagesKey}}}, DisableSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,6 +282,157 @@ func TestSubagentTaskUsesIsolatedInput(t *testing.T) {
 	}
 	if result.Messages[len(result.Messages)-1].TextContent() != "parent done" {
 		t.Fatal("parent did not finish")
+	}
+}
+
+func TestDeclarativeSubagentInheritsToolsAndUsesOwnModelAndPrompt(t *testing.T) {
+	lookup := tool.Func{Spec: tool.Definition{Name: "lookup", Description: "look up a value", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		return tool.TextResult("lookup result"), nil
+	}}
+	childModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Check: func(request model.Request) error {
+			if request.Messages[0].Role != message.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "specialist instructions") {
+				return errors.New("declarative system prompt missing")
+			}
+			if request.Messages[len(request.Messages)-1].TextContent() != "research this" {
+				return errors.New("parent conversation leaked into declarative subagent")
+			}
+			names := map[string]bool{}
+			for _, definition := range request.Tools {
+				names[definition.Name] = true
+			}
+			if !names["lookup"] || names["task"] {
+				return fmt.Errorf("declarative tools = %#v", names)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "lookup-1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if request.Messages[len(request.Messages)-1].TextContent() != "lookup result" {
+				return errors.New("inherited tool result missing")
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("child complete")}},
+	)
+	parentModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "delegate-declarative", Name: "task", Arguments: json.RawMessage(`{"description":"research this","subagent_type":"specialist"}`)}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if request.Messages[len(request.Messages)-1].TextContent() != "child complete" {
+				return errors.New("declarative result missing")
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("parent complete")}},
+	)
+	compiled, err := New(Options{
+		Model: parentModel, Tools: []tool.Tool{lookup}, DisableSummary: true,
+		Subagents: []Subagent{{
+			Name: "specialist", Description: "Research specialist", SystemPrompt: "specialist instructions", Model: childModel,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("parent context")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "parent complete" {
+		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
+func TestDeclarativeSubagentPropagatesNonMessageState(t *testing.T) {
+	files, err := backend.NewState("", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "declarative-write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/declarative.txt","content":"from declarative child"}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("created")}},
+	)
+	parentModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "delegate-writer", Name: "task", Arguments: json.RawMessage(`{"description":"create a file","subagent_type":"writer"}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "read-written", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/declarative.txt"}`)}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "from declarative child") {
+				return errors.New("declarative state update was not propagated")
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("done")}},
+	)
+	parent, err := New(Options{
+		Model: parentModel, Backend: files, DisableSummary: true,
+		Subagents: []Subagent{{
+			Name: "writer", Description: "Writes files", SystemPrompt: "Write the requested file.", Model: childModel,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := parent.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("parent-only context")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "done" {
+		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
+func TestDeclarativeSubagentApprovalInterruptResumesChild(t *testing.T) {
+	dangerRuns := 0
+	danger := tool.Func{Spec: tool.Definition{Name: "danger", Description: "dangerous child action", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		dangerRuns++
+		return tool.TextResult("ran"), nil
+	}}
+	childModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "child-danger", Name: "danger", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("child approved")}},
+	)
+	parentModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "delegate-approval", Name: "task", Arguments: json.RawMessage(`{"description":"perform action","subagent_type":"operator"}`)}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if request.Messages[len(request.Messages)-1].TextContent() != "child approved" {
+				return errors.New("resumed child result missing")
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("parent done")}},
+	)
+	saver := checkpoint.NewMemorySaver()
+	compiled, err := New(Options{
+		Model: parentModel, Tools: []tool.Tool{danger}, Saver: saver, DisableSummary: true,
+		InterruptOn: []agent.ApprovalRule{{Pattern: "danger", Description: "Allow danger?"}},
+		Subagents: []Subagent{{
+			Name: "operator", Description: "Performs approved actions", SystemPrompt: "Perform the action.", Model: childModel,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := checkpoint.Config{ThreadID: "nested-approval"}
+	paused, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("delegate")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paused.Interrupts) != 1 || dangerRuns != 0 {
+		t.Fatalf("paused = %#v, danger runs = %d", paused.Interrupts, dangerRuns)
+	}
+	resumed, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Resume: agent.ApprovalResponse{Decisions: map[string]agent.ApprovalChoice{
+		"child-danger": {Decision: agent.ApprovalApprove},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dangerRuns != 1 || resumed.Messages[len(resumed.Messages)-1].TextContent() != "parent done" {
+		t.Fatalf("danger runs = %d, messages = %#v", dangerRuns, resumed.Messages)
+	}
+}
+
+func TestApprovalConfigurationRequiresCheckpointer(t *testing.T) {
+	_, err := New(Options{
+		Model: modeltest.New(model.Profile{}), DisableSubagents: true, DisableSummary: true,
+		InterruptOn: []agent.ApprovalRule{{Pattern: "danger"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "checkpointer") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

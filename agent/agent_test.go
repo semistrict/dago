@@ -503,6 +503,57 @@ func TestHumanApprovalPausesBeforeAnyToolAndResumesAllDecisions(t *testing.T) {
 	}
 }
 
+func TestToolInterruptCheckpointsCompletedSiblingBeforeResume(t *testing.T) {
+	var siblingRuns atomic.Int32
+	interrupting := tool.Func{
+		Spec: tool.Definition{Name: "interrupting", Description: "Interrupt once", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(_ context.Context, _ json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
+			if runtime.Resume == nil {
+				return tool.Result{Interrupt: &tool.Interrupt{ID: "review", Value: "continue?"}}, nil
+			}
+			return tool.TextResult("resumed"), nil
+		},
+	}
+	sibling := tool.Func{
+		Spec: tool.Definition{Name: "sibling", Description: "Side effect", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+			siblingRuns.Add(1)
+			return tool.TextResult("sibling done"), nil
+		},
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+			{ID: "interrupt-call", Name: "interrupting", Arguments: json.RawMessage(`{}`)},
+			{ID: "sibling-call", Name: "sibling", Arguments: json.RawMessage(`{}`)},
+		}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if request.Messages[len(request.Messages)-2].TextContent() != "resumed" || request.Messages[len(request.Messages)-1].TextContent() != "sibling done" {
+				return fmt.Errorf("tool results = %#v", request.Messages)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := New(Options{Model: script, Tools: []tool.Tool{interrupting, sibling}, Saver: checkpoint.NewMemorySaver()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := checkpoint.Config{ThreadID: "tool-interrupt-sibling"}
+	paused, err := compiled.Invoke(context.Background(), Input{Config: config, Messages: []message.Message{message.Human("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paused.Interrupts) != 1 || siblingRuns.Load() != 1 {
+		t.Fatalf("paused = %#v, sibling runs = %d", paused.Interrupts, siblingRuns.Load())
+	}
+	resumed, err := compiled.Invoke(context.Background(), Input{Config: config, Resume: "approved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Interrupts) != 0 || siblingRuns.Load() != 1 || resumed.Messages[len(resumed.Messages)-1].TextContent() != "done" {
+		t.Fatalf("resumed = %#v, sibling runs = %d", resumed, siblingRuns.Load())
+	}
+}
+
 func TestToolRetryAndTodoMiddleware(t *testing.T) {
 	var calls atomic.Int32
 	flaky := tool.Func{

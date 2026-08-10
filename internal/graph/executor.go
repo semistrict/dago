@@ -84,9 +84,25 @@ func (graph *Compiled) Invoke(ctx context.Context, invocation Invocation) (Execu
 
 		interrupts := collectInterrupts(results)
 		if len(interrupts) > 0 {
+			updates := make([]state.Values, len(results))
+			for index, result := range results {
+				if result.command.Interrupt == nil || len(result.command.Update) == 0 {
+					continue
+				}
+				updates[index] = result.command.Update
+				if graph.options.Saver != nil {
+					if err := graph.options.Saver.PutWrites(ctx, current, result.task.id, result.task.path, stateWrites(result.command.Update)); err != nil {
+						return Execution{}, err
+					}
+				}
+			}
+			overwrites, err := machine.apply(updates)
+			if err != nil {
+				return Execution{}, err
+			}
 			current, metadata, err = graph.persist(ctx, current, checkpoint.Checkpoint{}, machine, tasks, MetadataInput{
 				Source: "loop", Step: metadata.Step + 1, Interrupts: interrupts,
-				PreviousMetadata: metadata,
+				Updated: updatedKeys(updates), Overwrites: overwrites, PreviousMetadata: metadata,
 			})
 			if err != nil {
 				return Execution{}, err

@@ -69,12 +69,22 @@ type StreamWriter interface {
 // JSON arguments.
 type Runtime struct {
 	CallID       string
+	TaskID       string
 	ThreadID     string
+	Namespace    string
 	CheckpointID string
+	Resume       any
 	State        StateReader
 	Store        store.Store
 	Stream       StreamWriter
 	Context      any
+}
+
+// Interrupt pauses the containing agent before a tool result is committed.
+// Resuming the agent re-enters the tool with Runtime.Resume populated.
+type Interrupt struct {
+	ID    string
+	Value any
 }
 
 // Result is normalized tool output. Update is merged into graph state by reducers;
@@ -84,6 +94,7 @@ type Result struct {
 	Artifact   json.RawMessage         `json:"artifact,omitempty"`
 	OtherUsage []message.PurposedUsage `json:"other_usage,omitempty"`
 	Update     map[string]any          `json:"-"`
+	Interrupt  *Interrupt              `json:"-"`
 }
 
 // TextResult creates a text-only tool result.
@@ -141,6 +152,10 @@ func (result Result) Clone() Result {
 		}
 	}
 	copy.Artifact = cloneRaw(result.Artifact)
+	if result.Interrupt != nil {
+		interrupt := *result.Interrupt
+		copy.Interrupt = &interrupt
+	}
 	copy.OtherUsage = append([]message.PurposedUsage{}, result.OtherUsage...)
 	for index := range copy.OtherUsage {
 		copy.OtherUsage[index].InputDetails = cloneMap(result.OtherUsage[index].InputDetails)

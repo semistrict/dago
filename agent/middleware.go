@@ -201,7 +201,7 @@ func HumanApproval(rules []ApprovalRule) Middleware {
 				return ToolBatchResponse{}, fmt.Errorf("human approval decision %q is invalid", choice.Decision)
 			}
 		}
-		return ToolBatchResponse{Calls: calls, Messages: rejected}, nil
+		return ToolBatchResponse{Calls: calls, Messages: rejected, ResumeConsumed: true}, nil
 	}}
 }
 

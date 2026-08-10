@@ -431,7 +431,7 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission)
 				return agent.ToolBatchResponse{}, fmt.Errorf("invalid filesystem approval decision %q", choice.Decision)
 			}
 		}
-		return agent.ToolBatchResponse{Calls: calls, Messages: rejected}, nil
+		return agent.ToolBatchResponse{Calls: calls, Messages: rejected, ResumeConsumed: true}, nil
 	}
 }
 

@@ -67,6 +67,14 @@ thread and become durable when a checkpoint saver is configured. Pass an explici
 filesystem, store, composite, local-shell, or remote sandbox backend when the agent
 should operate elsewhere.
 
+Declarative subagents inherit the parent model and tools unless they override them.
+They receive the standard filesystem, compaction, repair, profile, and prompt-cache
+stack; optional skills, permissions, structured output, and approval rules are
+configured on the subagent specification. Precompiled `Runnable` subagents remain
+available when the caller needs a completely custom graph. Human approval, including
+approval inside a subagent, requires a checkpoint saver so the exact pending tool call
+can resume without replaying completed sibling tools.
+
 ## OpenAI adapter
 
 The focused Responses API adapter supports text and multimodal messages, tool calls,

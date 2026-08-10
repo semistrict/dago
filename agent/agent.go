@@ -507,12 +507,30 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 	if len(messages) == 0 {
 		return graph.Command{}, fmt.Errorf("execute tools: message history is empty")
 	}
-	last := messages[len(messages)-1]
-	if last.Role != message.RoleAssistant || len(last.ToolCalls) == 0 {
+	assistantIndex := len(messages) - 1
+	for assistantIndex >= 0 && (messages[assistantIndex].Role != message.RoleAssistant || len(messages[assistantIndex].ToolCalls) == 0) {
+		assistantIndex--
+	}
+	if assistantIndex < 0 {
 		return graph.Command{}, fmt.Errorf("execute tools: last message has no tool calls")
 	}
-	calls := append([]message.ToolCall(nil), last.ToolCalls...)
+	completed := map[string]bool{}
+	for _, item := range messages[assistantIndex+1:] {
+		if item.Role == message.RoleTool && item.ToolCallID != "" {
+			completed[item.ToolCallID] = true
+		}
+	}
+	calls := make([]message.ToolCall, 0, len(messages[assistantIndex].ToolCalls))
+	for _, call := range messages[assistantIndex].ToolCalls {
+		if !completed[call.ID] {
+			calls = append(calls, call)
+		}
+	}
+	if len(calls) == 0 {
+		return graph.Command{}, nil
+	}
 	prefilled := []message.Message{}
+	resumeConsumed := false
 	for _, middleware := range compiler.options.Middleware {
 		if middleware.BeforeTools == nil {
 			continue
@@ -530,13 +548,15 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 		if response.Calls != nil {
 			calls = append([]message.ToolCall(nil), response.Calls...)
 		}
+		resumeConsumed = resumeConsumed || response.ResumeConsumed
 		prefilled = append(prefilled, cloneMessages(response.Messages)...)
 	}
 	type outcome struct {
-		message message.Message
-		update  state.Values
-		direct  bool
-		err     error
+		message   message.Message
+		update    state.Values
+		direct    bool
+		interrupt *Interrupt
+		err       error
 	}
 	results := make([]outcome, len(calls))
 	semaphore := make(chan struct{}, compiler.options.MaxConcurrency)
@@ -553,13 +573,50 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 				results[index].err = ctx.Err()
 				return
 			}
-			results[index] = compiler.executeTool(ctx, call, values, runtime)
+			toolRuntime := runtime
+			if resumeConsumed {
+				toolRuntime.Resume = nil
+			}
+			results[index] = compiler.executeTool(ctx, call, values, toolRuntime)
 		}()
 	}
 	wait.Wait()
+	var pendingInterrupt *Interrupt
+	for _, result := range results {
+		if result.err != nil {
+			return graph.Command{}, result.err
+		}
+		if result.interrupt == nil {
+			continue
+		}
+		if pendingInterrupt == nil {
+			interrupt := *result.interrupt
+			pendingInterrupt = &interrupt
+			continue
+		}
+		if pendingInterrupt.ID != result.interrupt.ID {
+			return graph.Command{}, fmt.Errorf("tools interrupted with incompatible ids %q and %q", pendingInterrupt.ID, result.interrupt.ID)
+		}
+		current, currentOK := pendingInterrupt.Value.([]any)
+		additional, additionalOK := result.interrupt.Value.([]any)
+		if !currentOK || !additionalOK {
+			return graph.Command{}, fmt.Errorf("multiple tool interrupts %q cannot be combined", pendingInterrupt.ID)
+		}
+		pendingInterrupt.Value = append(current, additional...)
+	}
 	update := state.Values{}
 	byCallID := make(map[string]message.Message, len(prefilled)+len(results))
 	var unassociated []message.Message
+	for _, item := range messages[assistantIndex+1:] {
+		if item.Role != message.RoleTool {
+			continue
+		}
+		if item.ToolCallID == "" {
+			unassociated = append(unassociated, item)
+		} else {
+			byCallID[item.ToolCallID] = item
+		}
+	}
 	for _, item := range prefilled {
 		if item.ToolCallID == "" {
 			unassociated = append(unassociated, item)
@@ -568,8 +625,8 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 		}
 	}
 	for _, result := range results {
-		if result.err != nil {
-			return graph.Command{}, result.err
+		if result.interrupt != nil {
+			continue
 		}
 		byCallID[result.message.ToolCallID] = result.message
 		if result.direct {
@@ -593,7 +650,7 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 		}
 	}
 	toolMessages := make([]message.Message, 0, len(byCallID)+len(unassociated))
-	for _, call := range last.ToolCalls {
+	for _, call := range messages[assistantIndex].ToolCalls {
 		if item, ok := byCallID[call.ID]; ok {
 			toolMessages = append(toolMessages, item)
 			delete(byCallID, call.ID)
@@ -610,15 +667,27 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 			toolMessages = append(toolMessages, byCallID[id])
 		}
 	}
-	update[MessagesKey] = toolMessages
-	return graph.Command{Update: update}, nil
+	if len(toolMessages) > 0 {
+		if assistantIndex < len(messages)-1 {
+			replacement := append(cloneMessages(messages[:assistantIndex+1]), toolMessages...)
+			update[MessagesKey] = state.Overwrite{Value: replacement}
+		} else {
+			update[MessagesKey] = toolMessages
+		}
+	}
+	command := graph.Command{Update: update}
+	if pendingInterrupt != nil {
+		command.Interrupt = &graph.Interrupt{ID: pendingInterrupt.ID, Value: pendingInterrupt.Value}
+	}
+	return command, nil
 }
 
 func (compiler *compiler) executeTool(ctx context.Context, call message.ToolCall, values state.Values, runtime graph.Runtime) (result struct {
-	message message.Message
-	update  state.Values
-	direct  bool
-	err     error
+	message   message.Message
+	update    state.Values
+	direct    bool
+	interrupt *Interrupt
+	err       error
 }) {
 	executable := compiler.tools[call.Name]
 	if executable == nil {
@@ -628,8 +697,10 @@ func (compiler *compiler) executeTool(ctx context.Context, call message.ToolCall
 	request := ToolCallRequest{Call: call, Tool: executable, State: values.Clone(), Runtime: convertRuntime(runtime)}
 	handler := func(ctx context.Context, request ToolCallRequest) (ToolCallResponse, error) {
 		output, err := request.Tool.Execute(ctx, request.Call.Arguments, tool.Runtime{
-			CallID: request.Call.ID, ThreadID: runtime.Config.ThreadID,
+			CallID: request.Call.ID, TaskID: runtime.TaskID, ThreadID: runtime.Config.ThreadID,
+			Namespace:    runtime.Config.Namespace,
 			CheckpointID: runtime.Config.CheckpointID,
+			Resume:       request.Runtime.Resume,
 			State:        request.State, Store: runtime.Store,
 			Stream: toolWriter{writer: runtime.Writer}, Context: runtime.Context,
 		})
@@ -654,6 +725,10 @@ func (compiler *compiler) executeTool(ctx context.Context, call message.ToolCall
 		result.message = message.Tool(call.ID, err.Error())
 		result.message.Name = call.Name
 		result.message.ToolStatus = message.ToolStatusError
+		return
+	}
+	if response.Result.Interrupt != nil {
+		result.interrupt = &Interrupt{ID: response.Result.Interrupt.ID, Value: response.Result.Interrupt.Value}
 		return
 	}
 	if response.Call != nil {

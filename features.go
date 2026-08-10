@@ -28,10 +28,19 @@ type Runnable interface {
 }
 
 type Subagent struct {
-	Name           string
-	Description    string
-	Runnable       Runnable
-	InheritedState []string
+	Name             string
+	Description      string
+	Runnable         Runnable
+	SystemPrompt     string
+	Model            model.Chat
+	Tools            []tool.Tool
+	Middleware       []agent.Middleware
+	InterruptOn      []agent.ApprovalRule
+	Skills           []string
+	Permissions      []FilesystemPermission
+	StructuredOutput *agent.StructuredOutput
+	InheritedState   []string
+	inheritAllState  bool
 }
 
 // PatchToolCallsMiddleware repairs assistant tool calls that have no matching
@@ -137,34 +146,75 @@ func SubagentMiddleware(subagents []Subagent) (agent.Middleware, error) {
 			return tool.TextResult("Unknown subagent type " + input.Type), nil
 		}
 		inherited := state.Values{}
-		for _, key := range selected.InheritedState {
+		inheritedKeys := append([]string(nil), selected.InheritedState...)
+		if selected.inheritAllState {
+			if values, ok := runtime.State.(state.Values); ok {
+				for key := range values {
+					if key != agent.MessagesKey && key != agent.StructuredResponseKey {
+						inheritedKeys = append(inheritedKeys, key)
+					}
+				}
+				sort.Strings(inheritedKeys)
+				deduplicated := inheritedKeys[:0]
+				for _, key := range inheritedKeys {
+					if len(deduplicated) == 0 || deduplicated[len(deduplicated)-1] != key {
+						deduplicated = append(deduplicated, key)
+					}
+				}
+				inheritedKeys = deduplicated
+			}
+		}
+		for _, key := range inheritedKeys {
+			if key == agent.MessagesKey || key == agent.StructuredResponseKey || strings.HasPrefix(key, "__") {
+				continue
+			}
 			if value, exists := runtime.State.Get(key); exists {
 				inherited[key] = value
 			}
 		}
-		result, err := selected.Runnable.Invoke(ctx, agent.Input{
-			Config: checkpoint.Config{ThreadID: "subagent-" + runtime.CallID},
-			State:  inherited, Messages: []message.Message{message.Human(input.Description)},
-		})
+		namespace := runtime.Namespace
+		if namespace != "" {
+			namespace += "/"
+		}
+		namespace += "subagent:" + runtime.TaskID + ":" + runtime.CallID
+		invocation := agent.Input{Config: checkpoint.Config{ThreadID: runtime.ThreadID, Namespace: namespace}}
+		if runtime.Resume != nil {
+			invocation.Resume = runtime.Resume
+		} else {
+			invocation.State = inherited
+			invocation.Messages = []message.Message{message.Human(input.Description)}
+		}
+		result, err := selected.Runnable.Invoke(ctx, invocation)
 		if err != nil {
 			return tool.Result{}, err
 		}
+		if len(result.Interrupts) > 0 {
+			if len(result.Interrupts) != 1 {
+				return tool.Result{}, fmt.Errorf("subagent %q produced multiple interrupts", selected.Name)
+			}
+			return tool.Result{Interrupt: &tool.Interrupt{ID: result.Interrupts[0].ID, Value: result.Interrupts[0].Value}}, nil
+		}
 		text := ""
-		for i := len(result.Messages) - 1; i >= 0; i-- {
-			if result.Messages[i].Role == message.RoleAssistant {
-				text = result.Messages[i].TextContent()
-				break
+		if len(result.Structured) > 0 {
+			text = string(result.Structured)
+		} else {
+			for i := len(result.Messages) - 1; i >= 0; i-- {
+				if result.Messages[i].Role == message.RoleAssistant {
+					text = strings.TrimSpace(result.Messages[i].TextContent())
+					if text != "" {
+						break
+					}
+				}
 			}
 		}
 		if text == "" {
-			if len(result.Structured) > 0 {
-				text = string(result.Structured)
-			} else {
-				text = "Subagent completed without a text response."
-			}
+			text = "Subagent completed without a text response."
 		}
 		toolResult := tool.TextResult(text)
-		for _, key := range selected.InheritedState {
+		for _, key := range inheritedKeys {
+			if key == agent.MessagesKey || key == agent.StructuredResponseKey || strings.HasPrefix(key, "__") {
+				continue
+			}
 			before, beforeExists := inherited[key]
 			after, afterExists := result.State[key]
 			if afterExists && (!beforeExists || !reflect.DeepEqual(before, after)) {
