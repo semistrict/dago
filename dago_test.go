@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
@@ -406,6 +407,90 @@ func TestPrivateParentStateDoesNotReachDeclarativeSubagent(t *testing.T) {
 		t.Fatalf("private state leaked from result: %#v", result.State)
 	}
 }
+
+func TestDeclarativeSubagentStructuredResponseWinsAndEmptyToolsOverrideInheritance(t *testing.T) {
+	parentOnly := tool.Func{Spec: tool.Definition{Name: "parent_only", Description: "parent tool", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		return tool.TextResult("parent"), nil
+	}}
+	childModel := modeltest.New(model.Profile{StructuredOutput: true}, modeltest.Step{Check: func(request model.Request) error {
+		for _, definition := range request.Tools {
+			if definition.Name == "parent_only" {
+				return errors.New("explicit empty child tools did not override inheritance")
+			}
+		}
+		if request.ResponseFormat == nil || request.ResponseFormat.Name != "findings" {
+			return errors.New("child structured response format missing")
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("fallback text"), Structured: json.RawMessage(`{"answer":"structured"}`)}})
+	parentModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "structured-task", Name: "task", Arguments: json.RawMessage(`{"description":"analyze","subagent_type":"analyst"}`)}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if request.Messages[len(request.Messages)-1].TextContent() != `{"answer":"structured"}` {
+				return errors.New("structured child response did not win")
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := New(Options{
+		Model: parentModel, Tools: []tool.Tool{parentOnly}, DisableSummary: true,
+		Subagents: []Subagent{{
+			Name: "analyst", Description: "Analyzes", SystemPrompt: "Analyze.", Model: childModel, Tools: []tool.Tool{},
+			StructuredOutput: &agent.StructuredOutput{Name: "findings", Schema: json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`)},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "done" {
+		t.Fatalf("messages = %#v", result.Messages)
+	}
+}
+
+func TestSubagentInvocationPropagatesCancellation(t *testing.T) {
+	childModel := &blockingChat{started: make(chan struct{})}
+	parentModel := modeltest.New(model.Profile{ToolCalling: true}, modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "cancel-task", Name: "task", Arguments: json.RawMessage(`{"description":"block","subagent_type":"worker"}`)}}}}})
+	compiled, err := New(Options{
+		Model: parentModel, DisableSummary: true,
+		Subagents: []Subagent{{Name: "worker", Description: "Blocks", SystemPrompt: "Wait.", Model: childModel}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	done := make(chan error, 1)
+	go func() {
+		_, err := compiled.Invoke(ctx, agent.Input{Messages: []message.Message{message.Human("go")}})
+		done <- err
+	}()
+	select {
+	case <-childModel.started:
+		cancel()
+	case <-ctx.Done():
+		t.Fatal("child model did not start")
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+type blockingChat struct{ started chan struct{} }
+
+func (chat *blockingChat) Invoke(ctx context.Context, _ model.Request) (model.Response, error) {
+	close(chat.started)
+	<-ctx.Done()
+	return model.Response{}, ctx.Err()
+}
+
+func (*blockingChat) Stream(context.Context, model.Request) (model.Stream, error) {
+	return model.EmptyStream{}, nil
+}
+
+func (*blockingChat) Profile() model.Profile { return model.Profile{} }
 
 func TestDeclarativeSubagentApprovalInterruptResumesChild(t *testing.T) {
 	dangerRuns := 0
