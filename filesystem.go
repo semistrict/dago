@@ -51,6 +51,7 @@ type FilesystemOptions struct {
 	ToolDescriptions  map[string]string
 	ReadLimit         int
 	GrepLimit         int
+	GlobTimeout       time.Duration
 	MaxExecuteTimeout int
 	LargeResultBytes  int
 	ArtifactsRoot     string
@@ -162,6 +163,9 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 	}
 	if options.GrepLimit <= 0 {
 		options.GrepLimit = 1000
+	}
+	if options.GlobTimeout <= 0 {
+		options.GlobTimeout = 10 * time.Second
 	}
 	if options.MaxExecuteTimeout <= 0 {
 		options.MaxExecuteTimeout = 3600
@@ -362,6 +366,7 @@ func validatePermissions(rules []FilesystemPermission) error {
 
 func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 	values := map[string]tool.Tool{}
+	globSlots := make(chan struct{}, 4)
 	values["ls"] = tool.Func{Spec: tool.Definition{Name: "ls", Description: FilesystemListDescription, InputSchema: schema(`{"path":{"type":"string","description":"Absolute path to the directory to list. Must be absolute, not relative."}}`, "path")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 		var input struct {
 			Path string `json:"path"`
@@ -494,9 +499,36 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if err := decodeArguments(raw, &input); err != nil {
 			return tool.Result{}, err
 		}
-		result, err := options.Backend.Glob(ctx, input.Pattern, input.Path)
-		if err != nil {
-			return tool.Result{}, err
+		select {
+		case globSlots <- struct{}{}:
+		default:
+			return tool.Result{}, fmt.Errorf("too many glob calls are already running; try again later with a more specific pattern or a narrower path")
+		}
+		type globResponse struct {
+			result backend.GlobResult
+			err    error
+		}
+		workerCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		response := make(chan globResponse, 1)
+		go func() {
+			defer func() { <-globSlots }()
+			result, err := options.Backend.Glob(workerCtx, input.Pattern, input.Path)
+			response <- globResponse{result: result, err: err}
+		}()
+		timer := time.NewTimer(options.GlobTimeout)
+		defer timer.Stop()
+		var result backend.GlobResult
+		select {
+		case completed := <-response:
+			if completed.err != nil {
+				return tool.Result{}, completed.err
+			}
+			result = completed.result
+		case <-timer.C:
+			return tool.Result{}, fmt.Errorf("glob timed out after %s; try a more specific pattern or a narrower path", options.GlobTimeout)
+		case <-ctx.Done():
+			return tool.Result{}, ctx.Err()
 		}
 		result.Matches = filterFileInfo(options.Permissions, FilesystemRead, result.Matches)
 		lines := make([]string, len(result.Matches))

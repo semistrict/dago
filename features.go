@@ -344,21 +344,22 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		older := messages[:cutoff]
 		recent := messages[cutoff:]
 		update := state.Values{}
+		var boundCtx context.Context
+		var bindErr error
 		if options.Backend != nil {
-			boundCtx, bindErr := backend.BindRuntime(ctx, options.Backend, reader)
-			if bindErr != nil {
-				boundCtx = nil
-			}
+			boundCtx, bindErr = backend.BindRuntime(ctx, options.Backend, reader)
 			if overflow && boundCtx != nil {
-				recent = clipOverflowToolTail(ctx, messages, recent, options)
+				recent = clipOverflowToolTail(boundCtx, messages, recent, options)
 			}
 		}
 		offloadChannel := make(chan historyOffloadResult, 1)
 		if options.Backend == nil {
 			offloadChannel <- historyOffloadResult{}
+		} else if bindErr != nil {
+			offloadChannel <- historyOffloadResult{Err: fmt.Errorf("bind conversation history backend: %w", bindErr)}
 		} else {
 			go func() {
-				offloadChannel <- offloadConversationHistory(ctx, options, runtime, reader, older)
+				offloadChannel <- offloadConversationHistoryBound(boundCtx, options, runtime, older)
 			}()
 		}
 		requestMessages := []message.Message{message.System(options.SummaryPrompt), message.Human(renderHistory(older))}
@@ -494,6 +495,15 @@ func offloadConversationHistory(
 	if err != nil {
 		return historyOffloadResult{Err: fmt.Errorf("bind conversation history backend: %w", err)}
 	}
+	return offloadConversationHistoryBound(boundCtx, options, runtime, messages)
+}
+
+func offloadConversationHistoryBound(
+	boundCtx context.Context,
+	options SummarizationOptions,
+	runtime agent.Runtime,
+	messages []message.Message,
+) historyOffloadResult {
 	filtered := make([]message.Message, 0, len(messages))
 	for _, item := range messages {
 		if !isSummaryMessage(item) {
@@ -1169,8 +1179,10 @@ func prepareOldContext(
 			update = state.Values{}
 		}
 		update[agent.MessagesKey] = state.Overwrite{Value: messages}
-		for key, value := range backend.RuntimeUpdates(boundCtx, options.Backend) {
-			update[key] = value
+		if boundCtx != nil {
+			for key, value := range backend.RuntimeUpdates(boundCtx, options.Backend) {
+				update[key] = value
+			}
 		}
 	}
 	return update, messages, nil

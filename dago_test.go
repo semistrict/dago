@@ -870,6 +870,56 @@ func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
 	}
 }
 
+func TestSummarizationPersistsOverflowArtifactsInStateBackend(t *testing.T) {
+	files, err := backend.NewState("", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("summary")}})
+	mainModel := modeltest.New(model.Profile{},
+		modeltest.Step{Error: model.ErrContextOverflow},
+		modeltest.Step{Check: func(request model.Request) error {
+			last := request.Messages[len(request.Messages)-1]
+			if !strings.Contains(last.TextContent(), "Tool result too large") || !strings.Contains(last.TextContent(), "/large_tool_results/lookup_state") {
+				return fmt.Errorf("tool result was not replaced with a durable reference: %#v", last)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("recovered")}},
+	)
+	compiled, err := New(Options{
+		Model: mainModel, Backend: files, DisableSubagents: true,
+		Summarization: SummarizationOptions{
+			Model: summaryModel, TriggerTokens: 1_000_000, KeepMessages: 2, OverflowClipTokens: 1,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{
+		ID: "lookup/state", Name: "lookup", Arguments: json.RawMessage(`{}`),
+	}}}
+	resultMessage := message.Tool("lookup/state", strings.Repeat("state-backed result\n", 1_200))
+	result, err := compiled.Invoke(context.Background(), agent.Input{
+		Config: checkpoint.Config{ThreadID: "overflow-state"},
+		Messages: []message.Message{
+			message.Human("old question"), message.Assistant("old answer"), message.Human("lookup"), call, resultMessage,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundCtx, err := backend.BindRuntime(context.Background(), files, result.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, filePath := range []string{"/large_tool_results/lookup_state", "/conversation_history/overflow-state.md"} {
+		read, readErr := files.Read(boundCtx, filePath, 0, 100_000)
+		if readErr != nil || read.Data == nil || read.Data.Content == "" {
+			t.Fatalf("persisted %s = %#v, %v", filePath, read, readErr)
+		}
+	}
+}
+
 func TestOverflowClipKeepsReadFileAtOriginalPath(t *testing.T) {
 	memory, _ := backend.NewMemory(nil)
 	content := strings.Repeat("content line\n", 2_000)

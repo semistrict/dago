@@ -3,8 +3,10 @@ package dago
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
@@ -12,6 +14,20 @@ import (
 	memorystore "github.com/semistrict/dago/store"
 	"github.com/semistrict/dago/tool"
 )
+
+type blockingGlobBackend struct {
+	backend.Backend
+	release <-chan struct{}
+	err     error
+}
+
+func (value blockingGlobBackend) Glob(context.Context, string, string) (backend.GlobResult, error) {
+	if value.err != nil {
+		return backend.GlobResult{}, value.err
+	}
+	<-value.release
+	return backend.GlobResult{}, nil
+}
 
 func TestFilesystemToolSchemasDescribeEveryArgument(t *testing.T) {
 	memory, err := backend.NewMemory(nil)
@@ -272,6 +288,43 @@ func TestFilesystemSearchResultsUseStableModelFacingShapes(t *testing.T) {
 	matches, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.go"}`), tool.Runtime{})
 	if err != nil || matches.Content[0].Text != "No files found" {
 		t.Fatalf("empty glob = %#v, %v", matches, err)
+	}
+}
+
+func TestFilesystemGlobBoundsUnresponsiveBackends(t *testing.T) {
+	memory, err := backend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	defer close(release)
+	glob := filesystemTool(t, FilesystemOptions{
+		Backend: blockingGlobBackend{Backend: memory, release: release}, GlobTimeout: 10 * time.Millisecond,
+	}, "glob")
+	for index := 0; index < 4; index++ {
+		_, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), tool.Runtime{})
+		if err == nil || !strings.Contains(err.Error(), "glob timed out after 10ms") {
+			t.Fatalf("timeout %d error = %v", index, err)
+		}
+	}
+	_, err = glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), tool.Runtime{})
+	if err == nil || !strings.Contains(err.Error(), "too many glob calls") {
+		t.Fatalf("overload error = %v", err)
+	}
+}
+
+func TestFilesystemGlobPreservesBackendTimeoutErrors(t *testing.T) {
+	memory, err := backend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("backend RPC timeout")
+	glob := filesystemTool(t, FilesystemOptions{
+		Backend: blockingGlobBackend{Backend: memory, err: want}, GlobTimeout: time.Second,
+	}, "glob")
+	_, err = glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), tool.Runtime{})
+	if !errors.Is(err, want) || strings.Contains(err.Error(), "glob timed out after") {
+		t.Fatalf("backend timeout error = %v", err)
 	}
 }
 
