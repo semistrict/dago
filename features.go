@@ -3,6 +3,7 @@ package dago
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"mime"
@@ -243,14 +244,16 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 }
 
 type SummarizationOptions struct {
-	Model             model.Chat
-	Backend           backend.Backend
-	TriggerTokens     int
-	KeepMessages      int
-	HistoryRoot       string
-	MediaRoot         string
-	MediaOffloadBytes int
-	SummaryPrompt     string
+	Model                model.Chat
+	Backend              backend.Backend
+	TriggerTokens        int
+	KeepMessages         int
+	HistoryRoot          string
+	MediaRoot            string
+	MediaOffloadBytes    int
+	OverflowClipTokens   int
+	LargeToolResultsRoot string
+	SummaryPrompt        string
 }
 
 // SummarizationMiddleware performs deterministic thresholding, offloads removed
@@ -278,10 +281,16 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 	if options.MediaOffloadBytes <= 0 {
 		options.MediaOffloadBytes = 1 << 20
 	}
+	if options.OverflowClipTokens <= 0 {
+		options.OverflowClipTokens = 5_000
+	}
+	if options.LargeToolResultsRoot == "" {
+		options.LargeToolResultsRoot = "/large_tool_results"
+	}
 	if options.SummaryPrompt == "" {
 		options.SummaryPrompt = "Summarize the earlier conversation faithfully. Preserve decisions, constraints, unresolved tasks, file paths, errors, and important tool results."
 	}
-	compact := func(ctx context.Context, messages []message.Message, runtime agent.Runtime, reader backend.StateReader) (state.Values, error) {
+	compact := func(ctx context.Context, messages []message.Message, runtime agent.Runtime, reader backend.StateReader, overflow bool) (state.Values, error) {
 		if len(messages) <= options.KeepMessages {
 			return nil, nil
 		}
@@ -291,19 +300,15 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		}
 		older := messages[:cutoff]
 		recent := messages[cutoff:]
-		requestMessages := []message.Message{message.System(options.SummaryPrompt), message.Human(renderHistory(older))}
-		response, err := options.Model.Invoke(ctx, model.Request{Messages: requestMessages})
-		if err != nil {
-			return nil, err
-		}
-		summary := message.Human("Summary of earlier conversation:\n" + response.Message.TextContent())
-		summary.Metadata = map[string]json.RawMessage{"dago_summary": json.RawMessage(`true`)}
-		replacement := append([]message.Message{summary}, recent...)
-		update := state.Values{agent.MessagesKey: state.Overwrite{Value: replacement}}
+		update := state.Values{}
 		if options.Backend != nil {
 			boundCtx, bindErr := backend.BindRuntime(ctx, options.Backend, reader)
 			if bindErr != nil {
 				return nil, fmt.Errorf("bind conversation history backend: %w", bindErr)
+			}
+			ctx = boundCtx
+			if overflow {
+				recent = clipOverflowToolTail(ctx, messages, recent, options)
 			}
 			thread := sanitizePath(runtime.Config.ThreadID)
 			if thread == "" {
@@ -321,6 +326,15 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 				update[key] = value
 			}
 		}
+		requestMessages := []message.Message{message.System(options.SummaryPrompt), message.Human(renderHistory(older))}
+		response, err := options.Model.Invoke(ctx, model.Request{Messages: requestMessages})
+		if err != nil {
+			return nil, err
+		}
+		summary := message.Human("Summary of earlier conversation:\n" + response.Message.TextContent())
+		summary.Metadata = map[string]json.RawMessage{"dago_summary": json.RawMessage(`true`)}
+		replacement := append([]message.Message{summary}, recent...)
+		update[agent.MessagesKey] = state.Overwrite{Value: replacement}
 		return update, nil
 	}
 	middleware := agent.Middleware{Name: "summarization", BeforeModel: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
@@ -341,12 +355,41 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		if tokens < options.TriggerTokens {
 			return contextUpdate, nil
 		}
-		compactUpdate, err := compact(ctx, messages, runtime, values)
+		compactUpdate, err := compact(ctx, messages, runtime, values, false)
 		if err != nil {
 			return nil, err
 		}
 		return mergeFeatureUpdates(contextUpdate, compactUpdate), nil
 	}}
+	middleware.WrapModelCall = func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+		response, err := next(ctx, request)
+		if !errors.Is(err, model.ErrContextOverflow) {
+			return response, err
+		}
+		update, compactErr := compact(ctx, request.Messages, request.Runtime, request.State, true)
+		if compactErr != nil {
+			return agent.ModelResponse{}, compactErr
+		}
+		overwrite, ok := update[agent.MessagesKey].(state.Overwrite)
+		if !ok {
+			return agent.ModelResponse{}, err
+		}
+		messages, messagesErr := featureMessages(overwrite.Value)
+		if messagesErr != nil {
+			return agent.ModelResponse{}, messagesErr
+		}
+		retry := request.Clone()
+		retry.Messages = messages
+		response, err = next(ctx, retry)
+		if err != nil {
+			return agent.ModelResponse{}, err
+		}
+		response.Update = mergeFeatureUpdates(update, response.Update)
+		persistedMessages := append([]message.Message(nil), messages...)
+		persistedMessages = append(persistedMessages, response.Messages...)
+		response.Update[agent.MessagesKey] = state.Overwrite{Value: persistedMessages}
+		return response, nil
+	}
 	compactSchema := json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 	middleware.Tools = []tool.Tool{tool.Func{Spec: tool.Definition{Name: "compact_conversation", Description: "Compact older conversation history into a durable summary while preserving recent messages.", InputSchema: compactSchema}, Run: func(ctx context.Context, _ json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
 		raw, _ := runtime.State.Get(agent.MessagesKey)
@@ -357,7 +400,7 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		update, err := compact(ctx, messages, agent.Runtime{
 			Context: runtime.Context, TaskID: runtime.CallID,
 			Config: checkpoint.Config{ThreadID: runtime.ThreadID, CheckpointID: runtime.CheckpointID},
-		}, runtime.State)
+		}, runtime.State, false)
 		if err != nil {
 			return tool.Result{}, err
 		}
@@ -730,6 +773,99 @@ func mergeFeatureUpdates(left, right state.Values) state.Values {
 	}
 	return result
 }
+
+func clipOverflowToolTail(ctx context.Context, all, recent []message.Message, options SummarizationOptions) []message.Message {
+	if len(recent) == 0 || recent[len(recent)-1].Role != message.RoleTool {
+		return recent
+	}
+	start := len(recent) - 1
+	for start > 0 && recent[start-1].Role == message.RoleTool {
+		start--
+	}
+	if approximateTokens(recent[start:]) < options.OverflowClipTokens {
+		return recent
+	}
+	calls := map[string]message.ToolCall{}
+	for _, item := range all {
+		for _, call := range item.ToolCalls {
+			calls[call.ID] = call
+		}
+	}
+	result := make([]message.Message, len(recent))
+	for index := range recent {
+		result[index] = recent[index].Clone()
+	}
+	for index := start; index < len(result); index++ {
+		item := &result[index]
+		content := item.TextContent()
+		call := calls[item.ToolCallID]
+		if call.Name == "read_file" {
+			var arguments struct {
+				FilePath string `json:"file_path"`
+			}
+			if json.Unmarshal(call.Arguments, &arguments) == nil && arguments.FilePath != "" {
+				replacement := truncateRunes(content, 4_000) + fmt.Sprintf("\n\n[Output was truncated due to context window size limits. The full content is at %s. Use read_file with offset and limit parameters to retrieve specific portions. For example, to read the first 100 lines, call read_file with file_path='%s', offset=0, limit=100.]", arguments.FilePath, arguments.FilePath)
+				replaceMessageText(item, replacement)
+			}
+			continue
+		}
+		toolCallID := item.ToolCallID
+		if toolCallID == "" {
+			toolCallID = "unknown"
+		}
+		filePath := strings.TrimSuffix(options.LargeToolResultsRoot, "/") + "/" + sanitizeToolCallID(toolCallID)
+		if _, err := options.Backend.Write(ctx, filePath, content); err != nil {
+			continue
+		}
+		replacement := fmt.Sprintf("Tool result too large, the result of this tool call %s was saved in the filesystem at this path: %s\n\nYou can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.\n\nYou can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.\n\nHere is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):\n\n%s\n", item.ToolCallID, filePath, largeToolResultPreview(content))
+		replaceMessageText(item, replacement)
+	}
+	return result
+}
+
+func replaceMessageText(item *message.Message, replacement string) {
+	blocks := make([]message.ContentBlock, 0, len(item.Content)+1)
+	blocks = append(blocks, message.ContentBlock{Type: message.BlockText, Text: replacement})
+	for _, block := range item.Content {
+		if block.Type != message.BlockText {
+			blocks = append(blocks, block)
+		}
+	}
+	item.Content = blocks
+}
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
+
+func sanitizeToolCallID(value string) string {
+	value = strings.ReplaceAll(value, ".", "_")
+	value = strings.ReplaceAll(value, "/", "_")
+	return strings.ReplaceAll(value, `\`, "_")
+}
+
+func largeToolResultPreview(content string) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) <= 10 {
+		return numberLines(strings.Join(truncatePreviewLines(lines), "\n"), 1)
+	}
+	head := numberLines(strings.Join(truncatePreviewLines(lines[:5]), "\n"), 1)
+	tail := numberLines(strings.Join(truncatePreviewLines(lines[len(lines)-5:]), "\n"), len(lines)-4)
+	return fmt.Sprintf("%s\n... [%d lines truncated] ...\n%s", head, len(lines)-10, tail)
+}
+
+func truncatePreviewLines(lines []string) []string {
+	result := make([]string, len(lines))
+	for index, line := range lines {
+		result[index] = truncateRunes(line, 1_000)
+	}
+	return result
+}
+
 func strconvQuote(value string) string { data, _ := json.Marshal(value); return string(data) }
 func sanitizePath(value string) string {
 	value = strings.Map(func(r rune) rune {

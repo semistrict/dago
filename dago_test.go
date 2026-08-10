@@ -658,3 +658,110 @@ func TestSummarizationOffloadsLargeOldMedia(t *testing.T) {
 		t.Fatalf("offloaded media = %#v, %v", files, err)
 	}
 }
+
+func TestSummarizationRetriesContextOverflowWithCompactedHistory(t *testing.T) {
+	memory, _ := backend.NewMemory(nil)
+	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("fallback facts")}})
+	mainModel := modeltest.New(model.Profile{},
+		modeltest.Step{Error: model.ErrContextOverflow},
+		modeltest.Step{Check: func(request model.Request) error {
+			if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "fallback facts") {
+				return fmt.Errorf("retry messages = %#v", request.Messages)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("recovered")}},
+	)
+	middleware, err := SummarizationMiddleware(SummarizationOptions{
+		Model: summaryModel, Backend: memory, TriggerTokens: 1_000_000, KeepMessages: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := agent.New(agent.Options{Model: mainModel, Middleware: []agent.Middleware{middleware}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{
+		message.Human("old one"), message.Assistant("old two"), message.Human("recent one"), message.Assistant("recent two"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 4 || result.Messages[len(result.Messages)-1].TextContent() != "recovered" {
+		t.Fatalf("messages = %#v", result.Messages)
+	}
+}
+
+func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
+	memory, _ := backend.NewMemory(nil)
+	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("summary")}})
+	mainModel := modeltest.New(model.Profile{},
+		modeltest.Step{Error: model.ErrContextOverflow},
+		modeltest.Step{Check: func(request model.Request) error {
+			if len(request.Messages) != 4 {
+				return fmt.Errorf("retry messages = %#v", request.Messages)
+			}
+			for _, item := range request.Messages[len(request.Messages)-2:] {
+				if !strings.Contains(item.TextContent(), "Tool result too large") || !strings.Contains(item.TextContent(), "/large_tool_results/") {
+					return fmt.Errorf("tool tail was not clipped: %#v", item)
+				}
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("recovered")}},
+	)
+	middleware, err := SummarizationMiddleware(SummarizationOptions{
+		Model: summaryModel, Backend: memory, TriggerTokens: 1_000_000, KeepMessages: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := agent.New(agent.Options{Model: mainModel, Middleware: []agent.Middleware{middleware}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolCalls := message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+		{ID: "lookup/one", Name: "lookup", Arguments: json.RawMessage(`{}`)},
+		{ID: "lookup.two", Name: "lookup", Arguments: json.RawMessage(`{}`)},
+	}}
+	first := message.Tool("lookup/one", strings.Repeat("first line\n", 1_200))
+	first.ID = "result-one"
+	second := message.Tool("lookup.two", strings.Repeat("second line\n", 1_200))
+	second.ID = "result-two"
+	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{
+		message.Human("old"), message.Assistant("old answer"), message.Human("lookup"), toolCalls, first, second,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "recovered" {
+		t.Fatalf("messages = %#v", result.Messages)
+	}
+	for _, filePath := range []string{"/large_tool_results/lookup_one", "/large_tool_results/lookup_two"} {
+		read, readErr := memory.Read(context.Background(), filePath, 0, 10_000)
+		if readErr != nil || read.Data == nil || len(read.Data.Content) < 10_000 {
+			t.Fatalf("offloaded %s = %#v, %v", filePath, read, readErr)
+		}
+	}
+}
+
+func TestOverflowClipKeepsReadFileAtOriginalPath(t *testing.T) {
+	memory, _ := backend.NewMemory(nil)
+	content := strings.Repeat("content line\n", 2_000)
+	call := message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{
+		ID: "read-one", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/source.txt"}`),
+	}}}
+	resultMessage := message.Tool("read-one", content)
+	clipped := clipOverflowToolTail(context.Background(), []message.Message{call, resultMessage}, []message.Message{call, resultMessage}, SummarizationOptions{
+		Backend: memory, OverflowClipTokens: 1, LargeToolResultsRoot: "/large_tool_results",
+	})
+	if len(clipped) != 2 || !strings.Contains(clipped[1].TextContent(), "The full content is at /source.txt") || len(clipped[1].TextContent()) >= len(content) {
+		t.Fatalf("clipped messages = %#v", clipped)
+	}
+	files, err := memory.Glob(context.Background(), "**/*", "/large_tool_results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files.Matches) != 0 {
+		t.Fatalf("read_file result was redundantly offloaded: %#v", files.Matches)
+	}
+}
