@@ -2,6 +2,7 @@ package dago
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,10 +12,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
 	"github.com/semistrict/dago/message"
+	"github.com/semistrict/dago/state"
 	"github.com/semistrict/dago/tool"
 )
 
@@ -53,12 +56,35 @@ type FilesystemOptions struct {
 	GrepLimit         int
 	GlobTimeout       time.Duration
 	MaxExecuteTimeout int
-	LargeResultBytes  int
-	ArtifactsRoot     string
-	VideoExtractor    VideoExtractor
-	MaxVideoBytes     int
-	VideoSamplingRate float64
+	// ToolResultTokenLimit follows the upstream four-characters-per-token
+	// eviction budget. Nil selects 20,000 tokens; zero disables tool-result
+	// eviction. LargeResultBytes remains available as a mutually exclusive
+	// byte-precise compatibility override.
+	ToolResultTokenLimit *int
+	// HumanMessageTokenLimit follows the same convention. Nil selects 50,000
+	// tokens and zero disables human-message eviction.
+	HumanMessageTokenLimit  *int
+	LargeResultBytes        int
+	ArtifactsRoot           string
+	ConversationHistoryRoot string
+	VideoExtractor          VideoExtractor
+	MaxVideoBytes           int
+	VideoSamplingRate       float64
+	toolResultLimit         int
+	toolResultBytes         bool
+	humanMessageLimit       int
 }
+
+const charactersPerToken = 4
+
+const oversizedHumanMessage = `Message content too large and was saved to the filesystem at: %s
+
+You can read the full content using the read_file tool with pagination (offset and limit parameters).
+
+Here is a preview showing the head and tail of the content:
+
+%s
+`
 
 var filesystemToolOperations = map[string]FilesystemOperation{
 	"ls": FilesystemRead, "read_file": FilesystemRead, "glob": FilesystemRead, "grep": FilesystemRead,
@@ -170,11 +196,38 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 	if options.MaxExecuteTimeout <= 0 {
 		options.MaxExecuteTimeout = 3600
 	}
-	if options.LargeResultBytes <= 0 {
-		options.LargeResultBytes = 20_000
+	if options.LargeResultBytes < 0 {
+		return agent.Middleware{}, fmt.Errorf("large result byte limit cannot be negative")
+	}
+	if options.ToolResultTokenLimit != nil && options.LargeResultBytes > 0 {
+		return agent.Middleware{}, fmt.Errorf("tool result token limit and large result byte limit are mutually exclusive")
+	}
+	if options.ToolResultTokenLimit != nil {
+		limit, err := tokenCharacterLimit("tool result", *options.ToolResultTokenLimit)
+		if err != nil {
+			return agent.Middleware{}, err
+		}
+		options.toolResultLimit = limit
+	} else if options.LargeResultBytes > 0 {
+		options.toolResultLimit = options.LargeResultBytes
+		options.toolResultBytes = true
+	} else {
+		options.toolResultLimit = charactersPerToken * 20_000
+	}
+	humanTokens := 50_000
+	if options.HumanMessageTokenLimit != nil {
+		humanTokens = *options.HumanMessageTokenLimit
+	}
+	var err error
+	options.humanMessageLimit, err = tokenCharacterLimit("human message", humanTokens)
+	if err != nil {
+		return agent.Middleware{}, err
 	}
 	if options.ArtifactsRoot == "" {
 		options.ArtifactsRoot = backend.ArtifactPath(options.Backend, "large_tool_results")
+	}
+	if options.ConversationHistoryRoot == "" {
+		options.ConversationHistoryRoot = backend.ArtifactPath(options.Backend, "conversation_history")
 	}
 	if options.MaxVideoBytes <= 0 {
 		options.MaxVideoBytes = DefaultMaxVideoInputBytes
@@ -228,8 +281,18 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 	}
 	middleware.BeforeTools = filesystemApprovalHook(options.Backend, options.Permissions, options.ApprovalOverrides)
 	middleware.WrapToolCall = filesystemPermissionWrapper(options)
-	middleware.WrapModelCall = filesystemModelWrapper(options.Backend)
+	middleware.WrapModelCall = filesystemModelWrapper(options)
 	return middleware, nil
+}
+
+func tokenCharacterLimit(subject string, tokens int) (int, error) {
+	if tokens < 0 {
+		return 0, fmt.Errorf("%s token limit cannot be negative", subject)
+	}
+	if tokens > int(^uint(0)>>1)/charactersPerToken {
+		return 0, fmt.Errorf("%s token limit is too large", subject)
+	}
+	return tokens * charactersPerToken, nil
 }
 
 func permissionsScopedToInaccessibleRoutes(value backend.Backend, rules []FilesystemPermission) bool {
@@ -255,7 +318,7 @@ func permissionsScopedToInaccessibleRoutes(value backend.Backend, rules []Filesy
 	return true
 }
 
-func filesystemModelWrapper(value backend.Backend) agent.ModelWrapper {
+func filesystemModelWrapper(options FilesystemOptions) agent.ModelWrapper {
 	return func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
 		visible := map[string]bool{}
 		for _, executable := range request.Tools {
@@ -283,7 +346,7 @@ func filesystemModelWrapper(value backend.Backend) agent.ModelWrapper {
 		}
 		request.Tools = applyToolProfile(request.Tools, descriptions, nil)
 		if visible["execute"] {
-			if routePrompt := filesystemRoutePrompt(value); routePrompt != "" {
+			if routePrompt := filesystemRoutePrompt(options.Backend); routePrompt != "" {
 				if request.SystemMessage == nil {
 					system := message.System(routePrompt)
 					request.SystemMessage = &system
@@ -294,8 +357,217 @@ func filesystemModelWrapper(value backend.Backend) agent.ModelWrapper {
 				}
 			}
 		}
-		return next(ctx, request)
+		processed, update, boundCtx, err := evictHumanMessages(ctx, options, request)
+		if err != nil {
+			return agent.ModelResponse{}, err
+		}
+		response, err := next(ctx, processed)
+		if err != nil || len(update) == 0 {
+			return response, err
+		}
+		if runtimeUpdates := backend.RuntimeUpdates(boundCtx, options.Backend); len(runtimeUpdates) > 0 {
+			for key, value := range runtimeUpdates {
+				if existing, exists := update[key]; exists {
+					merged, mergeErr := mergeFilesystemModelUpdate(existing, value)
+					if mergeErr != nil {
+						return agent.ModelResponse{}, fmt.Errorf("filesystem backend produced conflicting state update %q: %w", key, mergeErr)
+					}
+					update[key] = merged
+				} else {
+					update[key] = value
+				}
+			}
+		}
+		if response.Update == nil {
+			response.Update = state.Values{}
+		}
+		for key, value := range update {
+			if existing, exists := response.Update[key]; exists {
+				merged, mergeErr := mergeFilesystemModelUpdate(existing, value)
+				if mergeErr != nil {
+					return agent.ModelResponse{}, fmt.Errorf("filesystem model produced conflicting state update %q: %w", key, mergeErr)
+				}
+				response.Update[key] = merged
+			} else {
+				response.Update[key] = value
+			}
+		}
+		return response, nil
 	}
+}
+
+func evictHumanMessages(ctx context.Context, options FilesystemOptions, request agent.ModelRequest) (agent.ModelRequest, state.Values, context.Context, error) {
+	if options.humanMessageLimit == 0 {
+		return request, nil, ctx, nil
+	}
+	hasTagged := false
+	for _, item := range request.Messages {
+		if item.Role == message.RoleHuman && evictedMessagePath(item) != "" {
+			hasTagged = true
+			break
+		}
+	}
+	newEviction := false
+	if len(request.Messages) > 0 {
+		last := request.Messages[len(request.Messages)-1]
+		newEviction = last.Role == message.RoleHuman && evictedMessagePath(last) == "" && utf8.RuneCountInString(messageText(last)) > options.humanMessageLimit
+	}
+	if !hasTagged && !newEviction {
+		return request, nil, ctx, nil
+	}
+
+	processed := request.Clone()
+	update := state.Values{}
+	boundCtx := ctx
+	if newEviction {
+		var err error
+		boundCtx, err = backend.BindRuntime(ctx, options.Backend, request.State)
+		if err != nil {
+			return agent.ModelRequest{}, nil, ctx, fmt.Errorf("bind human message eviction backend: %w", err)
+		}
+		identifier, err := randomFilesystemID()
+		if err != nil {
+			return agent.ModelRequest{}, nil, ctx, fmt.Errorf("name evicted human message: %w", err)
+		}
+		filePath := path.Join(options.ConversationHistoryRoot, identifier+".md")
+		lastIndex := len(processed.Messages) - 1
+		if _, writeErr := options.Backend.Write(boundCtx, filePath, messageText(processed.Messages[lastIndex])); writeErr == nil {
+			tagged := processed.Messages[lastIndex].Clone()
+			if tagged.Metadata == nil {
+				tagged.Metadata = map[string]json.RawMessage{}
+			}
+			encodedPath, _ := json.Marshal(filePath)
+			tagged.Metadata["lc_evicted_to"] = encodedPath
+			processed.Messages[lastIndex] = tagged
+			update[agent.MessagesKey] = []message.Message{tagged}
+		}
+	}
+	for index, item := range processed.Messages {
+		if item.Role == message.RoleHuman {
+			if filePath := evictedMessagePath(item); filePath != "" {
+				processed.Messages[index] = truncateEvictedHumanMessage(item, filePath)
+			}
+		}
+	}
+	return processed, update, boundCtx, nil
+}
+
+func evictedMessagePath(value message.Message) string {
+	raw := value.Metadata["lc_evicted_to"]
+	if len(raw) == 0 {
+		return ""
+	}
+	var result string
+	if json.Unmarshal(raw, &result) != nil {
+		return ""
+	}
+	return result
+}
+
+func messageText(value message.Message) string {
+	parts := make([]string, 0, len(value.Content))
+	for _, block := range value.Content {
+		if block.Type == message.BlockText {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func truncateEvictedHumanMessage(value message.Message, filePath string) message.Message {
+	replacement := fmt.Sprintf(oversizedHumanMessage, filePath, humanMessagePreview(messageText(value)))
+	result := value.Clone()
+	content := []message.ContentBlock{{Type: message.BlockText, Text: replacement}}
+	for _, block := range result.Content {
+		if block.Type != message.BlockText {
+			content = append(content, block)
+		}
+	}
+	result.Content = content
+	return result
+}
+
+func humanMessagePreview(content string) string {
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for index := range lines {
+		lines[index] = truncatePreviewRunes(lines[index], 1000)
+	}
+	if len(lines) <= 10 {
+		return numberLines(strings.Join(lines, "\n"), 1)
+	}
+	head := numberLines(strings.Join(lines[:5], "\n"), 1)
+	tail := numberLines(strings.Join(lines[len(lines)-5:], "\n"), len(lines)-4)
+	return fmt.Sprintf("%s\n... [%d lines truncated] ...\n%s", head, len(lines)-10, tail)
+}
+
+func truncatePreviewRunes(value string, limit int) string {
+	if utf8.RuneCountInString(value) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:limit])
+}
+
+func randomFilesystemID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
+}
+
+func mergeFilesystemModelUpdate(existing, incoming any) (any, error) {
+	if existingMessages, ok := existing.([]message.Message); ok {
+		incomingMessages, messagesOK := incoming.([]message.Message)
+		if !messagesOK {
+			return nil, fmt.Errorf("cannot combine message and %T updates", incoming)
+		}
+		return append(existingMessages, incomingMessages...), nil
+	}
+	if overwrite, ok := existing.(state.Overwrite); ok {
+		incomingMessages, messagesOK := incoming.([]message.Message)
+		if !messagesOK {
+			return nil, fmt.Errorf("cannot combine overwrite and %T updates", incoming)
+		}
+		messages, messagesOK := overwrite.Value.([]message.Message)
+		if !messagesOK {
+			return nil, fmt.Errorf("message overwrite has type %T", overwrite.Value)
+		}
+		byID := make(map[string]message.Message, len(incomingMessages))
+		for _, item := range incomingMessages {
+			byID[item.ID] = item
+		}
+		for index, item := range messages {
+			if replacement, exists := byID[item.ID]; exists {
+				messages[index] = replacement
+			}
+		}
+		overwrite.Value = messages
+		return overwrite, nil
+	}
+	if existingMap, ok := existing.(map[string]any); ok {
+		incomingMap, mapOK := incoming.(map[string]any)
+		if !mapOK {
+			return nil, fmt.Errorf("cannot combine map and %T updates", incoming)
+		}
+		merged := make(map[string]any, len(existingMap)+len(incomingMap))
+		for key, value := range existingMap {
+			merged[key] = value
+		}
+		for key, value := range incomingMap {
+			merged[key] = value
+		}
+		return merged, nil
+	}
+	return nil, fmt.Errorf("cannot combine %T and %T updates", existing, incoming)
 }
 
 func filesystemRoutePrompt(value backend.Backend) string {
@@ -628,12 +900,16 @@ func filesystemPermissionWrapper(options FilesystemOptions) agent.ToolWrapper {
 		if err != nil {
 			return response, err
 		}
-		if request.Call.Name != "ls" && request.Call.Name != "glob" && request.Call.Name != "grep" && request.Call.Name != "read_file" && len(response.Result.Content) > 0 {
+		if request.Call.Name != "ls" && request.Call.Name != "glob" && request.Call.Name != "grep" && request.Call.Name != "read_file" && request.Call.Name != "edit_file" && request.Call.Name != "write_file" && request.Call.Name != "delete" && options.toolResultLimit > 0 && len(response.Result.Content) > 0 {
 			total := 0
 			for _, block := range response.Result.Content {
-				total += len(block.Text)
+				if options.toolResultBytes {
+					total += len(block.Text)
+				} else {
+					total += utf8.RuneCountInString(block.Text)
+				}
 			}
-			if total > options.LargeResultBytes {
+			if total > options.toolResultLimit {
 				var combined strings.Builder
 				for _, block := range response.Result.Content {
 					combined.WriteString(block.Text)

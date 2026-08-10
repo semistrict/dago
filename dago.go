@@ -30,6 +30,8 @@ type Options struct {
 	FilesystemTools            []string
 	FilesystemToolDescriptions map[string]string
 	MaxExecuteTimeout          int
+	ToolResultTokenLimit       *int
+	HumanMessageTokenLimit     *int
 	Permissions                []FilesystemPermission
 	VideoExtractor             VideoExtractor
 	MaxVideoBytes              int
@@ -106,7 +108,8 @@ func New(options Options) (*DeepAgent, error) {
 	filesystem, err := FilesystemMiddleware(FilesystemOptions{
 		Backend: options.Backend, Permissions: options.Permissions, Tools: options.FilesystemTools,
 		ApprovalOverrides: options.InterruptOn, ToolDescriptions: options.FilesystemToolDescriptions,
-		MaxExecuteTimeout: options.MaxExecuteTimeout, VideoExtractor: options.VideoExtractor,
+		MaxExecuteTimeout: options.MaxExecuteTimeout, ToolResultTokenLimit: options.ToolResultTokenLimit,
+		HumanMessageTokenLimit: options.HumanMessageTokenLimit, VideoExtractor: options.VideoExtractor,
 		MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
 	})
 	if err != nil {
@@ -300,7 +303,8 @@ func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]S
 		filesystem, err := FilesystemMiddleware(FilesystemOptions{
 			Backend: options.Backend, Permissions: permissions, Tools: options.FilesystemTools,
 			ApprovalOverrides: interruptOn, ToolDescriptions: options.FilesystemToolDescriptions,
-			MaxExecuteTimeout: options.MaxExecuteTimeout, VideoExtractor: options.VideoExtractor,
+			MaxExecuteTimeout: options.MaxExecuteTimeout, ToolResultTokenLimit: options.ToolResultTokenLimit,
+			HumanMessageTokenLimit: options.HumanMessageTokenLimit, VideoExtractor: options.VideoExtractor,
 			MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
 		})
 		if err != nil {
