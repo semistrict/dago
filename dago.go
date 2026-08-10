@@ -26,6 +26,9 @@ type Options struct {
 	Backend              backend.Backend
 	FilesystemTools      []string
 	Permissions          []FilesystemPermission
+	VideoExtractor       VideoExtractor
+	MaxVideoBytes        int
+	VideoSamplingRate    float64
 	Subagents            []Subagent
 	AsyncSubagents       []AsyncSubagent
 	AsyncSubagentPrompt  string
@@ -78,6 +81,7 @@ func New(options Options) (*DeepAgent, error) {
 	options.Tools = applyToolProfile(options.Tools, profile.ToolDescriptions, stringSet(profile.ExcludeTools))
 	filesystem, err := FilesystemMiddleware(FilesystemOptions{
 		Backend: options.Backend, Permissions: options.Permissions, Tools: options.FilesystemTools,
+		VideoExtractor: options.VideoExtractor, MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
 	})
 	if err != nil {
 		return nil, err
@@ -254,6 +258,7 @@ func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]S
 		}
 		filesystem, err := FilesystemMiddleware(FilesystemOptions{
 			Backend: options.Backend, Permissions: permissions, Tools: options.FilesystemTools,
+			VideoExtractor: options.VideoExtractor, MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q filesystem: %w", spec.Name, err)

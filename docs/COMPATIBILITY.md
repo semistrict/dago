@@ -28,7 +28,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
 | Asynchronous hosted-subagent lifecycle and durable task state | verified | provider-neutral runner and five management-tool tests |
 | Remote Agent Protocol background client | verified | thread/run create, status/result, interrupting update, cancellation, auth, path escaping, and redirect-boundary tests |
-| Video processing | deferred | media blocks round-trip; no heavy decoder dependency |
+| Video processing | verified | pluggable extractor contract plus optional bounded FFmpeg adapter; video-window, frame, truncation, fallback, and failure tests |
 | Shelley end-to-end application | verified | HTTP route tests plus desktop/mobile browser interaction checks |
 
 ## Intentional differences
@@ -46,5 +46,8 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
   async subagents require an HTTP URL or a caller-supplied runner.
 - Parent-graph commands and a public general-purpose graph builder are deferred. The
   internal command/send surface implements only the routing used by the agent factory.
-- Video decoding and tracing integrations remain separate optional adapters and
-  are not core runtime dependencies.
+- Video decoding is an opt-in extractor capability. The supplied FFmpeg adapter is
+  subprocess-isolated by context and output limits; opaque media behavior remains
+  the default and no decoder library is a core dependency.
+- General tracing integrations remain separate optional adapters and are not core
+  runtime dependencies.

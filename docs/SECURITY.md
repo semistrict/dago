@@ -26,6 +26,13 @@ API-key lookup follows the upstream precedence (`LANGGRAPH_API_KEY`, then
 `LANGSMITH_API_KEY`, then `LANGCHAIN_API_KEY`); use a custom runner when a different
 credential policy is required.
 
+Video decoding is disabled unless the application supplies a `VideoExtractor`.
+The optional FFmpeg adapter treats its configured executable as trusted deployment
+configuration, passes video bytes through standard input, applies a context deadline,
+and bounds input size, frame count, decoder output, emitted image data, and error
+output. It never forwards the original video to the model. Use a separately isolated
+decoder process when media itself is untrusted.
+
 The example web application is single-user software and does not add authentication.
 Bind it to loopback or place it behind an authenticated reverse proxy. Its terminal
 and local-shell paths execute trusted host commands in the selected workspace; they

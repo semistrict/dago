@@ -67,6 +67,11 @@ thread and become durable when a checkpoint saver is configured. Pass an explici
 filesystem, store, composite, local-shell, or remote sandbox backend when the agent
 should operate elsewhere.
 
+Binary media is returned opaquely by default. Supplying `VideoExtractor` in
+`dago.Options` changes video `read_file` pagination to seconds and returns sampled
+JPEG frames. `NewFFmpegVideoExtractor` is the optional ready-made implementation;
+the FFmpeg executable remains an external deployment dependency.
+
 Declarative subagents inherit the parent model and tools unless they override them.
 They receive the standard filesystem, compaction, repair, profile, and prompt-cache
 stack; optional skills, permissions, structured output, and approval rules are
@@ -117,7 +122,7 @@ records are rejected with typed context instead of reconstructed.
 
 | Package | Purpose |
 |---|---|
-| `dago` | Deep Agent constructor; filesystem, inline/background subagent, summary, skill, memory, profile, and rubric middleware; Agent Protocol background client |
+| `dago` | Deep Agent constructor; filesystem and optional video extraction, inline/background subagent, summary, skill, memory, profile, and rubric middleware; Agent Protocol background client |
 | `agent` | Provider-neutral model/tool graph, middleware lifecycle, approval, retry, todo, streaming, and checkpoint operations |
 | `message`, `model`, `tool`, `state` | Stable public contracts and reducers |
 | `model/modeltest` | Scripted and prompt-driven predictable model doubles for offline tests and examples |

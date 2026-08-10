@@ -44,13 +44,16 @@ type FilesystemPermission struct {
 }
 
 type FilesystemOptions struct {
-	Backend          backend.Backend
-	Permissions      []FilesystemPermission
-	Tools            []string
-	ReadLimit        int
-	GrepLimit        int
-	LargeResultBytes int
-	ArtifactsRoot    string
+	Backend           backend.Backend
+	Permissions       []FilesystemPermission
+	Tools             []string
+	ReadLimit         int
+	GrepLimit         int
+	LargeResultBytes  int
+	ArtifactsRoot     string
+	VideoExtractor    VideoExtractor
+	MaxVideoBytes     int
+	VideoSamplingRate float64
 }
 
 var filesystemToolOperations = map[string]FilesystemOperation{
@@ -74,6 +77,12 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 	}
 	if options.ArtifactsRoot == "" {
 		options.ArtifactsRoot = "/large_tool_results"
+	}
+	if options.MaxVideoBytes <= 0 {
+		options.MaxVideoBytes = DefaultMaxVideoInputBytes
+	}
+	if options.VideoSamplingRate <= 0 {
+		options.VideoSamplingRate = DefaultVideoSamplingRate
 	}
 	if err := validatePermissions(options.Permissions); err != nil {
 		return agent.Middleware{}, err
@@ -165,19 +174,37 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		}
 		return tool.TextResult(strings.Join(lines, "\n")), nil
 	}}
-	values["read_file"] = tool.Func{Spec: tool.Definition{Name: "read_file", Description: "Read an absolute file path with 0-indexed line pagination. Returned text includes source line numbers.", InputSchema: schema(`{"file_path":{"type":"string"},"offset":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"default":100}}`, "file_path")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+	readDescription := "Read an absolute file path with 0-indexed line pagination. Returned text includes source line numbers."
+	offsetDescription := "0-indexed starting line."
+	limitDescription := "Maximum lines to return."
+	if options.VideoExtractor != nil {
+		readDescription += " For videos, offset and limit select a window in seconds and sampled JPEG frames are returned."
+		offsetDescription += " For videos, seconds into the source."
+		limitDescription += " For videos, duration in seconds and must be positive."
+	}
+	readSchema, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+		"file_path": map[string]any{"type": "string"},
+		"offset":    map[string]any{"type": "integer", "minimum": 0, "default": 0, "description": offsetDescription},
+		"limit":     map[string]any{"type": "integer", "default": 100, "description": limitDescription},
+	}, "required": []string{"file_path"}})
+	values["read_file"] = tool.Func{Spec: tool.Definition{Name: "read_file", Description: readDescription, InputSchema: readSchema}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 		var input struct {
 			FilePath string `json:"file_path"`
 			Offset   int    `json:"offset"`
-			Limit    int    `json:"limit"`
+			Limit    *int   `json:"limit"`
 		}
 		if err := decodeArguments(raw, &input); err != nil {
 			return tool.Result{}, err
 		}
-		if input.Limit == 0 {
-			input.Limit = options.ReadLimit
+		limit := options.ReadLimit
+		if input.Limit != nil {
+			limit = *input.Limit
 		}
-		result, err := options.Backend.Read(ctx, input.FilePath, input.Offset, input.Limit)
+		video := options.VideoExtractor != nil && isVideoPath(input.FilePath)
+		if video && limit <= 0 {
+			return tool.Result{}, fmt.Errorf("error reading video %s: limit must be > 0, got %d", input.FilePath, limit)
+		}
+		result, err := options.Backend.Read(ctx, input.FilePath, input.Offset, limit)
 		if err != nil {
 			return tool.Result{}, err
 		}
@@ -185,6 +212,9 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 			return tool.Result{}, fmt.Errorf("read %q returned no data", input.FilePath)
 		}
 		if result.Data.Encoding == backend.EncodingBase64 {
+			if video {
+				return videoResult(ctx, options, input.FilePath, result.Data, input.Offset, limit)
+			}
 			return mediaResult(ctx, options.Backend, input.FilePath, result.Data)
 		}
 		if result.Data.Content == "" {
@@ -726,13 +756,9 @@ func numberLines(content string, start int) string {
 }
 
 func mediaResult(ctx context.Context, value backend.Backend, filePath string, data *backend.FileData) (tool.Result, error) {
-	downloads := value.Download(ctx, []string{filePath})
-	if len(downloads) != 1 || downloads[0].Error != "" {
-		raw, err := base64.StdEncoding.DecodeString(data.Content)
-		if err != nil {
-			return tool.Result{}, err
-		}
-		downloads = []backend.DownloadResult{{Content: raw}}
+	raw, err := binaryFileBytes(ctx, value, filePath, data)
+	if err != nil {
+		return tool.Result{}, err
 	}
 	mimeType := mime.TypeByExtension(path.Ext(filePath))
 	blockType := message.BlockFile
@@ -740,10 +766,71 @@ func mediaResult(ctx context.Context, value backend.Backend, filePath string, da
 		blockType = message.BlockImage
 	} else if strings.HasPrefix(mimeType, "audio/") {
 		blockType = message.BlockAudio
-	} else if strings.HasPrefix(mimeType, "video/") {
+	} else if strings.HasPrefix(mimeType, "video/") && strings.ToLower(path.Ext(filePath)) != ".mkv" {
 		blockType = message.BlockVideo
 	}
-	return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: "Read binary file " + filePath}, {Type: blockType, Data: downloads[0].Content, MIMEType: mimeType, Name: path.Base(filePath)}}}, nil
+	return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: "Read binary file " + filePath}, {Type: blockType, Data: raw, MIMEType: mimeType, Name: path.Base(filePath)}}}, nil
+}
+
+func binaryFileBytes(ctx context.Context, value backend.Backend, filePath string, data *backend.FileData) ([]byte, error) {
+	downloads := value.Download(ctx, []string{filePath})
+	if len(downloads) == 1 && downloads[0].Error == "" {
+		return append([]byte(nil), downloads[0].Content...), nil
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(data.Content)
+	if err != nil {
+		return nil, fmt.Errorf("binary content for %s is not valid base64: %w", filePath, err)
+	}
+	return raw, nil
+}
+
+func videoResult(ctx context.Context, options FilesystemOptions, filePath string, data *backend.FileData, offset, limit int) (tool.Result, error) {
+	raw, err := binaryFileBytes(ctx, options.Backend, filePath, data)
+	if err != nil {
+		return tool.Result{}, err
+	}
+	if len(raw) > options.MaxVideoBytes {
+		return tool.Result{}, fmt.Errorf("error reading video %s: video payload exceeds maximum input size of %d bytes", filePath, options.MaxVideoBytes)
+	}
+	window := VideoWindow{OffsetSeconds: float64(max(0, offset)), DurationSeconds: float64(limit), SamplingRate: options.VideoSamplingRate}
+	blocks, err := options.VideoExtractor.Extract(ctx, raw, window)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("error reading video %s: %w\n%s", filePath, err, videoWindowHeader(filePath, window))
+	}
+	frameCount := 0
+	for _, block := range blocks {
+		if block.Type == message.BlockImage {
+			frameCount++
+		}
+	}
+	frameLabel := "frames"
+	if frameCount == 1 {
+		frameLabel = "frame"
+	}
+	content := make([]message.ContentBlock, 0, len(blocks)+2)
+	content = append(content,
+		message.ContentBlock{Type: message.BlockText, Text: fmt.Sprintf("Read video %s: sampled %d %s.", filePath, frameCount, frameLabel)},
+		message.ContentBlock{Type: message.BlockText, Text: videoWindowHeader(filePath, window)},
+	)
+	content = append(content, blocks...)
+	return tool.Result{Content: content}, nil
+}
+
+func videoWindowHeader(filePath string, window VideoWindow) string {
+	end := window.OffsetSeconds + window.DurationSeconds
+	if window.OffsetSeconds <= 0 {
+		return fmt.Sprintf("Reading first %gs of %s at %g fps.", window.DurationSeconds, filePath, window.SamplingRate)
+	}
+	return fmt.Sprintf("Reading [%.3fs, %.3fs) of %s at %g fps.", window.OffsetSeconds, end, filePath, window.SamplingRate)
+}
+
+func isVideoPath(filePath string) bool {
+	switch strings.ToLower(path.Ext(filePath)) {
+	case ".mp4", ".mpeg", ".mov", ".avi", ".flv", ".mpg", ".webm", ".wmv", ".3gpp", ".mkv":
+		return true
+	default:
+		return false
+	}
 }
 
 func formatGrep(result backend.GrepResult, mode string) string {

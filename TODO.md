@@ -21,8 +21,9 @@ and release gates.
 
 The following integrations were deliberately evaluated and deferred because they are
 not required by the pinned local Deep Agents contract: a public general-purpose graph
-API, parent-graph routing, hosted asynchronous subagents, a remote graph client, video
-decoding, general tracing/deployment integrations, ACP, and a general-purpose CLI.
+API, parent-graph routing, general tracing/deployment integrations, ACP, and a
+general-purpose CLI. Hosted asynchronous subagents, the remote Agent Protocol client,
+and opt-in video frame extraction are implemented without becoming core dependencies.
 The Shelley application is included as a complete example rather than a supported
 hosted service.
 
@@ -308,8 +309,8 @@ The primary Python SDK under `libs/deepagents/deepagents` is the product scope:
 - Public structured response behavior and rubric middleware.
 
 Remote asynchronous subagents, video processing, vendor-hosted backends, tracing
-integrations, and provider-specific profile shims should remain optional work after
-the core parity gate.
+integrations, and provider-specific profile shims remain optional capabilities rather
+than prerequisites for local agent execution.
 
 ## Proposed architecture
 
@@ -610,8 +611,8 @@ API with deterministic prompt, tool, state, and stream output.
 - [x] Match schema descriptions, pagination, line numbering, empty-file behavior,
   exact replacement counts, literal grep, output modes, match limits, and truncation
   notices.
-- [x] Implement file/media type detection and safe binary representation without
-  committing to optional video support.
+- [x] Implement file/media type detection, safe binary representation, and optional
+  video-window extraction through a language-neutral interface.
 - [x] Implement ordered allow/deny/ask permission rules, wildcard semantics, delete
   descendant checks, composite-route filtering, and approval generation.
 - [x] Filter unsupported tools based on backend capabilities at each model call.
@@ -719,8 +720,8 @@ contract, and profile behavior is reproducible from fixtures.
 - [x] Implement provider-neutral asynchronous subagent lifecycle tools and durable
   delta task state without a hosted API dependency.
 - [x] Add the remote Agent Protocol client as an optional adapter.
-- [x] Defer video decoding and heavy media dependencies. Video/file blocks and
-  backend offload remain supported as opaque media records.
+- [x] Add an optional video extractor contract and bounded FFmpeg implementation
+  without a linked decoder dependency; retain opaque media behavior by default.
 - [x] Keep hosted sandbox, tracing, context-hub, and deployment integrations as
   separate adapters; include the LangSmith sandbox and persistent Context Hub
   connectors without making either a core runtime dependency.
@@ -831,8 +832,8 @@ suite with stale fixtures is not evidence of current parity.
 - [x] Ship standard SQLite and PostgreSQL savers; defer the PostgreSQL shallow saver
   and graph vector stores.
 - [x] Verify the core agent, filesystem, permissions, inline subagents, summarization,
-  skills, memory, persistence, streaming, and approval tier; defer hosted graph and
-  video-decoding integrations.
+  skills, memory, persistence, streaming, approval, hosted background-agent, and
+  optional video-extraction tiers.
 
 ## Definition of done for the overall port
 
