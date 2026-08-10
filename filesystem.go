@@ -28,9 +28,11 @@ const (
 type PermissionMode string
 
 const (
-	PermissionAllow PermissionMode = "allow"
-	PermissionDeny  PermissionMode = "deny"
-	PermissionAsk   PermissionMode = "ask"
+	PermissionAllow     PermissionMode = "allow"
+	PermissionDeny      PermissionMode = "deny"
+	PermissionInterrupt PermissionMode = "interrupt"
+	// PermissionAsk is retained as a compatibility spelling for interrupt.
+	PermissionAsk PermissionMode = "ask"
 )
 
 // FilesystemPermission is evaluated in declaration order; the first matching rule
@@ -123,7 +125,7 @@ func validatePermissions(rules []FilesystemPermission) error {
 		if rule.Mode == "" {
 			rule.Mode = PermissionAllow
 		}
-		if rule.Mode != PermissionAllow && rule.Mode != PermissionDeny && rule.Mode != PermissionAsk {
+		if rule.Mode != PermissionAllow && rule.Mode != PermissionDeny && rule.Mode != PermissionInterrupt && rule.Mode != PermissionAsk {
 			return fmt.Errorf("filesystem permission %d has invalid mode %q", ruleIndex, rule.Mode)
 		}
 		for _, operation := range rule.Operations {
@@ -378,11 +380,11 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission)
 			decision := permissionDecision(rules, operation, target)
 			if call.Name == "delete" {
 				hasDescendants := deleteTargetMayHaveDescendants(ctx, value, target, len(rules) > 0)
-				if len(findDeletePatterns(rules, target, hasDescendants, PermissionAsk)) > 0 {
-					decision = PermissionAsk
+				if len(findDeletePatterns(rules, target, hasDescendants, PermissionInterrupt)) > 0 {
+					decision = PermissionInterrupt
 				}
 			}
-			if decision == PermissionAsk {
+			if decision == PermissionInterrupt {
 				pending = append(pending, agent.ApprovalRequest{Call: call, Description: fmt.Sprintf("Allow %s access to %s?", operation, target)})
 				gated[call.ID] = true
 			}
@@ -450,7 +452,7 @@ func permissionDecision(rules []FilesystemPermission, operation FilesystemOperat
 				if rule.Mode == "" {
 					return PermissionAllow
 				}
-				return rule.Mode
+				return normalizedMode(rule.Mode)
 			}
 		}
 	}
@@ -656,6 +658,9 @@ func hasOperation(rule FilesystemPermission, operation FilesystemOperation) bool
 func normalizedMode(mode PermissionMode) PermissionMode {
 	if mode == "" {
 		return PermissionAllow
+	}
+	if mode == PermissionAsk {
+		return PermissionInterrupt
 	}
 	return mode
 }

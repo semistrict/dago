@@ -14,6 +14,7 @@ import (
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
+	"github.com/semistrict/dago/tool"
 )
 
 func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
@@ -24,10 +25,13 @@ func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
 			for _, definition := range request.Tools {
 				names[definition.Name] = true
 			}
-			for _, required := range []string{"write_todos", "ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "task", "compact_conversation"} {
+			for _, required := range []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "task", "compact_conversation"} {
 				if !names[required] {
 					return errors.New("missing tool " + required)
 				}
+			}
+			if names["write_todos"] {
+				return errors.New("write_todos should be opt-in")
 			}
 			if names["execute"] {
 				return errors.New("execute exposed without sandbox")
@@ -83,6 +87,69 @@ func TestDeepAgentRepairsDanglingToolCallsBeforeModel(t *testing.T) {
 	}
 	if result.Messages[len(result.Messages)-1].TextContent() != "continued" {
 		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
+func TestDeepAgentPlanningIsOptInAndPromptCachingIsAutomatic(t *testing.T) {
+	script := modeltest.New(model.Profile{SupportsPromptCaching: true}, modeltest.Step{Check: func(request model.Request) error {
+		if request.PromptCache == nil || request.PromptCache.Key != "cache-thread" || request.PromptCache.Retention != "24h" {
+			return fmt.Errorf("prompt cache = %#v", request.PromptCache)
+		}
+		foundTodo := false
+		for _, definition := range request.Tools {
+			foundTodo = foundTodo || definition.Name == "write_todos"
+		}
+		if !foundTodo {
+			return errors.New("opt-in planning tool missing")
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("done")}})
+	compiled, err := New(Options{
+		Model: script, EnableTodo: true, PromptCacheRetention: "24h",
+		DisableSubagents: true, DisableSummary: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{
+		Config: checkpoint.Config{ThreadID: "cache-thread"}, Messages: []message.Message{message.Human("go")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeepAgentInterruptOnWiresHumanApproval(t *testing.T) {
+	danger := tool.Func{Spec: tool.Definition{Name: "danger", Description: "dangerous action", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		return tool.TextResult("ran"), nil
+	}}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "danger-1", Name: "danger", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := New(Options{
+		Model: script, Tools: []tool.Tool{danger}, Saver: checkpoint.NewMemorySaver(),
+		DisableSubagents: true, DisableSummary: true,
+		InterruptOn: []agent.ApprovalRule{{Pattern: "danger", Description: "Allow danger?"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := checkpoint.Config{ThreadID: "generic-approval"}
+	paused, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paused.Interrupts) != 1 || paused.Interrupts[0].ID != "human_approval" {
+		t.Fatalf("interrupts = %#v", paused.Interrupts)
+	}
+	resumed, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Resume: agent.ApprovalResponse{Decisions: map[string]agent.ApprovalChoice{
+		"danger-1": {Decision: agent.ApprovalApprove},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Messages[len(resumed.Messages)-1].TextContent() != "done" {
+		t.Fatalf("messages = %#v", resumed.Messages)
 	}
 }
 
