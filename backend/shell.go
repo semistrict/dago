@@ -2,6 +2,8 @@ package backend
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -41,12 +43,19 @@ func NewLocalShell(options LocalShellOptions) (*LocalShell, error) {
 		return nil, err
 	}
 	if options.ID == "" {
-		options.ID = "local"
+		var identifier [4]byte
+		if _, err := rand.Read(identifier[:]); err != nil {
+			return nil, fmt.Errorf("generate local shell id: %w", err)
+		}
+		options.ID = "local-" + hex.EncodeToString(identifier[:])
 	}
 	if options.Shell == "" {
 		options.Shell = "/bin/sh"
 	}
-	if options.DefaultTimeout <= 0 {
+	if options.DefaultTimeout < 0 {
+		return nil, fmt.Errorf("default timeout must be positive, got %s", options.DefaultTimeout)
+	}
+	if options.DefaultTimeout == 0 {
 		options.DefaultTimeout = 120 * time.Second
 	}
 	if options.MaxOutput <= 0 {
@@ -63,7 +72,8 @@ func (shell *LocalShell) ID() string { return shell.id }
 
 func (shell *LocalShell) Execute(ctx context.Context, command string, timeout time.Duration) (ExecuteResult, error) {
 	if command == "" {
-		return ExecuteResult{}, fmt.Errorf("execute command is required")
+		code := 1
+		return ExecuteResult{Output: "Error: Command must be a non-empty string.", ExitCode: &code}, nil
 	}
 	if timeout < 0 {
 		return ExecuteResult{}, fmt.Errorf("execute timeout cannot be negative")

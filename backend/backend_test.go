@@ -366,6 +366,27 @@ func TestLocalShellIsExplicitBoundedAndCancelable(t *testing.T) {
 	}
 }
 
+func TestLocalShellUsesCanonicalIdentityAndEmptyCommandResult(t *testing.T) {
+	first, err := NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.ID()) != 14 || !strings.HasPrefix(first.ID(), "local-") || first.ID() == second.ID() {
+		t.Fatalf("local shell ids = %q, %q", first.ID(), second.ID())
+	}
+	result, err := first.Execute(context.Background(), "", 0)
+	if err != nil || result.ExitCode == nil || *result.ExitCode != 1 || result.Output != "Error: Command must be a non-empty string." {
+		t.Fatalf("empty command = %#v, %v", result, err)
+	}
+	if _, err := NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: t.TempDir()}, DefaultTimeout: -time.Second}); err == nil {
+		t.Fatal("negative default timeout succeeded")
+	}
+}
+
 func TestLocalShellUsesExplicitEnvironmentAndLabelsStderr(t *testing.T) {
 	t.Setenv("DAGO_SHELL_INHERITED", "parent")
 	root := t.TempDir()
