@@ -176,26 +176,3 @@ func TestProfilesResolveFromModelAndMergeProviderWithExactModel(t *testing.T) {
 }
 
 func stringPointer(value string) *string { return &value }
-
-func TestRubricMiddlewareStoresStructuredGradeAndFallback(t *testing.T) {
-	grader := modeltest.New(model.Profile{StructuredOutput: true}, modeltest.Step{
-		Response: model.Response{Message: message.Assistant("graded"), Structured: json.RawMessage(`{"scores":[{"name":"correct","score":1,"evidence":"right"}],"overall":1}`)},
-	})
-	middleware, err := RubricMiddleware(RubricOptions{Model: grader, Criteria: []RubricCriterion{{Name: "correct", Description: "Factually correct", Weight: 1}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	primary := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("answer")}})
-	compiled, err := New(Options{Model: primary, Middleware: []agent.Middleware{middleware}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("question")}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	grade, ok := result.State[RubricResultKey].(json.RawMessage)
-	if !ok || !strings.Contains(string(grade), `"overall":1`) {
-		t.Fatalf("grade = %#v", result.State[RubricResultKey])
-	}
-}

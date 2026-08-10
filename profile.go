@@ -2,16 +2,13 @@ package dago
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/state"
 	"github.com/semistrict/dago/tool"
 )
 
@@ -355,92 +352,4 @@ func ToolExclusionMiddleware(names []string) agent.Middleware {
 		request.Tools = filtered
 		return next(ctx, request)
 	}}
-}
-
-const RubricResultKey = "rubric_result"
-
-type RubricCriterion struct {
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
-	Weight      float64 `json:"weight,omitempty"`
-}
-
-type RubricOptions struct {
-	Model           model.Chat
-	Criteria        []RubricCriterion
-	Prompt          string
-	FallbackOnError bool
-}
-
-// RubricMiddleware performs an opt-in, provider-neutral structured grading call
-// after the primary agent has completed.
-func RubricMiddleware(options RubricOptions) (agent.Middleware, error) {
-	if options.Model == nil || len(options.Criteria) == 0 {
-		return agent.Middleware{}, fmt.Errorf("rubric model and criteria are required")
-	}
-	for _, criterion := range options.Criteria {
-		if criterion.Name == "" || criterion.Description == "" || criterion.Weight < 0 {
-			return agent.Middleware{}, fmt.Errorf("rubric criteria require name, description, and non-negative weight")
-		}
-	}
-	if options.Prompt == "" {
-		options.Prompt = "Grade the assistant response against every rubric criterion. Return concise evidence and a score from 0 to 1 for each criterion, plus an overall score from 0 to 1."
-	}
-	schema := json.RawMessage(`{"type":"object","properties":{"scores":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"score":{"type":"number","minimum":0,"maximum":1},"evidence":{"type":"string"}},"required":["name","score","evidence"],"additionalProperties":false}},"overall":{"type":"number","minimum":0,"maximum":1}},"required":["scores","overall"],"additionalProperties":false}`)
-	return agent.Middleware{
-		Name: "rubric",
-		Fields: map[string]agent.StateField{RubricResultKey: {
-			Kind: agent.FieldLast, Contract: "dago.rubric.v1", Clone: func(value any) any {
-				if raw, ok := value.(json.RawMessage); ok {
-					return append(json.RawMessage(nil), raw...)
-				}
-				return value
-			},
-		}},
-		AfterAgent: func(ctx context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
-			messages, err := profileMessages(values[agent.MessagesKey])
-			if err != nil {
-				return nil, err
-			}
-			criteria, _ := json.Marshal(options.Criteria)
-			request := []message.Message{
-				message.System(options.Prompt),
-				message.Human("Criteria:\n" + string(criteria) + "\n\nConversation:\n" + renderHistory(messages)),
-			}
-			response, err := options.Model.Invoke(ctx, model.Request{Messages: request, ResponseFormat: &model.ResponseFormat{Name: "rubric_grade", Description: "Rubric scores", Schema: schema, Strict: true}})
-			if err != nil {
-				if options.FallbackOnError {
-					fallback, _ := json.Marshal(map[string]any{"scores": []any{}, "overall": 0, "error": err.Error()})
-					return state.Values{RubricResultKey: json.RawMessage(fallback)}, nil
-				}
-				return nil, err
-			}
-			if !json.Valid(response.Structured) {
-				if options.FallbackOnError {
-					return state.Values{RubricResultKey: json.RawMessage(`{"scores":[],"overall":0,"error":"grader returned invalid structured output"}`)}, nil
-				}
-				return nil, fmt.Errorf("rubric grader returned invalid structured output")
-			}
-			return state.Values{RubricResultKey: append(json.RawMessage(nil), response.Structured...)}, nil
-		},
-	}, nil
-}
-
-func profileMessages(value any) ([]message.Message, error) {
-	switch typed := value.(type) {
-	case []message.Message:
-		return typed, nil
-	case []any:
-		result := make([]message.Message, len(typed))
-		for index, item := range typed {
-			messageValue, ok := item.(message.Message)
-			if !ok {
-				return nil, fmt.Errorf("messages[%d] has type %T", index, item)
-			}
-			result[index] = messageValue
-		}
-		return result, nil
-	default:
-		return nil, fmt.Errorf("messages have type %T", value)
-	}
 }
