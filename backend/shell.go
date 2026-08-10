@@ -1,11 +1,11 @@
 package backend
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os/exec"
+	"sync"
 	"time"
 )
 
@@ -56,26 +56,35 @@ func (shell *LocalShell) Execute(ctx context.Context, command string, timeout ti
 	if timeout < 0 {
 		return ExecuteResult{}, fmt.Errorf("execute timeout cannot be negative")
 	}
-	if timeout == 0 {
+	customTimeout := timeout > 0
+	if !customTimeout {
 		timeout = shell.defaultTimeout
 	}
 	executionContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	process := exec.CommandContext(executionContext, shell.shell, "-c", command)
 	process.Dir = shell.root
-	var output bytes.Buffer
+	output := cappedOutput{max: shell.maxOutput}
 	process.Stdout, process.Stderr = &output, &output
 	err := process.Run()
 	text := output.String()
-	truncated := false
-	if len(text) > shell.maxOutput {
-		text = text[:shell.maxOutput]
-		truncated = true
-	}
-	result := ExecuteResult{Output: text, Truncated: truncated}
+	result := ExecuteResult{Output: text, Truncated: output.Truncated()}
 	if err == nil {
 		code := 0
 		result.ExitCode = &code
+		return result, nil
+	}
+	if ctx.Err() != nil {
+		return result, ctx.Err()
+	}
+	if errors.Is(executionContext.Err(), context.DeadlineExceeded) {
+		code := 124
+		result.ExitCode = &code
+		if customTimeout {
+			result.Output += fmt.Sprintf("\nCommand timed out after %s using the custom timeout; it may be stuck. Inspect the command before retrying.", timeout)
+		} else {
+			result.Output += fmt.Sprintf("\nCommand timed out after %s. Retry with a larger timeout parameter if the command needs more time.", timeout)
+		}
 		return result, nil
 	}
 	var exit *exec.ExitError
@@ -88,4 +97,39 @@ func (shell *LocalShell) Execute(ctx context.Context, command string, timeout ti
 		return result, executionContext.Err()
 	}
 	return result, err
+}
+
+// cappedOutput drains process output after retaining max bytes. Returning the
+// full input length avoids closing the pipe early and changing the process exit
+// status through SIGPIPE.
+type cappedOutput struct {
+	mu        sync.Mutex
+	data      []byte
+	max       int
+	truncated bool
+}
+
+func (output *cappedOutput) Write(value []byte) (int, error) {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	remaining := output.max - len(output.data)
+	if remaining > 0 {
+		output.data = append(output.data, value[:min(remaining, len(value))]...)
+	}
+	if len(value) > remaining {
+		output.truncated = true
+	}
+	return len(value), nil
+}
+
+func (output *cappedOutput) String() string {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	return string(output.data)
+}
+
+func (output *cappedOutput) Truncated() bool {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	return output.truncated
 }

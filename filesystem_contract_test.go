@@ -136,6 +136,32 @@ func TestNumberLinesUsesStableContinuationMarkers(t *testing.T) {
 	}
 }
 
+func TestExecuteReportsExitStatusAndCaptureTruncation(t *testing.T) {
+	shell, err := backend.NewLocalShell(backend.LocalShellOptions{
+		Filesystem: backend.FilesystemOptions{Root: t.TempDir()},
+		MaxOutput:  4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execute := filesystemTool(t, FilesystemOptions{Backend: shell}, "execute")
+	result, err := execute.Execute(context.Background(), json.RawMessage(`{"command":"printf 123456; exit 3","timeout":1}`), tool.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].Text
+	if !strings.Contains(text, "1234") || !strings.Contains(text, "failed with exit code 3") || !strings.Contains(text, "capture size limit") {
+		t.Fatalf("execute result = %q", text)
+	}
+	if !strings.Contains(string(result.Artifact), `"exit_code":3`) || !strings.Contains(string(result.Artifact), `"truncated":true`) {
+		t.Fatalf("execute artifact = %s", result.Artifact)
+	}
+	capped := filesystemTool(t, FilesystemOptions{Backend: shell, MaxExecuteTimeout: 1}, "execute")
+	if _, err := capped.Execute(context.Background(), json.RawMessage(`{"command":"true","timeout":2}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "exceeds maximum 1") {
+		t.Fatalf("execute timeout error = %v", err)
+	}
+}
+
 func schemaString(value any) string {
 	text, _ := value.(string)
 	return text

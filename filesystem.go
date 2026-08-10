@@ -50,6 +50,7 @@ type FilesystemOptions struct {
 	ToolDescriptions  map[string]string
 	ReadLimit         int
 	GrepLimit         int
+	MaxExecuteTimeout int
 	LargeResultBytes  int
 	ArtifactsRoot     string
 	VideoExtractor    VideoExtractor
@@ -159,7 +160,10 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 		options.ReadLimit = 100
 	}
 	if options.GrepLimit <= 0 {
-		options.GrepLimit = 100
+		options.GrepLimit = 1000
+	}
+	if options.MaxExecuteTimeout <= 0 {
+		options.MaxExecuteTimeout = 3600
 	}
 	if options.LargeResultBytes <= 0 {
 		options.LargeResultBytes = 20_000
@@ -445,7 +449,11 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		return tool.TextResult(text), nil
 	}}
 	if sandbox, ok := options.Backend.(backend.Sandbox); ok {
-		values["execute"] = tool.Func{Spec: tool.Definition{Name: "execute", Description: filesystemExecuteDescription(true, true), InputSchema: schema(`{"command":{"type":"string","description":"Shell command to execute in the sandbox environment."},"timeout":{"anyOf":[{"type":"integer","minimum":0},{"type":"null"}],"default":null,"description":"Optional timeout in seconds for this command. Zero uses the backend's default timeout."}}`, "command")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+		executeSchema, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+			"command": map[string]any{"type": "string", "description": "Shell command to execute in the sandbox environment."},
+			"timeout": map[string]any{"anyOf": []any{map[string]any{"type": "integer", "minimum": 0, "maximum": options.MaxExecuteTimeout}, map[string]any{"type": "null"}}, "default": nil, "description": fmt.Sprintf("Optional timeout in seconds, capped at %d. Zero uses the backend's default timeout.", options.MaxExecuteTimeout)},
+		}, "required": []string{"command"}})
+		values["execute"] = tool.Func{Spec: tool.Definition{Name: "execute", Description: filesystemExecuteDescription(true, true), InputSchema: executeSchema}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 			var input struct {
 				Command string `json:"command"`
 				Timeout int    `json:"timeout"`
@@ -453,12 +461,26 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 			if err := decodeArguments(raw, &input); err != nil {
 				return tool.Result{}, err
 			}
+			if input.Timeout > options.MaxExecuteTimeout {
+				return tool.Result{}, fmt.Errorf("execute timeout %d exceeds maximum %d", input.Timeout, options.MaxExecuteTimeout)
+			}
 			result, err := sandbox.Execute(ctx, input.Command, time.Duration(input.Timeout)*time.Second)
 			if err != nil {
 				return tool.Result{}, err
 			}
 			artifact, _ := json.Marshal(map[string]any{"exit_code": result.ExitCode, "truncated": result.Truncated})
-			return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: result.Output}}, Artifact: artifact}, nil
+			text := result.Output
+			if result.ExitCode != nil {
+				status := "succeeded"
+				if *result.ExitCode != 0 {
+					status = "failed"
+				}
+				text += fmt.Sprintf("\n[Command %s with exit code %d]", status, *result.ExitCode)
+			}
+			if result.Truncated {
+				text += "\n[Output was truncated because it exceeded the capture size limit]"
+			}
+			return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: text}}, Artifact: artifact}, nil
 		}}
 	}
 	return values

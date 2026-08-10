@@ -143,3 +143,35 @@ func TestLocalShellIsExplicitBoundedAndCancelable(t *testing.T) {
 		t.Fatal("canceled Execute succeeded")
 	}
 }
+
+func TestLocalShellDrainsRunawayOutputAndReportsTimeouts(t *testing.T) {
+	shell, err := NewLocalShell(LocalShellOptions{
+		Filesystem: FilesystemOptions{Root: t.TempDir()}, MaxOutput: 1_000,
+		DefaultTimeout: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := shell.Execute(context.Background(), "yes x | head -n 50000", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Output) != 1_000 || !result.Truncated || result.ExitCode == nil || *result.ExitCode != 0 {
+		t.Fatalf("runaway Execute = %#v", result)
+	}
+
+	result, err = shell.Execute(context.Background(), "sleep 1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode == nil || *result.ExitCode != 124 || !strings.Contains(result.Output, "timeout parameter") {
+		t.Fatalf("default timeout Execute = %#v", result)
+	}
+	result, err = shell.Execute(context.Background(), "sleep 1", 20*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode == nil || *result.ExitCode != 124 || !strings.Contains(result.Output, "custom timeout") || !strings.Contains(result.Output, "may be stuck") {
+		t.Fatalf("custom timeout Execute = %#v", result)
+	}
+}
