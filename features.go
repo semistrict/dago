@@ -273,10 +273,10 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		options.KeepMessages = 6
 	}
 	if options.HistoryRoot == "" {
-		options.HistoryRoot = "/conversation_history"
+		options.HistoryRoot = backend.ArtifactPath(options.Backend, "conversation_history")
 	}
 	if options.MediaRoot == "" {
-		options.MediaRoot = "/conversation_media"
+		options.MediaRoot = backend.ArtifactPath(options.Backend, "conversation_media")
 	}
 	if options.MediaOffloadBytes <= 0 {
 		options.MediaOffloadBytes = 1 << 20
@@ -285,7 +285,7 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		options.OverflowClipTokens = 5_000
 	}
 	if options.LargeToolResultsRoot == "" {
-		options.LargeToolResultsRoot = "/large_tool_results"
+		options.LargeToolResultsRoot = backend.ArtifactPath(options.Backend, "large_tool_results")
 	}
 	if options.SummaryPrompt == "" {
 		options.SummaryPrompt = "Summarize the earlier conversation faithfully. Preserve decisions, constraints, unresolved tasks, file paths, errors, and important tool results."

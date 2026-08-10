@@ -4,6 +4,7 @@ package backend
 
 import (
 	"context"
+	"path"
 	"time"
 )
 
@@ -120,12 +121,88 @@ type Sandbox interface {
 	Execute(context.Context, string, time.Duration) (ExecuteResult, error)
 }
 
+type sandboxResolver interface {
+	resolveSandbox() (Sandbox, bool)
+}
+
+// SandboxOf resolves command execution through direct and composite backends.
+// Composite execution always belongs to its default backend; routed mounts are
+// file-only views and do not change the shell environment.
+func SandboxOf(value Backend) (Sandbox, bool) {
+	if sandbox, ok := value.(Sandbox); ok {
+		return sandbox, true
+	}
+	if resolver, ok := value.(sandboxResolver); ok {
+		return resolver.resolveSandbox()
+	}
+	return nil, false
+}
+
+// ShellPathRoute describes whether a composite virtual mount is reachable by
+// the default backend's shell and, when it is, which host prefix replaces it.
+type ShellPathRoute struct {
+	VirtualPrefix string
+	HostPrefix    string
+	Accessible    bool
+}
+
+type localHostSandbox interface {
+	Sandbox
+	localHostRoot() string
+}
+
+type localHostFilesystem interface {
+	Backend
+	localHostRoot() string
+}
+
+type artifactsRootBackend interface {
+	backendArtifactsRoot() string
+}
+
+// ArtifactsRootOf returns the backend-selected virtual root for generated
+// conversation history, media, and large tool outputs.
+func ArtifactsRootOf(value Backend) string {
+	if rooted, ok := value.(artifactsRootBackend); ok {
+		if root := rooted.backendArtifactsRoot(); root != "" {
+			return root
+		}
+	}
+	return "/"
+}
+
+// ArtifactPath joins a generated-artifact directory to a backend's root.
+func ArtifactPath(value Backend, directory string) string {
+	return path.Join(ArtifactsRootOf(value), directory)
+}
+
+// ShellPathRoutes reports composite mount mappings without exposing backend
+// internals. Local mappings are valid only when the default shell and routed
+// filesystem share the host.
+func ShellPathRoutes(value Backend) []ShellPathRoute {
+	composite, ok := value.(*Composite)
+	if !ok || len(composite.routes) == 0 {
+		return nil
+	}
+	_, localDefault := composite.defaultBackend.(localHostSandbox)
+	result := make([]ShellPathRoute, 0, len(composite.routes))
+	for _, route := range composite.routes {
+		item := ShellPathRoute{VirtualPrefix: route.prefix}
+		if filesystem, ok := route.backend.(localHostFilesystem); ok && localDefault {
+			item.HostPrefix = filesystem.localHostRoot()
+			item.Accessible = true
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
 type Capabilities struct {
 	Delete  bool
 	Execute bool
 }
 
 func CapabilitiesOf(value Backend) Capabilities {
-	_, execute := value.(Sandbox)
+	_, execute := SandboxOf(value)
 	return Capabilities{Delete: value != nil, Execute: execute}
 }

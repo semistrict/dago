@@ -119,6 +119,62 @@ func TestCompositeUsesLongestRouteAndRemapsResults(t *testing.T) {
 	}
 }
 
+func TestCompositeResolvesDefaultExecutionAndShellRoutes(t *testing.T) {
+	root := t.TempDir()
+	shell, err := NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountedRoot := t.TempDir()
+	mounted, err := NewFilesystem(FilesystemOptions{Root: mountedRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistent, err := NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	composite, err := NewComposite(shell, map[string]Backend{"/common/": mounted, "/memories/": persistent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, ok := SandboxOf(composite)
+	if !ok || resolved != shell || !CapabilitiesOf(composite).Execute {
+		t.Fatalf("composite sandbox = %#v, %v", resolved, ok)
+	}
+	routes := ShellPathRoutes(composite)
+	if len(routes) != 2 || routes[0].VirtualPrefix != "/memories/" || routes[0].Accessible || routes[1].VirtualPrefix != "/common/" || !routes[1].Accessible || routes[1].HostPrefix != mounted.localHostRoot() {
+		t.Fatalf("shell routes = %#v", routes)
+	}
+
+	plain, _ := NewMemory(nil)
+	withoutShell, err := NewComposite(plain, map[string]Backend{"/common/": mounted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := SandboxOf(withoutShell); ok || ShellPathRoutes(withoutShell)[0].Accessible {
+		t.Fatalf("non-shell composite exposed execution: %#v", ShellPathRoutes(withoutShell))
+	}
+}
+
+func TestCompositeArtifactsRootIsNormalized(t *testing.T) {
+	memory, _ := NewMemory(nil)
+	composite, err := NewCompositeWithOptions(CompositeOptions{Default: memory, ArtifactsRoot: "/workspace/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root := ArtifactsRootOf(composite); root != "/workspace" {
+		t.Fatalf("artifacts root = %q", root)
+	}
+	if target := ArtifactPath(composite, "large_tool_results"); target != "/workspace/large_tool_results" {
+		t.Fatalf("artifact path = %q", target)
+	}
+	plain, _ := NewComposite(memory, nil)
+	if root := ArtifactsRootOf(plain); root != "/" || ArtifactPath(plain, "conversation_history") != "/conversation_history" {
+		t.Fatalf("default artifacts root = %q", root)
+	}
+}
+
 func TestLocalShellIsExplicitBoundedAndCancelable(t *testing.T) {
 	shell, err := NewLocalShell(LocalShellOptions{
 		Filesystem: FilesystemOptions{Root: t.TempDir()}, MaxOutput: 4,

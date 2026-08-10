@@ -169,7 +169,7 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 		options.LargeResultBytes = 20_000
 	}
 	if options.ArtifactsRoot == "" {
-		options.ArtifactsRoot = "/large_tool_results"
+		options.ArtifactsRoot = backend.ArtifactPath(options.Backend, "large_tool_results")
 	}
 	if options.MaxVideoBytes <= 0 {
 		options.MaxVideoBytes = DefaultMaxVideoInputBytes
@@ -220,11 +220,11 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 	}
 	middleware.BeforeTools = filesystemApprovalHook(options.Backend, options.Permissions)
 	middleware.WrapToolCall = filesystemPermissionWrapper(options)
-	middleware.WrapModelCall = filesystemDescriptionWrapper()
+	middleware.WrapModelCall = filesystemModelWrapper(options.Backend)
 	return middleware, nil
 }
 
-func filesystemDescriptionWrapper() agent.ModelWrapper {
+func filesystemModelWrapper(value backend.Backend) agent.ModelWrapper {
 	return func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
 		visible := map[string]bool{}
 		for _, executable := range request.Tools {
@@ -251,8 +251,61 @@ func filesystemDescriptionWrapper() agent.ModelWrapper {
 			}
 		}
 		request.Tools = applyToolProfile(request.Tools, descriptions, nil)
+		if visible["execute"] {
+			if routePrompt := filesystemRoutePrompt(value); routePrompt != "" {
+				if request.SystemMessage == nil {
+					system := message.System(routePrompt)
+					request.SystemMessage = &system
+				} else {
+					system := request.SystemMessage.Clone()
+					system.Content = append(system.Content, message.ContentBlock{Type: message.BlockText, Text: "\n\n" + routePrompt})
+					request.SystemMessage = &system
+				}
+			}
+		}
 		return next(ctx, request)
 	}
+}
+
+func filesystemRoutePrompt(value backend.Backend) string {
+	routes := backend.ShellPathRoutes(value)
+	if len(routes) == 0 {
+		return ""
+	}
+	lines := []string{
+		"## Shell paths vs. virtual paths", "",
+		"The execute tool runs commands in the default backend's shell. Some paths returned by file tools are virtual mounts.", "",
+		"Replace a mapped virtual prefix with its host prefix in shell commands. Mounts without a mapping are not accessible from the shell and must be accessed with file tools.", "",
+		"Do not assume that every path returned by a file tool can be used directly in a shell command.",
+	}
+	hasMappings := false
+	for _, route := range routes {
+		hasMappings = hasMappings || route.Accessible
+	}
+	if hasMappings {
+		lines = append(lines, "", "Host path mappings:")
+		for _, route := range routes {
+			if !route.Accessible {
+				continue
+			}
+			virtual := strings.TrimSuffix(route.VirtualPrefix, "/") + "/"
+			host := strings.TrimSuffix(route.HostPrefix, "/") + "/"
+			lines = append(lines, fmt.Sprintf("- `%s` -> `%s` (e.g. `%sdir/x.go` -> `%sdir/x.go`)", virtual, host, virtual, host))
+		}
+	}
+	hasInaccessible := false
+	for _, route := range routes {
+		hasInaccessible = hasInaccessible || !route.Accessible
+	}
+	if hasInaccessible {
+		lines = append(lines, "", "Virtual mounts without a host path mapping (not accessible from the shell):")
+		for _, route := range routes {
+			if !route.Accessible {
+				lines = append(lines, "- `"+strings.TrimSuffix(route.VirtualPrefix, "/")+"/`")
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func validatePermissions(rules []FilesystemPermission) error {
@@ -448,7 +501,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		text := formatGrep(result, input.OutputMode)
 		return tool.TextResult(text), nil
 	}}
-	if sandbox, ok := options.Backend.(backend.Sandbox); ok {
+	if sandbox, ok := backend.SandboxOf(options.Backend); ok {
 		executeSchema, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 			"command": map[string]any{"type": "string", "description": "Shell command to execute in the sandbox environment."},
 			"timeout": map[string]any{"anyOf": []any{map[string]any{"type": "integer", "minimum": 0, "maximum": options.MaxExecuteTimeout}, map[string]any{"type": "null"}}, "default": nil, "description": fmt.Sprintf("Optional timeout in seconds, capped at %d. Zero uses the backend's default timeout.", options.MaxExecuteTimeout)},

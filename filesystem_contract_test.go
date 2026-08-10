@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
+	"github.com/semistrict/dago/message"
+	memorystore "github.com/semistrict/dago/store"
 	"github.com/semistrict/dago/tool"
 )
 
@@ -159,6 +162,77 @@ func TestExecuteReportsExitStatusAndCaptureTruncation(t *testing.T) {
 	capped := filesystemTool(t, FilesystemOptions{Backend: shell, MaxExecuteTimeout: 1}, "execute")
 	if _, err := capped.Execute(context.Background(), json.RawMessage(`{"command":"true","timeout":2}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "exceeds maximum 1") {
 		t.Fatalf("execute timeout error = %v", err)
+	}
+}
+
+func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
+	shell, err := backend.NewLocalShell(backend.LocalShellOptions{Filesystem: backend.FilesystemOptions{Root: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounted, err := backend.NewFilesystem(backend.FilesystemOptions{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistent, err := backend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	composite, err := backend.NewComposite(shell, map[string]backend.Backend{"/common/": mounted, "/memories/": persistent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := FilesystemMiddleware(FilesystemOptions{Backend: composite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	system := message.System("base prompt")
+	_, err = middleware.WrapModelCall(context.Background(), agent.ModelRequest{SystemMessage: &system, Tools: middleware.Tools}, func(_ context.Context, request agent.ModelRequest) (agent.ModelResponse, error) {
+		text := request.SystemMessage.TextContent()
+		if !strings.Contains(text, "## Shell paths vs. virtual paths") || !strings.Contains(text, "`/common/` -> `") || !strings.Contains(text, "`/memories/`") || !strings.Contains(text, "not accessible from the shell") {
+			t.Fatalf("system prompt = %q", text)
+		}
+		foundExecute := false
+		for _, executable := range request.Tools {
+			foundExecute = foundExecute || executable.Definition().Name == "execute"
+		}
+		if !foundExecute {
+			t.Fatal("composite default shell did not expose execute")
+		}
+		return agent.ModelResponse{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
+	memory, err := backend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composite, err := backend.NewCompositeWithOptions(backend.CompositeOptions{Default: memory, ArtifactsRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := FilesystemMiddleware(FilesystemOptions{Backend: composite, LargeResultBytes: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := middleware.WrapToolCall(context.Background(), agent.ToolCallRequest{
+		Call: message.ToolCall{ID: "evict", Name: "custom"},
+	}, func(context.Context, agent.ToolCallRequest) (agent.ToolCallResponse, error) {
+		return agent.ToolCallResponse{Result: tool.TextResult(strings.Repeat("x", 50))}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := response.Result.Content[0].Text; !strings.Contains(text, "/workspace/large_tool_results/evict.txt") {
+		t.Fatalf("offload result = %q", text)
+	}
+	read, err := composite.Read(context.Background(), "/workspace/large_tool_results/evict.txt", 0, 100)
+	if err != nil || read.Data == nil || read.Data.Content != strings.Repeat("x", 50) {
+		t.Fatalf("offloaded file = %#v, %v", read, err)
 	}
 }
 

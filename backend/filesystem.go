@@ -31,6 +31,8 @@ type Filesystem struct {
 	maxResults  int
 }
 
+func (backend *Filesystem) localHostRoot() string { return backend.root }
+
 func NewFilesystem(options FilesystemOptions) (*Filesystem, error) {
 	root := options.Root
 	if root == "" {

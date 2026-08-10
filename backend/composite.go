@@ -16,6 +16,19 @@ type route struct {
 type Composite struct {
 	defaultBackend Backend
 	routes         []route
+	artifactsRoot  string
+}
+
+func (composite *Composite) resolveSandbox() (Sandbox, bool) {
+	return SandboxOf(composite.defaultBackend)
+}
+
+func (composite *Composite) backendArtifactsRoot() string { return composite.artifactsRoot }
+
+type CompositeOptions struct {
+	Default       Backend
+	Routes        map[string]Backend
+	ArtifactsRoot string
 }
 
 func (composite *Composite) runtimeBackends() []RuntimeBackend {
@@ -92,11 +105,26 @@ func mergeStatePatches(left, right any) any {
 }
 
 func NewComposite(defaultBackend Backend, routes map[string]Backend) (*Composite, error) {
-	if defaultBackend == nil {
+	return NewCompositeWithOptions(CompositeOptions{Default: defaultBackend, Routes: routes})
+}
+
+func NewCompositeWithOptions(options CompositeOptions) (*Composite, error) {
+	if options.Default == nil {
 		return nil, fmt.Errorf("composite default backend is required")
 	}
-	result := &Composite{defaultBackend: defaultBackend}
-	for prefix, value := range routes {
+	artifactsRoot := options.ArtifactsRoot
+	if artifactsRoot == "" {
+		artifactsRoot = "/"
+	}
+	artifactsRoot, err := normalizeVirtual(artifactsRoot)
+	if err != nil {
+		return nil, fmt.Errorf("composite artifacts root: %w", err)
+	}
+	result := &Composite{defaultBackend: options.Default, artifactsRoot: strings.TrimSuffix(artifactsRoot, "/")}
+	if result.artifactsRoot == "" {
+		result.artifactsRoot = "/"
+	}
+	for prefix, value := range options.Routes {
 		if value == nil || !strings.HasPrefix(prefix, "/") {
 			return nil, fmt.Errorf("composite route %q is invalid", prefix)
 		}
