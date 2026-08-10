@@ -71,18 +71,35 @@ func NewLocalShell(options LocalShellOptions) (*LocalShell, error) {
 func (shell *LocalShell) ID() string { return shell.id }
 
 func (shell *LocalShell) Execute(ctx context.Context, command string, timeout time.Duration) (ExecuteResult, error) {
+	if timeout < 0 {
+		return ExecuteResult{}, fmt.Errorf("execute timeout cannot be negative")
+	}
+	if timeout == 0 {
+		return shell.execute(ctx, command, shell.defaultTimeout, false)
+	}
+	return shell.execute(ctx, command, timeout, true)
+}
+
+func (shell *LocalShell) ExecuteWithOptions(ctx context.Context, command string, options ExecuteOptions) (ExecuteResult, error) {
+	if options.Timeout == nil {
+		return shell.execute(ctx, command, shell.defaultTimeout, false)
+	}
+	if *options.Timeout < 0 {
+		return ExecuteResult{}, fmt.Errorf("execute timeout cannot be negative")
+	}
+	return shell.execute(ctx, command, *options.Timeout, true)
+}
+
+func (shell *LocalShell) execute(ctx context.Context, command string, timeout time.Duration, customTimeout bool) (ExecuteResult, error) {
 	if command == "" {
 		code := 1
 		return ExecuteResult{Output: "Error: Command must be a non-empty string.", ExitCode: &code}, nil
 	}
-	if timeout < 0 {
-		return ExecuteResult{}, fmt.Errorf("execute timeout cannot be negative")
+	executionContext := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		executionContext, cancel = context.WithTimeout(ctx, timeout)
 	}
-	customTimeout := timeout > 0
-	if !customTimeout {
-		timeout = shell.defaultTimeout
-	}
-	executionContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	process := exec.CommandContext(executionContext, shell.shell, "-c", command)
 	process.Dir = shell.root

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	ls "github.com/langchain-ai/langsmith-go"
 	"github.com/langchain-ai/langsmith-go/option"
@@ -14,6 +15,7 @@ import (
 type fakeSandbox struct {
 	files    map[string][]byte
 	commands []string
+	runs     []ls.SandboxBoxRunParams
 	run      func(string) (*ls.SandboxExecutionResult, error)
 }
 
@@ -35,6 +37,7 @@ func (fake *fakeSandbox) WriteFile(_ context.Context, path string, content []byt
 
 func (fake *fakeSandbox) Run(_ context.Context, params ls.SandboxBoxRunParams, _ ...option.RequestOption) (*ls.SandboxExecutionResult, error) {
 	fake.commands = append(fake.commands, params.Command.Value)
+	fake.runs = append(fake.runs, params)
 	if fake.run != nil {
 		return fake.run(params.Command.Value)
 	}
@@ -99,6 +102,31 @@ func TestExecuteCombinesOutputAndBoundsIt(t *testing.T) {
 	}
 	if result.Output != "12345\ner" || !result.Truncated || result.ExitCode == nil || *result.ExitCode != 7 {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestExecutePreservesOmittedAndZeroTimeouts(t *testing.T) {
+	fake := &fakeSandbox{}
+	remote, _ := newBackend("sandbox", fake, Options{})
+	if _, err := remote.ExecuteWithOptions(context.Background(), "true", backend.ExecuteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	zero := time.Duration(0)
+	if _, err := remote.ExecuteWithOptions(context.Background(), "true", backend.ExecuteOptions{Timeout: &zero}); err != nil {
+		t.Fatal(err)
+	}
+	partial := 1500 * time.Millisecond
+	if _, err := remote.ExecuteWithOptions(context.Background(), "true", backend.ExecuteOptions{Timeout: &partial}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.runs) != 3 || fake.runs[0].Timeout.Present {
+		t.Fatalf("omitted timeout = %#v", fake.runs)
+	}
+	if !fake.runs[1].Timeout.Present || fake.runs[1].Timeout.Value != 0 {
+		t.Fatalf("zero timeout = %#v", fake.runs[1].Timeout)
+	}
+	if !fake.runs[2].Timeout.Present || fake.runs[2].Timeout.Value != 2 {
+		t.Fatalf("rounded timeout = %#v", fake.runs[2].Timeout)
 	}
 }
 

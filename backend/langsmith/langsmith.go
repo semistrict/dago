@@ -73,12 +73,27 @@ func newBackend(id string, sandbox sandboxAPI, options Options) (*Backend, error
 func (remote *Backend) ID() string { return remote.id }
 
 func (remote *Backend) Execute(ctx context.Context, command string, timeout time.Duration) (backend.ExecuteResult, error) {
+	var selected *time.Duration
+	if timeout > 0 {
+		selected = &timeout
+	}
+	return remote.execute(ctx, command, selected)
+}
+
+func (remote *Backend) ExecuteWithOptions(ctx context.Context, command string, options backend.ExecuteOptions) (backend.ExecuteResult, error) {
+	if options.Timeout != nil && *options.Timeout < 0 {
+		return backend.ExecuteResult{}, fmt.Errorf("langsmith backend: execute timeout cannot be negative")
+	}
+	return remote.execute(ctx, command, options.Timeout)
+}
+
+func (remote *Backend) execute(ctx context.Context, command string, timeout *time.Duration) (backend.ExecuteResult, error) {
 	if strings.TrimSpace(command) == "" {
 		return backend.ExecuteResult{}, fmt.Errorf("langsmith backend: command is required")
 	}
 	params := ls.SandboxBoxRunParams{Command: ls.F(command)}
-	if timeout > 0 {
-		seconds := int64((timeout + time.Second - 1) / time.Second)
+	if timeout != nil {
+		seconds := int64((*timeout + time.Second - 1) / time.Second)
 		params.Timeout = ls.F(seconds)
 	}
 	result, err := remote.sandbox.Run(ctx, params)

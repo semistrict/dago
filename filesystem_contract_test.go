@@ -23,6 +23,23 @@ type blockingGlobBackend struct {
 	err     error
 }
 
+type recordingConfigurableSandbox struct {
+	backend.Backend
+	options []backend.ExecuteOptions
+}
+
+func (sandbox *recordingConfigurableSandbox) ID() string { return "recording" }
+
+func (sandbox *recordingConfigurableSandbox) Execute(context.Context, string, time.Duration) (backend.ExecuteResult, error) {
+	panic("legacy Execute called for configurable sandbox")
+}
+
+func (sandbox *recordingConfigurableSandbox) ExecuteWithOptions(_ context.Context, _ string, options backend.ExecuteOptions) (backend.ExecuteResult, error) {
+	sandbox.options = append(sandbox.options, options)
+	code := 0
+	return backend.ExecuteResult{ExitCode: &code}, nil
+}
+
 func (value blockingGlobBackend) Glob(context.Context, string, string) (backend.GlobResult, error) {
 	if value.err != nil {
 		return backend.GlobResult{}, value.err
@@ -207,6 +224,29 @@ func TestExecuteReportsExitStatusAndCaptureTruncation(t *testing.T) {
 	capped := filesystemTool(t, FilesystemOptions{Backend: shell, MaxExecuteTimeout: 1}, "execute")
 	if _, err := capped.Execute(context.Background(), json.RawMessage(`{"command":"true","timeout":2}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "exceeds maximum 1") {
 		t.Fatalf("execute timeout error = %v", err)
+	}
+}
+
+func TestExecuteDistinguishesOmittedAndZeroTimeouts(t *testing.T) {
+	memory, err := backend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox := &recordingConfigurableSandbox{Backend: memory}
+	execute := filesystemTool(t, FilesystemOptions{Backend: sandbox}, "execute")
+	for _, arguments := range []string{`{"command":"true"}`, `{"command":"true","timeout":0}`, `{"command":"true","timeout":3}`} {
+		if _, err := execute.Execute(context.Background(), json.RawMessage(arguments), tool.Runtime{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(sandbox.options) != 3 || sandbox.options[0].Timeout != nil {
+		t.Fatalf("omitted timeout = %#v", sandbox.options)
+	}
+	if sandbox.options[1].Timeout == nil || *sandbox.options[1].Timeout != 0 {
+		t.Fatalf("zero timeout = %#v", sandbox.options[1])
+	}
+	if sandbox.options[2].Timeout == nil || *sandbox.options[2].Timeout != 3*time.Second {
+		t.Fatalf("custom timeout = %#v", sandbox.options[2])
 	}
 }
 

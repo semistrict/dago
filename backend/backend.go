@@ -121,6 +121,33 @@ type Sandbox interface {
 	Execute(context.Context, string, time.Duration) (ExecuteResult, error)
 }
 
+// ExecuteOptions preserves the distinction between an omitted timeout and an
+// explicitly supplied zero timeout. A nil Timeout uses the backend default;
+// zero disables the command timeout when the backend supports that behavior.
+type ExecuteOptions struct {
+	Timeout *time.Duration
+}
+
+// ConfigurableSandbox is an optional Sandbox extension for execution options
+// whose omission is semantically meaningful. Existing Sandbox implementations
+// remain valid and receive the legacy duration form through ExecuteSandbox.
+type ConfigurableSandbox interface {
+	Sandbox
+	ExecuteWithOptions(context.Context, string, ExecuteOptions) (ExecuteResult, error)
+}
+
+// ExecuteSandbox uses the richer execution contract when available and falls
+// back to the legacy Sandbox method otherwise.
+func ExecuteSandbox(ctx context.Context, sandbox Sandbox, command string, options ExecuteOptions) (ExecuteResult, error) {
+	if configurable, ok := sandbox.(ConfigurableSandbox); ok {
+		return configurable.ExecuteWithOptions(ctx, command, options)
+	}
+	if options.Timeout == nil {
+		return sandbox.Execute(ctx, command, 0)
+	}
+	return sandbox.Execute(ctx, command, *options.Timeout)
+}
+
 type sandboxResolver interface {
 	resolveSandbox() (Sandbox, bool)
 }

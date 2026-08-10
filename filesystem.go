@@ -969,20 +969,25 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 	if sandbox, ok := backend.SandboxOf(options.Backend); ok {
 		executeSchema, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 			"command": map[string]any{"type": "string", "description": "Shell command to execute in the sandbox environment."},
-			"timeout": map[string]any{"anyOf": []any{map[string]any{"type": "integer", "minimum": 0, "maximum": options.MaxExecuteTimeout}, map[string]any{"type": "null"}}, "default": nil, "description": fmt.Sprintf("Optional timeout in seconds, capped at %d. Zero uses the backend's default timeout.", options.MaxExecuteTimeout)},
+			"timeout": map[string]any{"anyOf": []any{map[string]any{"type": "integer", "minimum": 0, "maximum": options.MaxExecuteTimeout}, map[string]any{"type": "null"}}, "default": nil, "description": fmt.Sprintf("Optional timeout in seconds, capped at %d. Omit it to use the backend default; zero disables the command timeout when supported.", options.MaxExecuteTimeout)},
 		}, "required": []string{"command"}})
 		values["execute"] = tool.Func{Spec: tool.Definition{Name: "execute", Description: filesystemExecuteDescription(true, true), InputSchema: executeSchema}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 			var input struct {
 				Command string `json:"command"`
-				Timeout int    `json:"timeout"`
+				Timeout *int   `json:"timeout"`
 			}
 			if err := decodeArguments(raw, &input); err != nil {
 				return tool.Result{}, err
 			}
-			if input.Timeout > options.MaxExecuteTimeout {
-				return tool.Result{}, fmt.Errorf("execute timeout %d exceeds maximum %d", input.Timeout, options.MaxExecuteTimeout)
+			if input.Timeout != nil && *input.Timeout > options.MaxExecuteTimeout {
+				return tool.Result{}, fmt.Errorf("execute timeout %d exceeds maximum %d", *input.Timeout, options.MaxExecuteTimeout)
 			}
-			result, err := sandbox.Execute(ctx, input.Command, time.Duration(input.Timeout)*time.Second)
+			var timeout *time.Duration
+			if input.Timeout != nil {
+				value := time.Duration(*input.Timeout) * time.Second
+				timeout = &value
+			}
+			result, err := backend.ExecuteSandbox(ctx, sandbox, input.Command, backend.ExecuteOptions{Timeout: timeout})
 			if err != nil {
 				return tool.Result{}, err
 			}
