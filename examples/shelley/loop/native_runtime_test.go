@@ -65,6 +65,26 @@ func TestNativeImageProjectionUsesBase64AndPreservesDimensions(t *testing.T) {
 	}
 }
 
+func TestNativeServerToolProjectionPreservesOpenAIOutputItem(t *testing.T) {
+	raw := json.RawMessage(`{"type":"web_search_call","id":"search_1","status":"completed","action":{"type":"search","queries":["NYC weather"]}}`)
+	native := []dmessage.ContentBlock{{
+		Type: dmessage.BlockServerTool, ID: "search_1", Name: "web_search",
+		Extra: map[string]json.RawMessage{
+			"arguments":         json.RawMessage(`{"query":"NYC weather"}`),
+			openAIOutputItemKey: raw,
+		},
+	}}
+
+	projected := contentFromDago(native)
+	if len(projected) != 1 || string(projected[0].OpenAIResponsesOutputItem) != string(raw) {
+		t.Fatalf("projected content = %#v", projected)
+	}
+	roundTrip := contentToDago(projected)
+	if len(roundTrip) != 1 || roundTrip[0].Type != dmessage.BlockServerTool || string(roundTrip[0].Extra[openAIOutputItemKey]) != string(raw) {
+		t.Fatalf("round-trip content = %#v", roundTrip)
+	}
+}
+
 func TestLoopDagoHarnessExposesCanonicalDeepAgentTools(t *testing.T) {
 	chat := &harnessSurfaceChat{}
 	runtime := NewLoop(Config{

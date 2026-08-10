@@ -18,6 +18,7 @@ const (
 	shelleyMessageMetadata  = "shelley.message.v1"
 	shelleyToolArtifact     = "shelley.tool_result.v1"
 	openAIReasoningStateKey = "openai.responses.reasoning"
+	openAIOutputItemKey     = "openai.responses.output_item"
 	displayWidthKey         = "shelley.display_width"
 	displayHeightKey        = "shelley.display_height"
 )
@@ -279,6 +280,16 @@ func contentToDago(items []llm.Content) []dmessage.ContentBlock {
 				}
 			}
 			result = append(result, block)
+		case llm.ContentTypeServerToolUse:
+			arguments := item.ToolInput
+			if len(arguments) == 0 {
+				arguments = json.RawMessage(`{}`)
+			}
+			extra := map[string]json.RawMessage{"arguments": append(json.RawMessage(nil), arguments...)}
+			if len(item.OpenAIResponsesOutputItem) > 0 {
+				extra[openAIOutputItemKey] = append(json.RawMessage(nil), item.OpenAIResponsesOutputItem...)
+			}
+			result = append(result, dmessage.ContentBlock{Type: dmessage.BlockServerTool, ID: item.ID, Name: item.ToolName, Extra: extra})
 		case llm.ContentTypeToolUse, llm.ContentTypeToolResult:
 			// Calls/results use the dedicated Dago fields.
 		default:
@@ -335,7 +346,11 @@ func contentFromDago(items []dmessage.ContentBlock) []llm.Content {
 			if len(arguments) == 0 {
 				arguments = json.RawMessage(`{}`)
 			}
-			result = append(result, llm.Content{ID: item.ID, Type: llm.ContentTypeServerToolUse, ToolName: item.Name, ToolInput: append(json.RawMessage(nil), arguments...)})
+			result = append(result, llm.Content{
+				ID: item.ID, Type: llm.ContentTypeServerToolUse, ToolName: item.Name,
+				ToolInput:                 append(json.RawMessage(nil), arguments...),
+				OpenAIResponsesOutputItem: append(json.RawMessage(nil), item.Extra[openAIOutputItemKey]...),
+			})
 		case dmessage.BlockSearchResult:
 			result = append(result, llm.Content{ID: item.ID, Type: llm.ContentTypeWebSearchResult, Title: item.Name, URL: item.URL})
 		case dmessage.BlockNonStandard:

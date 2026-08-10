@@ -177,6 +177,9 @@ type Content struct {
 	Signature string
 
 	OpenAIResponsesReasoning *OpenAIResponsesReasoningMetadata `json:",omitempty"`
+	// OpenAIResponsesOutputItem preserves a provider-hosted Responses API
+	// output item so manually managed conversation history can replay it.
+	OpenAIResponsesOutputItem json.RawMessage `json:",omitempty"`
 
 	// for tool_use
 	ToolName  string

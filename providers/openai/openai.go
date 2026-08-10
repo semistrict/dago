@@ -19,7 +19,10 @@ import (
 	"github.com/semistrict/dago/tool"
 )
 
-const defaultAPIBaseURL = "https://api.openai.com/v1"
+const (
+	defaultAPIBaseURL      = "https://api.openai.com/v1"
+	responseOutputStateKey = "openai.responses.output_item"
+)
 
 var ErrIncompleteStream = errors.New("openai: response stream ended before completion")
 
@@ -646,6 +649,31 @@ func inputItems(value message.Message) ([]any, error) {
 				"type": "reasoning", "id": state.ID, "summary": summary,
 				"encrypted_content": state.EncryptedContent,
 			})
+		case message.BlockServerTool:
+			if value.Role != message.RoleAssistant {
+				return nil, fmt.Errorf("openai: server tool content is only supported in assistant messages")
+			}
+			raw := block.Extra[responseOutputStateKey]
+			if len(raw) == 0 {
+				// Older checkpoints retained only the display projection of hosted
+				// tool calls. It is not sufficient to reconstruct a provider input
+				// item safely, so preserve the assistant text and omit this item.
+				continue
+			}
+			var replay struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+			}
+			if err := json.Unmarshal(raw, &replay); err != nil {
+				return nil, fmt.Errorf("openai: decode server tool state: %w", err)
+			}
+			if replay.Type != "web_search_call" {
+				return nil, fmt.Errorf("openai: unsupported server tool state %q", replay.Type)
+			}
+			if block.ID != "" && replay.ID != block.ID {
+				return nil, fmt.Errorf("openai: server tool state id %q does not match block id %q", replay.ID, block.ID)
+			}
+			items = append(items, append(json.RawMessage(nil), raw...))
 		default:
 			return nil, fmt.Errorf("openai: unsupported content block %q", block.Type)
 		}
@@ -675,6 +703,7 @@ type responseIncompleteDetails struct {
 type responseOutput struct {
 	Type             string            `json:"type"`
 	ID               string            `json:"id"`
+	Status           string            `json:"status,omitempty"`
 	Role             string            `json:"role"`
 	CallID           string            `json:"call_id"`
 	Name             string            `json:"name"`
@@ -683,6 +712,18 @@ type responseOutput struct {
 	Summary          []responseSummary `json:"summary,omitempty"`
 	EncryptedContent string            `json:"encrypted_content,omitempty"`
 	Action           *responseAction   `json:"action,omitempty"`
+	raw              json.RawMessage
+}
+
+func (output *responseOutput) UnmarshalJSON(data []byte) error {
+	type wire responseOutput
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*output = responseOutput(decoded)
+	output.raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 type responseAction struct {
@@ -775,7 +816,11 @@ func normalizeResponse(payload responsesResponse, format *model.ResponseFormat) 
 					}
 				}
 			}
-			result.Content = append(result.Content, message.ContentBlock{Type: message.BlockServerTool, ID: output.ID, Name: "web_search", Extra: map[string]json.RawMessage{"arguments": mustJSON(arguments)}})
+			extra := map[string]json.RawMessage{"arguments": mustJSON(arguments)}
+			if len(output.raw) > 0 {
+				extra[responseOutputStateKey] = append(json.RawMessage(nil), output.raw...)
+			}
+			result.Content = append(result.Content, message.ContentBlock{Type: message.BlockServerTool, ID: output.ID, Name: "web_search", Extra: extra})
 		}
 	}
 	finishReason := model.FinishReasonStop
@@ -1047,9 +1092,13 @@ func (stream *responseStream) event(data []byte) (model.Chunk, bool, error) {
 					arguments["queries"] = envelope.Item.Action.Queries
 				}
 			}
+			extra := map[string]json.RawMessage{"arguments": mustJSON(arguments)}
+			if len(envelope.Item.raw) > 0 {
+				extra[responseOutputStateKey] = append(json.RawMessage(nil), envelope.Item.raw...)
+			}
 			return model.Chunk{MessageDelta: message.Message{Role: message.RoleAssistant, Content: []message.ContentBlock{{
 				Type: message.BlockServerTool, ID: envelope.Item.ID, Name: "web_search",
-				Extra: map[string]json.RawMessage{"arguments": mustJSON(arguments)},
+				Extra: extra,
 			}}}}, true, nil
 		}
 	case "response.function_call_arguments.delta":

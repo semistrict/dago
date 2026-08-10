@@ -236,6 +236,92 @@ func TestInvokeMapsProviderWebSearch(t *testing.T) {
 	}
 }
 
+func TestInvokeReplaysProviderWebSearchOutput(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, body)
+		if len(requests) == 1 {
+			_, _ = io.WriteString(writer, `{
+			  "id":"resp_search","status":"completed",
+			  "output":[
+			    {"type":"web_search_call","id":"search_1","status":"completed","action":{"type":"search","queries":["NYC weather"]},"provider_extension":{"opaque":true}},
+			    {"type":"message","content":[{"type":"output_text","text":"Cloudy."}]}
+			  ]
+			}`)
+			return
+		}
+		_, _ = io.WriteString(writer, `{"id":"resp_followup","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"I used web search."}]}]}`)
+	}))
+	defer server.Close()
+
+	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), WebSearch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{message.Human("weather in NYC")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{
+		message.Human("weather in NYC"), first.Message, message.Human("which tool did you use?"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	input := requests[1]["input"].([]any)
+	var replay map[string]any
+	for _, value := range input {
+		item, ok := value.(map[string]any)
+		if ok && item["type"] == "web_search_call" {
+			replay = item
+			break
+		}
+	}
+	if replay == nil {
+		t.Fatalf("input does not contain replayed web search: %#v", input)
+	}
+	if replay["id"] != "search_1" || replay["status"] != "completed" {
+		t.Fatalf("replayed web search identity = %#v", replay)
+	}
+	extension, ok := replay["provider_extension"].(map[string]any)
+	if !ok || extension["opaque"] != true {
+		t.Fatalf("replayed provider extension = %#v", replay["provider_extension"])
+	}
+}
+
+func TestInvokeOmitsLegacyDisplayOnlyServerToolBlock(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(writer, `{"id":"r","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
+	}))
+	defer server.Close()
+
+	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), WebSearch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := message.Message{Role: message.RoleAssistant, Content: []message.ContentBlock{
+		{Type: message.BlockServerTool, ID: "search_legacy", Name: "web_search", Extra: map[string]json.RawMessage{"arguments": json.RawMessage(`{"query":"NYC weather"}`)}},
+		{Type: message.BlockText, Text: "Cloudy."},
+	}}
+	if _, err := client.Invoke(context.Background(), model.Request{Messages: []message.Message{legacy, message.Human("which tool?")}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range got["input"].([]any) {
+		item := value.(map[string]any)
+		if item["type"] == "web_search_call" {
+			t.Fatalf("legacy display-only block was replayed: %#v", item)
+		}
+	}
+}
+
 func TestInvokeMapsToolHistoryAndStructuredOutput(t *testing.T) {
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
