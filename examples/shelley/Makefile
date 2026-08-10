@@ -1,6 +1,6 @@
 # Shelley Makefile
 
-.PHONY: build build-custom build-linux-aarch64 build-linux-x86 test test-go test-e2e ui serve clean help templates demo
+.PHONY: build build-custom build-linux-aarch64 build-linux-x86 test test-go test-e2e bench-agent ui serve clean help templates demo
 
 # Default target
 all: build
@@ -87,6 +87,10 @@ test-e2e-ui: ui
 	@echo "Opening E2E test UI..."
 	cd ui && pnpm run test:e2e:ui
 
+# Benchmark the complete agent path with only the remote model mocked.
+bench-agent:
+	go test -run '^$$' -bench '^BenchmarkAgentE2E$$' -benchmem ./server
+
 # Run all tests
 test: test-go test-e2e
 
@@ -130,9 +134,9 @@ help:
 	@echo "  test-e2e      Run E2E tests (headless)"
 	@echo "  test-e2e-headed  Run E2E tests (visible browser)"
 	@echo "  test-e2e-ui   Open E2E test UI"
+	@echo "  bench-agent   Benchmark the agent path with a mocked model"
 	@echo "  serve         Start Shelley server"
 	@echo "  serve-test    Start Shelley with predictable model"
 	@echo "  clean         Clean build artifacts"
 	@echo "  demo          Build and (re)start the demo server"
 	@echo "  help          Show this help"
-
