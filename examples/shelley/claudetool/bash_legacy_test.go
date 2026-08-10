@@ -23,17 +23,7 @@ import (
 	"shelley.exe.dev/claudetool/bashkit"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/llmhttp"
-
-	"mvdan.cc/sh/v3/syntax"
 )
-
-// PermissionCallback is a function type for checking if a command is allowed to run
-type PermissionCallback func(command string) error
-
-// PreferredToolModels is the ordered list of model IDs preferred for
-// internal tool operations (validation, keyword search, etc.).
-// Every entry must be a model ID registered in models.All().
-var PreferredToolModels = []string{"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "predictable"}
 
 // BashTool executes shell commands through Dago's tool contract.
 type BashTool struct {
@@ -53,9 +43,6 @@ type BashTool struct {
 }
 
 const (
-	EnableBashToolJITInstall = true
-	NoBashToolJITInstall     = false
-
 	DefaultFastTimeout = 30 * time.Second
 	DefaultSlowTimeout = 15 * time.Minute
 )
@@ -115,15 +102,6 @@ func (b *BashTool) getWorkingDir() string {
 	return b.WorkingDir.Get()
 }
 
-// isNoTrailerSet checks if user has disabled co-author trailer via git config.
-func isNoTrailerSet() bool {
-	out, err := exec.Command("git", "config", "--get", "shelley.no-trailer").Output()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(out)) == "true"
-}
-
 const (
 	bashName        = "bash"
 	bashDescription = `Executes shell commands via bash --login -c, returning combined stdout/stderr.
@@ -171,11 +149,6 @@ For complex scripts, write them to a file first and then execute the file.
 type bashInput struct {
 	Command string `json:"command"`
 	SlowOK  bool   `json:"slow_ok,omitempty"`
-}
-
-// BashDisplayData is the display data sent to the UI for bash tool results.
-type BashDisplayData struct {
-	WorkingDir string `json:"workingDir"`
 }
 
 type bashExecution struct {
@@ -498,20 +471,6 @@ func humanizeBytes(bytes int) string {
 	return "more than 1GB"
 }
 
-// shellHasCommand checks whether a command is available inside the
-// same bash --login environment that the bash tool uses to run commands.
-// This accounts for version managers (uv, mise, direnv, …) that only
-// add entries to PATH after shell startup scripts are sourced.
-func shellHasCommand(ctx context.Context, name string) bool {
-	quoted, err := syntax.Quote(name, syntax.LangBash)
-	if err != nil {
-		return false
-	}
-	cmd := exec.CommandContext(ctx, "bash", "--login", "-c", "command -v "+quoted)
-	cmd.Stdin = nil
-	return cmd.Run() == nil
-}
-
 // checkAndInstallMissingTools analyzes a bash command and attempts to automatically install any missing tools.
 func (b *BashTool) checkAndInstallMissingTools(ctx context.Context, command string) error {
 	return b.checkAndInstallMissingToolsWith(ctx, command, b.installToolNative)
@@ -556,41 +515,6 @@ func (b *BashTool) checkAndInstallMissingToolsWith(ctx context.Context, command 
 	return nil
 }
 
-// Command safety check cache to avoid repeated LLM calls
-var (
-	autoInstallMu           sync.Mutex
-	doNotAttemptToolInstall = make(map[string]bool) // set to true if the tool should not be auto-installed
-)
-
-// autodetectPackageManager returns the first package‑manager binary
-// found in the login shell environment, or an empty string if none are present.
-func autodetectPackageManager() string {
-	// TODO: cache this result with a sync.OnceValue
-
-	managers := []string{
-		"apt", "apt-get", // Debian/Ubuntu
-		"brew", "port", // macOS (Homebrew / MacPorts)
-		"apk",        // Alpine
-		"yum", "dnf", // RHEL/Fedora
-		"pacman",          // Arch
-		"zypper",          // openSUSE
-		"xbps-install",    // Void
-		"emerge",          // Gentoo
-		"nix-env", "guix", // NixOS / Guix
-		"pkg",      // FreeBSD
-		"slackpkg", // Slackware
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	for _, m := range managers {
-		if shellHasCommand(ctx, m) {
-			return m
-		}
-	}
-	return ""
-}
-
 func (b *BashTool) installToolNative(ctx context.Context, cmd string) error {
 	slog.InfoContext(ctx, "attempting to install tool", "tool", cmd)
 	packageManager := autodetectPackageManager()
@@ -629,15 +553,6 @@ func (b *BashTool) selectBestChat() (dmodel.Chat, error) {
 		return b.LLMProvider.GetChat(available[0])
 	}
 	return nil, fmt.Errorf("no chat models available")
-}
-
-func toolInstallQuery(packageManager, cmd string) string {
-	return fmt.Sprintf(`Do you know this command/package/tool? Is it legitimate, clearly non-harmful, and commonly used? Can it be installed with package manager %s?
-
-Command: %s
-
-- YES: Respond ONLY with the package name used to install it
-- NO or UNSURE: Respond ONLY with the word NO`, packageManager, cmd)
 }
 
 func (b *BashTool) finishToolInstall(ctx context.Context, cmd, packageManager, rawResponse string) error {

@@ -7,11 +7,7 @@ import (
 	dtool "github.com/semistrict/dago/tool"
 )
 
-type SubagentRunner = dago.ConversationSubagentRunner
-type SubagentDB = dago.ConversationSubagentStore
-type AvailableModel = dago.ConversationSubagentModel
 type subagentInput = dago.ConversationSubagentInput
-type SubagentDisplayData = dago.ConversationSubagentDisplay
 
 var subagentReasoningLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
 

@@ -37,7 +37,7 @@ type SystemPromptData struct {
 	IsSudoAvailable  bool
 	Hostname         string // For exe.dev, the public hostname (e.g., "vmname.exe.xyz")
 	DefaultPort      int    // For exe.dev, the auto-routed HTTP port, 0 if unknown
-	SkillsXML        string // XML block for available skills
+	SkillsXML        string // Compatibility-only standalone prompt projection
 	UserEmail        string // The exe.dev auth email of the user, if known
 	skipSkills       bool
 }
@@ -87,9 +87,7 @@ func WithUserEmail(email string) SystemPromptOption {
 	}
 }
 
-// withoutPromptSkills leaves skill discovery and prompting to Dago. It is used
-// by production conversations; the standalone prompt generator retains its
-// original behavior for callers that render a complete prompt directly.
+// withoutPromptSkills leaves skill discovery and prompting to Dago.
 func withoutPromptSkills() SystemPromptOption {
 	return func(d *SystemPromptData) { d.skipSkills = true }
 }
@@ -672,12 +670,8 @@ func collectSystemData(workingDir string, skipSkills bool) (*SystemPromptData, e
 	// Check if running on exe.dev (cheap stat).
 	data.IsExeDev = isExeDev()
 
-	// The codebase-info and optional skill walks each traverse the project tree,
-	// stat'ing every directory and (for codebase info) reading guidance files.
-	// They are independent and dominate Hydrate's wall time — measured ~50ms
-	// each under -race on a moderately sized repo, more on loaded CI workers.
-	// Run them concurrently; the slowest of the two becomes the floor instead
-	// of their sum.
+	// Keep the independent project walks concurrent. Production skips the
+	// compatibility skill walk because Dago's middleware owns skill prompting.
 	var (
 		codebaseInfo *CodebaseInfo
 		codebaseErr  error
@@ -717,6 +711,13 @@ func collectSystemData(workingDir string, skipSkills bool) (*SystemPromptData, e
 	data.SkillsXML = skillsXML
 
 	return data, nil
+}
+
+// collectSkills is retained for the standalone prompt compatibility contract.
+// Production conversations install Dago's SkillsMiddleware instead.
+func collectSkills(workingDir, gitRoot string, env skills.Env) string {
+	values := skills.Filter(skills.ListAll(workingDir, gitRoot), env)
+	return skills.RenderPromptXML(values)
 }
 
 func collectGitInfo(dir string) (*GitInfo, error) {
@@ -937,13 +938,6 @@ func exeDevDefaultPortIn(env exeenv.Environment) int {
 	return body.DefaultPort
 }
 
-// collectSkills discovers skills from default directories, project .skills dirs,
-// the project tree, and built-in skills. See skills.ListAll for precedence rules.
-// Skills with a `when:` clause are filtered against env.
-func collectSkills(workingDir, gitRoot string, env skills.Env) string {
-	return skills.ToPromptXML(skills.Filter(skills.ListAll(workingDir, gitRoot), env))
-}
-
 // resolveAndNormalize returns a canonical lowercase path for dedup.
 // It resolves symlinks and normalizes to lowercase for case-insensitive FS.
 func resolveAndNormalize(path string) string {
@@ -965,14 +959,14 @@ type SubagentSystemPromptData struct {
 	GitInfo          *GitInfo
 	ShelleyDBPath    string
 	ConversationID   string // Parent conversation ID for querying user messages
-	SkillsXML        string // XML block for available skills
+	SkillsXML        string // Compatibility-only standalone prompt projection
 	skipSkills       bool
 }
 
 type SubagentSystemPromptOption func(*SubagentSystemPromptData)
 
 func withoutSubagentPromptSkills() SubagentSystemPromptOption {
-	return func(d *SubagentSystemPromptData) { d.skipSkills = true }
+	return func(data *SubagentSystemPromptData) { data.skipSkills = true }
 }
 
 // GenerateSubagentSystemPrompt generates a minimal system prompt for subagent conversations.
@@ -1000,13 +994,11 @@ func GenerateSubagentSystemPrompt(workingDir, parentConversationID string, opts 
 	if err == nil {
 		data.GitInfo = gitInfo
 	}
-
-	// Collect skills
-	gitRoot := ""
-	if gitInfo != nil {
-		gitRoot = gitInfo.Root
-	}
 	if !data.skipSkills {
+		gitRoot := ""
+		if gitInfo != nil {
+			gitRoot = gitInfo.Root
+		}
 		data.SkillsXML = collectSkills(wd, gitRoot, skills.Env{ExeDev: isExeDev()})
 	}
 

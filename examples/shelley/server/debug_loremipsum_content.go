@@ -152,7 +152,7 @@ func (g *loremGen) bashCall(i, k int) toolCall {
 }
 
 // shellCall exercises the shell tool (long-running process) with its own
-// ShellDisplayData shape. The UI renders it via the same BashTool component.
+// ShellDisplayData shape. The UI renders it via the same shell-tool component.
 func (g *loremGen) shellCall(i, k int) toolCall {
 	return toolCall{
 		use: llm.Content{
@@ -194,7 +194,7 @@ func (g *loremGen) patchCall(i, k int) toolCall {
 	}
 }
 
-// unifiedDiff synthesizes a small unified diff so the PatchTool diff
+// unifiedDiff synthesizes a small unified diff so the patch-tool diff
 // renderer has realistic input.
 func (g *loremGen) unifiedDiff(path string, i int) string {
 	var b strings.Builder

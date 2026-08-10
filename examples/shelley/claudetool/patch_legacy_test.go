@@ -289,12 +289,6 @@ type PatchInputOneString struct {
 	Patches string `json:"patches"` // contains Patches as a JSON string 🤦
 }
 
-// PatchDisplayData is the structured data sent to the UI for display.
-type PatchDisplayData struct {
-	Path string `json:"path"`
-	Diff string `json:"diff"`
-}
-
 type patchExecution struct {
 	Output  string
 	Display PatchDisplayData

@@ -108,8 +108,9 @@ func DagoCatalog(skills []Skill) []dskill.Skill {
 	return result
 }
 
-// ToPromptXML generates the <available_skills> XML block for system prompts.
-func ToPromptXML(skills []Skill) string {
+// RenderPromptXML is retained for the standalone prompt compatibility API.
+// Production conversations use Dago's SkillsMiddleware directly.
+func RenderPromptXML(skills []Skill) string {
 	values := make([]dskill.Skill, len(skills))
 	for index, item := range skills {
 		values[index] = dskill.Skill{Name: item.Name, Description: item.Description}

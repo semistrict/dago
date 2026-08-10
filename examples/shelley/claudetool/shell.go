@@ -20,7 +20,7 @@ import (
 	"shelley.exe.dev/llm"
 )
 
-// ShellTool is a successor to BashTool that does not unconditionally kill
+// ShellTool runs commands without unconditionally killing
 // commands on timeout. Instead, if the command does not finish within
 // yield_time_seconds, the tool returns to the LLM with the tail of output,
 // the PID of the still-running process, and the path to a temp log file the
@@ -224,15 +224,8 @@ func (s *ShellTool) execute(ctx context.Context, req shellInput, nativeModelCall
 	}
 
 	if s.EnableJITInstall {
-		// Reuse the bash JIT installer; it operates per-command and is
-		// independent of the BashTool struct beyond the LLM provider.
-		bt := &BashTool{LLMProvider: s.LLMProvider}
-		var installErr error
-		if nativeModelCalls {
-			installErr = bt.checkAndInstallMissingToolsNative(ctx, req.Command)
-		} else {
-			installErr = bt.checkAndInstallMissingTools(ctx, req.Command)
-		}
+		installer := commandInstaller{LLMProvider: s.LLMProvider}
+		installErr := installer.checkAndInstallMissingTools(ctx, req.Command)
 		if installErr != nil {
 			slog.DebugContext(ctx, "failed to auto-install missing tools", "error", installErr)
 		}
@@ -412,7 +405,7 @@ func readAndFormatShellOutput(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return formatForegroundBashOutput(string(b))
+	return formatShellForegroundOutput(string(b))
 }
 
 func buildYieldPayload(command string, pid, pgid int, logPath, tail string, yield time.Duration) string {
@@ -445,7 +438,7 @@ func shellProgressLoop(progress llm.ToolProgressFunc, toolID, path string, stop 
 	defer ticker.Stop()
 	last := ""
 	emit := func() {
-		t := readTailString(path, progressMaxBytes)
+		t := readTailString(path, shellProgressMaxBytes)
 		if t != last {
 			last = t
 			progress(llm.ToolProgress{

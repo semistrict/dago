@@ -3,7 +3,6 @@ package claudetool
 import (
 	"context"
 	"os"
-	"strings"
 	"sync"
 
 	dago "github.com/semistrict/dago"
@@ -154,12 +153,6 @@ func serverSideTools(profile dmodel.Profile) []dtool.Definition {
 }
 
 // NewToolSet creates a new set of tools for a conversation.
-// isStrongModel returns true for models that can handle complex tool schemas.
-func isStrongModel(modelID string) bool {
-	lower := strings.ToLower(modelID)
-	return strings.Contains(lower, "gpt-5.6-sol") || strings.Contains(lower, "gpt-5.6-terra") || strings.Contains(lower, "gpt-5.6-luna")
-}
-
 func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	workingDir := cfg.WorkingDir
 	if workingDir == "" {
@@ -208,16 +201,14 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	// MaxSubagentDepth of 0 means no limit; otherwise, only add if depth < max.
 	canSpawnSubagents := cfg.SubagentRunner != nil && cfg.SubagentDB != nil && cfg.ParentConversationID != ""
 	if canSpawnSubagents && (cfg.MaxSubagentDepth == 0 || cfg.SubagentDepth < cfg.MaxSubagentDepth) {
-		subagentTool := &SubagentTool{
-			DB:                   cfg.SubagentDB,
+		nativeTools = append(nativeTools, dago.ConversationSubagentTool(dago.ConversationSubagentOptions{
+			Store: cfg.SubagentDB, Runner: cfg.SubagentRunner,
 			ParentConversationID: cfg.ParentConversationID,
-			WorkingDir:           wd,
-			Runner:               cfg.SubagentRunner,
-			ModelID:              cfg.ModelID, // Inherit parent's model
+			WorkingDirectory:     wd.Get,
+			ModelID:              cfg.ModelID,
 			AvailableModels:      availableModels,
 			ParentReasoning:      cfg.ReasoningLevel,
-		}
-		nativeTools = append(nativeTools, subagentTool.NativeTool())
+		}))
 	}
 
 	// Add LLM one-shot tool if LLM provider is configured

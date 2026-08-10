@@ -335,7 +335,7 @@ func (cm *ConversationManager) RegisterEndOfTurnHook(ctx context.Context, hook d
 // subagent path — a caller who omits "reasoning" on a follow-up message must
 // not silently downgrade a subagent that was previously given an explicit
 // level. Inheriting the parent's level happens at the tool layer
-// (SubagentTool.ParentReasoning), which only reaches here with a concrete
+// (the subagent tool's parent reasoning), which only reaches here with a concrete
 // level, never "".
 //
 // thinkingMu serializes the whole DB-write-then-apply sequence so concurrent

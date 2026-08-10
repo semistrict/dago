@@ -17,12 +17,6 @@ import (
 	"shelley.exe.dev/pathutil"
 )
 
-// LLMServiceProvider resolves native chat models for model-backed tools.
-type LLMServiceProvider interface {
-	GetChat(modelID string) (dmodel.Chat, error)
-	GetAvailableModels() []string
-}
-
 // KeywordTool provides keyword search functionality
 type KeywordTool struct {
 	llmProvider LLMServiceProvider
