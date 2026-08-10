@@ -338,6 +338,8 @@ func applyToolProfile(values []tool.Tool, descriptions map[string]string, exclud
 
 // ToolExclusionMiddleware removes profile-excluded tools at the final model
 // boundary, after custom middleware has had an opportunity to alter the request.
+// It intentionally leaves the executor registry intact so historical or resumed
+// tool calls retain the same behavior as the canonical middleware.
 func ToolExclusionMiddleware(names []string) agent.Middleware {
 	excluded := make(map[string]bool, len(names))
 	for _, name := range names {

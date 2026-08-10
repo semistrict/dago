@@ -80,7 +80,7 @@ func New(options Options) (*DeepAgent, error) {
 	}
 	inheritedTools := append([]tool.Tool(nil), options.Tools...)
 	options.SystemPrompt = applyProfilePrompt(profile, options.SystemPrompt, "")
-	options.Tools = applyToolProfile(options.Tools, profile.ToolDescriptions, stringSet(profile.ExcludeTools))
+	options.Tools = applyToolProfile(options.Tools, profile.ToolDescriptions, nil)
 	filesystem, err := FilesystemMiddleware(FilesystemOptions{
 		Backend: options.Backend, Permissions: options.Permissions, Tools: options.FilesystemTools,
 		ToolDescriptions:  options.FilesystemToolDescriptions,
@@ -90,7 +90,7 @@ func New(options Options) (*DeepAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	filesystem.Tools = applyToolProfile(filesystem.Tools, profile.ToolDescriptions, stringSet(profile.ExcludeTools))
+	filesystem.Tools = applyToolProfile(filesystem.Tools, profile.ToolDescriptions, nil)
 	core := []agent.Middleware{}
 	if options.EnableTodo && !options.DisableTodo {
 		core = append(core, agent.TodoList())
@@ -181,16 +181,12 @@ func New(options Options) (*DeepAgent, error) {
 		excludedMiddleware[name] = true
 	}
 	filteredMiddleware := make([]agent.Middleware, 0, len(middleware))
-	excludedTools := map[string]bool{}
-	for _, name := range profile.ExcludeTools {
-		excludedTools[name] = true
-	}
 	for _, item := range middleware {
 		if excludedMiddleware[item.Name] {
 			delete(excludedMiddleware, item.Name)
 			continue
 		}
-		item.Tools = applyToolProfile(item.Tools, profile.ToolDescriptions, excludedTools)
+		item.Tools = applyToolProfile(item.Tools, profile.ToolDescriptions, nil)
 		filteredMiddleware = append(filteredMiddleware, item)
 	}
 	if len(excludedMiddleware) > 0 {
@@ -269,7 +265,7 @@ func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]S
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q filesystem: %w", spec.Name, err)
 		}
-		filesystem.Tools = applyToolProfile(filesystem.Tools, profile.ToolDescriptions, stringSet(profile.ExcludeTools))
+		filesystem.Tools = applyToolProfile(filesystem.Tools, profile.ToolDescriptions, nil)
 		core := []agent.Middleware{filesystem}
 		if !options.DisableSummary {
 			summary := options.Summarization
@@ -319,7 +315,7 @@ func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]S
 		if tools == nil {
 			tools = inheritedTools
 		}
-		tools = applyToolProfile(tools, profile.ToolDescriptions, stringSet(profile.ExcludeTools))
+		tools = applyToolProfile(tools, profile.ToolDescriptions, nil)
 		compiled, err := agent.New(agent.Options{
 			Name: spec.Name, Model: chat, Tools: tools,
 			SystemPrompt: applyProfilePrompt(profile, "", spec.SystemPrompt), Middleware: middleware,
@@ -506,7 +502,7 @@ func filterProfileMiddleware(values []agent.Middleware, profile Profile, verify 
 			delete(excluded, value.Name)
 			continue
 		}
-		value.Tools = applyToolProfile(value.Tools, profile.ToolDescriptions, stringSet(profile.ExcludeTools))
+		value.Tools = applyToolProfile(value.Tools, profile.ToolDescriptions, nil)
 		result = append(result, value)
 	}
 	if verify && len(excluded) > 0 {

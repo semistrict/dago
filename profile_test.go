@@ -64,6 +64,47 @@ func TestProfileRegistrationMergeToolOverrideAndExclusion(t *testing.T) {
 	}
 }
 
+func TestProfileToolExclusionOnlyFiltersTheModelBoundary(t *testing.T) {
+	name := "test-profile-late-tool-exclusion"
+	if err := RegisterProfile(Profile{Name: name, Kind: ProfileHarness, ExcludeTools: []string{"hidden"}}); err != nil {
+		t.Fatal(err)
+	}
+	executions := 0
+	hidden := tool.Func{Spec: tool.Definition{Name: "hidden", Description: "hidden", InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+		executions++
+		return tool.TextResult("executed"), nil
+	}}
+	script := modeltest.New(model.Profile{},
+		modeltest.Step{Check: func(request model.Request) error {
+			for _, definition := range request.Tools {
+				if definition.Name == "hidden" {
+					return errors.New("excluded tool reached the model")
+				}
+			}
+			return nil
+		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "historical-call", Name: "hidden", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if len(request.Messages) == 0 || request.Messages[len(request.Messages)-1].Role != message.RoleTool || request.Messages[len(request.Messages)-1].TextContent() != "executed" {
+				return errors.New("registered excluded tool did not execute")
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := New(Options{
+		Model: script, Tools: []tool.Tool{hidden}, ProfileNames: []string{name},
+		DisableSubagents: true, DisableSummary: true, DisableTodo: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 1 {
+		t.Fatalf("executions = %d, want 1", executions)
+	}
+}
+
 func TestProfileCannotExcludeRequiredFilesystem(t *testing.T) {
 	_, err := New(Options{Model: modeltest.New(model.Profile{}), Profiles: []Profile{{Name: "bad", Kind: ProfileHarness, ExcludeMiddleware: []string{"filesystem"}}}})
 	if err == nil || !strings.Contains(err.Error(), "required middleware") {
