@@ -23,6 +23,7 @@ type Options struct {
 	SystemPrompt     string
 	Middleware       []agent.Middleware
 	Backend          backend.Backend
+	FilesystemTools  []string
 	Permissions      []FilesystemPermission
 	Subagents        []Subagent
 	DisableSubagents bool
@@ -70,7 +71,9 @@ func New(options Options) (*DeepAgent, error) {
 		options.SystemPrompt += profile.SystemPrompt
 	}
 	options.Middleware = append(profile.Middleware, options.Middleware...)
-	filesystem, err := FilesystemMiddleware(FilesystemOptions{Backend: options.Backend, Permissions: options.Permissions})
+	filesystem, err := FilesystemMiddleware(FilesystemOptions{
+		Backend: options.Backend, Permissions: options.Permissions, Tools: options.FilesystemTools,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +117,7 @@ func New(options Options) (*DeepAgent, error) {
 		}
 		core = append(core, middleware)
 	}
+	core = append(core, PatchToolCallsMiddleware())
 	if len(options.Skills) > 0 {
 		middleware, err := SkillsMiddleware(SkillsOptions{Backend: options.Backend, Sources: options.Skills})
 		if err != nil {

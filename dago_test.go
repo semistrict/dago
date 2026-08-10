@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -50,6 +51,37 @@ func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.Messages[len(result.Messages)-1].TextContent() != "done" {
+		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
+func TestDeepAgentRepairsDanglingToolCallsBeforeModel(t *testing.T) {
+	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		if len(request.Messages) != 4 {
+			return fmt.Errorf("messages = %#v", request.Messages)
+		}
+		result := request.Messages[2]
+		if result.Role != message.RoleTool || result.ToolCallID != "call-1" || result.Name != "lookup" || result.ToolStatus != message.ToolStatusError {
+			return fmt.Errorf("patched tool result = %#v", result)
+		}
+		if !strings.Contains(result.TextContent(), "was cancelled") {
+			return fmt.Errorf("patched tool result text = %q", result.TextContent())
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("continued")}})
+	compiled, err := New(Options{Model: script, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{
+		message.Human("start"),
+		{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "call-1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}},
+		message.Human("continue without running it"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "continued" {
 		t.Fatalf("result = %#v", result.Messages)
 	}
 }

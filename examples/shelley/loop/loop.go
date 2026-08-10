@@ -12,7 +12,9 @@ import (
 	"sync"
 	"time"
 
+	dago "github.com/semistrict/dago"
 	dagent "github.com/semistrict/dago/agent"
+	dbackend "github.com/semistrict/dago/backend"
 	"github.com/semistrict/dago/checkpoint"
 	dmessage "github.com/semistrict/dago/message"
 	dmodel "github.com/semistrict/dago/model"
@@ -124,7 +126,7 @@ type Loop struct {
 	runtimeSeeded    bool
 	pendingInput     []llm.Message
 	executionMu      sync.Mutex
-	runtime          *dagent.Agent
+	runtime          *dago.DeepAgent
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -353,10 +355,15 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		return err
 	}
 
-	middleware := []dagent.Middleware{l.runtimeMiddleware()}
-	runtime, err := dagent.New(dagent.Options{
+	harnessBackend, err := dbackend.NewMemory(nil)
+	if err != nil {
+		return fmt.Errorf("create Shelley harness backend: %w", err)
+	}
+	runtime, err := dago.New(dago.Options{
 		Name: "Shelley", Model: model,
-		Tools: dagoTools, SystemPrompt: joinSystem(system), Middleware: middleware,
+		Tools: dagoTools, SystemPrompt: joinSystem(system), Middleware: []dagent.Middleware{l.runtimeMiddleware()},
+		Backend: harnessBackend, FilesystemTools: []string{},
+		DisableTodo: true, DisableSubagents: true, DisableSummary: true,
 		Saver: l.saver, MaxConcurrency: 1, FailOnToolError: false,
 		StateFields: map[string]dagent.StateField{
 			"shelley.run": {Kind: dagent.FieldEphemeral, Contract: "shelley.run.v1", Clone: func(value any) any { return value }},
@@ -614,6 +621,9 @@ func (l *Loop) runtimeMiddleware() dagent.Middleware {
 }
 
 func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update state.Values) error {
+	if node != "model" && node != "tools" {
+		return nil
+	}
 	value, ok := update[dagent.MessagesKey]
 	if !ok {
 		return nil
@@ -653,9 +663,6 @@ func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update sta
 				l.logger.Error("failed to record assistant message", "error", err)
 			}
 		}
-		return nil
-	}
-	if node != "tools" {
 		return nil
 	}
 	toolMessage := llm.Message{Role: llm.MessageRoleUser}

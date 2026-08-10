@@ -36,6 +36,66 @@ type Subagent struct {
 	InheritedState []string
 }
 
+// PatchToolCallsMiddleware repairs assistant tool calls that have no matching
+// result before a resumed agent run. Interrupted turns can otherwise leave model
+// history that providers reject because a requested tool was never answered.
+func PatchToolCallsMiddleware() agent.Middleware {
+	return agent.Middleware{
+		Name: "patch_tool_calls",
+		BeforeAgent: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
+			messages, err := featureMessages(values[agent.MessagesKey])
+			if err != nil {
+				return nil, err
+			}
+			answered := make(map[string]bool)
+			for _, item := range messages {
+				if item.Role == message.RoleTool && item.ToolCallID != "" {
+					answered[item.ToolCallID] = true
+				}
+			}
+
+			patched := make([]message.Message, 0, len(messages))
+			changed := false
+			appendMissing := func(id, name, text string) {
+				if id == "" || answered[id] {
+					return
+				}
+				result := message.Tool(id, text)
+				result.Name = name
+				result.ToolStatus = message.ToolStatusError
+				patched = append(patched, result)
+				answered[id] = true
+				changed = true
+			}
+
+			for _, item := range messages {
+				patched = append(patched, item.Clone())
+				if item.Role != message.RoleAssistant {
+					continue
+				}
+				for _, call := range item.ToolCalls {
+					name := call.Name
+					if name == "" {
+						name = "unknown"
+					}
+					appendMissing(call.ID, name, fmt.Sprintf("Tool call %s with id %s was cancelled - another message came in before it could be completed.", name, call.ID))
+				}
+				for _, call := range item.InvalidToolCalls {
+					name := call.Name
+					if name == "" {
+						name = "unknown"
+					}
+					appendMissing(call.ID, name, fmt.Sprintf("Tool call %s with id %s could not be executed - arguments were malformed or truncated.", name, call.ID))
+				}
+			}
+			if !changed {
+				return nil, nil
+			}
+			return state.Values{agent.MessagesKey: state.Overwrite{Value: patched}}, nil
+		},
+	}
+}
+
 // SubagentMiddleware adds the task tool. Each invocation receives only its task
 // message and a distinct thread identity, preventing parent and sibling state leaks.
 func SubagentMiddleware(subagents []Subagent) (agent.Middleware, error) {
