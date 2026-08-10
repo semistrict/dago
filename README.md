@@ -117,7 +117,7 @@ records are rejected with typed context instead of reconstructed.
 
 | Package | Purpose |
 |---|---|
-| `dago` | Deep Agent constructor and filesystem, inline/background subagent, summary, skill, memory, profile, and rubric middleware |
+| `dago` | Deep Agent constructor; filesystem, inline/background subagent, summary, skill, memory, profile, and rubric middleware; Agent Protocol background client |
 | `agent` | Provider-neutral model/tool graph, middleware lifecycle, approval, retry, todo, streaming, and checkpoint operations |
 | `message`, `model`, `tool`, `state` | Stable public contracts and reducers |
 | `model/modeltest` | Scripted and prompt-driven predictable model doubles for offline tests and examples |

@@ -27,7 +27,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | API-key and subscription OAuth model access | verified | request, PKCE, refresh, persistence, and stream tests |
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
 | Asynchronous hosted-subagent lifecycle and durable task state | verified | provider-neutral runner and five management-tool tests |
-| Remote Agent Protocol client | deferred | optional adapter; core runner contract has no hosted dependency |
+| Remote Agent Protocol background client | verified | thread/run create, status/result, interrupting update, cancellation, auth, path escaping, and redirect-boundary tests |
 | Video processing | deferred | media blocks round-trip; no heavy decoder dependency |
 | Shelley end-to-end application | verified | HTTP route tests plus desktop/mobile browser interaction checks |
 
@@ -42,7 +42,9 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
   constructed. The local shell is documented as trusted-host execution, not isolation.
 - Provider credentials are explicit adapter inputs or a library-owned OAuth session;
   credentials from another application are never discovered or copied.
+- Python's in-process ASGI transport for remote subagents is not applicable in Go;
+  async subagents require an HTTP URL or a caller-supplied runner.
 - Parent-graph commands and a public general-purpose graph builder are deferred. The
   internal command/send surface implements only the routing used by the agent factory.
-- Remote Agent Protocol clients, video decoding, and tracing integrations remain
-  separate optional adapters and are not core runtime dependencies.
+- Video decoding and tracing integrations remain separate optional adapters and
+  are not core runtime dependencies.

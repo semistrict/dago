@@ -20,6 +20,12 @@ credentials, and stores tokens only in its own caller-selected file. It does not
 or reuse another application’s credential store. API-key and OAuth credentials remain
 adapter concerns and are never placed into graph state or checkpoints.
 
+The Agent Protocol client sends credentials only to its configured origin, refuses
+redirects, bounds response bodies, and escapes thread/run identifiers. Its automatic
+API-key lookup follows the upstream precedence (`LANGGRAPH_API_KEY`, then
+`LANGSMITH_API_KEY`, then `LANGCHAIN_API_KEY`); use a custom runner when a different
+credential policy is required.
+
 The example web application is single-user software and does not add authentication.
 Bind it to loopback or place it behind an authenticated reverse proxy. Its terminal
 and local-shell paths execute trusted host commands in the selected workspace; they

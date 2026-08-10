@@ -718,7 +718,7 @@ contract, and profile behavior is reproducible from fixtures.
 
 - [x] Implement provider-neutral asynchronous subagent lifecycle tools and durable
   delta task state without a hosted API dependency.
-- [ ] Add the remote Agent Protocol client as an optional adapter.
+- [x] Add the remote Agent Protocol client as an optional adapter.
 - [x] Defer video decoding and heavy media dependencies. Video/file blocks and
   backend offload remain supported as opaque media records.
 - [x] Keep hosted sandbox, tracing, context-hub, and deployment integrations as

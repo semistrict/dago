@@ -144,3 +144,27 @@ func TestAsyncSubagentManagementTools(t *testing.T) {
 		t.Fatalf("runner = %#v", runner)
 	}
 }
+
+func TestAsyncCheckPreservesAnIntentionallyEmptyFinalMessage(t *testing.T) {
+	runner := &asyncRunnerStub{run: AsyncRun{ThreadID: "task-1", RunID: "run-1", Status: "success", ResultValue: "", HasResult: true}}
+	middleware, err := AsyncSubagentMiddleware(AsyncSubagentOptions{Subagents: []AsyncSubagent{{
+		Name: "worker", Description: "Works", GraphID: "worker-graph", Runner: runner,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var check tool.Tool
+	for _, candidate := range middleware.Tools {
+		if candidate.Definition().Name == "check_async_task" {
+			check = candidate
+		}
+	}
+	tasks := map[string]any{"task-1": asyncTaskMap(AsyncTask{TaskID: "task-1", AgentName: "worker", ThreadID: "task-1", RunID: "run-1", Status: "running"})}
+	result, err := check.Execute(context.Background(), json.RawMessage(`{"task_id":"task-1"}`), tool.Runtime{State: state.Values{AsyncTasksKey: tasks}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := result.Content[0].Text; !strings.Contains(text, `"result":""`) || strings.Contains(text, "no output") {
+		t.Fatalf("result = %q", text)
+	}
+}

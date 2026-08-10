@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -20,7 +21,13 @@ type AsyncRun struct {
 	RunID    string
 	Status   string
 	Result   string
-	Error    string
+	// ResultValue preserves structured final message content when a runner can
+	// return it. Result remains the convenient text representation.
+	ResultValue any
+	// HasResult distinguishes an empty final message from a completed thread
+	// with no output messages.
+	HasResult bool
+	Error     string
 }
 
 // AsyncSubagentRunner adapts a hosted or local background-agent service.
@@ -35,6 +42,10 @@ type AsyncSubagent struct {
 	Name        string
 	Description string
 	GraphID     string
+	URL         string
+	APIKey      string
+	Headers     map[string]string
+	HTTPClient  *http.Client
 	Runner      AsyncSubagentRunner
 }
 
@@ -66,8 +77,15 @@ func AsyncSubagentMiddleware(options AsyncSubagentOptions) (agent.Middleware, er
 	}
 	byName := make(map[string]AsyncSubagent, len(options.Subagents))
 	for _, value := range options.Subagents {
-		if strings.TrimSpace(value.Name) == "" || strings.TrimSpace(value.Description) == "" || strings.TrimSpace(value.GraphID) == "" || value.Runner == nil {
-			return agent.Middleware{}, fmt.Errorf("async subagent name, description, graph id, and runner are required")
+		if strings.TrimSpace(value.Name) == "" || strings.TrimSpace(value.Description) == "" || strings.TrimSpace(value.GraphID) == "" {
+			return agent.Middleware{}, fmt.Errorf("async subagent name, description, and graph id are required")
+		}
+		if value.Runner == nil {
+			runner, err := NewAgentProtocolRunner(AgentProtocolOptions{URL: value.URL, APIKey: value.APIKey, Headers: value.Headers, HTTPClient: value.HTTPClient})
+			if err != nil {
+				return agent.Middleware{}, fmt.Errorf("async subagent %q: %w", value.Name, err)
+			}
+			value.Runner = runner
 		}
 		if _, exists := byName[value.Name]; exists {
 			return agent.Middleware{}, fmt.Errorf("duplicate async subagent %q", value.Name)
@@ -118,7 +136,17 @@ func asyncStartTool(byName map[string]AsyncSubagent, names []string, available s
 		},
 		"required": []string{"description", "subagent_type"},
 	})
-	description := "Start an async subagent. It runs in the background and returns a task ID immediately.\n\nAvailable async agent types:\n" + available
+	description := `Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.
+
+Available async agent types:
+` + available + `
+
+## Usage notes:
+1. This tool launches a background task and returns immediately with a task ID. Report the task ID to the user and stop — do NOT immediately check status.
+2. Use check_async_task only when the user asks for a status update or result.
+3. Use update_async_task to send new instructions to a running task.
+4. Multiple async subagents can run concurrently — launch several and let them run in the background.
+5. The subagent runs on a remote server, so it has its own tools and capabilities.`
 	return tool.Func{Spec: tool.Definition{Name: "start_async_task", Description: description, InputSchema: schema}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 		var input struct {
 			Description string `json:"description"`
@@ -129,7 +157,11 @@ func asyncStartTool(byName map[string]AsyncSubagent, names []string, available s
 		}
 		spec, exists := byName[input.Type]
 		if !exists {
-			return tool.TextResult("Unknown async subagent type `" + input.Type + "`. Available types: " + strings.Join(names, ", ")), nil
+			quoted := make([]string, len(names))
+			for index, name := range names {
+				quoted[index] = "`" + name + "`"
+			}
+			return tool.TextResult("Unknown async subagent type `" + input.Type + "`. Available types: " + strings.Join(quoted, ", ")), nil
 		}
 		run, err := spec.Runner.Start(ctx, spec.GraphID, input.Description)
 		if err != nil {
@@ -139,17 +171,13 @@ func asyncStartTool(byName map[string]AsyncSubagent, names []string, available s
 			return tool.Result{}, fmt.Errorf("async subagent %q returned an empty thread or run id", input.Type)
 		}
 		stamp := asyncTimestamp(now())
-		status := run.Status
-		if status == "" {
-			status = "running"
-		}
-		task := AsyncTask{TaskID: run.ThreadID, AgentName: input.Type, ThreadID: run.ThreadID, RunID: run.RunID, Status: status, CreatedAt: stamp, LastCheckedAt: stamp, LastUpdatedAt: stamp}
+		task := AsyncTask{TaskID: run.ThreadID, AgentName: input.Type, ThreadID: run.ThreadID, RunID: run.RunID, Status: "running", CreatedAt: stamp, LastCheckedAt: stamp, LastUpdatedAt: stamp}
 		return asyncTaskResult("Launched async subagent. task_id: "+task.TaskID, task), nil
 	}}
 }
 
 func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) tool.Tool {
-	return tool.Func{Spec: tool.Definition{Name: "check_async_task", Description: "Check an async subagent task and return its current status and result when complete.", InputSchema: asyncTaskIDSchema()}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
+	return tool.Func{Spec: tool.Definition{Name: "check_async_task", Description: "Check the status of an async subagent task. Returns the current status and, if complete, the result. Statuses shown earlier in the conversation are always stale, so call this to get the current status rather than reporting a status from a previous tool result.", InputSchema: asyncTaskIDSchema()}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
 		task, result, err := resolveAsyncTask(raw, runtime)
 		if err != nil || result != nil {
 			return resultOrError(result, err)
@@ -170,10 +198,22 @@ func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) tool.
 		task.LastCheckedAt = stamp
 		payload := map[string]any{"status": task.Status, "thread_id": task.ThreadID}
 		if task.Status == "success" {
-			if run.Result == "" {
+			var resultValue any
+			switch {
+			case run.HasResult:
+				resultValue = run.ResultValue
+				if resultValue == nil && run.Result != "" {
+					resultValue = run.Result
+				}
+			case run.ResultValue != nil:
+				resultValue = run.ResultValue
+			case run.Result != "":
+				resultValue = run.Result
+			default:
 				run.Result = "(completed with no output messages)"
+				resultValue = run.Result
 			}
-			payload["result"] = run.Result
+			payload["result"] = resultValue
 		} else if task.Status == "error" {
 			if run.Error == "" {
 				run.Error = "The async subagent encountered an error."
@@ -187,7 +227,7 @@ func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) tool.
 
 func asyncUpdateTool(byName map[string]AsyncSubagent, now func() time.Time) tool.Tool {
 	schema := json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string"},"message":{"type":"string"}},"required":["task_id","message"],"additionalProperties":false}`)
-	return tool.Func{Spec: tool.Definition{Name: "update_async_task", Description: "Send updated instructions to an async subagent and start a new run on the same thread.", InputSchema: schema}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
+	return tool.Func{Spec: tool.Definition{Name: "update_async_task", Description: "Send updated instructions to an async subagent. Interrupts the current run and starts a new one on the same thread, so the subagent sees the full conversation history plus your new message. The task_id remains the same.", InputSchema: schema}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
 		var input struct {
 			TaskID  string `json:"task_id"`
 			Message string `json:"message"`
@@ -211,17 +251,14 @@ func asyncUpdateTool(byName map[string]AsyncSubagent, now func() time.Time) tool
 			return tool.Result{}, fmt.Errorf("async subagent %q returned an empty updated run id", task.AgentName)
 		}
 		task.RunID = run.RunID
-		task.Status = run.Status
-		if task.Status == "" {
-			task.Status = "running"
-		}
+		task.Status = "running"
 		task.LastUpdatedAt = asyncTimestamp(now())
 		return asyncTaskResult("Updated async subagent. task_id: "+task.TaskID, task), nil
 	}}
 }
 
 func asyncCancelTool(byName map[string]AsyncSubagent, now func() time.Time) tool.Tool {
-	return tool.Func{Spec: tool.Definition{Name: "cancel_async_task", Description: "Cancel a running async subagent task.", InputSchema: asyncTaskIDSchema()}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
+	return tool.Func{Spec: tool.Definition{Name: "cancel_async_task", Description: "Cancel a running async subagent task. Use this to stop a task that is no longer needed.", InputSchema: asyncTaskIDSchema()}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
 		task, result, err := resolveAsyncTask(raw, runtime)
 		if err != nil || result != nil {
 			return resultOrError(result, err)
@@ -241,7 +278,7 @@ func asyncCancelTool(byName map[string]AsyncSubagent, now func() time.Time) tool
 
 func asyncListTool(byName map[string]AsyncSubagent, now func() time.Time) tool.Tool {
 	schema := json.RawMessage(`{"type":"object","properties":{"status_filter":{"type":"string","enum":["running","success","error","cancelled","all"]}},"additionalProperties":false}`)
-	return tool.Func{Spec: tool.Definition{Name: "list_async_tasks", Description: "List tracked async subagent tasks with their current live statuses.", InputSchema: schema}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
+	return tool.Func{Spec: tool.Definition{Name: "list_async_tasks", Description: "List tracked async subagent tasks with their current live statuses. By default shows all tasks. Use status_filter to narrow by status. Use check_async_task to get the full result of a specific completed task. Statuses shown earlier in the conversation are always stale, so call this to read current statuses rather than reporting one from a previous tool result.", InputSchema: schema}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
 		var input struct {
 			Status string `json:"status_filter"`
 		}
