@@ -61,7 +61,7 @@ func PatchToolCallsMiddleware() agent.Middleware {
 	return agent.Middleware{
 		Name: "patch_tool_calls", SerializedName: "PatchToolCallsMiddleware",
 		BeforeAgent: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
-			messages, err := featureMessages(values[agent.MessagesKey])
+			messages, err := featureMessageView(values[agent.MessagesKey])
 			if err != nil {
 				return nil, err
 			}
@@ -118,13 +118,13 @@ func repairToolCallHistory(messages []message.Message) ([]message.Message, bool)
 				changed = true
 				continue
 			}
-			patched = append(patched, item.Clone())
+			patched = append(patched, item)
 			delete(pending, item.ToolCallID)
 			continue
 		}
 
 		flushMissing()
-		patched = append(patched, item.Clone())
+		patched = append(patched, item)
 		if item.Role != message.RoleAssistant {
 			continue
 		}
@@ -148,6 +148,9 @@ func repairToolCallHistory(messages []message.Message) ([]message.Message, bool)
 		}
 	}
 	flushMissing()
+	if changed {
+		patched = cloneMessageSlice(patched)
+	}
 	return patched, changed
 }
 
@@ -645,7 +648,7 @@ func integerValue(value any) (int, bool) {
 func applySummarizationEvent(messages []message.Message, value any) []message.Message {
 	cutoff, summary, _, ok := decodeSummarizationEvent(value)
 	if !ok {
-		return cloneMessageSlice(messages)
+		return messages
 	}
 	cutoff = min(cutoff, len(messages))
 	result := []message.Message{summary.Clone()}
@@ -1460,6 +1463,19 @@ func featureMessages(value any) ([]message.Message, error) {
 		return result, nil
 	default:
 		return nil, fmt.Errorf("messages have type %T", value)
+	}
+}
+
+// featureMessageView returns a read-only typed view for middleware that only
+// inspects messages. Callers must clone before returning or mutating elements.
+func featureMessageView(value any) ([]message.Message, error) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, nil
+	case []message.Message:
+		return typed, nil
+	default:
+		return featureMessages(value)
 	}
 }
 func approximateTokens(messages []message.Message) int { return message.ApproximateTokens(messages) }

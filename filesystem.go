@@ -405,17 +405,23 @@ func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat
 	if chat != nil {
 		profile = chat.Profile()
 	}
-	result := make([]message.Message, len(messages))
+	// The common text-only path must not deep-copy the entire transcript. The
+	// request already owns an isolated message slice; clone only messages whose
+	// media blocks actually need rewriting.
+	result := append([]message.Message(nil), messages...)
 	for index, item := range messages {
-		result[index] = item.Clone()
 		if item.Role != message.RoleHuman && item.Role != message.RoleTool {
 			continue
 		}
 		inToolMessage := item.Role == message.RoleTool
-		changed := false
-		for blockIndex, block := range result[index].Content {
+		cloned := false
+		for blockIndex, block := range item.Content {
 			if filesystemMediaSupported(block, profile, inToolMessage) {
 				continue
+			}
+			if !cloned {
+				result[index] = item.Clone()
+				cloned = true
 			}
 			path := filesystemMediaPath(block)
 			mimeType := block.MIMEType
@@ -426,10 +432,6 @@ func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat
 				"[read_file: %s was not attached because this model does not support %s content (%s).]",
 				path, block.Type, mimeType,
 			)}
-			changed = true
-		}
-		if !changed {
-			result[index] = item.Clone()
 		}
 	}
 	return result

@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -97,16 +98,32 @@ func messagesToDago(items []llm.Message) ([]dmessage.Message, error) {
 		if len(base.Content) > 0 || len(base.ToolCalls) > 0 || len(toolMessages) == 0 {
 			fragment := item
 			fragment.Content = removeToolResults(item.Content)
-			encoded, err := json.Marshal(fragment)
-			if err != nil {
-				return nil, err
+			// Most text messages are represented losslessly by the native message.
+			// Avoid carrying a second serialized copy through every clone and
+			// checkpoint; retain the envelope only for provider/UI fields that the
+			// native representation cannot reconstruct exactly.
+			if !shelleyMessageRoundTrips(fragment, base) {
+				encoded, err := json.Marshal(fragment)
+				if err != nil {
+					return nil, err
+				}
+				base.Metadata = map[string]json.RawMessage{shelleyMessageMetadata: encoded}
 			}
-			base.Metadata = map[string]json.RawMessage{shelleyMessageMetadata: encoded}
 			result = append(result, base)
 		}
 		result = append(result, toolMessages...)
 	}
 	return result, nil
+}
+
+func shelleyMessageRoundTrips(original llm.Message, native dmessage.Message) bool {
+	projected, err := messagesFromDago([]dmessage.Message{native})
+	if err != nil || len(projected) != 1 {
+		return false
+	}
+	originalJSON, originalErr := json.Marshal(original)
+	projectedJSON, projectedErr := json.Marshal(projected[0])
+	return originalErr == nil && projectedErr == nil && bytes.Equal(originalJSON, projectedJSON)
 }
 
 // messagesFromDago returns the Shelley representation used by the existing UI

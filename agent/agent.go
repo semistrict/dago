@@ -875,7 +875,7 @@ func (compiler *compiler) routeModel(_ context.Context, values state.Values) ([]
 	if _, done := values[StructuredResponseKey]; done {
 		return []string{"after_agent"}, nil
 	}
-	messages, err := messagesFrom(values[MessagesKey])
+	messages, err := messagesView(values[MessagesKey])
 	if err != nil {
 		return nil, err
 	}
@@ -972,13 +972,13 @@ func cloneToolMap(values map[string]tool.Tool) map[string]tool.Tool {
 }
 
 func reduceMessages(current any, writes []any) (any, error) {
-	left, err := messagesFrom(current)
+	left, err := messagesView(current)
 	if err != nil {
 		return nil, err
 	}
 	right := make([][]message.Message, 0, len(writes))
 	for _, write := range writes {
-		messages, err := messagesFrom(write)
+		messages, err := messagesView(write)
 		if err != nil {
 			return nil, err
 		}
@@ -1009,6 +1009,15 @@ func messagesFrom(value any) ([]message.Message, error) {
 	}
 }
 
+// messagesView avoids an extra deep copy when a caller only reads the slice or
+// immediately passes it to a reducer that provides its own isolation.
+func messagesView(value any) ([]message.Message, error) {
+	if typed, ok := value.([]message.Message); ok {
+		return typed, nil
+	}
+	return messagesFrom(value)
+}
+
 func cloneMessageValue(value any) any {
 	messages, err := messagesFrom(value)
 	if err != nil {
@@ -1028,9 +1037,9 @@ func mergeUpdate(current, combined, update state.Values) {
 					continue
 				}
 			}
-			currentMessages, err := messagesFrom(current[key])
+			currentMessages, err := messagesView(current[key])
 			if err == nil {
-				incoming, incomingErr := messagesFrom(value)
+				incoming, incomingErr := messagesView(value)
 				if incomingErr == nil {
 					incoming = message.EnsureIDs(incoming)
 					merged, mergeErr := message.DeltaReduce(currentMessages, [][]message.Message{incoming})
@@ -1038,7 +1047,7 @@ func mergeUpdate(current, combined, update state.Values) {
 						current[key] = merged
 					}
 					if pendingOverwrite, ok := combined[key].(state.Overwrite); ok {
-						pending, pendingErr := messagesFrom(pendingOverwrite.Value)
+						pending, pendingErr := messagesView(pendingOverwrite.Value)
 						if pendingErr == nil {
 							pendingMerged, pendingMergeErr := message.DeltaReduce(pending, [][]message.Message{incoming})
 							if pendingMergeErr == nil {
@@ -1047,7 +1056,7 @@ func mergeUpdate(current, combined, update state.Values) {
 							}
 						}
 					}
-					pending, _ := messagesFrom(combined[key])
+					pending, _ := messagesView(combined[key])
 					combined[key] = append(pending, incoming...)
 					continue
 				}
@@ -1067,13 +1076,13 @@ func ensureMessageIDsInValues(values state.Values) {
 		return
 	}
 	if overwrite, ok := raw.(state.Overwrite); ok {
-		if messages, err := messagesFrom(overwrite.Value); err == nil {
+		if messages, err := messagesView(overwrite.Value); err == nil {
 			overwrite.Value = message.EnsureIDs(messages)
 			values[MessagesKey] = overwrite
 		}
 		return
 	}
-	if messages, err := messagesFrom(raw); err == nil {
+	if messages, err := messagesView(raw); err == nil {
 		values[MessagesKey] = message.EnsureIDs(messages)
 	}
 }

@@ -153,6 +153,9 @@ func newWarmAgentBenchmarkFixture(b *testing.B) *agentBenchmarkFixture {
 
 func newSeededHistoryBenchmarkFixture(b *testing.B, priorTurns int) *agentBenchmarkFixture {
 	b.Helper()
+	if priorTurns < 1 {
+		b.Fatalf("prior turns must be positive, got %d", priorTurns)
+	}
 	workspace := b.TempDir()
 	fixture := newAgentBenchmarkFixture(b, workspace, false)
 	ctx := context.Background()
@@ -165,8 +168,12 @@ func newSeededHistoryBenchmarkFixture(b *testing.B, priorTurns int) *agentBenchm
 		b.Fatal(err)
 	}
 
-	messages := make([]db.CreateMessageParams, 0, priorTurns*2)
-	for turn := range priorTurns {
+	// Leave one turn for the untimed warmup below. That warmup establishes a
+	// native checkpoint containing exactly priorTurns user/assistant pairs, so
+	// the measured request exercises restoration instead of first-run import.
+	seededTurns := priorTurns - 1
+	messages := make([]db.CreateMessageParams, 0, seededTurns*2)
+	for turn := range seededTurns {
 		messages = append(messages,
 			db.CreateMessageParams{
 				ConversationID: conversation.ConversationID,
@@ -200,6 +207,8 @@ func newSeededHistoryBenchmarkFixture(b *testing.B, priorTurns int) *agentBenchm
 	}
 	fixture.conversationID = conversation.ConversationID
 	fixture.installDoneSignal(conversation.ConversationID)
+	fixture.chat("benchmark warmup")
+	fixture.waitDone()
 	fixture.model.calls.Store(0)
 	return fixture
 }
