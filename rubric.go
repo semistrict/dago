@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -209,9 +210,9 @@ func rubricTerminalUpdate(values state.Values, evaluation RubricEvaluation) stat
 	evaluations := rubricEvaluations(values[RubricEvaluationsKey])
 	evaluations = append(evaluations, evaluation)
 	update := state.Values{
-		RubricEvaluationsKey: evaluations,
+		RubricEvaluationsKey: rubricEvaluationsToState(evaluations),
 		RubricIterationsKey:  evaluation.Iteration + 1,
-		RubricStatusKey:      evaluation.Result,
+		RubricStatusKey:      string(evaluation.Result),
 	}
 	if evaluation.Result != RubricNeedsRevision {
 		return update
@@ -419,11 +420,45 @@ func rubricIteration(value any) int {
 }
 
 func rubricEvaluations(value any) []RubricEvaluation {
-	values, ok := value.([]RubricEvaluation)
-	if !ok {
+	if values, ok := value.([]RubricEvaluation); ok {
+		result := append([]RubricEvaluation(nil), values...)
+		for index := range result {
+			result[index].Criteria = cloneRubricCriteria(values[index].Criteria)
+		}
+		return result
+	}
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() || reflected.Kind() != reflect.Slice {
 		return nil
 	}
-	return cloneRubricEvaluations(values).([]RubricEvaluation)
+	result := make([]RubricEvaluation, 0, reflected.Len())
+	for index := 0; index < reflected.Len(); index++ {
+		record, ok := reflected.Index(index).Interface().(map[string]any)
+		if !ok {
+			continue
+		}
+		item := RubricEvaluation{
+			GradingRunID: rubricString(record["grading_run_id"]),
+			Iteration:    rubricIteration(record["iteration"]),
+			Result:       RubricResult(rubricString(record["result"])),
+			Explanation:  rubricString(record["explanation"]),
+		}
+		criteria := reflect.ValueOf(record["criteria"])
+		if criteria.IsValid() && criteria.Kind() == reflect.Slice {
+			for criterionIndex := 0; criterionIndex < criteria.Len(); criterionIndex++ {
+				criterion, ok := criteria.Index(criterionIndex).Interface().(map[string]any)
+				if !ok {
+					continue
+				}
+				passed, _ := criterion["passed"].(bool)
+				item.Criteria = append(item.Criteria, RubricCriterionEvaluation{
+					Name: rubricString(criterion["name"]), Passed: passed, Gap: rubricString(criterion["gap"]),
+				})
+			}
+		}
+		result = append(result, item)
+	}
+	return result
 }
 
 func cloneRubricCriteria(values []RubricCriterionEvaluation) []RubricCriterionEvaluation {
@@ -431,15 +466,29 @@ func cloneRubricCriteria(values []RubricCriterionEvaluation) []RubricCriterionEv
 }
 
 func cloneRubricEvaluations(value any) any {
-	values, ok := value.([]RubricEvaluation)
-	if !ok {
-		return value
-	}
-	result := append([]RubricEvaluation(nil), values...)
-	for index := range result {
-		result[index].Criteria = cloneRubricCriteria(values[index].Criteria)
+	return rubricEvaluationsToState(rubricEvaluations(value))
+}
+
+func rubricEvaluationsToState(values []RubricEvaluation) []map[string]any {
+	result := make([]map[string]any, len(values))
+	for index, item := range values {
+		criteria := make([]map[string]any, len(item.Criteria))
+		for criterionIndex, criterion := range item.Criteria {
+			criteria[criterionIndex] = map[string]any{
+				"name": criterion.Name, "passed": criterion.Passed, "gap": criterion.Gap,
+			}
+		}
+		result[index] = map[string]any{
+			"grading_run_id": item.GradingRunID, "iteration": item.Iteration,
+			"result": string(item.Result), "explanation": item.Explanation, "criteria": criteria,
+		}
 	}
 	return result
+}
+
+func rubricString(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func cloneRubricScalar(value any) any { return value }

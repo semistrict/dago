@@ -919,3 +919,83 @@ func TestMergeModelChunkPreservesTextAnnotations(t *testing.T) {
 		t.Fatalf("merged text block = %#v", block)
 	}
 }
+
+func TestTodoListRejectsParallelReplacementAndRetriesModel(t *testing.T) {
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Check: func(request model.Request) error {
+			if !strings.Contains(request.Messages[0].TextContent(), "Never call write_todos multiple times in parallel") {
+				return errors.New("todo planning prompt missing")
+			}
+			return nil
+		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+			{ID: "todo-1", Name: "write_todos", Arguments: json.RawMessage(`{"todos":[{"content":"one","status":"in_progress"}]}`)},
+			{ID: "todo-2", Name: "write_todos", Arguments: json.RawMessage(`{"todos":[{"content":"two","status":"pending"}]}`)},
+		}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			var errorsSeen int
+			for _, item := range request.Messages {
+				if item.Role == message.RoleTool && item.ToolStatus == message.ToolStatusError && item.TextContent() == parallelTodoError {
+					errorsSeen++
+				}
+			}
+			if errorsSeen != 2 {
+				return fmt.Errorf("parallel todo errors = %d", errorsSeen)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("recovered")}},
+	)
+	compiled, err := New(Options{Model: script, Middleware: []Middleware{TodoList()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), Input{Messages: []message.Message{message.Human("plan")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "recovered" {
+		t.Fatalf("messages = %#v", result.Messages)
+	}
+	if len(todosFromState(result.State["todos"])) != 0 {
+		t.Fatalf("parallel todo calls changed state: %#v", result.State["todos"])
+	}
+}
+
+func TestTodoListStateRestartsFromSQLite(t *testing.T) {
+	saver, err := checkpointsqlite.Open(filepath.Join(t.TempDir(), "todos.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer saver.Close()
+	firstModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{
+			Role: message.RoleAssistant,
+			ToolCalls: []message.ToolCall{{
+				ID: "todo", Name: "write_todos", Arguments: json.RawMessage(`{"todos":[{"content":"portable","status":"in_progress"}]}`),
+			}},
+		}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("saved")}},
+	)
+	first, err := New(Options{Model: firstModel, Middleware: []Middleware{TodoList()}, Saver: saver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := checkpoint.Config{ThreadID: "todo-portable"}
+	if _, err := first.Invoke(context.Background(), Input{Config: config, Messages: []message.Message{message.Human("plan")}}); err != nil {
+		t.Fatal(err)
+	}
+	secondModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("resumed")}})
+	observer := Middleware{Name: "todo_state_observer", WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
+		todos := todosFromState(request.State["todos"])
+		if len(todos) != 1 || todos[0].Content != "portable" || todos[0].Status != "in_progress" {
+			return ModelResponse{}, fmt.Errorf("restored todos = %#v", todos)
+		}
+		return next(ctx, request)
+	}}
+	second, err := New(Options{Model: secondModel, Middleware: []Middleware{TodoList(), observer}, Saver: saver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Invoke(context.Background(), Input{Config: config, Messages: []message.Message{message.Human("continue")}}); err != nil {
+		t.Fatal(err)
+	}
+}

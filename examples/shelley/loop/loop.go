@@ -609,6 +609,11 @@ func (l *Loop) runtimeInput(ctx context.Context) ([]llm.Message, error) {
 			l.mu.Unlock()
 			return pending, nil
 		}
+		if l.enableDagoHarness {
+			// Dago's PatchToolCallsMiddleware owns canonical dangling-call repair.
+			// The Shelley helper below remains only for direct legacy-loop tests.
+			return history, nil
+		}
 		return l.repairMessageHistory(history), nil
 	}
 	return pending, nil

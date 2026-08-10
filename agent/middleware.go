@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"reflect"
 	"strings"
 	"time"
 
@@ -61,11 +62,37 @@ type Todo struct {
 	Status  string `json:"status"`
 }
 
+type TodoListOptions struct {
+	SystemPrompt    string
+	ToolDescription string
+}
+
+const todoSystemPrompt = `## write_todos
+
+Use write_todos to create and manage a structured task list for complex objectives. Skip it for simple work that takes only a few steps.
+
+- Mark work in_progress before beginning it and completed immediately after it is actually finished.
+- Revise the list as new information appears; remove irrelevant items.
+- Unless all work is complete, keep at least one applicable item in_progress.
+- Never call write_todos multiple times in parallel.
+- The final answer must be a later assistant message, not the write_todos tool call itself.`
+
+const todoToolDescription = `Create or replace the structured task list for the current work session. Use this for non-trivial work with at least three distinct steps, when the user asks for a plan, or when tracking will materially help. Keep statuses current as work proceeds. Do not call this tool multiple times in one model response.`
+
+const parallelTodoError = "Error: The `write_todos` tool should never be called multiple times in parallel. Please call it only once per model invocation to update the todo list."
+
 // TodoList adds the write_todos tool and a checkpointed todos state field.
 func TodoList() Middleware {
+	return TodoListWithOptions(TodoListOptions{SystemPrompt: todoSystemPrompt, ToolDescription: todoToolDescription})
+}
+
+func TodoListWithOptions(options TodoListOptions) Middleware {
 	schema := json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}}},"required":["todos"],"additionalProperties":false}`)
+	if options.ToolDescription == "" {
+		options.ToolDescription = todoToolDescription
+	}
 	write := tool.Func{
-		Spec: tool.Definition{Name: "write_todos", Description: "Create or replace the task list for the current run.", InputSchema: schema},
+		Spec: tool.Definition{Name: "write_todos", Description: options.ToolDescription, InputSchema: schema},
 		Run: func(_ context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 			var arguments struct {
 				Todos []Todo `json:"todos"`
@@ -80,19 +107,94 @@ func TodoList() Middleware {
 			}
 			return tool.Result{
 				Content: []message.ContentBlock{{Type: message.BlockText, Text: "Updated todo list."}},
-				Update:  map[string]any{"todos": append([]Todo(nil), arguments.Todos...)},
+				Update:  map[string]any{"todos": todosToState(arguments.Todos)},
 			}, nil
 		},
 	}
 	return Middleware{
 		Name: "todo_list", Tools: []tool.Tool{write},
-		Fields: map[string]StateField{"todos": {Kind: FieldLast, Contract: "dago.todos.v1", Clone: func(value any) any {
-			if todos, ok := value.([]Todo); ok {
-				return append([]Todo(nil), todos...)
+		Fields: map[string]StateField{"todos": {Kind: FieldLast, Contract: "dago.todos.v1", Clone: cloneTodoState}},
+		WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
+			if options.SystemPrompt != "" {
+				appendModelSystem(&request, options.SystemPrompt)
 			}
-			return value
-		}}},
+			return next(ctx, request)
+		},
+		AfterModel: func(_ context.Context, values state.Values, _ Runtime) (state.Values, error) {
+			messages, err := messagesFrom(values[MessagesKey])
+			if err != nil {
+				return nil, err
+			}
+			var latest *message.Message
+			for index := len(messages) - 1; index >= 0; index-- {
+				if messages[index].Role == message.RoleAssistant {
+					latest = &messages[index]
+					break
+				}
+			}
+			if latest == nil {
+				return nil, nil
+			}
+			var calls []message.ToolCall
+			for _, call := range latest.ToolCalls {
+				if call.Name == "write_todos" {
+					calls = append(calls, call)
+				}
+			}
+			if len(calls) <= 1 {
+				return nil, nil
+			}
+			errors := make([]message.Message, len(calls))
+			for index, call := range calls {
+				errors[index] = message.Tool(call.ID, parallelTodoError)
+				errors[index].Name = call.Name
+				errors[index].ToolStatus = message.ToolStatusError
+			}
+			return state.Values{MessagesKey: errors, structuredRetryKey: true}, nil
+		},
 	}
+}
+
+func todosToState(values []Todo) []map[string]any {
+	result := make([]map[string]any, len(values))
+	for index, item := range values {
+		result[index] = map[string]any{"content": item.Content, "status": item.Status}
+	}
+	return result
+}
+
+func todosFromState(value any) []Todo {
+	if values, ok := value.([]Todo); ok {
+		return values
+	}
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() || reflected.Kind() != reflect.Slice {
+		return nil
+	}
+	result := make([]Todo, 0, reflected.Len())
+	for index := 0; index < reflected.Len(); index++ {
+		record, ok := reflected.Index(index).Interface().(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := record["content"].(string)
+		status, _ := record["status"].(string)
+		result = append(result, Todo{Content: content, Status: status})
+	}
+	return result
+}
+
+func cloneTodoState(value any) any { return todosToState(todosFromState(value)) }
+
+func appendModelSystem(request *ModelRequest, text string) {
+	if request.SystemMessage == nil {
+		value := message.System(text)
+		request.SystemMessage = &value
+		return
+	}
+	copy := request.SystemMessage.Clone()
+	copy.Content = append(copy.Content, message.ContentBlock{Type: message.BlockText, Text: "\n\n" + text})
+	request.SystemMessage = &copy
 }
 
 // ApprovalRequest describes one tool call awaiting a human decision.

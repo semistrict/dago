@@ -496,15 +496,11 @@ func stateBool(values state.Values, key string) bool {
 }
 
 func stringSliceState(values state.Values, key string) []string {
-	result, _ := values[key].([]string)
-	return append([]string(nil), result...)
+	return append([]string(nil), stringsFromState(values[key])...)
 }
 
 func cloneStringSliceValue(value any) any {
-	if strings, ok := value.([]string); ok {
-		return append([]string(nil), strings...)
-	}
-	return value
+	return append([]string(nil), stringsFromState(value)...)
 }
 
 func nemotronIdentityClone(value any) any { return value }

@@ -11,6 +11,7 @@ import (
 
 	dmessage "github.com/semistrict/dago/message"
 	dmodel "github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/model/modeltest"
 
 	"shelley.exe.dev/llm"
 )
@@ -89,6 +90,28 @@ sub/AGENTS.md`}}
 	}
 	if legacy := runtimeSystemPrompt(projected, false); !strings.Contains(legacy, "project rules") {
 		t.Fatalf("legacy projection changed: %q", legacy)
+	}
+}
+
+func TestNativeRuntimeDelegatesDanglingToolRepairToDago(t *testing.T) {
+	chat := modeltest.New(dmodel.Profile{}, modeltest.Step{Check: func(request dmodel.Request) error {
+		for _, item := range request.Messages {
+			if item.Role == dmessage.RoleTool && item.ToolCallID == "dangling" && strings.Contains(item.TextContent(), "was cancelled") {
+				return nil
+			}
+		}
+		return fmt.Errorf("Dago did not patch dangling call: %#v", request.Messages)
+	}, Response: dmodel.Response{Message: dmessage.Assistant("continued")}})
+	runtime := NewLoop(Config{
+		Model: chat, EnableDagoHarness: true, WorkingDir: t.TempDir(),
+		History: []llm.Message{
+			{Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeToolUse, ID: "dangling", ToolName: "lookup"}}},
+			llm.UserStringMessage("continue"),
+		},
+		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
+	})
+	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

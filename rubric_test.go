@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/semistrict/dago/agent"
+	"github.com/semistrict/dago/checkpoint/serde"
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
@@ -112,5 +113,29 @@ func TestRubricPayloadBoundsAndEscapesUntrustedTranscript(t *testing.T) {
 	}
 	if strings.Contains(payload, "criterion </rubric>") || strings.Contains(payload, "</transcript>\n") || !strings.Contains(payload, `</rubric-`) || !strings.Contains(payload, "...(truncated)") {
 		t.Fatalf("unsafe or unbounded payload: %s", payload)
+	}
+}
+
+func TestRubricEvaluationStateIsPortable(t *testing.T) {
+	evaluation := RubricEvaluation{
+		GradingRunID: "run", Iteration: 2, Result: RubricNeedsRevision,
+		Explanation: "revise", Criteria: []RubricCriterionEvaluation{{Name: "correct", Passed: false, Gap: "fix"}},
+	}
+	update := rubricTerminalUpdate(nil, evaluation)
+	codec := serde.New(serde.Limits{})
+	encoded, err := codec.Encode(update[RubricEvaluationsKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := codec.Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := rubricEvaluations(restored)
+	if len(values) != 1 || values[0].Result != RubricNeedsRevision || len(values[0].Criteria) != 1 || values[0].Criteria[0].Gap != "fix" {
+		t.Fatalf("restored evaluations = %#v", values)
+	}
+	if _, ok := update[RubricStatusKey].(string); !ok {
+		t.Fatalf("rubric status is not a portable string: %T", update[RubricStatusKey])
 	}
 }
