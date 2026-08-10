@@ -711,6 +711,8 @@ consumers cannot leak goroutines or silently lose terminal errors.
   streaming, usage, structured output, context overflow, cancellation, and provider
   errors.
 - [x] Keep provider-specific compatibility shims isolated and optional.
+- [x] Register the applicable built-in Anthropic harness overlays and
+  OpenAI/NVIDIA/OpenRouter construction defaults before user layering.
 
 Exit gate: core behavior is provider-neutral, selected adapters pass the same model
 contract, and profile behavior is reproducible from fixtures.
