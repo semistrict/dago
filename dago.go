@@ -2,6 +2,7 @@ package dago
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/semistrict/dago/agent"
@@ -38,7 +39,11 @@ type Options struct {
 	AsyncSubagentPrompt        string
 	DisableSubagents           bool
 	Skills                     []string
+	SkillCatalog               []Skill
+	SkillActivation            func(Skill) string
 	Memory                     []string
+	MemoryContents             map[string]string
+	MemorySystemPrompt         *string
 	EnableTodo                 bool
 	DisableTodo                bool
 	DisableSummary             bool
@@ -112,8 +117,11 @@ func New(options Options) (*DeepAgent, error) {
 	if options.EnableTodo && !options.DisableTodo {
 		core = append(core, agent.TodoList())
 	}
-	if options.Skills != nil {
-		middleware, err := SkillsMiddleware(SkillsOptions{Backend: options.Backend, Sources: options.Skills})
+	if options.Skills != nil || options.SkillCatalog != nil {
+		middleware, err := SkillsMiddleware(SkillsOptions{
+			Backend: options.Backend, Sources: options.Skills,
+			Catalog: options.SkillCatalog, Activate: options.SkillActivation,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -179,8 +187,19 @@ func New(options Options) (*DeepAgent, error) {
 		}
 		return request.Runtime.TaskID
 	}))
-	if options.Memory != nil {
-		middleware, err := MemoryMiddleware(MemoryOptions{Backend: options.Backend, Sources: options.Memory, AddCacheControl: true})
+	if options.Memory != nil || options.MemoryContents != nil {
+		sources := append([]string(nil), options.Memory...)
+		if sources == nil {
+			for source := range options.MemoryContents {
+				sources = append(sources, source)
+			}
+			sort.Strings(sources)
+		}
+		middleware, err := MemoryMiddleware(MemoryOptions{
+			Backend: options.Backend, Sources: sources,
+			Contents: options.MemoryContents, SystemPrompt: options.MemorySystemPrompt,
+			AddCacheControl: true,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -412,8 +431,11 @@ func buildGeneralSubagent(options Options, filesystem agent.Middleware, profile 
 		middleware = append(middleware, compact)
 	}
 	middleware = append(middleware, PatchToolCallsMiddleware())
-	if options.Skills != nil {
-		skills, err := SkillsMiddleware(SkillsOptions{Backend: options.Backend, Sources: options.Skills})
+	if options.Skills != nil || options.SkillCatalog != nil {
+		skills, err := SkillsMiddleware(SkillsOptions{
+			Backend: options.Backend, Sources: options.Skills,
+			Catalog: options.SkillCatalog, Activate: options.SkillActivation,
+		})
 		if err != nil {
 			return nil, err
 		}

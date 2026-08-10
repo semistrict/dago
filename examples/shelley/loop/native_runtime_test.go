@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -70,6 +71,24 @@ func TestLoopDagoHarnessExposesCanonicalDeepAgentTools(t *testing.T) {
 	runtime.QueueUserMessage(llm.UserStringMessage("inspect"))
 	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNativeRuntimeRemovesProjectedGuidance(t *testing.T) {
+	projected := []llm.SystemContent{{Text: `base
+<customization>projection note</customization>
+<guidance><root_guidance file="AGENTS.md">project rules</root_guidance></guidance>
+Subdirectory guidance files:
+sub/AGENTS.md`}}
+	native := runtimeSystemPrompt(projected, true)
+	if strings.Contains(native, "projection note") || strings.Contains(native, "project rules") {
+		t.Fatalf("projected guidance reached native runtime: %q", native)
+	}
+	if !strings.Contains(native, "base") || !strings.Contains(native, "sub/AGENTS.md") {
+		t.Fatalf("application prompt content was removed: %q", native)
+	}
+	if legacy := runtimeSystemPrompt(projected, false); !strings.Contains(legacy, "project rules") {
+		t.Fatalf("legacy projection changed: %q", legacy)
 	}
 }
 

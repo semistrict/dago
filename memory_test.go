@@ -8,6 +8,7 @@ import (
 
 	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
+	"github.com/semistrict/dago/checkpoint/serde"
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
@@ -82,6 +83,55 @@ func TestMemoryLoadsOnceInOneBatchAndFormatsSourcesInOrder(t *testing.T) {
 	}
 	if recording.calls != 1 {
 		t.Fatalf("checkpointed memory reloaded; download calls = %d", recording.calls)
+	}
+}
+
+func TestMemoryPreloadedContentsArePortableAndSurviveCheckpointDecode(t *testing.T) {
+	memory, err := backend.NewMemory(map[string]backend.FileData{
+		"/disk/AGENTS.md": {Content: "disk", Encoding: backend.EncodingUTF8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recording := &recordingDownloadBackend{Backend: memory}
+	middleware, err := MemoryMiddleware(MemoryOptions{
+		Backend: recording, Sources: []string{"/embedded/AGENTS.md", "/disk/AGENTS.md"},
+		Contents: map[string]string{"/embedded/AGENTS.md": "embedded"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, err := middleware.BeforeAgent(context.Background(), state.Values{}, agent.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recording.calls != 1 || len(recording.paths[0]) != 1 || recording.paths[0][0] != "/disk/AGENTS.md" {
+		t.Fatalf("downloaded paths = %#v", recording.paths)
+	}
+	codec := serde.New(serde.Limits{})
+	encoded, err := codec.Encode(update["memory_contents"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := codec.Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		prompt := request.Messages[0].TextContent()
+		if !strings.Contains(prompt, "/embedded/AGENTS.md\n\nembedded") || !strings.Contains(prompt, "/disk/AGENTS.md\n\ndisk") {
+			return &memoryTestError{"restored memory contents were not injected"}
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("done")}})
+	compiled, err := agent.New(agent.Options{Model: script, Middleware: []agent.Middleware{middleware}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{
+		Messages: []message.Message{message.Human("go")}, State: state.Values{"memory_contents": restored},
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -91,6 +91,23 @@ func fromDagoSkills(values []dskill.Skill) []Skill {
 	return result
 }
 
+// DagoCatalog converts Shelley's resolved skill set into the metadata consumed
+// by Dago's progressive-disclosure middleware. Shelley keeps ownership of its
+// built-in catalog and environment conditions; Dago owns agent prompting and
+// activation.
+func DagoCatalog(skills []Skill) []dskill.Skill {
+	result := make([]dskill.Skill, len(skills))
+	for index, item := range skills {
+		result[index] = dskill.Skill{
+			Name: item.Name, Description: item.Description, Path: item.Path,
+			License: item.License, Compatibility: item.Compatibility,
+			Metadata: item.Metadata, AllowedTools: strings.Fields(item.AllowedTools),
+			When: item.When,
+		}
+	}
+	return result
+}
+
 // ToPromptXML generates the <available_skills> XML block for system prompts.
 func ToPromptXML(skills []Skill) string {
 	values := make([]dskill.Skill, len(skills))

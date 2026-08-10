@@ -581,8 +581,11 @@ func requestTokenCount(ctx context.Context, request agent.ModelRequest) int {
 }
 
 type MemoryOptions struct {
-	Backend         backend.Backend
-	Sources         []string
+	Backend backend.Backend
+	Sources []string
+	// Contents supplies already-loaded source text. Entries whose paths appear
+	// in Sources are used without downloading them from Backend.
+	Contents        map[string]string
 	Prompt          string
 	SystemPrompt    *string
 	AddCacheControl bool
@@ -626,12 +629,18 @@ func MemoryMiddleware(options MemoryOptions) (agent.Middleware, error) {
 			return nil, err
 		}
 		ctx = boundCtx
-		contents := map[string]string{}
-		downloads := options.Backend.Download(ctx, append([]string(nil), options.Sources...))
-		if len(downloads) != len(options.Sources) {
-			return nil, fmt.Errorf("memory backend returned %d downloads for %d sources", len(downloads), len(options.Sources))
+		contents := cloneStringValues(options.Contents)
+		var unresolved []string
+		for _, source := range options.Sources {
+			if _, loaded := contents[source]; !loaded {
+				unresolved = append(unresolved, source)
+			}
 		}
-		for index, source := range options.Sources {
+		downloads := options.Backend.Download(ctx, unresolved)
+		if len(downloads) != len(unresolved) {
+			return nil, fmt.Errorf("memory backend returned %d downloads for %d sources", len(downloads), len(unresolved))
+		}
+		for index, source := range unresolved {
 			download := downloads[index]
 			if download.Error == "file_not_found" {
 				continue
@@ -647,7 +656,7 @@ func MemoryMiddleware(options MemoryOptions) (agent.Middleware, error) {
 		return state.Values{"memory_contents": contents}, nil
 	}, WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
 		if template != "" {
-			contents, _ := request.State["memory_contents"].(map[string]string)
+			contents := stringValuesFromState(request.State["memory_contents"])
 			var sections []string
 			for _, source := range options.Sources {
 				value := strings.TrimRight(commentRE.ReplaceAllString(contents[source], ""), " \t\r\n")
@@ -688,9 +697,17 @@ type SkillsOptions struct {
 	Backend        backend.Backend
 	Sources        []string
 	LabeledSources []SkillSource
-	SystemPrompt   *string
-	MaxFileBytes   int
-	Warn           func(string)
+	// Catalog supplies skills that were discovered by an application. Filesystem
+	// sources remain higher priority and replace catalog entries with the same
+	// name.
+	Catalog []Skill
+	// Activate returns the progressive-disclosure instruction for a skill. The
+	// default tells the agent to read the skill file through the filesystem
+	// tools.
+	Activate     func(Skill) string
+	SystemPrompt *string
+	MaxFileBytes int
+	Warn         func(string)
 }
 
 const (
@@ -708,13 +725,21 @@ You have access to a skills library that provides specialized capabilities and d
 
 {skills_list}
 
-Use skills through progressive disclosure: recognize when a skill applies, read its full SKILL.md with read_file before using it, follow its instructions, and use absolute paths for supporting files.`
+Use skills through progressive disclosure: recognize when a skill applies, follow its listed activation instruction before using it, then follow the loaded instructions and use absolute paths for supporting files.`
 
 // SkillsMiddleware discovers SKILL.md metadata and advertises stable on-demand
 // locations without loading the full instructions into every request.
 func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 	if options.Backend == nil {
 		return agent.Middleware{}, fmt.Errorf("skills backend is required")
+	}
+	for index, item := range options.Catalog {
+		if item.Name == "" || item.Description == "" {
+			return agent.Middleware{}, fmt.Errorf("catalog skill %d requires a name and description", index)
+		}
+		if item.Path == "" && options.Activate == nil {
+			return agent.Middleware{}, fmt.Errorf("catalog skill %q requires a path or activation function", item.Name)
+		}
 	}
 	if options.MaxFileBytes <= 0 {
 		options.MaxFileBytes = 10 << 20
@@ -742,6 +767,9 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 	}
 	discover := func(ctx context.Context) ([]Skill, []string, error) {
 		byName := map[string]Skill{}
+		for _, item := range options.Catalog {
+			byName[item.Name] = item
+		}
 		var warnings []string
 		warn := func(value string) {
 			if options.Warn != nil {
@@ -791,6 +819,7 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 					warn(fmt.Sprintf("cannot load %s: %v", skillPath, err))
 					continue
 				}
+				skill.Body = ""
 				// Sources are priority ordered: later sources replace earlier skills.
 				byName[skill.Name] = skill
 			}
@@ -803,7 +832,7 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 		return result, warnings, nil
 	}
 	return agent.Middleware{Name: "skills", Fields: map[string]agent.StateField{
-		"skills":             {Kind: agent.FieldLast, Contract: "dago.skills.v1", Private: true, Clone: cloneSkills},
+		"skills":             {Kind: agent.FieldLast, Contract: "dago.skills.v1", Private: true, Clone: cloneSkillState},
 		"skills_load_errors": {Kind: agent.FieldLast, Contract: "dago.skills.errors.v1", Private: true, Clone: cloneStrings},
 	}, BeforeAgent: func(ctx context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
 		if _, loaded := values["skills"]; loaded {
@@ -815,13 +844,13 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 		}
 		ctx = boundCtx
 		skills, warnings, err := discover(ctx)
-		return state.Values{"skills": skills, "skills_load_errors": warnings}, err
+		return state.Values{"skills": skillsToState(skills), "skills_load_errors": warnings}, err
 	}, WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
 		if template == "" {
 			return next(ctx, request)
 		}
-		skills, _ := request.State["skills"].([]Skill)
-		warnings, _ := request.State["skills_load_errors"].([]string)
+		skills := skillsFromState(request.State["skills"])
+		warnings := stringsFromState(request.State["skills_load_errors"])
 		locationLines := make([]string, 0, len(sources))
 		for index, source := range sources {
 			label := source.Label
@@ -853,7 +882,13 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 				if len(skill.AllowedTools) > 0 {
 					lines = append(lines, "  -> Allowed tools: "+strings.Join(skill.AllowedTools, ", "))
 				}
-				lines = append(lines, "  -> Read `"+skill.Path+"` for full instructions")
+				activation := "Read `" + skill.Path + "` for full instructions"
+				if options.Activate != nil {
+					activation = strings.TrimSpace(options.Activate(skill))
+				}
+				if activation != "" {
+					lines = append(lines, "  -> "+activation)
+				}
 			}
 			skillList = strings.Join(lines, "\n")
 		} else {
@@ -935,31 +970,92 @@ func capitalizeSkillSource(value string) string {
 	return strings.ToUpper(string(runes[:1])) + strings.ToLower(string(runes[1:]))
 }
 
-func cloneSkills(value any) any {
-	skills, ok := value.([]Skill)
-	if !ok {
-		return value
-	}
-	result := make([]Skill, len(skills))
+func skillsToState(skills []Skill) []map[string]any {
+	result := make([]map[string]any, len(skills))
 	for index, item := range skills {
-		result[index] = item
-		result[index].AllowedTools = append([]string(nil), item.AllowedTools...)
-		if item.Metadata != nil {
-			result[index].Metadata = make(map[string]string, len(item.Metadata))
-			for key, metadata := range item.Metadata {
-				result[index].Metadata[key] = metadata
-			}
+		metadata := make(map[string]any, len(item.Metadata))
+		for key, value := range item.Metadata {
+			metadata[key] = value
+		}
+		result[index] = map[string]any{
+			"name": item.Name, "description": item.Description, "path": item.Path,
+			"license": item.License, "compatibility": item.Compatibility,
+			"metadata": metadata, "allowed_tools": append([]string(nil), item.AllowedTools...),
+			"when": item.When,
 		}
 	}
 	return result
 }
 
-func cloneStrings(value any) any {
-	values, ok := value.([]string)
-	if !ok {
-		return value
+func skillsFromState(value any) []Skill {
+	if skills, ok := value.([]Skill); ok {
+		return skills
 	}
-	return append([]string(nil), values...)
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() || reflected.Kind() != reflect.Slice {
+		return nil
+	}
+	result := make([]Skill, 0, reflected.Len())
+	for index := 0; index < reflected.Len(); index++ {
+		record, ok := reflected.Index(index).Interface().(map[string]any)
+		if !ok {
+			continue
+		}
+		item := Skill{
+			Name: stringStateValue(record["name"]), Description: stringStateValue(record["description"]),
+			Path: stringStateValue(record["path"]), License: stringStateValue(record["license"]),
+			Compatibility: stringStateValue(record["compatibility"]), When: stringStateValue(record["when"]),
+			Metadata: map[string]string{},
+		}
+		if metadata, ok := record["metadata"].(map[string]any); ok {
+			for key, raw := range metadata {
+				item.Metadata[key] = stringStateValue(raw)
+			}
+		}
+		if len(item.Metadata) == 0 {
+			item.Metadata = nil
+		}
+		tools := reflect.ValueOf(record["allowed_tools"])
+		if tools.IsValid() && tools.Kind() == reflect.Slice {
+			for toolIndex := 0; toolIndex < tools.Len(); toolIndex++ {
+				if value := stringStateValue(tools.Index(toolIndex).Interface()); value != "" {
+					item.AllowedTools = append(item.AllowedTools, value)
+				}
+			}
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func stringStateValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func cloneSkillState(value any) any {
+	return skillsToState(skillsFromState(value))
+}
+
+func cloneStrings(value any) any {
+	return append([]string(nil), stringsFromState(value)...)
+}
+
+func stringsFromState(value any) []string {
+	if values, ok := value.([]string); ok {
+		return values
+	}
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() || reflected.Kind() != reflect.Slice {
+		return nil
+	}
+	result := make([]string, 0, reflected.Len())
+	for index := 0; index < reflected.Len(); index++ {
+		if text, ok := reflected.Index(index).Interface().(string); ok {
+			result = append(result, text)
+		}
+	}
+	return result
 }
 
 func parseSkill(content, filePath string) (Skill, []string, error) {
@@ -1317,10 +1413,27 @@ func sanitizePath(value string) string {
 	return value
 }
 func cloneStringMap(value any) any {
-	source, ok := value.(map[string]string)
-	if !ok {
-		return value
+	return cloneStringValues(stringValuesFromState(value))
+}
+
+func stringValuesFromState(value any) map[string]string {
+	if source, ok := value.(map[string]string); ok {
+		return source
 	}
+	source, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	result := make(map[string]string, len(source))
+	for key, item := range source {
+		if text, ok := item.(string); ok {
+			result[key] = text
+		}
+	}
+	return result
+}
+
+func cloneStringValues(source map[string]string) map[string]string {
 	result := make(map[string]string, len(source))
 	for key, item := range source {
 		result[key] = item

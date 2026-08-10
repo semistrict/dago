@@ -39,6 +39,7 @@ type SystemPromptData struct {
 	DefaultPort      int    // For exe.dev, the auto-routed HTTP port, 0 if unknown
 	SkillsXML        string // XML block for available skills
 	UserEmail        string // The exe.dev auth email of the user, if known
+	skipSkills       bool
 }
 
 // DBPath is the path to the shelley database, set at startup
@@ -86,10 +87,21 @@ func WithUserEmail(email string) SystemPromptOption {
 	}
 }
 
+// withoutPromptSkills leaves skill discovery and prompting to Dago. It is used
+// by production conversations; the standalone prompt generator retains its
+// original behavior for callers that render a complete prompt directly.
+func withoutPromptSkills() SystemPromptOption {
+	return func(d *SystemPromptData) { d.skipSkills = true }
+}
+
 // GenerateSystemPrompt generates the system prompt using the embedded template.
 // If workingDir is empty, it uses the current working directory.
 func GenerateSystemPrompt(workingDir string, opts ...SystemPromptOption) (string, error) {
-	data, err := collectSystemData(workingDir)
+	settings := &SystemPromptData{}
+	for _, opt := range opts {
+		opt(settings)
+	}
+	data, err := collectSystemData(workingDir, settings.skipSkills)
 	if err != nil {
 		return "", fmt.Errorf("failed to collect system data: %w", err)
 	}
@@ -632,7 +644,7 @@ func runHook(name, prompt string) (string, error) {
 	return result, nil
 }
 
-func collectSystemData(workingDir string) (*SystemPromptData, error) {
+func collectSystemData(workingDir string, skipSkills bool) (*SystemPromptData, error) {
 	wd := workingDir
 	if wd == "" {
 		var err error
@@ -660,7 +672,7 @@ func collectSystemData(workingDir string) (*SystemPromptData, error) {
 	// Check if running on exe.dev (cheap stat).
 	data.IsExeDev = isExeDev()
 
-	// The codebase-info and skill walks each traverse the project tree,
+	// The codebase-info and optional skill walks each traverse the project tree,
 	// stat'ing every directory and (for codebase info) reading guidance files.
 	// They are independent and dominate Hydrate's wall time — measured ~50ms
 	// each under -race on a moderately sized repo, more on loaded CI workers.
@@ -672,15 +684,18 @@ func collectSystemData(workingDir string) (*SystemPromptData, error) {
 		skillsXML    string
 		wg           sync.WaitGroup
 	)
-	wg.Add(2)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		codebaseInfo, codebaseErr = collectCodebaseInfo(wd, gitInfo)
 	}()
-	go func() {
-		defer wg.Done()
-		skillsXML = collectSkills(wd, gitRoot, skills.Env{ExeDev: data.IsExeDev})
-	}()
+	if !skipSkills {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			skillsXML = collectSkills(wd, gitRoot, skills.Env{ExeDev: data.IsExeDev})
+		}()
+	}
 
 	// Run the remaining cheap synchronous probes while the walks are in flight.
 	data.IsSudoAvailable = isSudoAvailable()
@@ -951,10 +966,17 @@ type SubagentSystemPromptData struct {
 	ShelleyDBPath    string
 	ConversationID   string // Parent conversation ID for querying user messages
 	SkillsXML        string // XML block for available skills
+	skipSkills       bool
+}
+
+type SubagentSystemPromptOption func(*SubagentSystemPromptData)
+
+func withoutSubagentPromptSkills() SubagentSystemPromptOption {
+	return func(d *SubagentSystemPromptData) { d.skipSkills = true }
 }
 
 // GenerateSubagentSystemPrompt generates a minimal system prompt for subagent conversations.
-func GenerateSubagentSystemPrompt(workingDir, parentConversationID string) (string, error) {
+func GenerateSubagentSystemPrompt(workingDir, parentConversationID string, opts ...SubagentSystemPromptOption) (string, error) {
 	wd := workingDir
 	if wd == "" {
 		var err error
@@ -969,6 +991,9 @@ func GenerateSubagentSystemPrompt(workingDir, parentConversationID string) (stri
 		ShelleyDBPath:    DBPath,
 		ConversationID:   parentConversationID,
 	}
+	for _, opt := range opts {
+		opt(data)
+	}
 
 	// Try to collect git info
 	gitInfo, err := collectGitInfo(wd)
@@ -981,7 +1006,9 @@ func GenerateSubagentSystemPrompt(workingDir, parentConversationID string) (stri
 	if gitInfo != nil {
 		gitRoot = gitInfo.Root
 	}
-	data.SkillsXML = collectSkills(wd, gitRoot, skills.Env{ExeDev: isExeDev()})
+	if !data.skipSkills {
+		data.SkillsXML = collectSkills(wd, gitRoot, skills.Env{ExeDev: isExeDev()})
+	}
 
 	tmpl, err := template.New("subagent_system_prompt").Parse(subagentSystemPromptTemplate)
 	if err != nil {

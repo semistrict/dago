@@ -7,6 +7,7 @@ import (
 
 	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
+	"github.com/semistrict/dago/checkpoint/serde"
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
@@ -151,6 +152,53 @@ func TestSkillsCustomPromptRequiresProgressiveDisclosureSlots(t *testing.T) {
 	}
 	valid := "Locations:\n{skills_locations}{skills_load_warnings}\nSkills:\n{skills_list}"
 	if _, err := SkillsMiddleware(SkillsOptions{Backend: memory, SystemPrompt: &valid}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSkillsCatalogUsesApplicationActivationAndFilesystemOverrides(t *testing.T) {
+	memory, err := backend.NewMemory(map[string]backend.FileData{
+		"/project/research/SKILL.md": {Content: "---\nname: research\ndescription: project\n---\nbody", Encoding: backend.EncodingUTF8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := SkillsMiddleware(SkillsOptions{
+		Backend: memory,
+		Sources: []string{"/project"},
+		Catalog: []Skill{
+			{Name: "research", Description: "catalog"},
+			{Name: "builtin", Description: "embedded"},
+		},
+		Activate: func(item Skill) string { return "Run skill show " + item.Name },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, err := middleware.BeforeAgent(context.Background(), map[string]any{}, agent.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serde.New(serde.Limits{}).Encode(update["skills"]); err != nil {
+		t.Fatalf("skills checkpoint state is not language-neutral: %v", err)
+	}
+	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		prompt := request.Messages[0].TextContent()
+		for _, expected := range []string{"**research**: project", "**builtin**: embedded", "Run skill show research", "Run skill show builtin"} {
+			if !strings.Contains(prompt, expected) {
+				return &skillTestError{"missing " + expected}
+			}
+		}
+		if strings.Contains(prompt, "**research**: catalog") {
+			return &skillTestError{"filesystem source did not override catalog"}
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("done")}})
+	compiled, err := agent.New(agent.Options{Model: script, Middleware: []agent.Middleware{middleware}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 }

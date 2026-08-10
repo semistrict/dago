@@ -101,6 +101,13 @@ type Config struct {
 	// FilesystemTools is the canonical Dago filesystem surface selected for
 	// this conversation. It is meaningful only when EnableDagoHarness is true.
 	FilesystemTools []string
+	// SkillCatalog is an application-resolved catalog consumed by Dago's
+	// progressive-disclosure middleware.
+	SkillCatalog    []dago.Skill
+	SkillActivation func(dago.Skill) string
+	Memory          []string
+	MemoryContents  map[string]string
+	MemoryPrompt    *string
 }
 
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
@@ -133,6 +140,11 @@ type Loop struct {
 	namespace         string
 	enableDagoHarness bool
 	filesystemTools   []string
+	skillCatalog      []dago.Skill
+	skillActivation   func(dago.Skill) string
+	memory            []string
+	memoryContents    map[string]string
+	memoryPrompt      *string
 	runtimeSeeded     bool
 	pendingInput      []llm.Message
 	executionMu       sync.Mutex
@@ -182,6 +194,11 @@ func NewLoop(config Config) *Loop {
 		namespace:         config.Namespace,
 		enableDagoHarness: config.EnableDagoHarness,
 		filesystemTools:   cloneFilesystemTools(config.FilesystemTools),
+		skillCatalog:      cloneSkillCatalog(config.SkillCatalog),
+		skillActivation:   config.SkillActivation,
+		memory:            append([]string(nil), config.Memory...),
+		memoryContents:    cloneStringMap(config.MemoryContents),
+		memoryPrompt:      cloneStringPointer(config.MemoryPrompt),
 	}
 	if loop.threadID == "" {
 		loop.threadID = fmt.Sprintf("shelley-loop-%p", loop)
@@ -387,7 +404,7 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	}
 	options := dago.Options{
 		Name: "Shelley", Model: model,
-		Tools: dagoTools, SystemPrompt: joinSystem(system), Middleware: []dagent.Middleware{l.runtimeMiddleware()},
+		Tools: dagoTools, SystemPrompt: runtimeSystemPrompt(system, l.enableDagoHarness), Middleware: []dagent.Middleware{l.runtimeMiddleware()},
 		Backend: harnessBackend,
 		Saver:   l.saver, MaxConcurrency: 1, FailOnToolError: false,
 		StateFields: map[string]dagent.StateField{
@@ -396,6 +413,11 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	}
 	if l.enableDagoHarness {
 		options.FilesystemTools = cloneFilesystemTools(l.filesystemTools)
+		options.SkillCatalog = cloneSkillCatalog(l.skillCatalog)
+		options.SkillActivation = l.skillActivation
+		options.Memory = append([]string(nil), l.memory...)
+		options.MemoryContents = cloneStringMap(l.memoryContents)
+		options.MemorySystemPrompt = cloneStringPointer(l.memoryPrompt)
 		// Shelley uses Dago's conversation-subagent tool so child runs retain
 		// their application-level UI and persistence contracts.
 		options.DisableSubagents = true
@@ -458,6 +480,43 @@ func cloneFilesystemTools(values []string) []string {
 	result := make([]string, len(values))
 	copy(result, values)
 	return result
+}
+
+func cloneSkillCatalog(values []dago.Skill) []dago.Skill {
+	if values == nil {
+		return nil
+	}
+	result := make([]dago.Skill, len(values))
+	for index, item := range values {
+		result[index] = item
+		result[index].AllowedTools = append([]string(nil), item.AllowedTools...)
+		if item.Metadata != nil {
+			result[index].Metadata = make(map[string]string, len(item.Metadata))
+			for key, value := range item.Metadata {
+				result[index].Metadata[key] = value
+			}
+		}
+	}
+	return result
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneStringPointer(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func isPredictableModel(chat dmodel.Chat) bool {
@@ -803,6 +862,22 @@ func joinSystem(items []llm.SystemContent) string {
 		parts = append(parts, item.Text)
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+var projectedGuidanceBlocks = []*regexp.Regexp{
+	regexp.MustCompile(`(?s)\n?<customization>.*?</customization>\n?`),
+	regexp.MustCompile(`(?s)\n?<guidance>.*?</guidance>\n?`),
+}
+
+func runtimeSystemPrompt(items []llm.SystemContent, nativeHarness bool) string {
+	prompt := joinSystem(items)
+	if !nativeHarness {
+		return prompt
+	}
+	for _, block := range projectedGuidanceBlocks {
+		prompt = block.ReplaceAllString(prompt, "\n")
+	}
+	return strings.TrimSpace(prompt)
 }
 
 func (l *Loop) emitToken(chunk dmodel.Chunk) {
