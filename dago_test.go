@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
 	"github.com/semistrict/dago/checkpoint"
+	checkpointsqlite "github.com/semistrict/dago/checkpoint/sqlite"
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
@@ -29,7 +31,7 @@ func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
 			for _, definition := range request.Tools {
 				names[definition.Name] = true
 			}
-			for _, required := range []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "task", "compact_conversation"} {
+			for _, required := range []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "task"} {
 				if !names[required] {
 					return errors.New("missing tool " + required)
 				}
@@ -847,11 +849,11 @@ func TestSubagentCanPropagateSelectedStateWithoutMessageLeak(t *testing.T) {
 	}
 }
 
-func TestSummarizationOverwritesOlderHistoryAndOffloads(t *testing.T) {
+func TestSummarizationPreservesRawHistoryAndOffloads(t *testing.T) {
 	memory, _ := backend.NewMemory(nil)
 	summaryModel := modeltest.New(model.Profile{ContextWindow: 100}, modeltest.Step{Response: model.Response{Message: message.Assistant("facts")}})
 	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
-		if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "Summary of earlier") {
+		if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "conversation that has been summarized") {
 			return errors.New("compacted history missing")
 		}
 		return nil
@@ -869,7 +871,7 @@ func TestSummarizationOverwritesOlderHistoryAndOffloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Messages) != 4 {
+	if len(result.Messages) != 5 || result.Messages[0].TextContent() != "old one" {
 		t.Fatalf("messages = %#v", result.Messages)
 	}
 	glob, err := memory.Glob(context.Background(), "**/*.md", "/conversation_history")
@@ -878,21 +880,70 @@ func TestSummarizationOverwritesOlderHistoryAndOffloads(t *testing.T) {
 	}
 }
 
+func TestSummarizationEventSurvivesSQLiteReplay(t *testing.T) {
+	saver, err := checkpointsqlite.Open(filepath.Join(t.TempDir(), "summaries.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer saver.Close()
+	memory, _ := backend.NewMemory(nil)
+	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("durable summary")}})
+	firstModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "durable summary") {
+			return fmt.Errorf("first effective messages = %#v", request.Messages)
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("first response")}})
+	firstMiddleware, err := SummarizationMiddleware(SummarizationOptions{Model: summaryModel, Backend: memory, TriggerMessages: 4, KeepMessages: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := agent.New(agent.Options{Model: firstModel, Middleware: []agent.Middleware{firstMiddleware}, Saver: saver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := checkpoint.Config{ThreadID: "summary-replay"}
+	initial := []message.Message{message.Human("old one"), message.Assistant("old two"), message.Human("recent one"), message.Assistant("recent two")}
+	if _, err := first.Invoke(context.Background(), agent.Input{Config: config, Messages: initial}); err != nil {
+		t.Fatal(err)
+	}
+
+	secondModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		if len(request.Messages) != 5 || !strings.Contains(request.Messages[0].TextContent(), "durable summary") || strings.Contains(request.Messages[0].TextContent(), "old one") {
+			return fmt.Errorf("replayed effective messages = %#v", request.Messages)
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("second response")}})
+	unusedSummaryModel := modeltest.New(model.Profile{})
+	secondMiddleware, err := SummarizationMiddleware(SummarizationOptions{Model: unusedSummaryModel, Backend: memory, TriggerMessages: 100, KeepMessages: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := agent.New(agent.Options{Model: secondModel, Middleware: []agent.Middleware{secondMiddleware}, Saver: saver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := second.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("continue")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 7 || result.Messages[0].TextContent() != "old one" {
+		t.Fatalf("raw replayed messages = %#v", result.Messages)
+	}
+}
+
 func TestSummarizationOffloadsLargeOldMedia(t *testing.T) {
 	memory, _ := backend.NewMemory(nil)
-	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
-		if len(request.Messages) != 2 || len(request.Messages[0].Content) != 1 {
-			return errors.New("unexpected prepared message history")
-		}
-		block := request.Messages[0].Content[0]
-		if block.Type != message.BlockText || !strings.Contains(block.Text, "/conversation_media/") || len(block.Data) != 0 {
+	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "/conversation_history/media/") {
 			return errors.New("large old media was not replaced with a reference")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: model.Response{Message: message.Assistant("media summary")}})
+	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}})
 	middleware, err := SummarizationMiddleware(SummarizationOptions{
-		Model: mainModel, Backend: memory, TriggerTokens: 1_000_000,
-		KeepMessages: 1, MediaOffloadBytes: 4,
+		Model: summaryModel, Backend: memory, TriggerTokens: 1,
+		KeepMessages: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -905,7 +956,7 @@ func TestSummarizationOffloadsLargeOldMedia(t *testing.T) {
 	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{old, message.Human("recent")}}); err != nil {
 		t.Fatal(err)
 	}
-	files, err := memory.Glob(context.Background(), "**/*.png", "/conversation_media")
+	files, err := memory.Glob(context.Background(), "**/*.png", "/conversation_history/media")
 	if err != nil || len(files.Matches) != 1 {
 		t.Fatalf("offloaded media = %#v, %v", files, err)
 	}
@@ -939,7 +990,7 @@ func TestSummarizationRetriesContextOverflowWithCompactedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Messages) != 4 || result.Messages[len(result.Messages)-1].TextContent() != "recovered" {
+	if len(result.Messages) != 5 || result.Messages[len(result.Messages)-1].TextContent() != "recovered" {
 		t.Fatalf("messages = %#v", result.Messages)
 	}
 }

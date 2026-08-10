@@ -14,6 +14,7 @@ import (
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
 	"github.com/semistrict/dago/state"
+	"github.com/semistrict/dago/tool"
 )
 
 type failingHistoryBackend struct{ backend.Backend }
@@ -74,15 +75,18 @@ func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := agent.New(agent.Options{Model: mainModel, Middleware: []agent.Middleware{middleware}})
+	response, err := middleware.WrapModelCall(context.Background(), agent.ModelRequest{
+		Model: mainModel, Messages: []message.Message{message.Human("old"), message.Assistant("recent")}, State: state.Values{},
+	}, func(context.Context, agent.ModelRequest) (agent.ModelResponse, error) {
+		return agent.ModelResponse{Messages: []message.Message{message.Assistant("done")}}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("old"), message.Assistant("recent")}})
-	if err != nil {
-		t.Fatal(err)
+	_, summary, _, ok := decodeSummarizationEvent(response.Update[summarizationEventKey])
+	if !ok {
+		t.Fatalf("summarization event = %#v", response.Update[summarizationEventKey])
 	}
-	summary := result.Messages[0]
 	if len(summary.Metadata["history_offload_error"]) == 0 || string(summary.Metadata["lc_source"]) != `"summarization"` {
 		t.Fatalf("summary metadata = %#v", summary.Metadata)
 	}
@@ -90,15 +94,15 @@ func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
 
 func TestMediaOffloadFailureUsesBoundedPlaceholder(t *testing.T) {
 	memory, _ := backend.NewMemory(nil)
-	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
-		block := request.Messages[0].Content[0]
-		if block.Type != message.BlockText || len(block.Data) != 0 || !strings.Contains(block.Text, "could not be offloaded") || !strings.Contains(block.Text, "inline data was removed") {
+	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+		if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "failed_to_offload") {
 			return errors.New("media placeholder missing")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: model.Response{Message: message.Assistant("summary")}})
+	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}})
 	middleware, err := SummarizationMiddleware(SummarizationOptions{
-		Model: mainModel, Backend: failingMediaBackend{Backend: memory}, TriggerTokens: 1_000_000, KeepMessages: 1, MediaOffloadBytes: 1,
+		Model: summaryModel, Backend: failingMediaBackend{Backend: memory}, TriggerTokens: 1, KeepMessages: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -210,5 +214,40 @@ func TestSummarizationTriggerCountsSystemPrompt(t *testing.T) {
 	_, err = compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("old"), message.Assistant("recent")}})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestManualSummarizationToolIsOptInAndSharesEventState(t *testing.T) {
+	memory, _ := backend.NewMemory(nil)
+	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("manual summary")}})
+	automatic, err := SummarizationMiddleware(SummarizationOptions{Model: summaryModel, Backend: memory, TriggerMessages: 4, KeepMessages: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(automatic.Tools) != 0 {
+		t.Fatalf("automatic summarization exposed tools: %#v", automatic.Tools)
+	}
+	manual, err := SummarizationToolMiddleware(SummarizationToolOptions{Summarization: SummarizationOptions{
+		Model: summaryModel, Backend: memory, TriggerMessages: 4, KeepMessages: 2,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manual.Tools) != 1 || manual.Tools[0].Definition().Name != "compact_conversation" {
+		t.Fatalf("manual tools = %#v", manual.Tools)
+	}
+	messages := []message.Message{message.Human("old"), message.Assistant("old answer"), message.Human("recent"), message.Assistant("recent answer")}
+	result, err := manual.Tools[0].Execute(context.Background(), json.RawMessage(`{}`), tool.Runtime{
+		CallID: "compact", ThreadID: "thread", State: state.Values{agent.MessagesKey: messages},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff, summary, _, ok := decodeSummarizationEvent(result.Update[summarizationEventKey])
+	if !ok || cutoff != 2 || !strings.Contains(summary.TextContent(), "manual summary") {
+		t.Fatalf("manual event = %#v", result.Update[summarizationEventKey])
+	}
+	if got := applySummarizationEvent(messages, result.Update[summarizationEventKey]); len(got) != 3 || got[0].ID != summary.ID || got[1].TextContent() != "recent" {
+		t.Fatalf("effective messages = %#v", got)
 	}
 }
