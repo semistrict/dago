@@ -13,7 +13,16 @@ type Encoding string
 const (
 	EncodingUTF8   Encoding = "utf-8"
 	EncodingBase64 Encoding = "base64"
+
+	// MaxSandboxBinaryPreviewBytes bounds binary data returned inline by a
+	// transport-backed sandbox read.
+	MaxSandboxBinaryPreviewBytes = 500 * 1024
+	// MaxSandboxReadOutputBytes bounds one rendered text page returned by a
+	// transport-backed sandbox read.
+	MaxSandboxReadOutputBytes = 500 * 1024
 )
+
+const SandboxReadTruncationMessage = "\n\n[Output was truncated due to size limits. This paginated read result exceeded the sandbox stdout limit. Continue reading with a larger offset or smaller limit to inspect the rest of the file.]"
 
 type FileData struct {
 	Content    string    `json:"content"`

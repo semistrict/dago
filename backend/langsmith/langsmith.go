@@ -139,14 +139,68 @@ func (remote *Backend) Read(ctx context.Context, filePath string, offset, limit 
 	}
 	fileData := backend.FileData{}
 	if backend.IsBinaryReadPath(filePath) || !utf8.Valid(data) {
+		if len(data) > backend.MaxSandboxBinaryPreviewBytes {
+			return backend.ReadResult{}, fmt.Errorf("file %q: binary file exceeds maximum preview size of %d bytes", filePath, backend.MaxSandboxBinaryPreviewBytes)
+		}
 		fileData.Content = base64.StdEncoding.EncodeToString(data)
 		fileData.Encoding = backend.EncodingBase64
 		return backend.ReadResult{Data: &fileData}, nil
 	}
 	fileData.Content = string(data)
 	fileData.Encoding = backend.EncodingUTF8
-	return backend.SliceRead(fileData, offset, limit)
+	return sliceRemoteRead(fileData, offset, limit)
 }
+
+func sliceRemoteRead(data backend.FileData, offset, limit int) (backend.ReadResult, error) {
+	if data.Content == "" {
+		return backend.ReadResult{Data: &data}, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		data.Content = ""
+		return backend.ReadResult{Data: &data, NoLinesRequested: true}, nil
+	}
+	lines := strings.Split(backend.NormalizeNewlines(data.Content), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if offset >= len(lines) {
+		return backend.ReadResult{}, fmt.Errorf("line offset %d exceeds file length (%d lines)", offset, len(lines))
+	}
+	page := strings.Join(lines[offset:min(len(lines), offset+limit)], "\n")
+	returnedLines := min(limit, len(lines)-offset)
+	effectiveLimit := backend.MaxSandboxReadOutputBytes - len(backend.SandboxReadTruncationMessage)
+	if len(page) > effectiveLimit {
+		page = validUTF8Prefix(page, effectiveLimit)
+		returnedLines = strings.Count(page, "\n")
+		if returnedLines == 0 {
+			returnedLines = 1
+		}
+		page += backend.SandboxReadTruncationMessage
+	}
+	data.Content = page
+	start, end := offset+1, offset+returnedLines
+	result := backend.ReadResult{Data: &data, TotalLines: intPointer(len(lines)), StartLine: &start, EndLine: &end}
+	if end < len(lines) {
+		result.NextOffset = &end
+	}
+	return result, nil
+}
+
+func validUTF8Prefix(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+func intPointer(value int) *int { return &value }
 
 func (remote *Backend) Write(ctx context.Context, filePath, content string) (backend.WriteResult, error) {
 	filePath, err := cleanPath(filePath)

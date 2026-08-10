@@ -1,6 +1,7 @@
 package langsmith
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -55,7 +56,7 @@ func TestBackendConformsAndUsesNativeFileTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if read.Data.Content != "two\n" || read.NextOffset == nil || *read.NextOffset != 2 {
+	if read.Data.Content != "two" || read.NextOffset == nil || *read.NextOffset != 2 {
 		t.Fatalf("read = %#v", read)
 	}
 	edit, err := remote.Edit(context.Background(), "/work/a.txt", "two", "second", false)
@@ -164,6 +165,44 @@ func TestBinaryReadAndSizeLimit(t *testing.T) {
 	}
 }
 
+func TestReadBoundsBinaryPreviewsAndTextPages(t *testing.T) {
+	fake := &fakeSandbox{files: map[string][]byte{
+		"/exact.png": bytes.Repeat([]byte{0}, backend.MaxSandboxBinaryPreviewBytes),
+		"/over.png":  bytes.Repeat([]byte{0}, backend.MaxSandboxBinaryPreviewBytes+1),
+		"/big.txt":   []byte(strings.Repeat("x", 100_000) + "\n" + strings.Repeat("y", 100_000) + "\n" + strings.Repeat("z", 400_000) + "\ntail"),
+	}}
+	remote, _ := newBackend("sandbox", fake, Options{})
+	exact, err := remote.Read(context.Background(), "/exact.png", 0, 1)
+	if err != nil || exact.Data == nil || exact.Data.Encoding != backend.EncodingBase64 {
+		t.Fatalf("exact binary read = %#v, %v", exact, err)
+	}
+	if _, err := remote.Read(context.Background(), "/over.png", 0, 1); err == nil || !strings.Contains(err.Error(), "maximum preview size") {
+		t.Fatalf("oversized binary error = %v", err)
+	}
+	page, err := remote.Read(context.Background(), "/big.txt", 0, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Data == nil || !strings.HasSuffix(page.Data.Content, backend.SandboxReadTruncationMessage) || len(page.Data.Content) > backend.MaxSandboxReadOutputBytes {
+		t.Fatalf("bounded text page = %#v", page)
+	}
+	if page.NextOffset == nil || page.EndLine == nil || *page.NextOffset != *page.EndLine || *page.NextOffset >= 4 {
+		t.Fatalf("bounded text pagination = %#v", page)
+	}
+}
+
+func TestReadNormalizesRemotePaginationWithoutTrailingNewline(t *testing.T) {
+	fake := &fakeSandbox{files: map[string][]byte{"/lines.txt": []byte("one\r\ntwo\rthree\n")}}
+	remote, _ := newBackend("sandbox", fake, Options{})
+	page, err := remote.Read(context.Background(), "/lines.txt", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Data == nil || page.Data.Content != "two" || page.StartLine == nil || *page.StartLine != 2 || page.NextOffset == nil || *page.NextOffset != 2 {
+		t.Fatalf("remote page = %#v", page)
+	}
+}
+
 func TestReadAndEditUseSharedTextSemantics(t *testing.T) {
 	fake := &fakeSandbox{files: map[string][]byte{
 		"/blank.txt": []byte(" \r\n\t"),
@@ -172,7 +211,7 @@ func TestReadAndEditUseSharedTextSemantics(t *testing.T) {
 	remote, _ := newBackend("sandbox", fake, Options{})
 
 	blank, err := remote.Read(context.Background(), "/blank.txt", 100, 0)
-	if err != nil || blank.Data.Content != " \r\n\t" || blank.NoLinesRequested {
+	if err != nil || blank.Data.Content != "" || !blank.NoLinesRequested {
 		t.Fatalf("blank read = %#v, %v", blank, err)
 	}
 	if _, err := remote.Read(context.Background(), "/eof.txt", 2, 1); err == nil {
