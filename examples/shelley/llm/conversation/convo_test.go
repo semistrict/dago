@@ -24,7 +24,7 @@ var emptyObjectSchema = json.RawMessage(`{"type":"object"}`)
 
 func compileAgent(t *testing.T, chat model.Chat, tools []tool.Tool, saver checkpoint.Saver, middleware ...agent.Middleware) *agent.Agent {
 	t.Helper()
-	compiled, err := agent.New(agent.Options{Model: chat, Tools: tools, Saver: saver, Middleware: middleware})
+	compiled, err := agent.New(agent.Options{Model: chat, Tools: tools, Saver: saver, Middleware: middleware, FailOnToolError: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -93,13 +93,8 @@ type Config struct {
 	ThreadID string
 	// Namespace isolates independent conversation generations under one thread.
 	Namespace string
-	// EnableDagoHarness installs Dago's canonical filesystem, execution,
-	// subagent, and conversation-compaction layers. The Shelley server enables
-	// this for production conversations; direct loop callers retain the
-	// original minimal tool surface unless they opt in.
-	EnableDagoHarness bool
 	// FilesystemTools is the canonical Dago filesystem surface selected for
-	// this conversation. It is meaningful only when EnableDagoHarness is true.
+	// this conversation.
 	FilesystemTools []string
 	// SkillCatalog is an application-resolved catalog consumed by Dago's
 	// progressive-disclosure middleware.
@@ -113,42 +108,41 @@ type Config struct {
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
 // Notably, when the turn ends, the "Loop" is over. TODO: maybe rename to Turn?
 type Loop struct {
-	model             dmodel.Chat
-	modelID           string
-	tools             []dtool.Tool
-	recordMessage     MessageRecordFunc
-	recordWarning     WarningRecordFunc
-	history           []llm.Message
-	messageQueue      []llm.Message
-	totalUsage        llm.Usage
-	mu                sync.Mutex
-	logger            *slog.Logger
-	system            []llm.SystemContent
-	workingDir        string
-	onGitStateChange  GitStateChangeFunc
-	getWorkingDir     func() string
-	lastGitState      *gitstate.GitState
-	onToolProgress    llm.ToolProgressFunc
-	onStreamDelta     func(llm.StreamDelta)
-	onStreamDone      func()
-	injectMessages    func(ctx context.Context) []llm.Message
-	thinkingLevel     llm.ThinkingLevel
-	notify            chan struct{} // signaled when a message is queued or retry requested
-	retryPending      bool          // set by Retry() to re-run processLLMRequest with current history
-	saver             checkpoint.Saver
-	threadID          string
-	namespace         string
-	enableDagoHarness bool
-	filesystemTools   []string
-	skillCatalog      []dago.Skill
-	skillActivation   func(dago.Skill) string
-	memory            []string
-	memoryContents    map[string]string
-	memoryPrompt      *string
-	runtimeSeeded     bool
-	pendingInput      []llm.Message
-	executionMu       sync.Mutex
-	runtime           *dago.DeepAgent
+	model            dmodel.Chat
+	modelID          string
+	tools            []dtool.Tool
+	recordMessage    MessageRecordFunc
+	recordWarning    WarningRecordFunc
+	history          []llm.Message
+	messageQueue     []llm.Message
+	totalUsage       llm.Usage
+	mu               sync.Mutex
+	logger           *slog.Logger
+	system           []llm.SystemContent
+	workingDir       string
+	onGitStateChange GitStateChangeFunc
+	getWorkingDir    func() string
+	lastGitState     *gitstate.GitState
+	onToolProgress   llm.ToolProgressFunc
+	onStreamDelta    func(llm.StreamDelta)
+	onStreamDone     func()
+	injectMessages   func(ctx context.Context) []llm.Message
+	thinkingLevel    llm.ThinkingLevel
+	notify           chan struct{} // signaled when a message is queued or retry requested
+	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
+	saver            checkpoint.Saver
+	threadID         string
+	namespace        string
+	filesystemTools  []string
+	skillCatalog     []dago.Skill
+	skillActivation  func(dago.Skill) string
+	memory           []string
+	memoryContents   map[string]string
+	memoryPrompt     *string
+	runtimeSeeded    bool
+	pendingInput     []llm.Message
+	executionMu      sync.Mutex
+	runtime          *dago.DeepAgent
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -170,35 +164,34 @@ func NewLoop(config Config) *Loop {
 		saver = checkpoint.NewMemorySaver()
 	}
 	loop := &Loop{
-		model:             config.Model,
-		modelID:           config.ModelID,
-		history:           config.History,
-		tools:             append([]dtool.Tool(nil), config.Tools...),
-		recordMessage:     config.RecordMessage,
-		recordWarning:     config.RecordWarning,
-		messageQueue:      make([]llm.Message, 0),
-		logger:            logger,
-		system:            config.System,
-		workingDir:        config.WorkingDir,
-		onGitStateChange:  config.OnGitStateChange,
-		getWorkingDir:     config.GetWorkingDir,
-		lastGitState:      initialGitState,
-		onToolProgress:    config.OnToolProgress,
-		onStreamDelta:     config.OnStreamDelta,
-		onStreamDone:      config.OnStreamDone,
-		injectMessages:    config.InjectMessages,
-		thinkingLevel:     config.ThinkingLevel,
-		notify:            make(chan struct{}, 1),
-		saver:             saver,
-		threadID:          config.ThreadID,
-		namespace:         config.Namespace,
-		enableDagoHarness: config.EnableDagoHarness,
-		filesystemTools:   cloneFilesystemTools(config.FilesystemTools),
-		skillCatalog:      cloneSkillCatalog(config.SkillCatalog),
-		skillActivation:   config.SkillActivation,
-		memory:            append([]string(nil), config.Memory...),
-		memoryContents:    cloneStringMap(config.MemoryContents),
-		memoryPrompt:      cloneStringPointer(config.MemoryPrompt),
+		model:            config.Model,
+		modelID:          config.ModelID,
+		history:          config.History,
+		tools:            append([]dtool.Tool(nil), config.Tools...),
+		recordMessage:    config.RecordMessage,
+		recordWarning:    config.RecordWarning,
+		messageQueue:     make([]llm.Message, 0),
+		logger:           logger,
+		system:           config.System,
+		workingDir:       config.WorkingDir,
+		onGitStateChange: config.OnGitStateChange,
+		getWorkingDir:    config.GetWorkingDir,
+		lastGitState:     initialGitState,
+		onToolProgress:   config.OnToolProgress,
+		onStreamDelta:    config.OnStreamDelta,
+		onStreamDone:     config.OnStreamDone,
+		injectMessages:   config.InjectMessages,
+		thinkingLevel:    config.ThinkingLevel,
+		notify:           make(chan struct{}, 1),
+		saver:            saver,
+		threadID:         config.ThreadID,
+		namespace:        config.Namespace,
+		filesystemTools:  cloneFilesystemTools(config.FilesystemTools),
+		skillCatalog:     cloneSkillCatalog(config.SkillCatalog),
+		skillActivation:  config.SkillActivation,
+		memory:           append([]string(nil), config.Memory...),
+		memoryContents:   cloneStringMap(config.MemoryContents),
+		memoryPrompt:     cloneStringPointer(config.MemoryPrompt),
 	}
 	if loop.threadID == "" {
 		loop.threadID = fmt.Sprintf("shelley-loop-%p", loop)
@@ -384,18 +377,13 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		return err
 	}
 
-	var harnessBackend dbackend.Backend
-	if l.enableDagoHarness {
-		harnessBackend, err = dbackend.NewLocalShell(dbackend.LocalShellOptions{
-			Filesystem: dbackend.FilesystemOptions{Root: l.currentWorkingDir()},
-		})
-	} else {
-		harnessBackend, err = dbackend.NewMemory(nil)
-	}
+	harnessBackend, err := dbackend.NewLocalShell(dbackend.LocalShellOptions{
+		Filesystem: dbackend.FilesystemOptions{Root: l.currentWorkingDir()},
+	})
 	if err != nil {
 		return fmt.Errorf("create Shelley harness backend: %w", err)
 	}
-	if l.enableDagoHarness && isPredictableModel(model) {
+	if l.filesystemTools != nil && isPredictableModel(model) && !hasToolNamed(dagoTools, "bash") {
 		aliases, aliasErr := predictableFilesystemAliases(harnessBackend, l.filesystemTools)
 		if aliasErr != nil {
 			return aliasErr
@@ -404,14 +392,22 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	}
 	options := dago.Options{
 		Name: "Shelley", Model: model,
-		Tools: dagoTools, SystemPrompt: runtimeSystemPrompt(system, l.enableDagoHarness), Middleware: []dagent.Middleware{l.runtimeMiddleware()},
+		Tools: dagoTools, SystemPrompt: runtimeSystemPrompt(system), Middleware: []dagent.Middleware{l.runtimeMiddleware()},
 		Backend: harnessBackend,
 		Saver:   l.saver, MaxConcurrency: 1, FailOnToolError: false,
 		StateFields: map[string]dagent.StateField{
 			"shelley.run": {Kind: dagent.FieldEphemeral, Contract: "shelley.run.v1", Clone: func(value any) any { return value }},
 		},
 	}
-	if l.enableDagoHarness {
+	if l.filesystemTools == nil {
+		// A nil selection is the embedding form used by direct callers that
+		// provide their complete tool surface. It still runs through Dago, but
+		// does not opt into Dago's default harness tools or prompts.
+		options.FilesystemTools = []string{}
+		options.DisableTodo = true
+		options.DisableSubagents = true
+		options.DisableSummary = true
+	} else {
 		options.FilesystemTools = cloneFilesystemTools(l.filesystemTools)
 		options.SkillCatalog = cloneSkillCatalog(l.skillCatalog)
 		options.SkillActivation = l.skillActivation
@@ -421,11 +417,6 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		// Shelley uses Dago's conversation-subagent tool so child runs retain
 		// their application-level UI and persistence contracts.
 		options.DisableSubagents = true
-	} else {
-		options.FilesystemTools = []string{}
-		options.DisableTodo = true
-		options.DisableSubagents = true
-		options.DisableSummary = true
 	}
 	runtime, err := dago.New(options)
 	if err != nil {
@@ -471,6 +462,15 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	}
 	l.checkGitStateChange(ctx)
 	return nil
+}
+
+func hasToolNamed(tools []dtool.Tool, name string) bool {
+	for _, item := range tools {
+		if item.Definition().Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneFilesystemTools(values []string) []string {
@@ -609,12 +609,8 @@ func (l *Loop) runtimeInput(ctx context.Context) ([]llm.Message, error) {
 			l.mu.Unlock()
 			return pending, nil
 		}
-		if l.enableDagoHarness {
-			// Dago's PatchToolCallsMiddleware owns canonical dangling-call repair.
-			// The Shelley helper below remains only for direct legacy-loop tests.
-			return history, nil
-		}
-		return l.repairMessageHistory(history), nil
+		// Dago's PatchToolCallsMiddleware owns canonical dangling-call repair.
+		return history, nil
 	}
 	return pending, nil
 }
@@ -845,11 +841,8 @@ var projectedGuidanceBlocks = []*regexp.Regexp{
 	regexp.MustCompile(`(?s)\n?<guidance>.*?</guidance>\n?`),
 }
 
-func runtimeSystemPrompt(items []llm.SystemContent, nativeHarness bool) string {
+func runtimeSystemPrompt(items []llm.SystemContent) string {
 	prompt := joinSystem(items)
-	if !nativeHarness {
-		return prompt
-	}
 	for _, block := range projectedGuidanceBlocks {
 		prompt = block.ReplaceAllString(prompt, "\n")
 	}

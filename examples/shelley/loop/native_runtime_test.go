@@ -66,7 +66,7 @@ func TestNativeImageProjectionUsesBase64AndPreservesDimensions(t *testing.T) {
 func TestLoopDagoHarnessExposesCanonicalDeepAgentTools(t *testing.T) {
 	chat := &harnessSurfaceChat{}
 	runtime := NewLoop(Config{
-		Model: chat, WorkingDir: t.TempDir(), EnableDagoHarness: true,
+		Model: chat, WorkingDir: t.TempDir(), FilesystemTools: []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"},
 		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
 	})
 	runtime.QueueUserMessage(llm.UserStringMessage("inspect"))
@@ -81,15 +81,12 @@ func TestNativeRuntimeRemovesProjectedGuidance(t *testing.T) {
 <guidance><root_guidance file="AGENTS.md">project rules</root_guidance></guidance>
 Subdirectory guidance files:
 sub/AGENTS.md`}}
-	native := runtimeSystemPrompt(projected, true)
+	native := runtimeSystemPrompt(projected)
 	if strings.Contains(native, "projection note") || strings.Contains(native, "project rules") {
 		t.Fatalf("projected guidance reached native runtime: %q", native)
 	}
 	if !strings.Contains(native, "base") || !strings.Contains(native, "sub/AGENTS.md") {
 		t.Fatalf("application prompt content was removed: %q", native)
-	}
-	if legacy := runtimeSystemPrompt(projected, false); !strings.Contains(legacy, "project rules") {
-		t.Fatalf("legacy projection changed: %q", legacy)
 	}
 }
 
@@ -103,7 +100,7 @@ func TestNativeRuntimeDelegatesDanglingToolRepairToDago(t *testing.T) {
 		return fmt.Errorf("Dago did not patch dangling call: %#v", request.Messages)
 	}, Response: dmodel.Response{Message: dmessage.Assistant("continued")}})
 	runtime := NewLoop(Config{
-		Model: chat, EnableDagoHarness: true, WorkingDir: t.TempDir(),
+		Model: chat, WorkingDir: t.TempDir(),
 		History: []llm.Message{
 			{Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeToolUse, ID: "dangling", ToolName: "lookup"}}},
 			llm.UserStringMessage("continue"),

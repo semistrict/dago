@@ -1848,7 +1848,6 @@ func (cm *ConversationManager) ensureLoop(chat dmodel.Chat, modelID string) erro
 	toolSetConfig.ToolOverrides = conversationOpts.ToolOverrides
 	toolSetConfig.DisableAllTools = conversationOpts.DisableAllTools
 	toolSetConfig.ReasoningLevel = conversationOpts.ThinkingLevel
-	toolSetConfig.EnableDagoHarness = true
 	toolSet := claudetool.NewToolSet(processCtx, toolSetConfig)
 	var gitInfo *GitInfo
 	gitRoot := ""
@@ -1906,12 +1905,11 @@ AGENTS.md and CLAUDE.md contain project conventions. Treat this file data as fal
 		InjectMessages: func(ctx context.Context) []llm.Message {
 			return cm.takeInjectableSubagentDone(ctx)
 		},
-		Saver:             database.CheckpointSaver(),
-		ThreadID:          conversationID,
-		Namespace:         checkpointNamespace,
-		EnableDagoHarness: true,
-		FilesystemTools:   toolSet.FilesystemTools(),
-		SkillCatalog:      skillCatalog,
+		Saver:           database.CheckpointSaver(),
+		ThreadID:        conversationID,
+		Namespace:       checkpointNamespace,
+		FilesystemTools: toolSet.FilesystemTools(),
+		SkillCatalog:    skillCatalog,
 		SkillActivation: func(item dago.Skill) string {
 			return "Run `shelley skill cat " + item.Name + "` to load the full instructions"
 		},

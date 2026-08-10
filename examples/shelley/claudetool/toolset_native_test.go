@@ -21,7 +21,7 @@ func TestToolSetPublishesOnlyEnabledNativeTools(t *testing.T) {
 
 func TestDagoHarnessRemovesOverlappingShelleyExecutables(t *testing.T) {
 	set := NewToolSet(context.Background(), ToolSetConfig{
-		WorkingDir: t.TempDir(), EnableDagoHarness: true,
+		WorkingDir: t.TempDir(),
 	})
 	defer set.Cleanup()
 	seen := map[string]bool{}
@@ -46,7 +46,7 @@ func TestDagoHarnessRemovesOverlappingShelleyExecutables(t *testing.T) {
 
 func TestDagoFilesystemSelectionMapsShelleySettings(t *testing.T) {
 	set := NewToolSet(context.Background(), ToolSetConfig{
-		WorkingDir: t.TempDir(), EnableDagoHarness: true,
+		WorkingDir:    t.TempDir(),
 		ToolOverrides: map[string]string{"bash": "off", "patch": "off", "keyword_search": "off"},
 	})
 	if got := set.FilesystemTools(); len(got) != 2 || got[0] != "ls" || got[1] != "read_file" {
@@ -54,7 +54,7 @@ func TestDagoFilesystemSelectionMapsShelleySettings(t *testing.T) {
 	}
 
 	disabled := NewToolSet(context.Background(), ToolSetConfig{
-		WorkingDir: t.TempDir(), EnableDagoHarness: true, DisableAllTools: true,
+		WorkingDir: t.TempDir(), DisableAllTools: true,
 	})
 	if got := disabled.FilesystemTools(); got == nil || len(got) != 0 {
 		t.Fatalf("disabled filesystem tools = %#v, want a non-nil empty selection", got)

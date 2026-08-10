@@ -95,10 +95,6 @@ type ToolSetConfig struct {
 	ToolOverrides map[string]string
 	// DisableAllTools disables every tool by default; ToolOverrides with "on" re-enable.
 	DisableAllTools bool
-	// EnableDagoHarness delegates shell, file editing, and file discovery to
-	// Dago's canonical filesystem middleware instead of registering Shelley's
-	// overlapping bash, patch, and keyword-search executables.
-	EnableDagoHarness bool
 }
 
 // ToolSet holds a set of tools for a single conversation.
@@ -185,31 +181,15 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 
 	outputIframeTool := &OutputIframeTool{WorkingDir: wd}
 
-	var nativeTools []dtool.Tool
-	var filesystemTools []string
-	if cfg.EnableDagoHarness {
-		nativeTools = append(nativeTools, changeDirTool.NativeTool(), outputIframeTool.NativeTool())
-		filesystemTools = selectedDagoFilesystemTools(cfg.ToolOverrides, cfg.DisableAllTools)
-		// Shelley's yielding shell remains an application-specific opt-in. The
-		// ordinary command path is Dago's execute tool.
-		if IsToolEnabled("shell", cfg.ToolOverrides, cfg.DisableAllTools) {
-			nativeTools = append(nativeTools, (&ShellTool{
-				WorkingDir: wd, LLMProvider: cfg.LLMProvider, EnableJITInstall: cfg.EnableJITInstall,
-				Env: env, BackgroundCtx: ctx,
-			}).NativeTool())
-		}
-	} else {
-		bashTool := &BashTool{WorkingDir: wd, LLMProvider: cfg.LLMProvider, EnableJITInstall: cfg.EnableJITInstall, Env: env}
-		patchTool := &PatchTool{Simplified: !isStrongModel(cfg.ModelID), WorkingDir: wd, ClipboardEnabled: true}
-		keywordTool := NewKeywordToolWithWorkingDir(cfg.LLMProvider, wd)
-		shellTool := &ShellTool{
+	nativeTools := []dtool.Tool{changeDirTool.NativeTool(), outputIframeTool.NativeTool()}
+	filesystemTools := selectedDagoFilesystemTools(cfg.ToolOverrides, cfg.DisableAllTools)
+	// Shelley's yielding shell remains an application-specific opt-in. The
+	// ordinary command path is Dago's execute tool.
+	if IsToolEnabled("shell", cfg.ToolOverrides, cfg.DisableAllTools) {
+		nativeTools = append(nativeTools, (&ShellTool{
 			WorkingDir: wd, LLMProvider: cfg.LLMProvider, EnableJITInstall: cfg.EnableJITInstall,
 			Env: env, BackgroundCtx: ctx,
-		}
-		nativeTools = append(nativeTools,
-			bashTool.NativeTool(), shellTool.NativeTool(), patchTool.NativeTool(), keywordTool.NativeTool(),
-			changeDirTool.NativeTool(), outputIframeTool.NativeTool(),
-		)
+		}).NativeTool())
 	}
 
 	// Build the available models list (shared by subagent and llm_one_shot tools).
@@ -288,9 +268,20 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	for _, item := range nativeTools {
 		definitions = append(definitions, item.Definition())
 	}
-	if cfg.EnableDagoHarness {
-		definitions = append(definitions, dagoFilesystemDefinitions(workingDir, filesystemTools)...)
+	filesystemDefinitions := dagoFilesystemDefinitions(workingDir, filesystemTools)
+	// Preserve the legacy settings label at the application metadata boundary
+	// when it is the sole explicitly enabled command tool. Execution still uses
+	// Dago's canonical execute tool.
+	if cfg.DisableAllTools && cfg.ToolOverrides["bash"] == "on" {
+		if _, canonical := cfg.ToolOverrides["execute"]; !canonical {
+			for index := range filesystemDefinitions {
+				if filesystemDefinitions[index].Name == "execute" {
+					filesystemDefinitions[index].Name = "bash"
+				}
+			}
+		}
 	}
+	definitions = append(definitions, filesystemDefinitions...)
 
 	// Add provider-hosted tools to display metadata. They are configured on the
 	// model and are not dispatched through the local tool executor.

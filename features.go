@@ -65,53 +65,90 @@ func PatchToolCallsMiddleware() agent.Middleware {
 			if err != nil {
 				return nil, err
 			}
-			answered := make(map[string]bool)
-			for _, item := range messages {
-				if item.Role == message.RoleTool && item.ToolCallID != "" {
-					answered[item.ToolCallID] = true
-				}
-			}
-
-			patched := make([]message.Message, 0, len(messages))
-			changed := false
-			appendMissing := func(id, name, text string) {
-				if id == "" || answered[id] {
-					return
-				}
-				result := message.Tool(id, text)
-				result.Name = name
-				result.ToolStatus = message.ToolStatusError
-				patched = append(patched, result)
-				answered[id] = true
-				changed = true
-			}
-
-			for _, item := range messages {
-				patched = append(patched, item.Clone())
-				if item.Role != message.RoleAssistant {
-					continue
-				}
-				for _, call := range item.ToolCalls {
-					name := call.Name
-					if name == "" {
-						name = "unknown"
-					}
-					appendMissing(call.ID, name, fmt.Sprintf("Tool call %s with id %s was cancelled - another message came in before it could be completed.", name, call.ID))
-				}
-				for _, call := range item.InvalidToolCalls {
-					name := call.Name
-					if name == "" {
-						name = "unknown"
-					}
-					appendMissing(call.ID, name, fmt.Sprintf("Tool call %s with id %s could not be executed - arguments were malformed or truncated.", name, call.ID))
-				}
-			}
+			patched, changed := repairToolCallHistory(messages)
 			if !changed {
 				return nil, nil
 			}
 			return state.Values{agent.MessagesKey: state.Overwrite{Value: patched}}, nil
 		},
 	}
+}
+
+type pendingToolCall struct {
+	name    string
+	invalid bool
+}
+
+// repairToolCallHistory produces the provider-valid structural form required
+// by chat APIs: each assistant tool-call batch is followed only by its matching
+// tool results, with a synthetic error result for every unanswered call.
+func repairToolCallHistory(messages []message.Message) ([]message.Message, bool) {
+	patched := make([]message.Message, 0, len(messages))
+	pending := map[string]pendingToolCall{}
+	order := []string{}
+	changed := false
+
+	flushMissing := func() {
+		for _, id := range order {
+			call, exists := pending[id]
+			if !exists {
+				continue
+			}
+			name := call.name
+			if name == "" {
+				name = "unknown"
+			}
+			content := fmt.Sprintf("Tool call %s with id %s was cancelled - another message came in before it could be completed.", name, id)
+			if call.invalid {
+				content = fmt.Sprintf("Tool call %s with id %s could not be executed - arguments were malformed or truncated.", name, id)
+			}
+			result := message.Tool(id, content)
+			result.Name = name
+			result.ToolStatus = message.ToolStatusError
+			patched = append(patched, result)
+			changed = true
+		}
+		pending = map[string]pendingToolCall{}
+		order = order[:0]
+	}
+
+	for _, item := range messages {
+		if item.Role == message.RoleTool {
+			if _, exists := pending[item.ToolCallID]; !exists || item.ToolCallID == "" {
+				changed = true
+				continue
+			}
+			patched = append(patched, item.Clone())
+			delete(pending, item.ToolCallID)
+			continue
+		}
+
+		flushMissing()
+		patched = append(patched, item.Clone())
+		if item.Role != message.RoleAssistant {
+			continue
+		}
+		for _, call := range item.ToolCalls {
+			if call.ID == "" {
+				continue
+			}
+			if _, duplicate := pending[call.ID]; !duplicate {
+				order = append(order, call.ID)
+			}
+			pending[call.ID] = pendingToolCall{name: call.Name}
+		}
+		for _, call := range item.InvalidToolCalls {
+			if call.ID == "" {
+				continue
+			}
+			if _, duplicate := pending[call.ID]; !duplicate {
+				order = append(order, call.ID)
+			}
+			pending[call.ID] = pendingToolCall{name: call.Name, invalid: true}
+		}
+	}
+	flushMissing()
+	return patched, changed
 }
 
 // SubagentMiddleware adds the task tool. Each invocation receives only its task
