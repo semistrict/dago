@@ -90,6 +90,34 @@ func TestDeltaReduceIsBatchingInvariant(t *testing.T) {
 	}
 }
 
+func TestDeltaReduceLastResetDropsStateAndEarlierWrites(t *testing.T) {
+	state := []Message{{ID: "old", Role: RoleHuman}}
+	writes := [][]Message{
+		{{ID: "before", Role: RoleAssistant}, Remove(RemoveAllMessages), {ID: "between", Role: RoleHuman}},
+		{{ID: "discard", Role: RoleAssistant}, Remove(RemoveAllMessages), {ID: "kept", Role: RoleAssistant}},
+	}
+	got, err := DeltaReduce(state, writes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Message{{ID: "kept", Role: RoleAssistant}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages = %#v, want %#v", got, want)
+	}
+}
+
+func TestEnsureIDsIsStableAndIsolated(t *testing.T) {
+	original := []Message{{Role: RoleHuman}, {ID: "given", Role: RoleAssistant}, Remove("gone")}
+	first := EnsureIDs(original)
+	if first[0].ID == "" || first[1].ID != "given" || first[2].ID != "gone" || original[0].ID != "" {
+		t.Fatalf("first = %#v, original = %#v", first, original)
+	}
+	second := EnsureIDs(first)
+	if second[0].ID != first[0].ID {
+		t.Fatalf("id changed: %q -> %q", first[0].ID, second[0].ID)
+	}
+}
+
 func TestMessageCloneIsDeep(t *testing.T) {
 	original := Message{
 		Role:      RoleAssistant,

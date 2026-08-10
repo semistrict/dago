@@ -8,7 +8,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Middleware order and wrapper nesting | verified | `agent/agent_test.go` |
 | Parallel tool calls and deterministic reduction | verified | agent and graph tests |
 | Provider and synthetic-tool structured output | verified | schema validation and retry tests |
-| Mandatory delta state and message channels | verified | channel, graph, memory saver, SQLite tests |
+| Mandatory delta state and message channels | verified | channel, graph, memory saver, SQLite, remove-all reset, and pre-checkpoint stable-message-ID tests |
 | Graph routing, sends, retry, interrupt, resume | verified | graph tests plus agent after-hook model re-entry and invalid-destination guards |
 | Replay by checkpoint and thread fork | verified | public history/replay/fork helpers and saver copy/replay tests |
 | SQLite standard schema and saver behavior | verified | schema, conflict, history, copy, prune, restart tests |

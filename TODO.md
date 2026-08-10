@@ -451,6 +451,8 @@ source provenance, and CI can detect races and upstream drift.
   comparison.
 - [x] Implement message reduction, replacement, deletion, full reset, and delta
   behavior used by Deep Agent state.
+- [x] Assign stable IDs before serializing every agent message delta and preserve
+  those IDs across resumed checkpointed invocations.
 - [x] Define tool metadata, JSON Schema inputs, execution, runtime injection, result
   normalization, artifacts, and errors.
 - [x] Define model request/response, streaming chunks, tool binding, structured output,

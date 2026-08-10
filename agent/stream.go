@@ -6,6 +6,7 @@ import (
 	"io"
 
 	graph "github.com/semistrict/dago/internal/graph"
+	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/state"
 )
@@ -51,8 +52,9 @@ func (agent *Agent) Stream(ctx context.Context, input Input, buffer int) *Stream
 		values = state.Values{}
 	}
 	if len(input.Messages) > 0 {
-		values[MessagesKey] = cloneMessages(input.Messages)
+		values[MessagesKey] = message.EnsureIDs(input.Messages)
 	}
+	ensureMessageIDsInValues(values)
 	return &Stream{graph: agent.graph.Stream(ctx, graph.Invocation{Config: input.Config, State: values, Resume: input.Resume}, buffer), private: agent.private}
 }
 

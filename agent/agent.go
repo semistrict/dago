@@ -149,8 +149,9 @@ func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
 		values = state.Values{}
 	}
 	if len(input.Messages) > 0 {
-		values[MessagesKey] = cloneMessages(input.Messages)
+		values[MessagesKey] = message.EnsureIDs(input.Messages)
 	}
+	ensureMessageIDsInValues(values)
 	execution, err := agent.graph.Invoke(ctx, graph.Invocation{Config: input.Config, State: values, Resume: input.Resume})
 	if err != nil {
 		return Result{}, err
@@ -169,8 +170,9 @@ func (agent *Agent) Cancel(ctx context.Context, input Input) (Result, error) {
 		values = state.Values{}
 	}
 	if len(input.Messages) > 0 {
-		values[MessagesKey] = cloneMessages(input.Messages)
+		values[MessagesKey] = message.EnsureIDs(input.Messages)
 	}
+	ensureMessageIDsInValues(values)
 	execution, err := agent.graph.Cancel(ctx, graph.Invocation{Config: input.Config, State: values})
 	if err != nil {
 		return Result{}, err
@@ -249,6 +251,7 @@ func (compiler *compiler) beforeAgent(ctx context.Context, values state.Values, 
 		}
 		mergeUpdate(current, update, result)
 	}
+	ensureMessageIDsInValues(update)
 	return graph.Command{Update: update}, nil
 }
 
@@ -275,6 +278,7 @@ func (compiler *compiler) afterAgent(ctx context.Context, values state.Values, r
 		delete(update, jumpToKey)
 		command.Goto = []string{name}
 	}
+	ensureMessageIDsInValues(update)
 	return command, nil
 }
 
@@ -338,6 +342,7 @@ func (compiler *compiler) model(ctx context.Context, values state.Values, runtim
 		}
 		mergeUpdate(current, update, result)
 	}
+	ensureMessageIDsInValues(update)
 	return graph.Command{Update: update}, nil
 }
 
@@ -703,6 +708,7 @@ func (compiler *compiler) executeTools(ctx context.Context, values state.Values,
 	if pendingInterrupt != nil {
 		command.Interrupt = &graph.Interrupt{ID: pendingInterrupt.ID, Value: pendingInterrupt.Value}
 	}
+	ensureMessageIDsInValues(update)
 	return command, nil
 }
 
@@ -922,6 +928,7 @@ func mergeUpdate(current, combined, update state.Values) {
 		if key == MessagesKey {
 			if overwrite, ok := value.(state.Overwrite); ok {
 				if replacement, err := messagesFrom(overwrite.Value); err == nil {
+					replacement = message.EnsureIDs(replacement)
 					current[key] = replacement
 					combined[key] = state.Overwrite{Value: replacement}
 					continue
@@ -931,6 +938,7 @@ func mergeUpdate(current, combined, update state.Values) {
 			if err == nil {
 				incoming, incomingErr := messagesFrom(value)
 				if incomingErr == nil {
+					incoming = message.EnsureIDs(incoming)
 					merged, mergeErr := message.DeltaReduce(currentMessages, [][]message.Message{incoming})
 					if mergeErr == nil {
 						current[key] = merged
@@ -953,6 +961,26 @@ func mergeUpdate(current, combined, update state.Values) {
 		}
 		current[key] = value
 		combined[key] = value
+	}
+}
+
+func ensureMessageIDsInValues(values state.Values) {
+	if values == nil {
+		return
+	}
+	raw, exists := values[MessagesKey]
+	if !exists {
+		return
+	}
+	if overwrite, ok := raw.(state.Overwrite); ok {
+		if messages, err := messagesFrom(overwrite.Value); err == nil {
+			overwrite.Value = message.EnsureIDs(messages)
+			values[MessagesKey] = overwrite
+		}
+		return
+	}
+	if messages, err := messagesFrom(raw); err == nil {
+		values[MessagesKey] = message.EnsureIDs(messages)
 	}
 }
 

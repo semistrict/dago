@@ -4,11 +4,15 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"sync/atomic"
+	"time"
 )
 
 const RemoveAllMessages = "__remove_all__"
 
 var ErrRemoveUnknownMessage = errors.New("cannot remove unknown message")
+
+var fallbackMessageID atomic.Uint64
 
 // IDGenerator supplies missing message identifiers. It is injectable for deterministic
 // tests and fixture generation.
@@ -89,8 +93,8 @@ func (reducer Reducer) Merge(left, right []Message) ([]Message, error) {
 }
 
 // DeltaReduce is the batching-invariant reducer used by a delta channel. Unlike
-// Merge, it leaves missing IDs untouched, ignores tombstones for unknown IDs, and
-// treats a reset tombstone as an ordinary unknown tombstone.
+// Merge, it leaves missing IDs untouched and ignores tombstones for unknown IDs.
+// A reset tombstone clears state and all changes that precede it.
 func DeltaReduce(state []Message, writes [][]Message) ([]Message, error) {
 	result := cloneMessages(state)
 	byID := make(map[string]int, len(result))
@@ -103,6 +107,11 @@ func DeltaReduce(state []Message, writes [][]Message) ([]Message, error) {
 	for _, write := range writes {
 		for _, raw := range write {
 			change := raw.Clone()
+			if change.Role == RoleRemove && change.ID == RemoveAllMessages {
+				result = nil
+				byID = map[string]int{}
+				continue
+			}
 			if change.ID == "" {
 				result = append(result, change)
 				continue
@@ -131,6 +140,24 @@ func DeltaReduce(state []Message, writes [][]Message) ([]Message, error) {
 		}
 	}
 	return compacted, nil
+}
+
+// EnsureIDs returns an isolated message slice with an identifier on every
+// ordinary message. Agent runtimes call it before a delta write is serialized,
+// so checkpoint replay observes the same IDs instead of generating new ones.
+func EnsureIDs(messages []Message) []Message {
+	result := cloneMessages(messages)
+	for index := range result {
+		if result[index].ID != "" || result[index].Role == RoleRemove {
+			continue
+		}
+		id, err := randomUUID()
+		if err != nil {
+			id = fmt.Sprintf("message-%d-%d", time.Now().UnixNano(), fallbackMessageID.Add(1))
+		}
+		result[index].ID = id
+	}
+	return result
 }
 
 func cloneMessages(messages []Message) []Message {

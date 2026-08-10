@@ -82,6 +82,42 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 	}
 }
 
+func TestAgentMessageIDsAreAssignedAndStableAcrossCheckpoints(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	script := modeltest.New(model.Profile{},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("first")}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("second")}},
+	)
+	compiled, err := New(Options{Model: script, Saver: saver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := checkpoint.Config{ThreadID: "stable-message-ids"}
+	first, err := compiled.Invoke(context.Background(), Input{Config: config, Messages: []message.Message{message.Human("one")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Messages) != 2 || first.Messages[0].ID == "" || first.Messages[1].ID == "" {
+		t.Fatalf("first messages = %#v", first.Messages)
+	}
+	firstHumanID, firstAssistantID := first.Messages[0].ID, first.Messages[1].ID
+	second, err := compiled.Invoke(context.Background(), Input{Config: config, Messages: []message.Message{message.Human("two")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Messages) != 4 {
+		t.Fatalf("second messages = %#v", second.Messages)
+	}
+	if second.Messages[0].ID != firstHumanID || second.Messages[1].ID != firstAssistantID {
+		t.Fatalf("checkpointed IDs changed: %#v", second.Messages)
+	}
+	for index, value := range second.Messages {
+		if value.ID == "" {
+			t.Errorf("message %d has no ID: %#v", index, value)
+		}
+	}
+}
+
 func TestPrivateStateIsAvailableInternallyButHiddenFromResultsAndStreams(t *testing.T) {
 	middleware := Middleware{
 		Name: "private_state",
