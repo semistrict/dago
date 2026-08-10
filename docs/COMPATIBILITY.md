@@ -21,6 +21,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Declarative and precompiled subagents, isolation, state propagation, and nested approval resume | verified | root and agent tests |
 | Summarization, offload, and compaction | verified | threshold, valid-cutoff, thread-aware offload, and state-update tests |
 | Skills and memory prompt injection | verified | safe YAML, deterministic discovery, warning, ordering, and prompt tests |
+| Provider and harness profiles | verified | additive registration, provider/exact resolution, hook/factory chaining, option precedence, prompt composition, exclusions, and worker overrides |
 | Token/update/task/interrupt/custom streaming | verified | graph, agent, and provider stream tests |
 | API-key and subscription OAuth model access | verified | request, PKCE, refresh, persistence, and stream tests |
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
