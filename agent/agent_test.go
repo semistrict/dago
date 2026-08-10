@@ -647,6 +647,80 @@ func TestHumanApprovalPausesBeforeAnyToolAndResumesAllDecisions(t *testing.T) {
 	}
 }
 
+func TestHumanApprovalRespondsWithoutExecutingTool(t *testing.T) {
+	var executions atomic.Int32
+	ask := tool.Func{
+		Spec: tool.Definition{Name: "ask_user", Description: "Ask", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+			executions.Add(1)
+			return tool.TextResult("implementation ran"), nil
+		},
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "ask", Name: "ask_user", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			last := request.Messages[len(request.Messages)-1]
+			if last.Role != message.RoleTool || last.ToolStatus != message.ToolStatusSuccess || last.TextContent() != "blue" {
+				return fmt.Errorf("synthetic response = %#v", last)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := New(Options{
+		Model: script, Tools: []tool.Tool{ask}, Saver: checkpoint.NewMemorySaver(),
+		Middleware: []Middleware{HumanApproval([]ApprovalRule{{Pattern: "ask_user", AllowedDecisions: []ApprovalDecision{ApprovalRespond}}})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := checkpoint.Config{ThreadID: "approval-respond"}
+	paused, err := compiled.Invoke(context.Background(), Input{Config: config, Messages: []message.Message{message.Human("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paused.Interrupts) != 1 {
+		t.Fatalf("interrupts = %#v", paused.Interrupts)
+	}
+	resumed, err := compiled.Invoke(context.Background(), Input{Config: config, Resume: ApprovalResponse{Decisions: map[string]ApprovalChoice{
+		"ask": {Decision: ApprovalRespond, Message: "blue"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executions.Load() != 0 || resumed.Messages[len(resumed.Messages)-1].TextContent() != "done" {
+		t.Fatalf("executions = %d, messages = %#v", executions.Load(), resumed.Messages)
+	}
+}
+
+func TestHumanApprovalConditionalRuleCanAutoApprove(t *testing.T) {
+	var executions atomic.Int32
+	action := tool.Func{
+		Spec: tool.Definition{Name: "conditional", Description: "Conditional", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+			executions.Add(1)
+			return tool.TextResult("ran"), nil
+		},
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "conditional-call", Name: "conditional", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := New(Options{
+		Model: script, Tools: []tool.Tool{action},
+		Middleware: []Middleware{HumanApproval([]ApprovalRule{{Pattern: "conditional", When: func(ToolCallRequest) bool { return false }}})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), Input{Messages: []message.Message{message.Human("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Interrupts) != 0 || executions.Load() != 1 {
+		t.Fatalf("result = %#v, executions = %d", result, executions.Load())
+	}
+}
+
 func TestToolInterruptCheckpointsCompletedSiblingBeforeResume(t *testing.T) {
 	var siblingRuns atomic.Int32
 	interrupting := tool.Func{

@@ -46,6 +46,7 @@ type FilesystemPermission struct {
 type FilesystemOptions struct {
 	Backend           backend.Backend
 	Permissions       []FilesystemPermission
+	ApprovalOverrides []agent.ApprovalRule
 	Tools             []string
 	ToolDescriptions  map[string]string
 	ReadLimit         int
@@ -180,6 +181,9 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 	if err := validatePermissions(options.Permissions); err != nil {
 		return agent.Middleware{}, err
 	}
+	if err := agent.ValidateApprovalRules(options.ApprovalOverrides); err != nil {
+		return agent.Middleware{}, err
+	}
 	available := makeFilesystemTools(options)
 	selected := []tool.Tool{}
 	if options.Tools == nil {
@@ -218,7 +222,7 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 			}
 		}
 	}
-	middleware.BeforeTools = filesystemApprovalHook(options.Backend, options.Permissions)
+	middleware.BeforeTools = filesystemApprovalHook(options.Backend, options.Permissions, options.ApprovalOverrides)
 	middleware.WrapToolCall = filesystemPermissionWrapper(options)
 	middleware.WrapModelCall = filesystemModelWrapper(options.Backend)
 	return middleware, nil
@@ -623,7 +627,7 @@ func filesystemPermissionWrapper(options FilesystemOptions) agent.ToolWrapper {
 	}
 }
 
-func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission) agent.ToolBatchHook {
+func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission, overrides []agent.ApprovalRule) agent.ToolBatchHook {
 	return func(ctx context.Context, request agent.ToolBatchRequest) (agent.ToolBatchResponse, error) {
 		boundCtx, err := backend.BindRuntime(ctx, value, request.State)
 		if err != nil {
@@ -633,6 +637,20 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission)
 		var pending []agent.ApprovalRequest
 		gated := map[string]bool{}
 		for _, call := range request.Calls {
+			overridden := false
+			for _, rule := range overrides {
+				matched, matchErr := rule.MatchesName(call.Name)
+				if matchErr != nil {
+					return agent.ToolBatchResponse{}, matchErr
+				}
+				if matched {
+					overridden = true
+					break
+				}
+			}
+			if overridden {
+				continue
+			}
 			operation, known := filesystemToolOperations[call.Name]
 			if !known {
 				continue
@@ -648,7 +666,7 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission)
 				decision = PermissionInterrupt
 			}
 			if decision == PermissionInterrupt {
-				pending = append(pending, agent.ApprovalRequest{Call: call, Description: fmt.Sprintf("Allow %s access to %s?", operation, target)})
+				pending = append(pending, agent.ApprovalRequest{Call: call, Description: fmt.Sprintf("Allow %s access to %s?", operation, target), AllowedDecisions: []agent.ApprovalDecision{agent.ApprovalApprove, agent.ApprovalEdit, agent.ApprovalReject, agent.ApprovalRespond}})
 				gated[call.ID] = true
 			}
 		}
@@ -677,18 +695,30 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission)
 			case agent.ApprovalApprove:
 				calls = append(calls, call)
 			case agent.ApprovalEdit:
-				if choice.Call == nil || choice.Call.ID != call.ID || !json.Valid(choice.Call.Arguments) {
+				if choice.Call == nil || choice.Call.Name == "" || !json.Valid(choice.Call.Arguments) || (choice.Call.ID != "" && choice.Call.ID != call.ID) {
 					return agent.ToolBatchResponse{}, fmt.Errorf("invalid filesystem approval edit for %q", call.ID)
 				}
-				calls = append(calls, *choice.Call)
+				edited := *choice.Call
+				edited.ID = call.ID
+				calls = append(calls, edited)
 			case agent.ApprovalReject:
-				text := choice.Reason
+				text := choice.Message
+				if text == "" {
+					text = choice.Reason
+				}
 				if text == "" {
 					text = "Filesystem operation rejected."
 				}
 				item := message.Tool(call.ID, text)
 				item.Name = call.Name
 				item.ToolStatus = message.ToolStatusError
+				rejected = append(rejected, item)
+			case agent.ApprovalRespond:
+				if choice.Message == "" {
+					return agent.ToolBatchResponse{}, fmt.Errorf("filesystem response for %q requires a message", call.ID)
+				}
+				item := message.Tool(call.ID, choice.Message)
+				item.Name = call.Name
 				rejected = append(rejected, item)
 			default:
 				return agent.ToolBatchResponse{}, fmt.Errorf("invalid filesystem approval decision %q", choice.Decision)

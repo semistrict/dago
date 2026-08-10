@@ -83,7 +83,7 @@ func New(options Options) (*DeepAgent, error) {
 	options.Tools = applyToolProfile(options.Tools, profile.ToolDescriptions, nil)
 	filesystem, err := FilesystemMiddleware(FilesystemOptions{
 		Backend: options.Backend, Permissions: options.Permissions, Tools: options.FilesystemTools,
-		ToolDescriptions:  options.FilesystemToolDescriptions,
+		ApprovalOverrides: options.InterruptOn, ToolDescriptions: options.FilesystemToolDescriptions,
 		MaxExecuteTimeout: options.MaxExecuteTimeout, VideoExtractor: options.VideoExtractor,
 		MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
 	})
@@ -256,9 +256,13 @@ func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]S
 		if permissions == nil {
 			permissions = options.Permissions
 		}
+		interruptOn := spec.InterruptOn
+		if interruptOn == nil {
+			interruptOn = options.InterruptOn
+		}
 		filesystem, err := FilesystemMiddleware(FilesystemOptions{
 			Backend: options.Backend, Permissions: permissions, Tools: options.FilesystemTools,
-			ToolDescriptions:  options.FilesystemToolDescriptions,
+			ApprovalOverrides: interruptOn, ToolDescriptions: options.FilesystemToolDescriptions,
 			MaxExecuteTimeout: options.MaxExecuteTimeout, VideoExtractor: options.VideoExtractor,
 			MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
 		})
@@ -296,10 +300,6 @@ func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]S
 			}
 			return request.Runtime.TaskID
 		}))
-		interruptOn := spec.InterruptOn
-		if interruptOn == nil {
-			interruptOn = options.InterruptOn
-		}
 		if len(interruptOn) > 0 {
 			tail = append(tail, agent.HumanApproval(interruptOn))
 		}

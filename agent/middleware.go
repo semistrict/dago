@@ -96,8 +96,9 @@ func TodoList() Middleware {
 
 // ApprovalRequest describes one tool call awaiting a human decision.
 type ApprovalRequest struct {
-	Call        message.ToolCall `json:"call"`
-	Description string           `json:"description,omitempty"`
+	Call             message.ToolCall   `json:"call"`
+	Description      string             `json:"description,omitempty"`
+	AllowedDecisions []ApprovalDecision `json:"allowed_decisions,omitempty"`
 }
 
 type ApprovalDecision string
@@ -106,6 +107,7 @@ const (
 	ApprovalApprove ApprovalDecision = "approve"
 	ApprovalEdit    ApprovalDecision = "edit"
 	ApprovalReject  ApprovalDecision = "reject"
+	ApprovalRespond ApprovalDecision = "respond"
 )
 
 // ApprovalResponse is supplied as Input.Resume. Every gated call in the interrupt
@@ -118,30 +120,90 @@ type ApprovalChoice struct {
 	Decision ApprovalDecision  `json:"decision"`
 	Call     *message.ToolCall `json:"call,omitempty"`
 	Reason   string            `json:"reason,omitempty"`
+	Message  string            `json:"message,omitempty"`
 }
 
 // ApprovalRule gates tool names using path.Match syntax. Rules are evaluated in
 // order and the first match wins.
 type ApprovalRule struct {
-	Pattern     string
-	Description string
+	Pattern          string
+	Description      string
+	AllowedDecisions []ApprovalDecision
+	When             func(ToolCallRequest) bool
+}
+
+func (rule ApprovalRule) MatchesName(name string) (bool, error) {
+	return path.Match(rule.Pattern, name)
+}
+
+func (rule ApprovalRule) Applies(request ToolCallRequest) (bool, error) {
+	matched, err := rule.MatchesName(request.Call.Name)
+	if err != nil || !matched {
+		return matched, err
+	}
+	return rule.When == nil || rule.When(request), nil
+}
+
+func (rule ApprovalRule) decisions() []ApprovalDecision {
+	if len(rule.AllowedDecisions) == 0 {
+		return []ApprovalDecision{ApprovalApprove, ApprovalEdit, ApprovalReject, ApprovalRespond}
+	}
+	return append([]ApprovalDecision(nil), rule.AllowedDecisions...)
+}
+
+func (rule ApprovalRule) allows(decision ApprovalDecision) bool {
+	for _, allowed := range rule.decisions() {
+		if allowed == decision {
+			return true
+		}
+	}
+	return false
+}
+
+func ValidateApprovalRules(rules []ApprovalRule) error {
+	for index, rule := range rules {
+		if rule.Pattern == "" {
+			return fmt.Errorf("approval rule %d requires a tool pattern", index)
+		}
+		if _, err := path.Match(rule.Pattern, "probe"); err != nil {
+			return fmt.Errorf("approval rule %d pattern %q: %w", index, rule.Pattern, err)
+		}
+		seen := map[ApprovalDecision]bool{}
+		for _, decision := range rule.AllowedDecisions {
+			if decision != ApprovalApprove && decision != ApprovalEdit && decision != ApprovalReject && decision != ApprovalRespond {
+				return fmt.Errorf("approval rule %d has invalid decision %q", index, decision)
+			}
+			if seen[decision] {
+				return fmt.Errorf("approval rule %d repeats decision %q", index, decision)
+			}
+			seen[decision] = true
+		}
+	}
+	return nil
 }
 
 // HumanApproval pauses before any matching tool executes and supports approve,
-// edit, and reject decisions, including several pending calls in one interrupt.
+// edit, reject, and respond decisions, including several pending calls in one interrupt.
 func HumanApproval(rules []ApprovalRule) Middleware {
 	return Middleware{Name: "human_approval", BeforeTools: func(_ context.Context, request ToolBatchRequest) (ToolBatchResponse, error) {
+		if err := ValidateApprovalRules(rules); err != nil {
+			return ToolBatchResponse{}, err
+		}
 		var pending []ApprovalRequest
 		gated := map[string]bool{}
+		matchedRules := map[string]ApprovalRule{}
 		for _, call := range request.Calls {
 			for _, rule := range rules {
-				matched, err := path.Match(rule.Pattern, call.Name)
+				matched, err := rule.Applies(ToolCallRequest{Call: call, Tool: request.Tools[call.Name], State: request.State, Runtime: request.Runtime})
 				if err != nil {
 					return ToolBatchResponse{}, fmt.Errorf("approval pattern %q: %w", rule.Pattern, err)
 				}
 				if matched {
-					pending = append(pending, ApprovalRequest{Call: call, Description: rule.Description})
+					pending = append(pending, ApprovalRequest{Call: call, Description: rule.Description, AllowedDecisions: rule.decisions()})
 					gated[call.ID] = true
+					matchedRules[call.ID] = rule
+				}
+				if nameMatched, _ := rule.MatchesName(call.Name); nameMatched {
 					break
 				}
 			}
@@ -161,6 +223,7 @@ func HumanApproval(rules []ApprovalRule) Middleware {
 				if item.Description != "" {
 					record["description"] = item.Description
 				}
+				record["allowed_decisions"] = item.AllowedDecisions
 				value = append(value, record)
 			}
 			return ToolBatchResponse{Interrupt: &Interrupt{ID: "human_approval", Value: value}}, nil
@@ -180,22 +243,38 @@ func HumanApproval(rules []ApprovalRule) Middleware {
 			if !exists {
 				return ToolBatchResponse{}, fmt.Errorf("human approval decision missing for call %q", call.ID)
 			}
+			rule := matchedRules[call.ID]
+			if !rule.allows(choice.Decision) {
+				return ToolBatchResponse{}, fmt.Errorf("decision %q is not allowed for tool %q", choice.Decision, call.Name)
+			}
 			switch choice.Decision {
 			case ApprovalApprove:
 				calls = append(calls, call)
 			case ApprovalEdit:
-				if choice.Call == nil || choice.Call.ID != call.ID || choice.Call.Name == "" || !json.Valid(choice.Call.Arguments) {
+				if choice.Call == nil || choice.Call.Name == "" || !json.Valid(choice.Call.Arguments) || (choice.Call.ID != "" && choice.Call.ID != call.ID) {
 					return ToolBatchResponse{}, fmt.Errorf("human approval edit for call %q is invalid", call.ID)
 				}
-				calls = append(calls, *choice.Call)
+				edited := *choice.Call
+				edited.ID = call.ID
+				calls = append(calls, edited)
 			case ApprovalReject:
-				text := choice.Reason
+				text := choice.Message
 				if text == "" {
-					text = "Tool call rejected by reviewer."
+					text = choice.Reason
+				}
+				if text == "" {
+					text = fmt.Sprintf("User rejected the tool call for `%s` with id %s. The tool was not executed. Do not retry this tool call unless the user explicitly requests it.", call.Name, call.ID)
 				}
 				result := message.Tool(call.ID, text)
 				result.Name = call.Name
 				result.ToolStatus = message.ToolStatusError
+				rejected = append(rejected, result)
+			case ApprovalRespond:
+				if choice.Message == "" {
+					return ToolBatchResponse{}, fmt.Errorf("human response for call %q requires a message", call.ID)
+				}
+				result := message.Tool(call.ID, choice.Message)
+				result.Name = call.Name
 				rejected = append(rejected, result)
 			default:
 				return ToolBatchResponse{}, fmt.Errorf("human approval decision %q is invalid", choice.Decision)

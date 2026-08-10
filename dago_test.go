@@ -155,6 +155,51 @@ func TestDeepAgentInterruptOnWiresHumanApproval(t *testing.T) {
 	}
 }
 
+func TestExplicitApprovalOverridesFilesystemPermissionApproval(t *testing.T) {
+	memory, err := backend.NewMemory(map[string]backend.FileData{
+		"/secret.txt": {Content: "backend secret", Encoding: backend.EncodingUTF8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/secret.txt"}`)}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			last := request.Messages[len(request.Messages)-1]
+			if last.TextContent() != "reviewer supplied" || last.ToolStatus != message.ToolStatusSuccess {
+				return fmt.Errorf("tool response = %#v", last)
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := New(Options{
+		Model: script, Backend: memory, Saver: checkpoint.NewMemorySaver(),
+		DisableSubagents: true, DisableSummary: true,
+		Permissions: []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/secret.txt"}, Mode: PermissionInterrupt}},
+		InterruptOn: []agent.ApprovalRule{{Pattern: "read_file", AllowedDecisions: []agent.ApprovalDecision{agent.ApprovalRespond}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := checkpoint.Config{ThreadID: "approval-precedence"}
+	paused, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paused.Interrupts) != 1 || paused.Interrupts[0].ID != "human_approval" {
+		t.Fatalf("interrupts = %#v", paused.Interrupts)
+	}
+	resumed, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Resume: agent.ApprovalResponse{Decisions: map[string]agent.ApprovalChoice{
+		"read": {Decision: agent.ApprovalRespond, Message: "reviewer supplied"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Messages[len(resumed.Messages)-1].TextContent() != "done" {
+		t.Fatalf("messages = %#v", resumed.Messages)
+	}
+}
+
 func TestDefaultStateBackendPersistsParallelWritesPerThread(t *testing.T) {
 	script := modeltest.New(model.Profile{ToolCalling: true},
 		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
