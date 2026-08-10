@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,9 +12,26 @@ import (
 
 // Store persists virtual files in a namespaced runtime Store.
 type Store struct {
+	store            store.Store
+	namespaceFactory NamespaceFactory
+	session          storeSessionKey
+	mu               sync.Mutex
+}
+
+// NamespaceFactory resolves the persistent namespace for one invocation. The
+// runtime is nil when the backend is used directly outside an agent run.
+type NamespaceFactory func(*Runtime) (store.Namespace, error)
+
+type StoreOptions struct {
+	// Store may be omitted when the agent runtime supplies one.
+	Store     store.Store
+	Namespace NamespaceFactory
+}
+
+type storeSessionKey struct{ owner *Store }
+type storeSession struct {
 	store     store.Store
 	namespace store.Namespace
-	mu        sync.Mutex
 }
 
 func NewStore(values store.Store, namespace store.Namespace) (*Store, error) {
@@ -23,17 +41,84 @@ func NewStore(values store.Store, namespace store.Namespace) (*Store, error) {
 	if err := namespace.Validate(); err != nil {
 		return nil, err
 	}
-	return &Store{store: values, namespace: append(store.Namespace(nil), namespace...)}, nil
+	fixed := append(store.Namespace(nil), namespace...)
+	return NewStoreWithOptions(StoreOptions{Store: values, Namespace: func(*Runtime) (store.Namespace, error) {
+		return append(store.Namespace(nil), fixed...), nil
+	}})
+}
+
+// NewStoreWithOptions constructs a persistent backend whose namespace and,
+// optionally, store are resolved from each agent invocation.
+func NewStoreWithOptions(options StoreOptions) (*Store, error) {
+	if options.Namespace == nil {
+		return nil, fmt.Errorf("backend store namespace factory is required")
+	}
+	result := &Store{store: options.Store, namespaceFactory: options.Namespace}
+	result.session.owner = result
+	return result, nil
+}
+
+func (backend *Store) resolve(ctx context.Context) (store.Store, store.Namespace, error) {
+	if session, ok := ctx.Value(backend.session).(*storeSession); ok && session != nil {
+		return session.store, append(store.Namespace(nil), session.namespace...), nil
+	}
+	runtime := runtimeFromContext(ctx)
+	values := backend.store
+	if values == nil && runtime != nil {
+		values = runtime.Store
+	}
+	if values == nil {
+		return nil, nil, fmt.Errorf("store backend requires an explicit store or a bound agent runtime store")
+	}
+	namespace, err := backend.namespaceFactory(runtime)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateStoreNamespace(namespace); err != nil {
+		return nil, nil, err
+	}
+	return values, append(store.Namespace(nil), namespace...), nil
+}
+
+func (backend *Store) BindRuntime(ctx context.Context, _ StateReader) (context.Context, error) {
+	values, namespace, err := backend.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return context.WithValue(ctx, backend.session, &storeSession{store: values, namespace: namespace}), nil
+}
+
+func (backend *Store) RuntimeUpdates(context.Context) map[string]any { return nil }
+func (backend *Store) StateFields() []StateField                     { return nil }
+
+func validateStoreNamespace(namespace store.Namespace) error {
+	if err := namespace.Validate(); err != nil {
+		return err
+	}
+	for index, component := range namespace {
+		for _, character := range component {
+			if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+				(character >= '0' && character <= '9') || strings.ContainsRune("-_.@+:~", character) {
+				continue
+			}
+			return fmt.Errorf("invalid store namespace component %d %q: contains disallowed characters", index, component)
+		}
+	}
+	return nil
 }
 
 func (backend *Store) snapshot(ctx context.Context) (*Memory, error) {
-	items, err := backend.store.Search(ctx, store.SearchOptions{Prefix: backend.namespace})
+	values, namespace, err := backend.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items, err := values.Search(ctx, store.SearchOptions{Prefix: namespace})
 	if err != nil {
 		return nil, err
 	}
 	files := map[string]FileData{}
 	for _, item := range items {
-		if len(item.Namespace) != len(backend.namespace) {
+		if len(item.Namespace) != len(namespace) {
 			continue
 		}
 		data, err := fileDataFromMap(item.Value)
@@ -46,10 +131,14 @@ func (backend *Store) snapshot(ctx context.Context) (*Memory, error) {
 }
 
 func (backend *Store) persist(ctx context.Context, memory *Memory) error {
+	values, namespace, err := backend.resolve(ctx)
+	if err != nil {
+		return err
+	}
 	memory.mu.RLock()
 	defer memory.mu.RUnlock()
 	for name, data := range memory.files {
-		if err := backend.store.Put(ctx, backend.namespace, name, fileDataMap(data)); err != nil {
+		if err := values.Put(ctx, namespace, name, fileDataMap(data)); err != nil {
 			return err
 		}
 	}
@@ -118,8 +207,12 @@ func (backend *Store) Delete(ctx context.Context, path string) (DeleteResult, er
 		delete(before, name)
 	}
 	memory.mu.RUnlock()
+	values, namespace, err := backend.resolve(ctx)
+	if err != nil {
+		return DeleteResult{}, err
+	}
 	for name := range before {
-		if err := backend.store.Delete(ctx, backend.namespace, name); err != nil {
+		if err := values.Delete(ctx, namespace, name); err != nil {
 			return DeleteResult{}, err
 		}
 	}

@@ -505,7 +505,7 @@ func evictHumanMessages(ctx context.Context, options FilesystemOptions, request 
 	boundCtx := ctx
 	if newEviction {
 		var err error
-		boundCtx, err = backend.BindRuntime(ctx, options.Backend, request.State)
+		boundCtx, err = backend.BindRuntime(ctx, options.Backend, request.State, backendRuntime(request.Runtime))
 		if err != nil {
 			return agent.ModelRequest{}, nil, ctx, fmt.Errorf("bind human message eviction backend: %w", err)
 		}
@@ -963,7 +963,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 
 func filesystemPermissionWrapper(options FilesystemOptions) agent.ToolWrapper {
 	return func(ctx context.Context, request agent.ToolCallRequest, next agent.ToolHandler) (agent.ToolCallResponse, error) {
-		boundCtx, err := backend.BindRuntime(ctx, options.Backend, request.State)
+		boundCtx, err := backend.BindRuntime(ctx, options.Backend, request.State, backendRuntime(request.Runtime))
 		if err != nil {
 			return agent.ToolCallResponse{}, err
 		}
@@ -1021,7 +1021,7 @@ func filesystemPermissionWrapper(options FilesystemOptions) agent.ToolWrapper {
 
 func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission, overrides []agent.ApprovalRule) agent.ToolBatchHook {
 	return func(ctx context.Context, request agent.ToolBatchRequest) (agent.ToolBatchResponse, error) {
-		boundCtx, err := backend.BindRuntime(ctx, value, request.State)
+		boundCtx, err := backend.BindRuntime(ctx, value, request.State, backendRuntime(request.Runtime))
 		if err != nil {
 			return agent.ToolBatchResponse{}, err
 		}

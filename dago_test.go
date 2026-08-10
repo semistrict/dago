@@ -17,6 +17,7 @@ import (
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
 	"github.com/semistrict/dago/state"
+	"github.com/semistrict/dago/store"
 	"github.com/semistrict/dago/tool"
 )
 
@@ -59,6 +60,32 @@ func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
 	}
 	if result.Messages[len(result.Messages)-1].TextContent() != "done" {
 		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
+func TestDeepAgentBindsRuntimeScopedStoreBackend(t *testing.T) {
+	values := store.NewMemory()
+	files, err := backend.NewStoreWithOptions(backend.StoreOptions{Namespace: func(runtime *backend.Runtime) (store.Namespace, error) {
+		user, _ := runtime.Context.(string)
+		return store.Namespace{"files", user}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/note.txt","content":"private"}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := New(Options{Model: script, Backend: files, Store: values, Context: "alice", DisableSubagents: true, DisableSummary: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("write")}}); err != nil {
+		t.Fatal(err)
+	}
+	item, err := values.Get(context.Background(), store.Namespace{"files", "alice"}, "/note.txt")
+	if err != nil || item == nil || item.Value["content"] != "private" {
+		t.Fatalf("runtime-scoped store item = %#v, %v", item, err)
 	}
 }
 

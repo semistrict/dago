@@ -419,7 +419,7 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		var boundCtx context.Context
 		var bindErr error
 		if options.Backend != nil {
-			boundCtx, bindErr = backend.BindRuntime(ctx, options.Backend, reader)
+			boundCtx, bindErr = backend.BindRuntime(ctx, options.Backend, reader, backendRuntime(runtime))
 			if overflow && boundCtx != nil {
 				recent = clipOverflowToolTail(boundCtx, messages, recent, options)
 			}
@@ -563,7 +563,7 @@ func offloadConversationHistory(
 	reader backend.StateReader,
 	messages []message.Message,
 ) historyOffloadResult {
-	boundCtx, err := backend.BindRuntime(ctx, options.Backend, reader)
+	boundCtx, err := backend.BindRuntime(ctx, options.Backend, reader, backendRuntime(runtime))
 	if err != nil {
 		return historyOffloadResult{Err: fmt.Errorf("bind conversation history backend: %w", err)}
 	}
@@ -692,11 +692,11 @@ func MemoryMiddleware(options MemoryOptions) (agent.Middleware, error) {
 		return agent.Middleware{}, fmt.Errorf("memory system prompt must contain the {agent_memory} slot")
 	}
 	commentRE := regexp.MustCompile(`(?s)<!--.*?-->`)
-	return agent.Middleware{Name: "memory", Fields: map[string]agent.StateField{"memory_contents": {Kind: agent.FieldLast, Contract: "dago.memory.v1", Private: true, Clone: cloneStringMap}}, BeforeAgent: func(ctx context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
+	return agent.Middleware{Name: "memory", Fields: map[string]agent.StateField{"memory_contents": {Kind: agent.FieldLast, Contract: "dago.memory.v1", Private: true, Clone: cloneStringMap}}, BeforeAgent: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
 		if _, loaded := values["memory_contents"]; loaded {
 			return nil, nil
 		}
-		boundCtx, err := backend.BindRuntime(ctx, options.Backend, values)
+		boundCtx, err := backend.BindRuntime(ctx, options.Backend, values, backendRuntime(runtime))
 		if err != nil {
 			return nil, err
 		}
@@ -906,11 +906,11 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 	return agent.Middleware{Name: "skills", Fields: map[string]agent.StateField{
 		"skills":             {Kind: agent.FieldLast, Contract: "dago.skills.v1", Private: true, Clone: cloneSkillState},
 		"skills_load_errors": {Kind: agent.FieldLast, Contract: "dago.skills.errors.v1", Private: true, Clone: cloneStrings},
-	}, BeforeAgent: func(ctx context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
+	}, BeforeAgent: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
 		if _, loaded := values["skills"]; loaded {
 			return nil, nil
 		}
-		boundCtx, bindErr := backend.BindRuntime(ctx, options.Backend, values)
+		boundCtx, bindErr := backend.BindRuntime(ctx, options.Backend, values, backendRuntime(runtime))
 		if bindErr != nil {
 			return nil, bindErr
 		}
@@ -1301,7 +1301,7 @@ func prepareOldContext(
 	if cutoff <= 0 || options.Backend == nil {
 		return update, messages, nil
 	}
-	boundCtx, err := backend.BindRuntime(ctx, options.Backend, values)
+	boundCtx, err := backend.BindRuntime(ctx, options.Backend, values, backendRuntime(runtime))
 	if err != nil {
 		return nil, nil, err
 	}

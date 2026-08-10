@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +59,65 @@ func TestMemoryAndStoreBackendsShareContract(t *testing.T) {
 	read, err := reopened.Read(context.Background(), "/persist", 0, 10)
 	if err != nil || read.Data.Content != "value" {
 		t.Fatalf("reopened Read = %#v, %v", read, err)
+	}
+}
+
+func TestStoreBackendResolvesNamespaceAndStorePerRuntime(t *testing.T) {
+	values := memorystore.NewMemory()
+	persistent, err := NewStoreWithOptions(StoreOptions{Namespace: func(runtime *Runtime) (memorystore.Namespace, error) {
+		if runtime == nil {
+			return nil, fmt.Errorf("runtime is required")
+		}
+		user, ok := runtime.Context.(string)
+		if !ok || user == "" {
+			return nil, fmt.Errorf("runtime user is required")
+		}
+		return memorystore.Namespace{"files", user}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistent.Write(context.Background(), "/note.txt", "outside"); err == nil {
+		t.Fatal("runtime-dependent Store.Write succeeded outside a bound run")
+	}
+
+	alice, err := BindRuntime(context.Background(), persistent, nil, Runtime{Context: "alice", Store: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := BindRuntime(context.Background(), persistent, nil, Runtime{Context: "bob", Store: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistent.Write(alice, "/note.txt", "alice note"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistent.Write(bob, "/note.txt", "bob note"); err != nil {
+		t.Fatal(err)
+	}
+	for name, ctx := range map[string]context.Context{"alice": alice, "bob": bob} {
+		result, err := persistent.Read(ctx, "/note.txt", 0, 10)
+		if err != nil || result.Data == nil || result.Data.Content != name+" note" {
+			t.Fatalf("%s Read = %#v, %v", name, result, err)
+		}
+	}
+	if item, err := values.Get(context.Background(), memorystore.Namespace{"files", "alice"}, "/note.txt"); err != nil || item == nil || item.Value["content"] != "alice note" {
+		t.Fatalf("alice stored item = %#v, %v", item, err)
+	}
+}
+
+func TestStoreBackendRejectsUnsafeDynamicNamespace(t *testing.T) {
+	persistent, err := NewStoreWithOptions(StoreOptions{
+		Store: memorystore.NewMemory(),
+		Namespace: func(*Runtime) (memorystore.Namespace, error) {
+			return memorystore.Namespace{"files", "*"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistent.Write(context.Background(), "/note.txt", "unsafe"); err == nil || !strings.Contains(err.Error(), "disallowed") {
+		t.Fatalf("unsafe namespace error = %v", err)
 	}
 }
 

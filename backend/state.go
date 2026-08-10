@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/semistrict/dago/store"
 )
 
 // StateReader is the minimal graph-state view required by a runtime-bound
@@ -21,6 +23,25 @@ type StateField struct {
 	Initial           func() any
 	Reduce            func(any, []any) (any, error)
 	Clone             func(any) any
+}
+
+// Runtime contains the invocation values a backend may use to select durable
+// resources. Context is application-defined and is the usual source for a
+// per-user or per-assistant namespace.
+type Runtime struct {
+	Context      any
+	ThreadID     string
+	Namespace    string
+	CheckpointID string
+	TaskID       string
+	Store        store.Store
+}
+
+type backendRuntimeKey struct{}
+
+func runtimeFromContext(ctx context.Context) *Runtime {
+	runtime, _ := ctx.Value(backendRuntimeKey{}).(*Runtime)
+	return runtime
 }
 
 // RuntimeBackend is a backend whose storage is supplied by the current graph
@@ -349,7 +370,11 @@ func cloneStatePatch(values map[string]any) map[string]any {
 }
 
 // BindRuntime binds every runtime-backed component reachable through value.
-func BindRuntime(ctx context.Context, value Backend, reader StateReader) (context.Context, error) {
+func BindRuntime(ctx context.Context, value Backend, reader StateReader, runtime ...Runtime) (context.Context, error) {
+	if len(runtime) > 0 {
+		copy := runtime[0]
+		ctx = context.WithValue(ctx, backendRuntimeKey{}, &copy)
+	}
 	if bound, ok := value.(RuntimeBackend); ok {
 		return bound.BindRuntime(ctx, reader)
 	}
