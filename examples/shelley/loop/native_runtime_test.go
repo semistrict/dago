@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -70,6 +72,32 @@ func TestLoopDagoHarnessExposesCanonicalDeepAgentTools(t *testing.T) {
 		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
 	})
 	runtime.QueueUserMessage(llm.UserStringMessage("inspect"))
+	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoopDagoHarnessAcceptsShelleyHostPaths(t *testing.T) {
+	workingDir := t.TempDir()
+	filePath := filepath.Join(workingDir, "visible.txt")
+	if err := os.WriteFile(filePath, []byte("visible"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := modeltest.New(dmodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: dmodel.Response{Message: dmessage.Message{Role: dmessage.RoleAssistant, ToolCalls: []dmessage.ToolCall{{ID: "list", Name: "ls", Arguments: json.RawMessage(fmt.Sprintf(`{"path":%q}`, workingDir))}}}}},
+		modeltest.Step{Check: func(request dmodel.Request) error {
+			last := request.Messages[len(request.Messages)-1]
+			if last.Role != dmessage.RoleTool || !strings.Contains(last.TextContent(), filePath) {
+				return fmt.Errorf("host-path ls result = %#v", last)
+			}
+			return nil
+		}, Response: dmodel.Response{Message: dmessage.Assistant("done")}},
+	)
+	runtime := NewLoop(Config{
+		Model: script, WorkingDir: workingDir, FilesystemTools: []string{"ls"},
+		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
+	})
+	runtime.QueueUserMessage(llm.UserStringMessage("list files"))
 	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
 	}

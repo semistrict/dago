@@ -68,8 +68,15 @@ type ModelRequest struct {
 	Reasoning      *model.Reasoning
 	State          state.Values
 	Runtime        Runtime
-	Metadata       map[string]json.RawMessage
-	Tags           []string
+	// InvocationMetadata and InvocationTags describe the agent run for
+	// middleware, tracing, and evaluation. They are never forwarded as provider
+	// request parameters.
+	InvocationMetadata map[string]json.RawMessage
+	InvocationTags     []string
+	// Metadata and Tags are explicit provider request values. Model wrappers may
+	// set them when the selected provider supports those fields.
+	Metadata map[string]json.RawMessage
+	Tags     []string
 }
 
 func (request ModelRequest) Clone() ModelRequest {
@@ -98,6 +105,8 @@ func (request ModelRequest) Clone() ModelRequest {
 		copy.Reasoning = &reasoning
 	}
 	copy.State = request.State.Clone()
+	copy.InvocationMetadata = cloneRawMap(request.InvocationMetadata)
+	copy.InvocationTags = append([]string(nil), request.InvocationTags...)
 	copy.Metadata = cloneRawMap(request.Metadata)
 	copy.Tags = append([]string(nil), request.Tags...)
 	return copy

@@ -67,23 +67,34 @@ func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
 
 func TestDeepAgentAddsConstructionMetadataAndTags(t *testing.T) {
 	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
-		if string(request.Metadata["ls_integration"]) != `"deepagents"` || string(request.Metadata["lc_agent_name"]) != `"researcher"` || string(request.Metadata["tenant"]) != `"alpha"` {
-			return fmt.Errorf("metadata = %#v", request.Metadata)
-		}
-		if len(request.Tags) != 1 || request.Tags[0] != "integration" {
-			return fmt.Errorf("tags = %#v", request.Tags)
+		if len(request.Metadata) != 0 || len(request.Tags) != 0 {
+			return fmt.Errorf("construction metadata leaked into provider request: metadata=%#v tags=%#v", request.Metadata, request.Tags)
 		}
 		return nil
 	}, Response: model.Response{Message: message.Assistant("done")}})
+	inspected := false
+	metadataMiddleware := agent.Middleware{Name: "inspect_invocation_metadata", WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+		if string(request.InvocationMetadata["ls_integration"]) != `"deepagents"` || string(request.InvocationMetadata["lc_agent_name"]) != `"researcher"` || string(request.InvocationMetadata["tenant"]) != `"alpha"` {
+			return agent.ModelResponse{}, fmt.Errorf("invocation metadata = %#v", request.InvocationMetadata)
+		}
+		if len(request.InvocationTags) != 1 || request.InvocationTags[0] != "integration" {
+			return agent.ModelResponse{}, fmt.Errorf("invocation tags = %#v", request.InvocationTags)
+		}
+		inspected = true
+		return next(ctx, request)
+	}}
 	compiled, err := New(Options{
 		Name: "researcher", Model: script, DisableSubagents: true, DisableSummary: true,
-		Metadata: map[string]json.RawMessage{"tenant": json.RawMessage(`"alpha"`)}, Tags: []string{"integration"},
+		Metadata: map[string]json.RawMessage{"tenant": json.RawMessage(`"alpha"`)}, Tags: []string{"integration"}, Middleware: []agent.Middleware{metadataMiddleware},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
 		t.Fatal(err)
+	}
+	if !inspected {
+		t.Fatal("invocation metadata middleware was not called")
 	}
 }
 

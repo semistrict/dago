@@ -378,7 +378,7 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	}
 
 	harnessBackend, err := dbackend.NewLocalShell(dbackend.LocalShellOptions{
-		Filesystem: dbackend.FilesystemOptions{Root: l.currentWorkingDir()},
+		Filesystem: dbackend.FilesystemOptions{Root: l.currentWorkingDir(), AllowHostPaths: true},
 	})
 	if err != nil {
 		return fmt.Errorf("create Shelley harness backend: %w", err)

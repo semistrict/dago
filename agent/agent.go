@@ -354,8 +354,8 @@ func (compiler *compiler) model(ctx context.Context, values state.Values, runtim
 	}
 	request := ModelRequest{
 		Model: compiler.options.Model, Messages: messages, Tools: toolsSlice(compiler.tools),
-		State: current.Clone(), Runtime: convertRuntime(runtime), Metadata: cloneRawMap(compiler.options.Metadata),
-		Tags: append([]string(nil), compiler.options.Tags...),
+		State: current.Clone(), Runtime: convertRuntime(runtime),
+		InvocationMetadata: cloneRawMap(compiler.options.Metadata), InvocationTags: append([]string(nil), compiler.options.Tags...),
 	}
 	if compiler.options.SystemMessage != nil {
 		system := compiler.options.SystemMessage.Clone()
