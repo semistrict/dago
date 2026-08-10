@@ -1,6 +1,6 @@
 # Shelley Makefile
 
-.PHONY: build build-custom build-linux-aarch64 build-linux-x86 test test-go test-e2e bench-agent ui serve clean help templates demo
+.PHONY: build build-custom build-linux-aarch64 build-linux-x86 test test-go test-e2e bench-agent bench-scaling ui serve clean help templates demo
 
 # Default target
 all: build
@@ -90,6 +90,10 @@ test-e2e-ui: ui
 # Benchmark the complete agent path with only the remote model mocked.
 bench-agent:
 	go test -run '^$$' -bench '^BenchmarkAgentE2E$$' -benchmem ./server
+
+# Compare one steady-state turn across fixed transcript sizes.
+bench-scaling:
+	go test -run '^$$' -bench '^BenchmarkAgentHistoryScaling$$' -benchmem ./server
 
 # Run all tests
 test: test-go test-e2e

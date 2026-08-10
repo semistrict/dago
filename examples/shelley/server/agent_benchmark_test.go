@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
+	"shelley.exe.dev/llm"
 	"shelley.exe.dev/models"
 )
 
@@ -30,6 +32,33 @@ func BenchmarkAgentE2E(b *testing.B) {
 	b.Run("ColdTextTurn", benchmarkAgentColdTextTurn)
 	b.Run("GrowingTextConversation", benchmarkAgentGrowingTextConversation)
 	b.Run("GrowingFilesystemToolConversation", benchmarkAgentGrowingFilesystemToolConversation)
+}
+
+// BenchmarkAgentHistoryScaling measures one steady-state text turn at fixed
+// transcript sizes. History construction and loop hydration are deliberately
+// outside the timer so results isolate the marginal cost of processing the
+// next turn rather than the cost of building the fixture.
+func BenchmarkAgentHistoryScaling(b *testing.B) {
+	for _, priorTurns := range []int{1, 10, 50, 100, 250} {
+		b.Run(fmt.Sprintf("PriorTurns_%03d", priorTurns), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				b.StopTimer()
+				fixture := newSeededHistoryBenchmarkFixture(b, priorTurns)
+				b.StartTimer()
+
+				fixture.chat("benchmark text")
+				fixture.waitDone()
+
+				b.StopTimer()
+				fixture.close()
+				b.StartTimer()
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(priorTurns*2), "history_messages")
+		})
+	}
 }
 
 func benchmarkAgentColdTextTurn(b *testing.B) {
@@ -119,6 +148,59 @@ func newWarmAgentBenchmarkFixture(b *testing.B) *agentBenchmarkFixture {
 	fixture.waitDone()
 	fixture.model.disableGate()
 	b.StartTimer()
+	return fixture
+}
+
+func newSeededHistoryBenchmarkFixture(b *testing.B, priorTurns int) *agentBenchmarkFixture {
+	b.Helper()
+	workspace := b.TempDir()
+	fixture := newAgentBenchmarkFixture(b, workspace, false)
+	ctx := context.Background()
+	slug := fmt.Sprintf("benchmark-history-%d", priorTurns)
+	modelID := "benchmark"
+	conversation, err := fixture.database.CreateConversation(
+		ctx, &slug, true, &workspace, &modelID, db.ConversationOptions{},
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	messages := make([]db.CreateMessageParams, 0, priorTurns*2)
+	for turn := range priorTurns {
+		messages = append(messages,
+			db.CreateMessageParams{
+				ConversationID: conversation.ConversationID,
+				Type:           db.MessageTypeUser,
+				LLMData: llm.Message{
+					Role:    llm.MessageRoleUser,
+					Content: []llm.Content{{Type: llm.ContentTypeText, Text: fmt.Sprintf("prior request %d", turn)}},
+				},
+			},
+			db.CreateMessageParams{
+				ConversationID: conversation.ConversationID,
+				Type:           db.MessageTypeAgent,
+				LLMData: llm.Message{
+					Role:      llm.MessageRoleAssistant,
+					Content:   []llm.Content{{Type: llm.ContentTypeText, Text: fmt.Sprintf("prior response %d", turn)}},
+					EndOfTurn: true,
+				},
+			},
+		)
+	}
+	if _, err := fixture.database.CreateMessages(ctx, messages); err != nil {
+		b.Fatal(err)
+	}
+
+	manager, err := fixture.server.getOrCreateConversationManager(ctx, conversation.ConversationID, "")
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := manager.ensureLoop(fixture.model, modelID); err != nil {
+		b.Fatal(err)
+	}
+	fixture.conversationID = conversation.ConversationID
+	fixture.installDoneSignal(conversation.ConversationID)
+	fixture.model.calls.Store(0)
 	return fixture
 }
 
