@@ -14,6 +14,7 @@ import (
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/model/modeltest"
+	"github.com/semistrict/dago/state"
 	"github.com/semistrict/dago/tool"
 )
 
@@ -374,6 +375,35 @@ func TestDeclarativeSubagentPropagatesNonMessageState(t *testing.T) {
 	}
 	if result.Messages[len(result.Messages)-1].TextContent() != "done" {
 		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
+func TestPrivateParentStateDoesNotReachDeclarativeSubagent(t *testing.T) {
+	childModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("child done")}})
+	guard := agent.Middleware{Name: "private_guard", BeforeModel: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
+		if _, exists := values["parent_secret"]; exists {
+			return nil, errors.New("private parent state leaked to child")
+		}
+		return nil, nil
+	}}
+	parentModel := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "private-task", Name: "task", Arguments: json.RawMessage(`{"description":"work","subagent_type":"worker"}`)}}}}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	)
+	compiled, err := New(Options{
+		Model: parentModel, DisableSummary: true,
+		StateFields: map[string]agent.StateField{"parent_secret": {Kind: agent.FieldLast, Contract: "parent.secret.v1", Private: true, Clone: func(value any) any { return value }}},
+		Subagents:   []Subagent{{Name: "worker", Description: "Works", SystemPrompt: "Work.", Model: childModel, Middleware: []agent.Middleware{guard}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}, State: state.Values{"parent_secret": "hidden"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := result.State["parent_secret"]; exists {
+		t.Fatalf("private state leaked from result: %#v", result.State)
 	}
 }
 

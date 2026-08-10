@@ -39,8 +39,9 @@ type Options struct {
 
 // Agent is a compiled provider-neutral model/tool graph.
 type Agent struct {
-	graph *graph.Compiled
-	saver checkpoint.Saver
+	graph   *graph.Compiled
+	saver   checkpoint.Saver
+	private map[string]bool
 }
 
 // Input starts or resumes one agent thread.
@@ -130,7 +131,13 @@ func New(options Options) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Agent{graph: runtimeGraph, saver: options.Saver}, nil
+	private := map[string]bool{}
+	for name, field := range fields {
+		if field.Private {
+			private[name] = true
+		}
+	}
+	return &Agent{graph: runtimeGraph, saver: options.Saver, private: private}, nil
 }
 
 func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
@@ -148,7 +155,7 @@ func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return resultFromExecution(execution)
+	return resultFromExecution(execution, agent.private)
 }
 
 // Cancel durably appends final messages/state and clears pending graph tasks.
@@ -168,15 +175,15 @@ func (agent *Agent) Cancel(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return resultFromExecution(execution)
+	return resultFromExecution(execution, agent.private)
 }
 
-func resultFromExecution(execution graph.Execution) (Result, error) {
+func resultFromExecution(execution graph.Execution, private map[string]bool) (Result, error) {
 	messages, err := messagesFrom(execution.State[MessagesKey])
 	if err != nil {
 		return Result{}, err
 	}
-	result := Result{Config: execution.Config, Messages: messages, State: execution.State.Clone(), Steps: execution.Steps}
+	result := Result{Config: execution.Config, Messages: messages, State: publicState(execution.State, private), Steps: execution.Steps}
 	if raw, ok := execution.State[StructuredResponseKey].(json.RawMessage); ok {
 		result.Structured = append(json.RawMessage(nil), raw...)
 	} else if value, exists := execution.State[StructuredResponseKey]; exists {
@@ -189,6 +196,14 @@ func resultFromExecution(execution graph.Execution) (Result, error) {
 		result.Interrupts = append(result.Interrupts, Interrupt{ID: interrupt.ID, Value: interrupt.Value})
 	}
 	return result, nil
+}
+
+func publicState(values state.Values, private map[string]bool) state.Values {
+	result := values.Clone()
+	for key := range private {
+		delete(result, key)
+	}
+	return result
 }
 
 type compiler struct {
@@ -780,8 +795,11 @@ func resolveFields(base map[string]StateField, middleware []Middleware) (map[str
 		if err := field.validate(name); err != nil {
 			return err
 		}
-		if current, exists := result[name]; exists && current.Contract != field.Contract && !explicit {
-			return fmt.Errorf("agent state field %q has incompatible contracts %q and %q", name, current.Contract, field.Contract)
+		if current, exists := result[name]; exists {
+			if current.Contract != field.Contract && !explicit {
+				return fmt.Errorf("agent state field %q has incompatible contracts %q and %q", name, current.Contract, field.Contract)
+			}
+			field.Private = field.Private || current.Private
 		}
 		result[name] = field
 		return nil

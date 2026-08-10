@@ -82,6 +82,53 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 	}
 }
 
+func TestPrivateStateIsAvailableInternallyButHiddenFromResultsAndStreams(t *testing.T) {
+	middleware := Middleware{
+		Name: "private_state",
+		Fields: map[string]StateField{
+			"secret": {Kind: FieldLast, Contract: "secret.v1", Private: true, Clone: identityClone},
+			"public": {Kind: FieldLast, Contract: "public.v1", Clone: identityClone},
+		},
+		BeforeAgent: func(context.Context, state.Values, Runtime) (state.Values, error) {
+			return state.Values{"secret": "hidden", "public": "shown"}, nil
+		},
+		WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
+			if request.State["secret"] != "hidden" {
+				return ModelResponse{}, errors.New("private state unavailable to middleware")
+			}
+			return next(ctx, request)
+		},
+	}
+	compiled, err := New(Options{Model: modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}}), Middleware: []Middleware{middleware}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := compiled.Stream(context.Background(), Input{Messages: []message.Message{message.Human("go")}}, 16)
+	defer stream.Close()
+	for {
+		event, err := stream.Next(context.Background())
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := event.Update["secret"]; exists {
+			t.Fatalf("private update leaked: %#v", event.Update)
+		}
+		if _, exists := event.Values["secret"]; exists {
+			t.Fatalf("private values leaked: %#v", event.Values)
+		}
+	}
+	result, err := stream.Result(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := result.State["secret"]; exists || result.State["public"] != "shown" {
+		t.Fatalf("state = %#v", result.State)
+	}
+}
+
 func TestAgentCancelClearsPendingToolsAndPreservesState(t *testing.T) {
 	started := make(chan struct{})
 	blocking := tool.Func{

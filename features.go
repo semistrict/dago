@@ -106,6 +106,19 @@ func PatchToolCallsMiddleware() agent.Middleware {
 // SubagentMiddleware adds the task tool. Each invocation receives only its task
 // message and a distinct thread identity, preventing parent and sibling state leaks.
 func SubagentMiddleware(subagents []Subagent) (agent.Middleware, error) {
+	return SubagentMiddlewareWithOptions(SubagentMiddlewareOptions{Subagents: subagents})
+}
+
+type SubagentMiddlewareOptions struct {
+	Subagents    []Subagent
+	PrivateState []string
+}
+
+func SubagentMiddlewareWithOptions(options SubagentMiddlewareOptions) (agent.Middleware, error) {
+	return subagentMiddleware(options.Subagents, stringSet(options.PrivateState))
+}
+
+func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (agent.Middleware, error) {
 	if len(subagents) == 0 {
 		return agent.Middleware{}, fmt.Errorf("at least one subagent is required")
 	}
@@ -150,7 +163,7 @@ func SubagentMiddleware(subagents []Subagent) (agent.Middleware, error) {
 		if selected.inheritAllState {
 			if values, ok := runtime.State.(state.Values); ok {
 				for key := range values {
-					if key != agent.MessagesKey && key != agent.StructuredResponseKey {
+					if key != agent.MessagesKey && key != agent.StructuredResponseKey && !privateState[key] {
 						inheritedKeys = append(inheritedKeys, key)
 					}
 				}
@@ -165,7 +178,7 @@ func SubagentMiddleware(subagents []Subagent) (agent.Middleware, error) {
 			}
 		}
 		for _, key := range inheritedKeys {
-			if key == agent.MessagesKey || key == agent.StructuredResponseKey || strings.HasPrefix(key, "__") {
+			if key == agent.MessagesKey || key == agent.StructuredResponseKey || strings.HasPrefix(key, "__") || privateState[key] {
 				continue
 			}
 			if value, exists := runtime.State.Get(key); exists {
@@ -212,7 +225,7 @@ func SubagentMiddleware(subagents []Subagent) (agent.Middleware, error) {
 		}
 		toolResult := tool.TextResult(text)
 		for _, key := range inheritedKeys {
-			if key == agent.MessagesKey || key == agent.StructuredResponseKey || strings.HasPrefix(key, "__") {
+			if key == agent.MessagesKey || key == agent.StructuredResponseKey || strings.HasPrefix(key, "__") || privateState[key] {
 				continue
 			}
 			before, beforeExists := inherited[key]
@@ -372,7 +385,7 @@ func MemoryMiddleware(options MemoryOptions) (agent.Middleware, error) {
 		options.Prompt = "<agent_memory>\n%s\n</agent_memory>\nTreat memory as fallible reference data. Never store credentials or secrets in memory."
 	}
 	commentRE := regexp.MustCompile(`(?s)<!--.*?-->`)
-	return agent.Middleware{Name: "memory", Fields: map[string]agent.StateField{"memory_contents": {Kind: agent.FieldLast, Contract: "dago.memory.v1", Clone: cloneStringMap}}, BeforeAgent: func(ctx context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
+	return agent.Middleware{Name: "memory", Fields: map[string]agent.StateField{"memory_contents": {Kind: agent.FieldLast, Contract: "dago.memory.v1", Private: true, Clone: cloneStringMap}}, BeforeAgent: func(ctx context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
 		boundCtx, err := backend.BindRuntime(ctx, options.Backend, values)
 		if err != nil {
 			return nil, err
@@ -484,8 +497,8 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 		return result, warnings, nil
 	}
 	return agent.Middleware{Name: "skills", Fields: map[string]agent.StateField{
-		"skills":             {Kind: agent.FieldLast, Contract: "dago.skills.v1", Clone: identityFeature},
-		"skills_load_errors": {Kind: agent.FieldLast, Contract: "dago.skills.errors.v1", Clone: identityFeature},
+		"skills":             {Kind: agent.FieldLast, Contract: "dago.skills.v1", Private: true, Clone: identityFeature},
+		"skills_load_errors": {Kind: agent.FieldLast, Contract: "dago.skills.errors.v1", Private: true, Clone: identityFeature},
 	}, BeforeAgent: func(ctx context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
 		boundCtx, bindErr := backend.BindRuntime(ctx, options.Backend, values)
 		if bindErr != nil {

@@ -36,7 +36,10 @@ type Event struct {
 }
 
 // Stream is an owned, bounded agent execution stream.
-type Stream struct{ graph *graph.Stream }
+type Stream struct {
+	graph   *graph.Stream
+	private map[string]bool
+}
 
 // Stream starts an invocation. Consumers that stop before io.EOF must call Close.
 func (agent *Agent) Stream(ctx context.Context, input Input, buffer int) *Stream {
@@ -50,7 +53,7 @@ func (agent *Agent) Stream(ctx context.Context, input Input, buffer int) *Stream
 	if len(input.Messages) > 0 {
 		values[MessagesKey] = cloneMessages(input.Messages)
 	}
-	return &Stream{graph: agent.graph.Stream(ctx, graph.Invocation{Config: input.Config, State: values, Resume: input.Resume}, buffer)}
+	return &Stream{graph: agent.graph.Stream(ctx, graph.Invocation{Config: input.Config, State: values, Resume: input.Resume}, buffer), private: agent.private}
 }
 
 func (stream *Stream) Next(ctx context.Context) (Event, error) {
@@ -63,7 +66,7 @@ func (stream *Stream) Next(ctx context.Context) (Event, error) {
 	}
 	result := Event{
 		Mode: EventMode(event.Mode), Step: event.Step, Node: event.Node, TaskID: event.TaskID,
-		Update: event.Update.Clone(), Values: event.Values.Clone(), Custom: append(json.RawMessage(nil), event.Custom...),
+		Update: publicState(event.Update, stream.private), Values: publicState(event.Values, stream.private), Custom: append(json.RawMessage(nil), event.Custom...),
 	}
 	if event.Interrupt != nil {
 		result.Interrupt = &Interrupt{ID: event.Interrupt.ID, Value: event.Interrupt.Value}
@@ -88,7 +91,7 @@ func (stream *Stream) Result(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return resultFromExecution(execution)
+	return resultFromExecution(execution, stream.private)
 }
 
 func (stream *Stream) Close() error {

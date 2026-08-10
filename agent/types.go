@@ -163,6 +163,7 @@ const (
 type StateField struct {
 	Kind              FieldKind
 	Contract          string
+	Private           bool
 	Initial           func() any
 	Reduce            func(any, []any) (any, error)
 	Clone             func(any) any

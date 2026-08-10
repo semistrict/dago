@@ -96,6 +96,7 @@ func New(options Options) (*DeepAgent, error) {
 	}
 	core = append(core, filesystem)
 
+	subagentPrivateState := map[string]bool{}
 	if !options.DisableSubagents {
 		subagents, err := buildDeclarativeSubagents(options, inheritedTools)
 		if err != nil {
@@ -117,7 +118,7 @@ func New(options Options) (*DeepAgent, error) {
 			}}, subagents...)
 		}
 		if len(subagents) > 0 {
-			middleware, err := SubagentMiddleware(subagents)
+			middleware, err := subagentMiddleware(subagents, subagentPrivateState)
 			if err != nil {
 				return nil, err
 			}
@@ -193,6 +194,11 @@ func New(options Options) (*DeepAgent, error) {
 	if len(profile.ExcludeTools) > 0 {
 		middleware = append(middleware, ToolExclusionMiddleware(profile.ExcludeTools))
 	}
+	for name, private := range privateStateFields(options.StateFields, middleware) {
+		if private {
+			subagentPrivateState[name] = true
+		}
+	}
 	compiled, err := agent.New(agent.Options{
 		Name: options.Name, Model: options.Model, Tools: options.Tools, SystemPrompt: options.SystemPrompt,
 		Middleware: middleware, StateFields: options.StateFields, StructuredOutput: options.StructuredOutput,
@@ -204,6 +210,24 @@ func New(options Options) (*DeepAgent, error) {
 		return nil, err
 	}
 	return &DeepAgent{Agent: compiled}, nil
+}
+
+func privateStateFields(base map[string]agent.StateField, middleware []agent.Middleware) map[string]bool {
+	result := map[string]bool{}
+	apply := func(name string, field agent.StateField) {
+		if field.Private {
+			result[name] = true
+		}
+	}
+	for _, item := range middleware {
+		for name, field := range item.Fields {
+			apply(name, field)
+		}
+	}
+	for name, field := range base {
+		apply(name, field)
+	}
+	return result
 }
 
 func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]Subagent, error) {
