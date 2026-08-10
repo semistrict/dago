@@ -61,6 +61,18 @@ func TestNativeImageProjectionUsesBase64AndPreservesDimensions(t *testing.T) {
 	}
 }
 
+func TestLoopDagoHarnessExposesCanonicalDeepAgentTools(t *testing.T) {
+	chat := &harnessSurfaceChat{}
+	runtime := NewLoop(Config{
+		Model: chat, WorkingDir: t.TempDir(), EnableDagoHarness: true,
+		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
+	})
+	runtime.QueueUserMessage(llm.UserStringMessage("inspect"))
+	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type nativeRuntimeChat struct{ calls atomic.Int64 }
 
 func (chat *nativeRuntimeChat) Profile() dmodel.Profile {
@@ -79,5 +91,28 @@ func (chat *nativeRuntimeChat) Invoke(_ context.Context, request dmodel.Request)
 }
 
 func (*nativeRuntimeChat) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+	return dmodel.EmptyStream{}, nil
+}
+
+type harnessSurfaceChat struct{}
+
+func (*harnessSurfaceChat) Profile() dmodel.Profile {
+	return dmodel.Profile{Provider: "native-test", Model: "native-test", ToolCalling: true}
+}
+
+func (*harnessSurfaceChat) Invoke(_ context.Context, request dmodel.Request) (dmodel.Response, error) {
+	names := make(map[string]bool, len(request.Tools))
+	for _, definition := range request.Tools {
+		names[definition.Name] = true
+	}
+	for _, required := range []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute", "task", "compact_conversation"} {
+		if !names[required] {
+			return dmodel.Response{}, fmt.Errorf("missing Dago harness tool %q", required)
+		}
+	}
+	return dmodel.Response{Message: dmessage.Assistant("done")}, nil
+}
+
+func (*harnessSurfaceChat) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
 	return dmodel.EmptyStream{}, nil
 }

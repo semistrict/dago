@@ -93,40 +93,46 @@ type Config struct {
 	ThreadID string
 	// Namespace isolates independent conversation generations under one thread.
 	Namespace string
+	// EnableDagoHarness installs Dago's canonical filesystem, execution,
+	// subagent, and conversation-compaction layers. The Shelley server enables
+	// this for production conversations; direct loop callers retain the
+	// original minimal tool surface unless they opt in.
+	EnableDagoHarness bool
 }
 
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
 // Notably, when the turn ends, the "Loop" is over. TODO: maybe rename to Turn?
 type Loop struct {
-	model            dmodel.Chat
-	modelID          string
-	tools            []dtool.Tool
-	recordMessage    MessageRecordFunc
-	recordWarning    WarningRecordFunc
-	history          []llm.Message
-	messageQueue     []llm.Message
-	totalUsage       llm.Usage
-	mu               sync.Mutex
-	logger           *slog.Logger
-	system           []llm.SystemContent
-	workingDir       string
-	onGitStateChange GitStateChangeFunc
-	getWorkingDir    func() string
-	lastGitState     *gitstate.GitState
-	onToolProgress   llm.ToolProgressFunc
-	onStreamDelta    func(llm.StreamDelta)
-	onStreamDone     func()
-	injectMessages   func(ctx context.Context) []llm.Message
-	thinkingLevel    llm.ThinkingLevel
-	notify           chan struct{} // signaled when a message is queued or retry requested
-	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
-	saver            checkpoint.Saver
-	threadID         string
-	namespace        string
-	runtimeSeeded    bool
-	pendingInput     []llm.Message
-	executionMu      sync.Mutex
-	runtime          *dago.DeepAgent
+	model             dmodel.Chat
+	modelID           string
+	tools             []dtool.Tool
+	recordMessage     MessageRecordFunc
+	recordWarning     WarningRecordFunc
+	history           []llm.Message
+	messageQueue      []llm.Message
+	totalUsage        llm.Usage
+	mu                sync.Mutex
+	logger            *slog.Logger
+	system            []llm.SystemContent
+	workingDir        string
+	onGitStateChange  GitStateChangeFunc
+	getWorkingDir     func() string
+	lastGitState      *gitstate.GitState
+	onToolProgress    llm.ToolProgressFunc
+	onStreamDelta     func(llm.StreamDelta)
+	onStreamDone      func()
+	injectMessages    func(ctx context.Context) []llm.Message
+	thinkingLevel     llm.ThinkingLevel
+	notify            chan struct{} // signaled when a message is queued or retry requested
+	retryPending      bool          // set by Retry() to re-run processLLMRequest with current history
+	saver             checkpoint.Saver
+	threadID          string
+	namespace         string
+	enableDagoHarness bool
+	runtimeSeeded     bool
+	pendingInput      []llm.Message
+	executionMu       sync.Mutex
+	runtime           *dago.DeepAgent
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -148,28 +154,29 @@ func NewLoop(config Config) *Loop {
 		saver = checkpoint.NewMemorySaver()
 	}
 	loop := &Loop{
-		model:            config.Model,
-		modelID:          config.ModelID,
-		history:          config.History,
-		tools:            append([]dtool.Tool(nil), config.Tools...),
-		recordMessage:    config.RecordMessage,
-		recordWarning:    config.RecordWarning,
-		messageQueue:     make([]llm.Message, 0),
-		logger:           logger,
-		system:           config.System,
-		workingDir:       config.WorkingDir,
-		onGitStateChange: config.OnGitStateChange,
-		getWorkingDir:    config.GetWorkingDir,
-		lastGitState:     initialGitState,
-		onToolProgress:   config.OnToolProgress,
-		onStreamDelta:    config.OnStreamDelta,
-		onStreamDone:     config.OnStreamDone,
-		injectMessages:   config.InjectMessages,
-		thinkingLevel:    config.ThinkingLevel,
-		notify:           make(chan struct{}, 1),
-		saver:            saver,
-		threadID:         config.ThreadID,
-		namespace:        config.Namespace,
+		model:             config.Model,
+		modelID:           config.ModelID,
+		history:           config.History,
+		tools:             append([]dtool.Tool(nil), config.Tools...),
+		recordMessage:     config.RecordMessage,
+		recordWarning:     config.RecordWarning,
+		messageQueue:      make([]llm.Message, 0),
+		logger:            logger,
+		system:            config.System,
+		workingDir:        config.WorkingDir,
+		onGitStateChange:  config.OnGitStateChange,
+		getWorkingDir:     config.GetWorkingDir,
+		lastGitState:      initialGitState,
+		onToolProgress:    config.OnToolProgress,
+		onStreamDelta:     config.OnStreamDelta,
+		onStreamDone:      config.OnStreamDone,
+		injectMessages:    config.InjectMessages,
+		thinkingLevel:     config.ThinkingLevel,
+		notify:            make(chan struct{}, 1),
+		saver:             saver,
+		threadID:          config.ThreadID,
+		namespace:         config.Namespace,
+		enableDagoHarness: config.EnableDagoHarness,
 	}
 	if loop.threadID == "" {
 		loop.threadID = fmt.Sprintf("shelley-loop-%p", loop)
@@ -355,20 +362,33 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		return err
 	}
 
-	harnessBackend, err := dbackend.NewMemory(nil)
+	var harnessBackend dbackend.Backend
+	if l.enableDagoHarness {
+		harnessBackend, err = dbackend.NewLocalShell(dbackend.LocalShellOptions{
+			Filesystem: dbackend.FilesystemOptions{Root: l.currentWorkingDir()},
+		})
+	} else {
+		harnessBackend, err = dbackend.NewMemory(nil)
+	}
 	if err != nil {
 		return fmt.Errorf("create Shelley harness backend: %w", err)
 	}
-	runtime, err := dago.New(dago.Options{
+	options := dago.Options{
 		Name: "Shelley", Model: model,
 		Tools: dagoTools, SystemPrompt: joinSystem(system), Middleware: []dagent.Middleware{l.runtimeMiddleware()},
-		Backend: harnessBackend, FilesystemTools: []string{},
-		DisableTodo: true, DisableSubagents: true, DisableSummary: true,
-		Saver: l.saver, MaxConcurrency: 1, FailOnToolError: false,
+		Backend: harnessBackend,
+		Saver:   l.saver, MaxConcurrency: 1, FailOnToolError: false,
 		StateFields: map[string]dagent.StateField{
 			"shelley.run": {Kind: dagent.FieldEphemeral, Contract: "shelley.run.v1", Clone: func(value any) any { return value }},
 		},
-	})
+	}
+	if !l.enableDagoHarness {
+		options.FilesystemTools = []string{}
+		options.DisableTodo = true
+		options.DisableSubagents = true
+		options.DisableSummary = true
+	}
+	runtime, err := dago.New(options)
 	if err != nil {
 		return fmt.Errorf("create Dago Shelley agent: %w", err)
 	}

@@ -332,6 +332,57 @@ func TestExplicitEmptyMemoryAndSkillsStillInstallMiddleware(t *testing.T) {
 	}
 }
 
+func TestStructuredSystemMessagePreservesBlocksAndAppendsProfilePrompt(t *testing.T) {
+	system := message.Message{Role: message.RoleSystem, Content: []message.ContentBlock{
+		{Type: message.BlockText, Text: "first", Extra: map[string]json.RawMessage{"provider_field": json.RawMessage(`true`)}},
+		{Type: message.BlockText, Text: "second"},
+	}}
+	script := modeltest.New(model.Profile{Provider: "anthropic", SupportsPromptCaching: true}, modeltest.Step{Check: func(request model.Request) error {
+		if len(request.Messages) == 0 || request.Messages[0].Role != message.RoleSystem {
+			return errors.New("structured system message missing")
+		}
+		blocks := request.Messages[0].Content
+		if len(blocks) != 3 || blocks[0].Text != "first" || blocks[1].Text != "second" || blocks[2].Text != "\n\nprofile fragment" {
+			return fmt.Errorf("system blocks = %#v", blocks)
+		}
+		if string(blocks[0].Extra["provider_field"]) != "true" {
+			return fmt.Errorf("provider metadata = %#v", blocks[0].Extra)
+		}
+		if _, ok := blocks[1].Extra["cache_control"]; ok {
+			return errors.New("cache breakpoint applied before the final block")
+		}
+		if _, ok := blocks[2].Extra["cache_control"]; !ok {
+			return errors.New("final profile block lacks cache breakpoint")
+		}
+		return nil
+	}, Response: model.Response{Message: message.Assistant("done")}})
+	compiled, err := New(Options{
+		Model: script, SystemMessage: &system, Profiles: []Profile{{SystemPrompt: "profile fragment"}},
+		DisableSubagents: true, DisableSummary: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("hi")}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(system.Content) != 2 || system.Content[1].Extra != nil {
+		t.Fatalf("New mutated source system message: %#v", system)
+	}
+}
+
+func TestStructuredSystemMessageValidation(t *testing.T) {
+	chat := modeltest.New(model.Profile{})
+	human := message.Human("not system")
+	if _, err := New(Options{Model: chat, SystemMessage: &human}); err == nil {
+		t.Fatal("expected non-system message to fail")
+	}
+	system := message.System("system")
+	if _, err := New(Options{Model: chat, SystemPrompt: "string", SystemMessage: &system}); err == nil {
+		t.Fatal("expected conflicting system inputs to fail")
+	}
+}
+
 func TestSubagentTaskUsesIsolatedInput(t *testing.T) {
 	childModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
 		if len(request.Messages) != 1 || request.Messages[0].TextContent() != "child work" {

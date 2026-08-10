@@ -25,6 +25,7 @@ type Options struct {
 	Model            model.Chat
 	Tools            []tool.Tool
 	SystemPrompt     string
+	SystemMessage    *message.Message
 	Middleware       []Middleware
 	StateFields      map[string]StateField
 	StructuredOutput *StructuredOutput
@@ -72,6 +73,16 @@ type Interrupt struct {
 func New(options Options) (*Agent, error) {
 	if options.Model == nil {
 		return nil, fmt.Errorf("create agent: model is required")
+	}
+	if options.SystemPrompt != "" && options.SystemMessage != nil {
+		return nil, fmt.Errorf("create agent: system prompt and system message are mutually exclusive")
+	}
+	if options.SystemMessage != nil {
+		if options.SystemMessage.Role != message.RoleSystem {
+			return nil, fmt.Errorf("create agent: system message role must be system")
+		}
+		copy := options.SystemMessage.Clone()
+		options.SystemMessage = &copy
 	}
 	structuredOutput, err := prepareStructuredOutput(options.StructuredOutput)
 	if err != nil {
@@ -303,7 +314,10 @@ func (compiler *compiler) model(ctx context.Context, values state.Values, runtim
 		Model: compiler.options.Model, Messages: messages, Tools: toolsSlice(compiler.tools),
 		State: current.Clone(), Runtime: convertRuntime(runtime),
 	}
-	if compiler.options.SystemPrompt != "" {
+	if compiler.options.SystemMessage != nil {
+		system := compiler.options.SystemMessage.Clone()
+		request.SystemMessage = &system
+	} else if compiler.options.SystemPrompt != "" {
 		system := message.System(compiler.options.SystemPrompt)
 		request.SystemMessage = &system
 	}

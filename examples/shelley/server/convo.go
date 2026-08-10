@@ -1879,9 +1879,10 @@ func (cm *ConversationManager) ensureLoop(chat dmodel.Chat, modelID string) erro
 		InjectMessages: func(ctx context.Context) []llm.Message {
 			return cm.takeInjectableSubagentDone(ctx)
 		},
-		Saver:     database.CheckpointSaver(),
-		ThreadID:  conversationID,
-		Namespace: checkpointNamespace,
+		Saver:             database.CheckpointSaver(),
+		ThreadID:          conversationID,
+		Namespace:         checkpointNamespace,
+		EnableDagoHarness: true,
 	})
 
 	cm.mu.Lock()

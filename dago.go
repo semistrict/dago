@@ -8,6 +8,7 @@ import (
 	"github.com/semistrict/dago/backend"
 	"github.com/semistrict/dago/cache"
 	"github.com/semistrict/dago/checkpoint"
+	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
 	"github.com/semistrict/dago/state"
 	"github.com/semistrict/dago/store"
@@ -22,6 +23,7 @@ type Options struct {
 	Model                      model.Chat
 	Tools                      []tool.Tool
 	SystemPrompt               string
+	SystemMessage              *message.Message
 	Middleware                 []agent.Middleware
 	Backend                    backend.Backend
 	FilesystemTools            []string
@@ -64,6 +66,12 @@ func New(options Options) (*DeepAgent, error) {
 	if options.Model == nil {
 		return nil, fmt.Errorf("create deep agent: model is required")
 	}
+	if options.SystemPrompt != "" && options.SystemMessage != nil {
+		return nil, fmt.Errorf("create deep agent: system prompt and system message are mutually exclusive")
+	}
+	if options.SystemMessage != nil && options.SystemMessage.Role != message.RoleSystem {
+		return nil, fmt.Errorf("create deep agent: system message role must be system")
+	}
 	if options.Saver == nil && optionsNeedSaver(options) {
 		return nil, fmt.Errorf("human approval requires a checkpointer")
 	}
@@ -79,7 +87,16 @@ func New(options Options) (*DeepAgent, error) {
 		return nil, err
 	}
 	inheritedTools := append([]tool.Tool(nil), options.Tools...)
-	options.SystemPrompt = applyProfilePrompt(profile, options.SystemPrompt, "")
+	if options.SystemMessage != nil {
+		copy := options.SystemMessage.Clone()
+		profilePrompt := applyProfilePrompt(profile, "", "")
+		if profilePrompt != "" {
+			copy.Content = append(copy.Content, message.ContentBlock{Type: message.BlockText, Text: "\n\n" + profilePrompt})
+		}
+		options.SystemMessage = &copy
+	} else {
+		options.SystemPrompt = applyProfilePrompt(profile, options.SystemPrompt, "")
+	}
 	options.Tools = applyToolProfile(options.Tools, profile.ToolDescriptions, nil)
 	filesystem, err := FilesystemMiddleware(FilesystemOptions{
 		Backend: options.Backend, Permissions: options.Permissions, Tools: options.FilesystemTools,
@@ -205,7 +222,8 @@ func New(options Options) (*DeepAgent, error) {
 	}
 	compiled, err := agent.New(agent.Options{
 		Name: options.Name, Model: options.Model, Tools: options.Tools, SystemPrompt: options.SystemPrompt,
-		Middleware: middleware, StateFields: options.StateFields, StructuredOutput: options.StructuredOutput,
+		SystemMessage: options.SystemMessage,
+		Middleware:    middleware, StateFields: options.StateFields, StructuredOutput: options.StructuredOutput,
 		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Context: options.Context,
 		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
