@@ -198,7 +198,7 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 			}
 			return agent.Middleware{}, fmt.Errorf("unknown filesystem tool %q", name)
 		}
-		if name == "execute" && len(options.Permissions) > 0 {
+		if name == "execute" && len(options.Permissions) > 0 && !permissionsScopedToInaccessibleRoutes(options.Backend, options.Permissions) {
 			return agent.Middleware{}, fmt.Errorf("filesystem permissions cannot constrain execute; configure an isolated sandbox or omit execute")
 		}
 		selected = append(selected, executable)
@@ -222,6 +222,29 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 	middleware.WrapToolCall = filesystemPermissionWrapper(options)
 	middleware.WrapModelCall = filesystemModelWrapper(options.Backend)
 	return middleware, nil
+}
+
+func permissionsScopedToInaccessibleRoutes(value backend.Backend, rules []FilesystemPermission) bool {
+	routes := backend.ShellPathRoutes(value)
+	if len(routes) == 0 || len(rules) == 0 {
+		return false
+	}
+	for _, rule := range rules {
+		for _, pattern := range rule.Paths {
+			scoped := false
+			for _, route := range routes {
+				prefix := strings.TrimSuffix(route.VirtualPrefix, "/")
+				if !route.Accessible && (pattern == prefix || strings.HasPrefix(pattern, prefix+"/")) {
+					scoped = true
+					break
+				}
+			}
+			if !scoped {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func filesystemModelWrapper(value backend.Backend) agent.ModelWrapper {
@@ -351,6 +374,9 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		for i, item := range result.Entries {
 			lines[i] = item.Path
 		}
+		if len(lines) == 0 {
+			return tool.TextResult("No files found"), nil
+		}
 		return tool.TextResult(strings.Join(lines, "\n")), nil
 	}}
 	readDescription := FilesystemReadDescription
@@ -474,8 +500,11 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 			lines[i] = item.Path
 		}
 		text := strings.Join(lines, "\n")
+		if text == "" {
+			text = "No files found"
+		}
 		if result.Truncated {
-			text += "\nResults truncated; narrow the pattern or path."
+			text += "\n\nNote: the search stopped early because it hit its time or size limit. The paths above are valid but incomplete. Narrow the pattern or path to see the rest."
 		}
 		return tool.TextResult(text), nil
 	}}
@@ -497,8 +526,9 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if err != nil {
 			return tool.Result{}, err
 		}
+		backendHadMatches := len(result.Matches) > 0
 		result.Matches = filterGrepMatches(options.Permissions, FilesystemRead, result.Matches)
-		text := formatGrep(result, input.OutputMode)
+		text := formatGrep(result, input.OutputMode, input.Pattern, backendHadMatches)
 		return tool.TextResult(text), nil
 	}}
 	if sandbox, ok := backend.SandboxOf(options.Backend); ok {
@@ -614,6 +644,8 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission)
 				if len(findDeletePatterns(rules, target, hasDescendants, PermissionInterrupt)) > 0 {
 					decision = PermissionInterrupt
 				}
+			} else if decision != PermissionDeny && filesystemBulkInterrupt(rules, operation, call) {
+				decision = PermissionInterrupt
 			}
 			if decision == PermissionInterrupt {
 				pending = append(pending, agent.ApprovalRequest{Call: call, Description: fmt.Sprintf("Allow %s access to %s?", operation, target)})
@@ -664,6 +696,87 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission)
 		}
 		return agent.ToolBatchResponse{Calls: calls, Messages: rejected, ResumeConsumed: true}, nil
 	}
+}
+
+func filesystemBulkInterrupt(rules []FilesystemPermission, operation FilesystemOperation, call message.ToolCall) bool {
+	if call.Name != "ls" && call.Name != "glob" && call.Name != "grep" {
+		return false
+	}
+	var arguments map[string]any
+	if json.Unmarshal(call.Arguments, &arguments) != nil {
+		return false
+	}
+	rawPath, _ := arguments["path"].(string)
+	target, valid := permissionCallPath(rawPath)
+	if !valid {
+		return false
+	}
+	for _, rule := range rules {
+		if normalizedMode(rule.Mode) != PermissionInterrupt || !hasOperation(rule, operation) {
+			continue
+		}
+		for _, pattern := range rule.Paths {
+			if deletePatternOverlaps(pattern, target) {
+				return true
+			}
+		}
+	}
+	if call.Name != "glob" {
+		return false
+	}
+	pattern, _ := arguments["pattern"].(string)
+	if globPatternTraverses(pattern) {
+		return hasInterruptRule(rules, operation)
+	}
+	if !strings.HasPrefix(pattern, "/") {
+		return false
+	}
+	anchor, _ := globAnchor(pattern)
+	for _, rule := range rules {
+		if normalizedMode(rule.Mode) != PermissionInterrupt || !hasOperation(rule, operation) {
+			continue
+		}
+		for _, protected := range rule.Paths {
+			if deletePatternOverlaps(protected, anchor) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func permissionCallPath(value string) (string, bool) {
+	if value == "" || value == "." || value == "./" || value == "/." {
+		return "/", true
+	}
+	if strings.ContainsRune(value, '\x00') || strings.HasPrefix(value, "~") {
+		return "", false
+	}
+	normalized := strings.ReplaceAll(value, "\\", "/")
+	for _, segment := range strings.Split(normalized, "/") {
+		if segment == ".." {
+			return "", false
+		}
+	}
+	return normalizeMatchPath(normalized), true
+}
+
+func globPatternTraverses(pattern string) bool {
+	for _, segment := range strings.Split(strings.ReplaceAll(pattern, "\\", "/"), "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func hasInterruptRule(rules []FilesystemPermission, operation FilesystemOperation) bool {
+	for _, rule := range rules {
+		if normalizedMode(rule.Mode) == PermissionInterrupt && hasOperation(rule, operation) {
+			return true
+		}
+	}
+	return false
 }
 
 func permissionDecision(rules []FilesystemPermission, operation FilesystemOperation, target string) PermissionMode {
@@ -1074,20 +1187,40 @@ func isVideoPath(filePath string) bool {
 	}
 }
 
-func formatGrep(result backend.GrepResult, mode string) string {
+func formatGrep(result backend.GrepResult, mode, pattern string, backendHadMatches bool) string {
 	if mode == "" {
 		mode = "files_with_matches"
 	}
-	switch mode {
-	case "content":
-		lines := make([]string, len(result.Matches))
-		for i, item := range result.Matches {
-			lines[i] = fmt.Sprintf("%s:%d: %s", item.Path, item.Line, item.Text)
+	if len(result.Matches) == 0 {
+		text := "No matches found"
+		if !result.Truncated && !backendHadMatches && looksLikeRegex(pattern) {
+			text += "\n\nNote: grep matches literal text, not regex, so characters like `|`, `.*`, and `\\.` are searched verbatim. Search for each literal alternative separately or use execute with rg."
 		}
 		if result.Truncated {
-			lines = append(lines, "Results truncated; narrow the pattern or path.")
+			text += grepTruncationNote()
 		}
-		return strings.Join(lines, "\n")
+		return text
+	}
+	var text string
+	switch mode {
+	case "content":
+		grouped := map[string][]backend.GrepMatch{}
+		for _, item := range result.Matches {
+			grouped[item.Path] = append(grouped[item.Path], item)
+		}
+		paths := make([]string, 0, len(grouped))
+		for itemPath := range grouped {
+			paths = append(paths, itemPath)
+		}
+		sort.Strings(paths)
+		var lines []string
+		for _, itemPath := range paths {
+			lines = append(lines, itemPath+":")
+			for _, item := range grouped[itemPath] {
+				lines = append(lines, fmt.Sprintf("  %d: %s", item.Line, item.Text))
+			}
+		}
+		text = strings.Join(lines, "\n")
 	case "count":
 		counts := map[string]int{}
 		for _, item := range result.Matches {
@@ -1102,7 +1235,7 @@ func formatGrep(result backend.GrepResult, mode string) string {
 		for i, p := range paths {
 			lines[i] = fmt.Sprintf("%s: %d", p, counts[p])
 		}
-		return strings.Join(lines, "\n")
+		text = strings.Join(lines, "\n")
 	default:
 		seen := map[string]bool{}
 		var paths []string
@@ -1113,11 +1246,28 @@ func formatGrep(result backend.GrepResult, mode string) string {
 			}
 		}
 		sort.Strings(paths)
-		if result.Truncated {
-			paths = append(paths, "Results truncated; narrow the pattern or path.")
-		}
-		return strings.Join(paths, "\n")
+		text = strings.Join(paths, "\n")
 	}
+	if result.Truncated {
+		text += grepTruncationNote()
+	}
+	return text
+}
+
+func grepTruncationNote() string {
+	return "\n\nNote: the search stopped early because it hit its time limit or maximum match count. The matches above are valid but incomplete. Narrow the pattern or path, or raise max_count, to see the rest."
+}
+
+func looksLikeRegex(pattern string) bool {
+	if strings.Contains(pattern, "|") || strings.Contains(pattern, ".*") || strings.Contains(pattern, ".+") {
+		return true
+	}
+	for _, signal := range []string{`\\.`, `\\w`, `\\W`, `\\d`, `\\D`, `\\s`, `\\S`, `\\b`, `\\B`, `\\(`, `\\)`, `\\{`, `\\}`, `\\[`, `\\]`, `\\+`, `\\*`, `\\?`, `\\^`, `\\$`} {
+		if strings.Contains(pattern, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func previewText(value string, limit int) string {

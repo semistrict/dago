@@ -2,11 +2,14 @@ package dago
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/semistrict/dago/backend"
+	"github.com/semistrict/dago/message"
+	memorystore "github.com/semistrict/dago/store"
 )
 
 func TestPermissionGlobSemantics(t *testing.T) {
@@ -109,6 +112,76 @@ func TestFilesystemPermissionsRejectExecuteCapability(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot constrain execute") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestFilesystemPermissionsAllowOnlyShellInaccessibleRoutes(t *testing.T) {
+	shell, err := backend.NewLocalShell(backend.LocalShellOptions{Filesystem: backend.FilesystemOptions{Root: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistent, err := backend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	composite, err := backend.NewComposite(shell, map[string]backend.Backend{"/memories/": persistent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/memories/**"}, Mode: PermissionDeny}}
+	middleware, err := FilesystemMiddleware(FilesystemOptions{Backend: composite, Permissions: rules})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundExecute := false
+	for _, executable := range middleware.Tools {
+		foundExecute = foundExecute || executable.Definition().Name == "execute"
+	}
+	if !foundExecute {
+		t.Fatal("route-scoped permissions hid execute")
+	}
+
+	localRoute, err := backend.NewFilesystem(backend.FilesystemOptions{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessible, err := backend.NewComposite(shell, map[string]backend.Backend{"/work/": localRoute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = FilesystemMiddleware(FilesystemOptions{Backend: accessible, Permissions: []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/work/**"}, Mode: PermissionDeny}}})
+	if err == nil || !strings.Contains(err.Error(), "cannot constrain execute") {
+		t.Fatalf("accessible route permissions error = %v", err)
+	}
+}
+
+func TestFilesystemBulkInterruptCannotBeBypassed(t *testing.T) {
+	rules := []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/secrets/**"}, Mode: PermissionInterrupt}}
+	tests := []struct {
+		name string
+		tool string
+		args string
+		want bool
+	}{
+		{"pathless grep", "grep", `{"pattern":"key"}`, true},
+		{"root alias", "ls", `{"path":"."}`, true},
+		{"protected subtree", "grep", `{"pattern":"key","path":"/secrets"}`, true},
+		{"unrelated subtree", "grep", `{"pattern":"key","path":"/workspace"}`, false},
+		{"prefix lookalike", "ls", `{"path":"/secret"}`, false},
+		{"invalid traversal", "ls", `{"path":"/secrets/../etc"}`, false},
+		{"absolute protected glob", "glob", `{"pattern":"/secrets/**/*.pem","path":"/workspace"}`, true},
+		{"root anchored glob", "glob", `{"pattern":"/**/key.pem","path":"/workspace"}`, true},
+		{"absolute public glob", "glob", `{"pattern":"/workspace/**","path":"/workspace"}`, false},
+		{"relative traversal glob", "glob", `{"pattern":"../secrets/*","path":"/workspace"}`, true},
+		{"relative public glob", "glob", `{"pattern":"*.txt","path":"/workspace"}`, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			call := message.ToolCall{ID: test.name, Name: test.tool, Arguments: json.RawMessage(test.args)}
+			if got := filesystemBulkInterrupt(rules, FilesystemRead, call); got != test.want {
+				t.Fatalf("filesystemBulkInterrupt(%s, %s) = %v, want %v", test.tool, test.args, got, test.want)
+			}
+		})
 	}
 }
 

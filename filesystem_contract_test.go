@@ -236,6 +236,45 @@ func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
 	}
 }
 
+func TestFilesystemSearchResultsUseStableModelFacingShapes(t *testing.T) {
+	result := backend.GrepResult{Matches: []backend.GrepMatch{
+		{Path: "/b.go", Line: 3, Text: "needle b"},
+		{Path: "/a.go", Line: 2, Text: "needle a"},
+		{Path: "/a.go", Line: 8, Text: "needle again"},
+	}}
+	content := formatGrep(result, "content", "needle", true)
+	want := "/a.go:\n  2: needle a\n  8: needle again\n/b.go:\n  3: needle b"
+	if content != want {
+		t.Fatalf("content grep = %q", content)
+	}
+	truncated := result
+	truncated.Truncated = true
+	if text := formatGrep(truncated, "count", "needle", true); !strings.Contains(text, "/a.go: 2") || !strings.Contains(text, "valid but incomplete") {
+		t.Fatalf("count grep = %q", text)
+	}
+	if text := formatGrep(backend.GrepResult{}, "files_with_matches", `foo|bar`, false); !strings.Contains(text, "No matches found") || !strings.Contains(text, "literal text, not regex") {
+		t.Fatalf("empty regex-like grep = %q", text)
+	}
+	if text := formatGrep(backend.GrepResult{}, "files_with_matches", `foo|bar`, true); strings.Contains(text, "literal text, not regex") {
+		t.Fatalf("redacted grep leaked a regex hint = %q", text)
+	}
+
+	memory, err := backend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls := filesystemTool(t, FilesystemOptions{Backend: memory}, "ls")
+	listing, err := ls.Execute(context.Background(), json.RawMessage(`{"path":"/"}`), tool.Runtime{})
+	if err != nil || listing.Content[0].Text != "No files found" {
+		t.Fatalf("empty listing = %#v, %v", listing, err)
+	}
+	glob := filesystemTool(t, FilesystemOptions{Backend: memory}, "glob")
+	matches, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.go"}`), tool.Runtime{})
+	if err != nil || matches.Content[0].Text != "No files found" {
+		t.Fatalf("empty glob = %#v, %v", matches, err)
+	}
+}
+
 func schemaString(value any) string {
 	text, _ := value.(string)
 	return text
