@@ -416,9 +416,6 @@ const defaultGeneralSubagentPrompt = "In order to complete the objective that th
 
 func buildGeneralSubagent(options Options, filesystem agent.Middleware, profile Profile) (*agent.Agent, error) {
 	middleware := []agent.Middleware{}
-	if options.EnableTodo && !options.DisableTodo {
-		middleware = append(middleware, agent.TodoList())
-	}
 	middleware = append(middleware, filesystem)
 	if !options.DisableSummary {
 		summary := options.Summarization

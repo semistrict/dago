@@ -184,6 +184,41 @@ func TestDeepAgentPlanningIsOptInAndPromptCachingIsAutomatic(t *testing.T) {
 	}
 }
 
+func TestMainPlanningOptInDoesNotLeakIntoGeneralSubagent(t *testing.T) {
+	hasTodo := func(request model.Request) bool {
+		for _, definition := range request.Tools {
+			if definition.Name == "write_todos" {
+				return true
+			}
+		}
+		return false
+	}
+	script := modeltest.New(model.Profile{ToolCalling: true},
+		modeltest.Step{Check: func(request model.Request) error {
+			if !hasTodo(request) {
+				return errors.New("main planning tool missing")
+			}
+			return nil
+		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{
+			ID: "delegate", Name: "task", Arguments: json.RawMessage(`{"description":"work","subagent_type":"general-purpose"}`),
+		}}}}},
+		modeltest.Step{Check: func(request model.Request) error {
+			if hasTodo(request) {
+				return errors.New("main planning opt-in leaked into general subagent")
+			}
+			return nil
+		}, Response: model.Response{Message: message.Assistant("child done")}},
+		modeltest.Step{Response: model.Response{Message: message.Assistant("parent done")}},
+	)
+	compiled, err := New(Options{Model: script, EnableTodo: true, DisableSummary: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDeepAgentInterruptOnWiresHumanApproval(t *testing.T) {
 	danger := tool.Func{Spec: tool.Definition{Name: "danger", Description: "dangerous action", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
 		return tool.TextResult("ran"), nil
