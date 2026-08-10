@@ -244,16 +244,30 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 }
 
 type SummarizationOptions struct {
-	Model                model.Chat
-	Backend              backend.Backend
-	TriggerTokens        int
-	KeepMessages         int
-	HistoryRoot          string
-	MediaRoot            string
-	MediaOffloadBytes    int
-	OverflowClipTokens   int
-	LargeToolResultsRoot string
-	SummaryPrompt        string
+	Model                     model.Chat
+	Backend                   backend.Backend
+	TriggerTokens             int
+	TriggerMessages           int
+	KeepMessages              int
+	KeepTokens                int
+	HistoryRoot               string
+	MediaRoot                 string
+	MediaOffloadBytes         int
+	OverflowClipTokens        int
+	LargeToolResultsRoot      string
+	SummaryPrompt             string
+	ArgumentTruncation        *ArgumentTruncationOptions
+	DisableArgumentTruncation bool
+}
+
+type ArgumentTruncationOptions struct {
+	TriggerTokens   int
+	TriggerMessages int
+	KeepTokens      int
+	KeepMessages    int
+	MaxLength       int
+	PreviewLength   int
+	TruncationText  string
 }
 
 // SummarizationMiddleware performs deterministic thresholding, offloads removed
@@ -262,15 +276,20 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 	if options.Model == nil {
 		return agent.Middleware{}, fmt.Errorf("summarization model is required")
 	}
-	if options.TriggerTokens <= 0 {
-		window := options.Model.Profile().ContextWindow
+	profileWindow := options.Model.Profile().ContextWindow
+	if options.TriggerTokens <= 0 && options.TriggerMessages <= 0 {
+		window := profileWindow
 		if window <= 0 {
 			window = 128000
 		}
 		options.TriggerTokens = window * 85 / 100
 	}
-	if options.KeepMessages <= 0 {
-		options.KeepMessages = 6
+	if options.KeepMessages <= 0 && options.KeepTokens <= 0 {
+		if profileWindow > 0 {
+			options.KeepTokens = max(profileWindow/10, 1)
+		} else {
+			options.KeepMessages = 6
+		}
 	}
 	if options.HistoryRoot == "" {
 		options.HistoryRoot = backend.ArtifactPath(options.Backend, "conversation_history")
@@ -290,11 +309,34 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 	if options.SummaryPrompt == "" {
 		options.SummaryPrompt = "Summarize the earlier conversation faithfully. Preserve decisions, constraints, unresolved tasks, file paths, errors, and important tool results."
 	}
-	compact := func(ctx context.Context, messages []message.Message, runtime agent.Runtime, reader backend.StateReader, overflow bool) (state.Values, error) {
-		if len(messages) <= options.KeepMessages {
-			return nil, nil
+	if options.ArgumentTruncation == nil && !options.DisableArgumentTruncation {
+		if profileWindow > 0 {
+			options.ArgumentTruncation = &ArgumentTruncationOptions{TriggerTokens: profileWindow * 85 / 100, KeepTokens: profileWindow / 10}
+		} else {
+			options.ArgumentTruncation = &ArgumentTruncationOptions{TriggerMessages: 20, KeepMessages: 20}
 		}
-		cutoff := validCutoff(messages, len(messages)-options.KeepMessages)
+	}
+	if options.ArgumentTruncation != nil {
+		settings := *options.ArgumentTruncation
+		if settings.MaxLength <= 0 {
+			settings.MaxLength = 2_000
+		}
+		if settings.PreviewLength <= 0 {
+			settings.PreviewLength = 20
+		}
+		if settings.TruncationText == "" {
+			settings.TruncationText = "...(argument truncated)"
+		}
+		if settings.TriggerTokens <= 0 && settings.TriggerMessages <= 0 {
+			return agent.Middleware{}, fmt.Errorf("argument truncation requires a token or message trigger")
+		}
+		if settings.KeepTokens <= 0 && settings.KeepMessages <= 0 {
+			return agent.Middleware{}, fmt.Errorf("argument truncation requires a token or message keep policy")
+		}
+		options.ArgumentTruncation = &settings
+	}
+	compact := func(ctx context.Context, messages []message.Message, runtime agent.Runtime, reader backend.StateReader, overflow bool) (state.Values, error) {
+		cutoff := summaryCutoff(messages, options)
 		if cutoff <= 0 {
 			return nil, nil
 		}
@@ -304,35 +346,39 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		if options.Backend != nil {
 			boundCtx, bindErr := backend.BindRuntime(ctx, options.Backend, reader)
 			if bindErr != nil {
-				return nil, fmt.Errorf("bind conversation history backend: %w", bindErr)
+				boundCtx = nil
 			}
-			ctx = boundCtx
-			if overflow {
+			if overflow && boundCtx != nil {
 				recent = clipOverflowToolTail(ctx, messages, recent, options)
 			}
-			thread := sanitizePath(runtime.Config.ThreadID)
-			if thread == "" {
-				thread = "default"
-			}
-			checkpointID := sanitizePath(runtime.Config.CheckpointID)
-			if checkpointID == "" {
-				checkpointID = sanitizePath(runtime.TaskID)
-			}
-			historyPath := fmt.Sprintf("%s/%s/%s.md", strings.TrimSuffix(options.HistoryRoot, "/"), thread, checkpointID)
-			if _, writeErr := options.Backend.Write(boundCtx, historyPath, renderHistory(older)); writeErr != nil {
-				return nil, fmt.Errorf("offload conversation history: %w", writeErr)
-			}
-			for key, value := range backend.RuntimeUpdates(boundCtx, options.Backend) {
-				update[key] = value
-			}
+		}
+		offloadChannel := make(chan historyOffloadResult, 1)
+		if options.Backend == nil {
+			offloadChannel <- historyOffloadResult{}
+		} else {
+			go func() {
+				offloadChannel <- offloadConversationHistory(ctx, options, runtime, reader, older)
+			}()
 		}
 		requestMessages := []message.Message{message.System(options.SummaryPrompt), message.Human(renderHistory(older))}
 		response, err := options.Model.Invoke(ctx, model.Request{Messages: requestMessages})
+		offload := <-offloadChannel
 		if err != nil {
 			return nil, err
 		}
-		summary := message.Human("Summary of earlier conversation:\n" + response.Message.TextContent())
-		summary.Metadata = map[string]json.RawMessage{"dago_summary": json.RawMessage(`true`)}
+		for key, value := range offload.Updates {
+			update[key] = value
+		}
+		summaryText := "Summary of earlier conversation:\n\n<summary>\n" + response.Message.TextContent() + "\n</summary>"
+		if offload.Path != "" {
+			summaryText += "\n\nThe full conversation history has been saved to " + offload.Path + ". Use read_file to inspect it if needed."
+		}
+		summary := message.Human(summaryText)
+		summary.Metadata = map[string]json.RawMessage{"dago_summary": json.RawMessage(`true`), "lc_source": json.RawMessage(`"summarization"`)}
+		if offload.Err != nil {
+			encoded, _ := json.Marshal(offload.Err.Error())
+			summary.Metadata["history_offload_error"] = encoded
+		}
 		replacement := append([]message.Message{summary}, recent...)
 		update[agent.MessagesKey] = state.Overwrite{Value: replacement}
 		return update, nil
@@ -352,7 +398,11 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 				tokens = counted
 			}
 		}
-		if tokens < options.TriggerTokens {
+		triggered := options.TriggerMessages > 0 && len(messages) >= options.TriggerMessages
+		if options.TriggerTokens > 0 && tokens >= options.TriggerTokens {
+			triggered = true
+		}
+		if !triggered {
 			return contextUpdate, nil
 		}
 		compactUpdate, err := compact(ctx, messages, runtime, values, false)
@@ -362,33 +412,50 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		return mergeFeatureUpdates(contextUpdate, compactUpdate), nil
 	}}
 	middleware.WrapModelCall = func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+		invokeCompacted := func(overflow bool) (agent.ModelResponse, error, bool) {
+			update, compactErr := compact(ctx, request.Messages, request.Runtime, request.State, overflow)
+			if compactErr != nil {
+				return agent.ModelResponse{}, compactErr, true
+			}
+			overwrite, ok := update[agent.MessagesKey].(state.Overwrite)
+			if !ok {
+				return agent.ModelResponse{}, nil, false
+			}
+			messages, messagesErr := featureMessages(overwrite.Value)
+			if messagesErr != nil {
+				return agent.ModelResponse{}, messagesErr, true
+			}
+			retry := request.Clone()
+			retry.Messages = messages
+			retry.State[agent.MessagesKey] = append([]message.Message(nil), messages...)
+			for key, value := range update {
+				if key != agent.MessagesKey {
+					retry.State[key] = value
+				}
+			}
+			response, retryErr := next(ctx, retry)
+			if retryErr != nil {
+				return agent.ModelResponse{}, retryErr, true
+			}
+			response.Update = mergeFeatureUpdates(update, response.Update)
+			persistedMessages := append([]message.Message(nil), messages...)
+			persistedMessages = append(persistedMessages, response.Messages...)
+			response.Update[agent.MessagesKey] = state.Overwrite{Value: persistedMessages}
+			return response, nil, true
+		}
+		if options.TriggerTokens > 0 && !containsSummaryMessage(request.Messages) && requestTokenCount(ctx, request) >= options.TriggerTokens {
+			if response, err, handled := invokeCompacted(false); handled {
+				return response, err
+			}
+		}
 		response, err := next(ctx, request)
 		if !errors.Is(err, model.ErrContextOverflow) {
 			return response, err
 		}
-		update, compactErr := compact(ctx, request.Messages, request.Runtime, request.State, true)
-		if compactErr != nil {
-			return agent.ModelResponse{}, compactErr
+		if response, retryErr, handled := invokeCompacted(true); handled {
+			return response, retryErr
 		}
-		overwrite, ok := update[agent.MessagesKey].(state.Overwrite)
-		if !ok {
-			return agent.ModelResponse{}, err
-		}
-		messages, messagesErr := featureMessages(overwrite.Value)
-		if messagesErr != nil {
-			return agent.ModelResponse{}, messagesErr
-		}
-		retry := request.Clone()
-		retry.Messages = messages
-		response, err = next(ctx, retry)
-		if err != nil {
-			return agent.ModelResponse{}, err
-		}
-		response.Update = mergeFeatureUpdates(update, response.Update)
-		persistedMessages := append([]message.Message(nil), messages...)
-		persistedMessages = append(persistedMessages, response.Messages...)
-		response.Update[agent.MessagesKey] = state.Overwrite{Value: persistedMessages}
-		return response, nil
+		return agent.ModelResponse{}, err
 	}
 	compactSchema := json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 	middleware.Tools = []tool.Tool{tool.Func{Spec: tool.Definition{Name: "compact_conversation", Description: "Compact older conversation history into a durable summary while preserving recent messages.", InputSchema: compactSchema}, Run: func(ctx context.Context, _ json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
@@ -407,6 +474,99 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: "Conversation compacted."}}, Update: update}, nil
 	}}}
 	return middleware, nil
+}
+
+type historyOffloadResult struct {
+	Path    string
+	Updates state.Values
+	Err     error
+}
+
+func offloadConversationHistory(
+	ctx context.Context,
+	options SummarizationOptions,
+	runtime agent.Runtime,
+	reader backend.StateReader,
+	messages []message.Message,
+) historyOffloadResult {
+	boundCtx, err := backend.BindRuntime(ctx, options.Backend, reader)
+	if err != nil {
+		return historyOffloadResult{Err: fmt.Errorf("bind conversation history backend: %w", err)}
+	}
+	filtered := make([]message.Message, 0, len(messages))
+	for _, item := range messages {
+		if !isSummaryMessage(item) {
+			filtered = append(filtered, item)
+		}
+	}
+	if len(filtered) == 0 {
+		return historyOffloadResult{}
+	}
+	thread := sanitizePath(runtime.Config.ThreadID)
+	if thread == "" {
+		thread = "default"
+	}
+	marker := sanitizePath(runtime.Config.CheckpointID)
+	if marker == "" {
+		marker = sanitizePath(runtime.TaskID)
+	}
+	if marker == "" {
+		marker = "run"
+	}
+	historyPath := fmt.Sprintf("%s/%s.md", strings.TrimSuffix(options.HistoryRoot, "/"), thread)
+	section := fmt.Sprintf("## Summarized at %s\n\n%s", marker, renderHistory(filtered))
+	downloads := options.Backend.Download(boundCtx, []string{historyPath})
+	if len(downloads) == 1 && downloads[0].Error == "" {
+		old := string(downloads[0].Content)
+		combined := old + "\n\n" + section
+		if _, err := options.Backend.Edit(boundCtx, historyPath, old, combined, false); err != nil {
+			return historyOffloadResult{Err: fmt.Errorf("append conversation history: %w", err)}
+		}
+	} else if _, err := options.Backend.Write(boundCtx, historyPath, section); err != nil {
+		return historyOffloadResult{Err: fmt.Errorf("write conversation history: %w", err)}
+	}
+	updates := state.Values{}
+	for key, value := range backend.RuntimeUpdates(boundCtx, options.Backend) {
+		updates[key] = value
+	}
+	return historyOffloadResult{Path: historyPath, Updates: updates}
+}
+
+func isSummaryMessage(item message.Message) bool {
+	if raw := item.Metadata["dago_summary"]; string(raw) == "true" {
+		return true
+	}
+	var source string
+	return json.Unmarshal(item.Metadata["lc_source"], &source) == nil && source == "summarization"
+}
+
+func containsSummaryMessage(messages []message.Message) bool {
+	for _, item := range messages {
+		if isSummaryMessage(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func requestTokenCount(ctx context.Context, request agent.ModelRequest) int {
+	messages := append([]message.Message(nil), request.Messages...)
+	if request.SystemMessage != nil {
+		messages = append([]message.Message{request.SystemMessage.Clone()}, messages...)
+	}
+	tokens := approximateTokens(messages)
+	if counter, ok := request.Model.(model.TokenCounter); ok {
+		if counted, err := counter.CountTokens(ctx, messages); err == nil {
+			tokens = counted
+		}
+	}
+	for _, executable := range request.Tools {
+		encoded, err := json.Marshal(executable.Definition())
+		if err == nil {
+			tokens += max((len(encoded)+3)/4, 1)
+		}
+	}
+	return tokens
 }
 
 type MemoryOptions struct {
@@ -644,6 +804,24 @@ func validCutoff(messages []message.Message, desired int) int {
 	}
 	return min(desired, len(messages))
 }
+
+func summaryCutoff(messages []message.Message, options SummarizationOptions) int {
+	desired := len(messages) - options.KeepMessages
+	if options.KeepTokens > 0 {
+		keptTokens := 0
+		desired = len(messages)
+		for desired > 0 {
+			candidate := approximateTokens(messages[desired-1 : desired])
+			if keptTokens+candidate > options.KeepTokens && desired < len(messages) {
+				break
+			}
+			keptTokens += candidate
+			desired--
+		}
+	}
+	return validCutoff(messages, desired)
+}
+
 func renderHistory(messages []message.Message) string {
 	var output strings.Builder
 	for _, item := range messages {
@@ -656,8 +834,29 @@ func renderHistory(messages []message.Message) string {
 	}
 	return output.String()
 }
-func truncateOldToolArguments(messages []message.Message, keep int) state.Values {
-	cutoff := len(messages) - keep
+func truncateOldToolArguments(messages []message.Message, settings *ArgumentTruncationOptions) state.Values {
+	if settings == nil {
+		return nil
+	}
+	if settings.TriggerMessages > 0 && len(messages) < settings.TriggerMessages {
+		return nil
+	}
+	if settings.TriggerTokens > 0 && approximateTokens(messages) < settings.TriggerTokens {
+		return nil
+	}
+	cutoff := len(messages) - settings.KeepMessages
+	if settings.KeepTokens > 0 {
+		keptTokens := 0
+		cutoff = len(messages)
+		for cutoff > 0 {
+			candidate := approximateTokens(messages[cutoff-1 : cutoff])
+			if keptTokens+candidate > settings.KeepTokens && cutoff < len(messages) {
+				break
+			}
+			keptTokens += candidate
+			cutoff--
+		}
+	}
 	if cutoff <= 0 {
 		return nil
 	}
@@ -669,10 +868,34 @@ func truncateOldToolArguments(messages []message.Message, keep int) state.Values
 			continue
 		}
 		for callIndex, call := range result[i].ToolCalls {
-			if len(call.Arguments) > 2000 {
-				preview := string(call.Arguments[:20]) + `"... arguments truncated ..."`
-				result[i].ToolCalls[callIndex].Arguments = json.RawMessage(strconvQuote(preview))
-				changed = true
+			fields := []string(nil)
+			switch call.Name {
+			case "write_file":
+				fields = []string{"content"}
+			case "edit_file":
+				fields = []string{"old_string", "new_string"}
+			default:
+				continue
+			}
+			var arguments map[string]any
+			if json.Unmarshal(call.Arguments, &arguments) != nil {
+				continue
+			}
+			callChanged := false
+			for _, field := range fields {
+				value, ok := arguments[field].(string)
+				if !ok || len([]rune(value)) <= settings.MaxLength {
+					continue
+				}
+				arguments[field] = truncateRunes(value, settings.PreviewLength) + settings.TruncationText
+				callChanged = true
+			}
+			if callChanged {
+				encoded, err := json.Marshal(arguments)
+				if err == nil {
+					result[i].ToolCalls[callIndex].Arguments = encoded
+					changed = true
+				}
 			}
 		}
 	}
@@ -689,13 +912,13 @@ func prepareOldContext(
 	runtime agent.Runtime,
 	options SummarizationOptions,
 ) (state.Values, []message.Message, error) {
-	update := truncateOldToolArguments(messages, options.KeepMessages)
+	update := truncateOldToolArguments(messages, options.ArgumentTruncation)
 	if overwrite, ok := update[agent.MessagesKey].(state.Overwrite); ok {
 		if changed, err := featureMessages(overwrite.Value); err == nil {
 			messages = changed
 		}
 	}
-	cutoff := len(messages) - options.KeepMessages
+	cutoff := summaryCutoff(messages, options)
 	if cutoff <= 0 || options.Backend == nil {
 		return update, messages, nil
 	}
@@ -732,7 +955,9 @@ func prepareOldContext(
 				if len(uploads) == 1 {
 					reason = uploads[0].Error
 				}
-				return nil, nil, fmt.Errorf("offload conversation media %s: %s", mediaPath, reason)
+				*block = message.ContentBlock{Type: message.BlockText, Text: fmt.Sprintf("Earlier %s content could not be offloaded (%s); its inline data was removed to protect the context window.", block.Type, reason)}
+				changed = true
+				continue
 			}
 			*block = message.ContentBlock{Type: message.BlockText, Text: fmt.Sprintf("Earlier %s content was offloaded to %s; use read_file to inspect it.", block.Type, mediaPath)}
 			changed = true
@@ -866,17 +1091,16 @@ func truncatePreviewLines(lines []string) []string {
 	return result
 }
 
-func strconvQuote(value string) string { data, _ := json.Marshal(value); return string(data) }
 func sanitizePath(value string) string {
+	if value == "" {
+		return ""
+	}
 	value = strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
 			return r
 		}
 		return '-'
 	}, value)
-	if value == "" {
-		return "run"
-	}
 	return value
 }
 func cloneStringMap(value any) any {
