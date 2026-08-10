@@ -47,6 +47,7 @@ type FilesystemOptions struct {
 	Backend           backend.Backend
 	Permissions       []FilesystemPermission
 	Tools             []string
+	ToolDescriptions  map[string]string
 	ReadLimit         int
 	GrepLimit         int
 	LargeResultBytes  int
@@ -59,6 +60,94 @@ type FilesystemOptions struct {
 var filesystemToolOperations = map[string]FilesystemOperation{
 	"ls": FilesystemRead, "read_file": FilesystemRead, "glob": FilesystemRead, "grep": FilesystemRead,
 	"write_file": FilesystemWrite, "edit_file": FilesystemWrite, "delete": FilesystemWrite,
+}
+
+const FilesystemListDescription = `Lists all files in a directory.
+
+This is useful for exploring the filesystem and finding the right file to read or edit.
+You should almost always use this tool before using read_file or edit_file.`
+
+const filesystemReadDescriptionTemplate = `Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.
+
+Usage:
+- %s Use offset and limit to page through large files instead of reading them whole.
+- Results include source line numbers, then two spaces, then the source line. Never include these prefixes when editing.
+- Lines over 5,000 characters use continuation markers such as 5.1; limit counts source lines, not continuation rows.
+- Batch independent read_file calls when several files may be useful.
+- An empty file returns a system reminder in place of contents.
+- Large tool results may be offloaded to a file; read the path from the tool result with pagination.
+- Images, audio, video, and PDFs return multimodal content blocks.
+%s
+- Always read a file before editing it.`
+
+var FilesystemReadDescription = fmt.Sprintf(filesystemReadDescriptionTemplate,
+	"By default, it reads up to 100 lines starting from the beginning of the file.",
+	"- For images and PDFs, omit offset and limit.",
+)
+
+var FilesystemReadVideoDescription = fmt.Sprintf(filesystemReadDescriptionTemplate,
+	"For text files, by default it reads up to 100 lines starting from the beginning of the file.",
+	"- For images and PDFs, omit offset and limit.\n- For videos, offset and limit are seconds; the default window is 100 seconds.",
+)
+
+const FilesystemWriteDescription = `Writes content to a file. Creates the file if it does not exist; replaces it entirely if it does.
+
+Use this tool to create a new file or replace a whole file. Prefer edit_file for an existing file when possible.`
+
+const FilesystemEditDescription = `Performs exact string replacements in files.
+
+Read the file before editing. Preserve exact indentation and omit line-number prefixes. The old text must be unique unless replace_all is true.`
+
+const FilesystemDeleteDescription = `Deletes a file or directory from the filesystem.
+
+Directories are removed recursively. This cannot be undone, so only delete paths that are no longer needed.`
+
+const FilesystemGlobDescription = `Find files matching a glob pattern and return absolute paths.
+
+Supports * for characters, ** for directories, and ? for one character.`
+
+func filesystemGrepDescription(includeExecute bool) string {
+	description := `Search for a literal text pattern across files, not a regular expression.
+
+Regular-expression metacharacters are ordinary characters. Run separate searches to match several strings.`
+	if includeExecute {
+		description += " If regular expressions are required, use execute with rg."
+	}
+	return description + "\n\nResults can be paths, matching content, or counts. Search the artifacts root for offloaded large tool results when the exact path is unknown."
+}
+
+func filesystemExecuteDescription(includeGrep, includeGlob bool) string {
+	description := `Executes a shell command in an explicitly configured sandbox and returns combined output with the exit code.
+
+Quote paths containing spaces, use absolute paths where practical, and use read_file instead of cat, head, or tail.`
+	if includeGrep && includeGlob {
+		description += " Use grep and glob instead of shell search commands."
+	} else if includeGrep {
+		description += " Use grep instead of shell text-search commands."
+	} else if includeGlob {
+		description += " Use glob instead of shell file-search commands."
+	}
+	return description
+}
+
+func describeFilesystemTools(values []tool.Tool, custom map[string]string) []tool.Tool {
+	visible := map[string]bool{}
+	for _, value := range values {
+		visible[value.Definition().Name] = true
+	}
+	descriptions := map[string]string{}
+	for name, description := range custom {
+		if strings.TrimSpace(description) != "" {
+			descriptions[name] = description
+		}
+	}
+	if descriptions["grep"] == "" {
+		descriptions["grep"] = filesystemGrepDescription(visible["execute"])
+	}
+	if descriptions["execute"] == "" {
+		descriptions["execute"] = filesystemExecuteDescription(visible["grep"], visible["glob"])
+	}
+	return applyToolProfile(values, descriptions, nil)
 }
 
 // FilesystemMiddleware constructs the standard file tools and permission boundary.
@@ -110,6 +199,7 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 		}
 		selected = append(selected, executable)
 	}
+	selected = describeFilesystemTools(selected, options.ToolDescriptions)
 	middleware := agent.Middleware{Name: "filesystem", Tools: selected}
 	if fields := backend.RuntimeStateFields(options.Backend); len(fields) > 0 {
 		middleware.Fields = make(map[string]agent.StateField, len(fields))
@@ -126,7 +216,39 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 	}
 	middleware.BeforeTools = filesystemApprovalHook(options.Backend, options.Permissions)
 	middleware.WrapToolCall = filesystemPermissionWrapper(options)
+	middleware.WrapModelCall = filesystemDescriptionWrapper()
 	return middleware, nil
+}
+
+func filesystemDescriptionWrapper() agent.ModelWrapper {
+	return func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+		visible := map[string]bool{}
+		for _, executable := range request.Tools {
+			visible[executable.Definition().Name] = true
+		}
+		descriptions := map[string]string{}
+		for _, executable := range request.Tools {
+			definition := executable.Definition()
+			switch definition.Name {
+			case "grep":
+				if definition.Description == filesystemGrepDescription(true) || definition.Description == filesystemGrepDescription(false) {
+					descriptions[definition.Name] = filesystemGrepDescription(visible["execute"])
+				}
+			case "execute":
+				isDefault := false
+				for _, grep := range []bool{false, true} {
+					for _, glob := range []bool{false, true} {
+						isDefault = isDefault || definition.Description == filesystemExecuteDescription(grep, glob)
+					}
+				}
+				if isDefault {
+					descriptions[definition.Name] = filesystemExecuteDescription(visible["grep"], visible["glob"])
+				}
+			}
+		}
+		request.Tools = applyToolProfile(request.Tools, descriptions, nil)
+		return next(ctx, request)
+	}
 }
 
 func validatePermissions(rules []FilesystemPermission) error {
@@ -156,7 +278,7 @@ func validatePermissions(rules []FilesystemPermission) error {
 
 func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 	values := map[string]tool.Tool{}
-	values["ls"] = tool.Func{Spec: tool.Definition{Name: "ls", Description: "List files and directories directly inside an absolute directory path.", InputSchema: schema(`{"path":{"type":"string"}}`, "path")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+	values["ls"] = tool.Func{Spec: tool.Definition{Name: "ls", Description: FilesystemListDescription, InputSchema: schema(`{"path":{"type":"string","description":"Absolute path to the directory to list. Must be absolute, not relative."}}`, "path")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 		var input struct {
 			Path string `json:"path"`
 		}
@@ -174,17 +296,17 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		}
 		return tool.TextResult(strings.Join(lines, "\n")), nil
 	}}
-	readDescription := "Read an absolute file path with 0-indexed line pagination. Returned text includes source line numbers."
-	offsetDescription := "0-indexed starting line."
-	limitDescription := "Maximum lines to return."
+	readDescription := FilesystemReadDescription
+	offsetDescription := "Line number to start reading from (0-indexed). Use for pagination of large files."
+	limitDescription := "Maximum number of lines to read. Use for pagination of large files."
 	if options.VideoExtractor != nil {
-		readDescription += " For videos, offset and limit select a window in seconds and sampled JPEG frames are returned."
-		offsetDescription += " For videos, seconds into the source."
-		limitDescription += " For videos, duration in seconds and must be positive."
+		readDescription = FilesystemReadVideoDescription
+		offsetDescription = "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling."
+		limitDescription = "Maximum number of lines to read for text files. For videos, seconds of source to sample."
 	}
 	readSchema, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-		"file_path": map[string]any{"type": "string"},
-		"offset":    map[string]any{"type": "integer", "minimum": 0, "default": 0, "description": offsetDescription},
+		"file_path": map[string]any{"type": "string", "description": "Absolute path to the file to read. Must be absolute, not relative."},
+		"offset":    map[string]any{"type": "integer", "default": 0, "description": offsetDescription},
 		"limit":     map[string]any{"type": "integer", "default": 100, "description": limitDescription},
 	}, "required": []string{"file_path"}})
 	values["read_file"] = tool.Func{Spec: tool.Definition{Name: "read_file", Description: readDescription, InputSchema: readSchema}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
@@ -211,26 +333,30 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if result.Data == nil {
 			return tool.Result{}, fmt.Errorf("read %q returned no data", input.FilePath)
 		}
+		if result.NoLinesRequested {
+			return tool.TextResult(fmt.Sprintf("System reminder: no lines were read because `limit` was %d. The file was not inspected and may have contents; retry with `limit` >= 1 to read it.", limit)), nil
+		}
 		if result.Data.Encoding == backend.EncodingBase64 {
 			if video {
 				return videoResult(ctx, options, input.FilePath, result.Data, input.Offset, limit)
 			}
 			return mediaResult(ctx, options.Backend, input.FilePath, result.Data)
 		}
-		if result.Data.Content == "" {
-			return tool.TextResult("System reminder: the file is empty."), nil
+		if strings.TrimSpace(result.Data.Content) == "" {
+			return tool.TextResult("System reminder: File exists but has empty contents"), nil
 		}
-		start := input.Offset + 1
+		start := max(input.Offset, 0) + 1
 		if result.StartLine != nil {
 			start = *result.StartLine
 		}
 		text := numberLines(result.Data.Content, start)
-		if result.NextOffset != nil {
-			text += fmt.Sprintf("\n\nMore lines are available; continue with offset=%d.", *result.NextOffset)
+		text += readPaginationNotice(result)
+		if input.Offset < 0 {
+			text += fmt.Sprintf("\n\n[Requested offset %d is before the start of the file; read from line 1 instead.]", input.Offset)
 		}
 		return tool.TextResult(text), nil
 	}}
-	values["write_file"] = tool.Func{Spec: tool.Definition{Name: "write_file", Description: "Create or completely replace a text file at an absolute path.", InputSchema: schema(`{"file_path":{"type":"string"},"content":{"type":"string"}}`, "file_path", "content")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+	values["write_file"] = tool.Func{Spec: tool.Definition{Name: "write_file", Description: FilesystemWriteDescription, InputSchema: schema(`{"file_path":{"type":"string","description":"Absolute path where the file should be written. Must be absolute, not relative."},"content":{"type":"string","description":"The text content to write to the file. This parameter is required."}}`, "file_path", "content")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 		var input struct {
 			FilePath string `json:"file_path"`
 			Content  string `json:"content"`
@@ -244,7 +370,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		}
 		return tool.TextResult("Wrote " + result.Path), nil
 	}}
-	values["edit_file"] = tool.Func{Spec: tool.Definition{Name: "edit_file", Description: "Replace exact text in an existing file. The old text must be unique unless replace_all is true.", InputSchema: schema(`{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}}`, "file_path", "old_string", "new_string")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+	values["edit_file"] = tool.Func{Spec: tool.Definition{Name: "edit_file", Description: FilesystemEditDescription, InputSchema: schema(`{"file_path":{"type":"string","description":"Absolute path to the file to edit. Must be absolute, not relative."},"old_string":{"type":"string","description":"The exact text to find and replace. Must be unique in the file unless replace_all is true."},"new_string":{"type":"string","description":"The text to replace old_string with. Must be different from old_string."},"replace_all":{"type":"boolean","default":false,"description":"If true, replace all occurrences of old_string. If false, old_string must be unique."}}`, "file_path", "old_string", "new_string")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 		var input struct {
 			FilePath string `json:"file_path"`
 			Old      string `json:"old_string"`
@@ -260,7 +386,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		}
 		return tool.TextResult(fmt.Sprintf("Edited %s (%d replacement(s)).", result.Path, result.Occurrences)), nil
 	}}
-	values["delete"] = tool.Func{Spec: tool.Definition{Name: "delete", Description: "Recursively delete an absolute file or directory path.", InputSchema: schema(`{"file_path":{"type":"string"}}`, "file_path")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+	values["delete"] = tool.Func{Spec: tool.Definition{Name: "delete", Description: FilesystemDeleteDescription, InputSchema: schema(`{"file_path":{"type":"string","description":"Absolute path to the file or directory to delete. Must be absolute, not relative."}}`, "file_path")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 		var input struct {
 			FilePath string `json:"file_path"`
 		}
@@ -273,7 +399,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		}
 		return tool.TextResult("Deleted " + result.Path), nil
 	}}
-	values["glob"] = tool.Func{Spec: tool.Definition{Name: "glob", Description: "Find files using a glob pattern such as **/*.go. Returns absolute virtual paths.", InputSchema: schema(`{"pattern":{"type":"string"},"path":{"type":"string"}}`, "pattern")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+	values["glob"] = tool.Func{Spec: tool.Definition{Name: "glob", Description: FilesystemGlobDescription, InputSchema: schema(`{"pattern":{"type":"string","description":"Glob pattern to match files, such as **/*.go, *.txt, or /subdir/**/*.md."},"path":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"Base directory to search from. Defaults to the backend's default root."}}`, "pattern")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 		var input struct {
 			Pattern string `json:"pattern"`
 			Path    string `json:"path"`
@@ -296,7 +422,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		}
 		return tool.TextResult(text), nil
 	}}
-	values["grep"] = tool.Func{Spec: tool.Definition{Name: "grep", Description: "Search for a literal text pattern across files. This is not a regular-expression search.", InputSchema: schema(`{"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string"},"output_mode":{"type":"string","enum":["files_with_matches","content","count"],"default":"files_with_matches"},"max_count":{"type":"integer","minimum":1}}`, "pattern")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+	values["grep"] = tool.Func{Spec: tool.Definition{Name: "grep", Description: filesystemGrepDescription(true), InputSchema: schema(`{"pattern":{"type":"string","description":"Text pattern to search for (literal string, not regex)."},"path":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"Directory to search in. Defaults to the backend's default root."},"glob":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"Glob pattern (not regex) limiting which files are searched. A pattern without / matches file names at any depth; a pattern containing / matches paths relative to the search root."},"output_mode":{"type":"string","enum":["files_with_matches","content","count"],"default":"files_with_matches","description":"Shape of the result: matching paths, matching lines grouped by file, or match counts by file."},"max_count":{"anyOf":[{"type":"integer","minimum":1},{"type":"null"}],"default":null,"description":"Optional cap on matches across all files. Leave unset to use the configured default."}}`, "pattern")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 		var input struct {
 			Pattern    string `json:"pattern"`
 			Path       string `json:"path"`
@@ -319,7 +445,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		return tool.TextResult(text), nil
 	}}
 	if sandbox, ok := options.Backend.(backend.Sandbox); ok {
-		values["execute"] = tool.Func{Spec: tool.Definition{Name: "execute", Description: "Execute a shell command in the explicitly configured local or remote sandbox and return combined output and exit status.", InputSchema: schema(`{"command":{"type":"string"},"timeout":{"type":"integer","minimum":0}}`, "command")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+		values["execute"] = tool.Func{Spec: tool.Definition{Name: "execute", Description: filesystemExecuteDescription(true, true), InputSchema: schema(`{"command":{"type":"string","description":"Shell command to execute in the sandbox environment."},"timeout":{"anyOf":[{"type":"integer","minimum":0},{"type":"null"}],"default":null,"description":"Optional timeout in seconds for this command. Zero uses the backend's default timeout."}}`, "command")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
 			var input struct {
 				Command string `json:"command"`
 				Timeout int    `json:"timeout"`
@@ -735,22 +861,62 @@ func decodeArguments(raw json.RawMessage, target any) error {
 	return nil
 }
 
+func readPaginationNotice(result backend.ReadResult) string {
+	if result.StartLine == nil || result.EndLine == nil || result.NextOffset == nil {
+		return ""
+	}
+	count := *result.EndLine - *result.StartLine + 1
+	unit := "lines"
+	if count == 1 {
+		unit = "line"
+	}
+	if result.TotalLines == nil {
+		return fmt.Sprintf("\n\n[Read %d %s (lines %d-%d). More lines remain from offset %d.]", count, unit, *result.StartLine, *result.EndLine, *result.NextOffset)
+	}
+	if *result.EndLine >= *result.TotalLines {
+		return ""
+	}
+	remaining := *result.TotalLines - *result.EndLine
+	remainingUnit := "lines"
+	if remaining == 1 {
+		remainingUnit = "line"
+	}
+	return fmt.Sprintf("\n\n[Read %d %s (lines %d-%d of %d total). %d %s remaining from offset %d.]", count, unit, *result.StartLine, *result.EndLine, *result.TotalLines, remaining, remainingUnit, *result.NextOffset)
+}
+
 func numberLines(content string, start int) string {
 	lines := strings.Split(content, "\n")
-	var output []string
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	type row struct {
+		marker string
+		text   string
+	}
+	rows := make([]row, 0, len(lines))
+	width := 0
 	for index, line := range lines {
 		number := start + index
-		if len(line) <= 5000 {
-			output = append(output, strconv.Itoa(number)+"  "+line)
+		if line == "" {
+			marker := strconv.Itoa(number)
+			rows = append(rows, row{marker: marker})
+			width = max(width, len(marker))
 			continue
 		}
-		part := 1
-		for len(line) > 0 {
+		for part := 0; len(line) > 0; part++ {
 			size := min(5000, len(line))
-			output = append(output, fmt.Sprintf("%d.%d  %s", number, part, line[:size]))
+			marker := strconv.Itoa(number)
+			if part > 0 {
+				marker += "." + strconv.Itoa(part)
+			}
+			rows = append(rows, row{marker: marker, text: line[:size]})
+			width = max(width, len(marker))
 			line = line[size:]
-			part++
 		}
+	}
+	output := make([]string, len(rows))
+	for index, item := range rows {
+		output[index] = fmt.Sprintf("%*s  %s", width, item.marker, item.text)
 	}
 	return strings.Join(output, "\n")
 }

@@ -16,40 +16,41 @@ import (
 
 // Options configures the complete local deep-agent stack.
 type Options struct {
-	Name                 string
-	ProfileNames         []string
-	Profiles             []Profile
-	Model                model.Chat
-	Tools                []tool.Tool
-	SystemPrompt         string
-	Middleware           []agent.Middleware
-	Backend              backend.Backend
-	FilesystemTools      []string
-	Permissions          []FilesystemPermission
-	VideoExtractor       VideoExtractor
-	MaxVideoBytes        int
-	VideoSamplingRate    float64
-	Subagents            []Subagent
-	AsyncSubagents       []AsyncSubagent
-	AsyncSubagentPrompt  string
-	DisableSubagents     bool
-	Skills               []string
-	Memory               []string
-	EnableTodo           bool
-	DisableTodo          bool
-	DisableSummary       bool
-	Summarization        SummarizationOptions
-	InterruptOn          []agent.ApprovalRule
-	PromptCacheRetention string
-	StructuredOutput     *agent.StructuredOutput
-	StateFields          map[string]agent.StateField
-	Saver                checkpoint.Saver
-	Store                store.Store
-	Cache                cache.Cache
-	Context              any
-	RecursionLimit       int
-	MaxConcurrency       int
-	FailOnToolError      bool
+	Name                       string
+	ProfileNames               []string
+	Profiles                   []Profile
+	Model                      model.Chat
+	Tools                      []tool.Tool
+	SystemPrompt               string
+	Middleware                 []agent.Middleware
+	Backend                    backend.Backend
+	FilesystemTools            []string
+	FilesystemToolDescriptions map[string]string
+	Permissions                []FilesystemPermission
+	VideoExtractor             VideoExtractor
+	MaxVideoBytes              int
+	VideoSamplingRate          float64
+	Subagents                  []Subagent
+	AsyncSubagents             []AsyncSubagent
+	AsyncSubagentPrompt        string
+	DisableSubagents           bool
+	Skills                     []string
+	Memory                     []string
+	EnableTodo                 bool
+	DisableTodo                bool
+	DisableSummary             bool
+	Summarization              SummarizationOptions
+	InterruptOn                []agent.ApprovalRule
+	PromptCacheRetention       string
+	StructuredOutput           *agent.StructuredOutput
+	StateFields                map[string]agent.StateField
+	Saver                      checkpoint.Saver
+	Store                      store.Store
+	Cache                      cache.Cache
+	Context                    any
+	RecursionLimit             int
+	MaxConcurrency             int
+	FailOnToolError            bool
 }
 
 // DeepAgent is a compiled agent with the standard filesystem, subagent,
@@ -81,7 +82,8 @@ func New(options Options) (*DeepAgent, error) {
 	options.Tools = applyToolProfile(options.Tools, profile.ToolDescriptions, stringSet(profile.ExcludeTools))
 	filesystem, err := FilesystemMiddleware(FilesystemOptions{
 		Backend: options.Backend, Permissions: options.Permissions, Tools: options.FilesystemTools,
-		VideoExtractor: options.VideoExtractor, MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
+		ToolDescriptions: options.FilesystemToolDescriptions,
+		VideoExtractor:   options.VideoExtractor, MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
 	})
 	if err != nil {
 		return nil, err
@@ -258,7 +260,8 @@ func buildDeclarativeSubagents(options Options, inheritedTools []tool.Tool) ([]S
 		}
 		filesystem, err := FilesystemMiddleware(FilesystemOptions{
 			Backend: options.Backend, Permissions: permissions, Tools: options.FilesystemTools,
-			VideoExtractor: options.VideoExtractor, MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
+			ToolDescriptions: options.FilesystemToolDescriptions,
+			VideoExtractor:   options.VideoExtractor, MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q filesystem: %w", spec.Name, err)
