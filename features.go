@@ -11,17 +11,15 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/semistrict/dago/agent"
 	"github.com/semistrict/dago/backend"
 	"github.com/semistrict/dago/checkpoint"
 	"github.com/semistrict/dago/message"
 	"github.com/semistrict/dago/model"
+	skillpkg "github.com/semistrict/dago/skill"
 	"github.com/semistrict/dago/state"
 	"github.com/semistrict/dago/tool"
-	"gopkg.in/yaml.v3"
 )
 
 // Runnable is the small invocation contract accepted by compiled subagents.
@@ -355,15 +353,7 @@ func MemoryMiddleware(options MemoryOptions) (agent.Middleware, error) {
 	}}, nil
 }
 
-type Skill struct {
-	Name          string            `json:"name"`
-	Description   string            `json:"description"`
-	Path          string            `json:"path"`
-	License       string            `json:"license,omitempty"`
-	Compatibility string            `json:"compatibility,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-	AllowedTools  []string          `json:"allowed_tools,omitempty"`
-}
+type Skill = skillpkg.Skill
 type SkillsOptions struct {
 	Backend      backend.Backend
 	Sources      []string
@@ -372,11 +362,8 @@ type SkillsOptions struct {
 }
 
 const (
-	maxSkillNameLength          = 64
-	maxSkillDescriptionLength   = 1024
-	maxSkillCompatibilityLength = 500
-	maxSkillWarnings            = 20
-	maxSkillWarningLength       = 1000
+	maxSkillWarnings      = 20
+	maxSkillWarningLength = 1000
 )
 
 // SkillsMiddleware discovers SKILL.md metadata and advertises stable on-demand
@@ -499,100 +486,7 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 }
 
 func parseSkill(content, filePath string) (Skill, []string, error) {
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	if !utf8.ValidString(content) || !strings.HasPrefix(content, "---\n") {
-		return Skill{}, nil, fmt.Errorf("missing valid YAML frontmatter")
-	}
-	rest := strings.TrimPrefix(content, "---\n")
-	end := strings.Index(rest, "\n---\n")
-	if end < 0 {
-		return Skill{}, nil, fmt.Errorf("unterminated YAML frontmatter")
-	}
-	var data map[string]any
-	if err := yaml.Unmarshal([]byte(rest[:end]), &data); err != nil {
-		return Skill{}, nil, fmt.Errorf("invalid YAML frontmatter: %w", err)
-	}
-	stringValue := func(key string) string {
-		value, exists := data[key]
-		if !exists || value == nil {
-			return ""
-		}
-		return strings.TrimSpace(fmt.Sprint(value))
-	}
-	skill := Skill{
-		Name:          stringValue("name"),
-		Description:   stringValue("description"),
-		Path:          filePath,
-		License:       stringValue("license"),
-		Compatibility: stringValue("compatibility"),
-		Metadata:      parseSkillMetadata(data["metadata"]),
-		AllowedTools:  parseAllowedTools(data["allowed-tools"]),
-	}
-	if skill.Name == "" || skill.Description == "" {
-		return Skill{}, nil, fmt.Errorf("skill name and description are required")
-	}
-	var warnings []string
-	directory := path.Base(path.Dir(filePath))
-	if reason := validateSkillName(skill.Name, directory); reason != "" {
-		warnings = append(warnings, fmt.Sprintf("skill %q in %s does not follow the skill specification: %s", skill.Name, filePath, reason))
-	}
-	if len([]rune(skill.Description)) > maxSkillDescriptionLength {
-		warnings = append(warnings, fmt.Sprintf("skill description in %s exceeds %d characters and was truncated", filePath, maxSkillDescriptionLength))
-		skill.Description = string([]rune(skill.Description)[:maxSkillDescriptionLength])
-	}
-	if len([]rune(skill.Compatibility)) > maxSkillCompatibilityLength {
-		warnings = append(warnings, fmt.Sprintf("skill compatibility in %s exceeds %d characters and was truncated", filePath, maxSkillCompatibilityLength))
-		skill.Compatibility = string([]rune(skill.Compatibility)[:maxSkillCompatibilityLength])
-	}
-	return skill, warnings, nil
-}
-
-func validateSkillName(name, directory string) string {
-	if len([]rune(name)) > maxSkillNameLength {
-		return "name exceeds 64 characters"
-	}
-	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") || strings.Contains(name, "--") {
-		return "name must use lowercase alphanumeric characters separated by single hyphens"
-	}
-	for _, value := range name {
-		if value == '-' || unicode.IsDigit(value) || unicode.IsLetter(value) && unicode.IsLower(value) {
-			continue
-		}
-		return "name must use lowercase alphanumeric characters separated by single hyphens"
-	}
-	if name != directory {
-		return fmt.Sprintf("name must match directory %q", directory)
-	}
-	return ""
-}
-
-func parseAllowedTools(value any) []string {
-	switch typed := value.(type) {
-	case string:
-		return strings.FieldsFunc(typed, func(r rune) bool { return unicode.IsSpace(r) || r == ',' })
-	case []any:
-		var result []string
-		for _, item := range typed {
-			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
-				result = append(result, strings.TrimSpace(text))
-			}
-		}
-		return result
-	default:
-		return nil
-	}
-}
-
-func parseSkillMetadata(value any) map[string]string {
-	values, ok := value.(map[string]any)
-	if !ok {
-		return nil
-	}
-	result := make(map[string]string, len(values))
-	for key, item := range values {
-		result[key] = fmt.Sprint(item)
-	}
-	return result
+	return skillpkg.ParseContent(content, filePath)
 }
 
 func truncateSkillWarning(value string) string {

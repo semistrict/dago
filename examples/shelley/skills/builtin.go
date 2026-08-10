@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+
+	dskill "github.com/semistrict/dago/skill"
 )
 
 //go:embed builtin/*/SKILL.md
@@ -29,37 +31,18 @@ func BuiltinSkills() []Skill {
 			panic(fmt.Sprintf("reading embedded skill %s: %v", path, err))
 		}
 
-		frontmatter, err := parseFrontmatter(string(data))
+		parsed, _, err := dskill.ParseContent(string(data), path)
 		if err != nil {
 			panic(fmt.Sprintf("parsing embedded skill %s: %v", path, err))
 		}
 
-		name, _ := frontmatter["name"].(string)
-		description, _ := frontmatter["description"].(string)
-		if name == "" || description == "" {
-			panic(fmt.Sprintf("embedded skill %s: name and description are required", path))
-		}
-
 		// Validate name matches parent directory
 		parentDir := filepath.Base(filepath.Dir(path))
-		if name != parentDir {
-			panic(fmt.Sprintf("embedded skill %s: name %q does not match directory %q", path, name, parentDir))
+		if parsed.Name != parentDir {
+			panic(fmt.Sprintf("embedded skill %s: name %q does not match directory %q", path, parsed.Name, parentDir))
 		}
-
-		var when string
-		if w, ok := frontmatter["when"].(string); ok {
-			when = w
-		}
-
-		// Extract the body (everything after the second ---)
-		body := extractBody(string(data))
-
-		out = append(out, Skill{
-			Name:        name,
-			Description: description,
-			When:        when,
-			Body:        body,
-		})
+		parsed.Path = ""
+		out = append(out, fromDagoSkill(parsed))
 		return nil
 	})
 
@@ -68,9 +51,5 @@ func BuiltinSkills() []Skill {
 
 // extractBody returns the markdown content after the YAML frontmatter.
 func extractBody(content string) string {
-	parts := strings.SplitN(content, "---", 3)
-	if len(parts) < 3 {
-		return ""
-	}
-	return strings.TrimSpace(parts[2])
+	return dskill.ExtractBody(content)
 }
