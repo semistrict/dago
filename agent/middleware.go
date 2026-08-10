@@ -121,7 +121,7 @@ func TodoListWithOptions(options TodoListOptions) Middleware {
 			return next(ctx, request)
 		},
 		AfterModel: func(_ context.Context, values state.Values, _ Runtime) (state.Values, error) {
-			messages, err := messagesFrom(values[MessagesKey])
+			messages, err := messagesView(values[MessagesKey])
 			if err != nil {
 				return nil, err
 			}

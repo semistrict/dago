@@ -82,6 +82,36 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 	}
 }
 
+func TestRetainedThreadStateSendsSystemMessageSeparately(t *testing.T) {
+	script := modeltest.New(model.Profile{SupportsSeparateSystemMessage: true}, modeltest.Step{
+		Check: func(request model.Request) error {
+			if request.SystemMessage == nil || request.SystemMessage.Role != message.RoleSystem || request.SystemMessage.TextContent() != "Be concise" {
+				return fmt.Errorf("system message = %#v", request.SystemMessage)
+			}
+			if len(request.Messages) != 1 || request.Messages[0].Role != message.RoleHuman {
+				return fmt.Errorf("conversation messages = %#v", request.Messages)
+			}
+			return nil
+		},
+		Response: model.Response{Message: message.Assistant("done")},
+	})
+	compiled, err := New(Options{
+		Model: script, SystemPrompt: "Be concise", Saver: checkpoint.NewMemorySaver(), RetainThreadState: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), Input{
+		Config: checkpoint.Config{ThreadID: "retained-system"}, Messages: []message.Message{message.Human("hello")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 2 || result.Messages[1].TextContent() != "done" {
+		t.Fatalf("result messages = %#v", result.Messages)
+	}
+}
+
 func TestToolParentHandoffIsCommittedAndReturned(t *testing.T) {
 	transfer := tool.Func{
 		Spec: tool.Definition{Name: "transfer", Description: "Transfer to a sibling agent", InputSchema: json.RawMessage(`{"type":"object"}`)},

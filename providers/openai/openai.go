@@ -161,7 +161,7 @@ func (client *Client) Profile() model.Profile {
 		Provider: "openai", Model: client.options.Model,
 		ContextWindow: client.options.ContextWindow, MaxOutputTokens: client.options.MaxOutputTokens,
 		ToolCalling: true, ParallelToolCalls: true, StructuredOutput: true,
-		NativeStreaming: true, SupportsPromptCaching: true, SupportsReasoning: true,
+		NativeStreaming: true, SupportsPromptCaching: true, SupportsSeparateSystemMessage: true, SupportsReasoning: true,
 		ReasoningLevels: []string{"none", "low", "medium", "high", "xhigh"}, DefaultReasoningLevel: defaultReasoning,
 		SupportsImages: true, SupportsPDF: true, SupportsFiles: true,
 		SupportsWebSearch: client.options.WebSearch,
@@ -474,6 +474,14 @@ type responseFormat struct {
 func (client *Client) requestBody(request model.Request, stream bool) ([]byte, error) {
 	input := make([]any, 0, len(request.Messages)*2)
 	var instructions []string
+	if request.SystemMessage != nil {
+		if request.SystemMessage.Role != message.RoleSystem {
+			return nil, fmt.Errorf("system message has role %q", request.SystemMessage.Role)
+		}
+		if text := strings.TrimSpace(request.SystemMessage.TextContent()); text != "" {
+			instructions = append(instructions, text)
+		}
+	}
 	for _, item := range request.Messages {
 		if item.Role == message.RoleSystem {
 			if text := strings.TrimSpace(item.TextContent()); text != "" {

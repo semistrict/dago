@@ -134,6 +134,82 @@ func TestCompiledDeltaStateSurvivesRepeatedInvocations(t *testing.T) {
 	}
 }
 
+func TestRetainedThreadStateSkipsDeltaReplayAndInvalidatesAfterFailure(t *testing.T) {
+	schema := Schema{Fields: map[string]Field{
+		"items": Delta(
+			func() any { return []string{} }, appendStringWrites, cloneStringSlice, 1000,
+		),
+	}}
+	failing := false
+	builder := NewBuilder(schema)
+	mustAddNode(t, builder, "append", func(context.Context, state.Values, Runtime) (Command, error) {
+		if failing {
+			failing = false
+			return Command{}, errors.New("fail once")
+		}
+		return Command{Update: state.Values{"items": []string{"node"}}}, nil
+	})
+	mustAddEdge(t, builder, Start, "append")
+	mustAddEdge(t, builder, "append", End)
+
+	baseSaver := checkpoint.NewMemorySaver()
+	seed := mustCompile(t, builder, CompileOptions{Saver: baseSaver})
+	config := checkpoint.Config{ThreadID: "retained"}
+	if _, err := seed.Invoke(context.Background(), Invocation{
+		Config: config, State: state.Values{"items": []string{"seed"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	saver := &deltaHistoryCountingSaver{Saver: baseSaver}
+	retained := mustCompile(t, builder, CompileOptions{Saver: saver, RetainThreadState: true})
+	if _, err := retained.Invoke(context.Background(), Invocation{
+		Config: config, State: state.Values{"items": []string{"first"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if saver.historyCalls != 1 {
+		t.Fatalf("history calls after restore = %d, want 1", saver.historyCalls)
+	}
+	if _, err := retained.Invoke(context.Background(), Invocation{
+		Config: config, State: state.Values{"items": []string{"second"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if saver.historyCalls != 1 {
+		t.Fatalf("history calls after retained invoke = %d, want 1", saver.historyCalls)
+	}
+
+	failing = true
+	if _, err := retained.Invoke(context.Background(), Invocation{
+		Config: config, State: state.Values{"items": []string{"fail"}},
+	}); err == nil {
+		t.Fatal("failing Invoke() error = nil")
+	}
+	if _, err := retained.Invoke(context.Background(), Invocation{
+		Config: config, State: state.Values{"items": []string{"recover"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if saver.historyCalls != 2 {
+		t.Fatalf("history calls after invalidation = %d, want 2", saver.historyCalls)
+	}
+}
+
+type deltaHistoryCountingSaver struct {
+	checkpoint.Saver
+	historyCalls int
+}
+
+func (saver *deltaHistoryCountingSaver) GetDeltaChannelHistory(
+	ctx context.Context,
+	config checkpoint.Config,
+	channels []string,
+) (map[string]checkpoint.DeltaHistory, error) {
+	saver.historyCalls++
+	return saver.Saver.GetDeltaChannelHistory(ctx, config, channels)
+}
+
 func TestCompiledInterruptAndResume(t *testing.T) {
 	schema := Schema{Fields: map[string]Field{"answer": LastValue(identityClone)}}
 	builder := NewBuilder(schema)

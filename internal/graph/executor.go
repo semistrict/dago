@@ -14,12 +14,41 @@ func (graph *Compiled) Invoke(ctx context.Context, invocation Invocation) (Execu
 	if err := invocation.Config.Validate(); err != nil {
 		return Execution{}, err
 	}
+	session := graph.threadSession(invocation.Config)
+	if session != nil {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		if invocation.Config.CheckpointID != "" {
+			session.valid = false
+			return graph.invoke(ctx, invocation, nil)
+		}
+	}
+	return graph.invoke(ctx, invocation, session)
+}
+
+func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, session *threadSession) (
+	execution Execution,
+	err error,
+) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
-	machine, current, tasks, metadata, err := graph.restore(ctx, invocation)
+	machine, current, tasks, metadata, err := graph.restoreRetained(ctx, invocation, session)
 	if err != nil {
 		return Execution{}, err
+	}
+	if session != nil {
+		defer func() {
+			if err != nil {
+				session.valid = false
+				return
+			}
+			session.machine = machine
+			session.config = current
+			session.tasks = tasks
+			session.metadata = metadata
+			session.valid = true
+		}()
 	}
 	if current.CheckpointID == "" {
 		tasks = graph.startTasks()
@@ -173,19 +202,32 @@ func (graph *Compiled) Invoke(ctx context.Context, invocation Invocation) (Execu
 					return Execution{}, err
 				}
 			}
-			values, err := machine.values()
-			if err != nil {
-				return Execution{}, err
-			}
-			if err := graph.options.Writer.Write(ctx, Event{
-				Mode: EventValues, Step: step, Values: values,
-			}); err != nil {
-				return Execution{}, err
+			if !invocation.SkipValueEvents {
+				values, err := machine.values()
+				if err != nil {
+					return Execution{}, err
+				}
+				if err := graph.options.Writer.Write(ctx, Event{
+					Mode: EventValues, Step: step, Values: values,
+				}); err != nil {
+					return Execution{}, err
+				}
 			}
 		}
 		tasks = next
 	}
 	return Execution{}, ErrRecursionLimit
+}
+
+func (graph *Compiled) restoreRetained(
+	ctx context.Context,
+	invocation Invocation,
+	session *threadSession,
+) (*stateMachine, checkpoint.Config, []task, checkpoint.Metadata, error) {
+	if session != nil && session.valid {
+		return session.machine, session.config, session.tasks, session.metadata, nil
+	}
+	return graph.restore(ctx, invocation)
 }
 
 // Cancel applies a final state update and clears all scheduled tasks. It is the
@@ -194,6 +236,12 @@ func (graph *Compiled) Invoke(ctx context.Context, invocation Invocation) (Execu
 func (graph *Compiled) Cancel(ctx context.Context, invocation Invocation) (Execution, error) {
 	if err := invocation.Config.Validate(); err != nil {
 		return Execution{}, err
+	}
+	session := graph.threadSession(invocation.Config)
+	if session != nil {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		session.valid = false
 	}
 	machine, current, _, metadata, err := graph.restore(ctx, invocation)
 	if err != nil {

@@ -97,6 +97,33 @@ func (reducer Reducer) Merge(left, right []Message) ([]Message, error) {
 // A reset tombstone clears state and all changes that precede it.
 func DeltaReduce(state []Message, writes [][]Message) ([]Message, error) {
 	result := cloneMessages(state)
+	return deltaReduce(result, writes)
+}
+
+// DeltaReduceOwned applies delta writes to an exclusively owned state slice.
+// Existing message values are not mutated; new and replacement values are
+// cloned before they are retained.
+func DeltaReduceOwned(state []Message, writes [][]Message) ([]Message, error) {
+	result := state
+	for _, write := range writes {
+		for _, raw := range write {
+			if raw.Role == RoleRemove {
+				return deltaReduce(state, writes)
+			}
+			if raw.ID != "" {
+				for _, existing := range result {
+					if existing.ID == raw.ID {
+						return deltaReduce(state, writes)
+					}
+				}
+			}
+			result = append(result, raw.Clone())
+		}
+	}
+	return result, nil
+}
+
+func deltaReduce(result []Message, writes [][]Message) ([]Message, error) {
 	byID := make(map[string]int, len(result))
 	for index, existing := range result {
 		if existing.ID != "" {

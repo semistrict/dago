@@ -31,15 +31,19 @@ type Options struct {
 	StateFields      map[string]StateField
 	StructuredOutput *StructuredOutput
 	Saver            checkpoint.Saver
-	Store            store.Store
-	Cache            cache.Cache
-	Context          any
-	RecursionLimit   int
-	MaxConcurrency   int
-	FailOnToolError  bool
-	Metadata         map[string]json.RawMessage
-	Tags             []string
-	Debug            bool
+	// RetainThreadState keeps active thread state in memory between invocations
+	// while continuing to persist checkpoints. Disable it when another process or
+	// agent instance may update the same thread concurrently.
+	RetainThreadState bool
+	Store             store.Store
+	Cache             cache.Cache
+	Context           any
+	RecursionLimit    int
+	MaxConcurrency    int
+	FailOnToolError   bool
+	Metadata          map[string]json.RawMessage
+	Tags              []string
+	Debug             bool
 }
 
 // Agent is a compiled provider-neutral model/tool graph.
@@ -51,10 +55,12 @@ type Agent struct {
 
 // Input starts or resumes one agent thread.
 type Input struct {
-	Config   checkpoint.Config
-	Messages []message.Message
-	State    state.Values
-	Resume   any
+	Config             checkpoint.Config
+	Messages           []message.Message
+	State              state.Values
+	Resume             any
+	SkipValueEvents    bool
+	DiscardResultState bool
 }
 
 // Result is the complete visible agent state.
@@ -129,7 +135,15 @@ func New(options Options) (*Agent, error) {
 		case FieldAggregate:
 			schema.Fields[name] = graph.Aggregate(field.Initial, field.Reduce, field.Clone)
 		case FieldDelta:
-			schema.Fields[name] = graph.Delta(field.Initial, field.Reduce, field.Clone, field.SnapshotFrequency)
+			reducer := field.Reduce
+			if options.RetainThreadState && name == MessagesKey {
+				reducer = reduceMessagesOwned
+			}
+			graphField := graph.Delta(field.Initial, reducer, field.Clone, field.SnapshotFrequency)
+			if options.RetainThreadState && name == MessagesKey {
+				graphField = graphField.WithReadView(identityClone).WithOwnedReducerInput()
+			}
+			schema.Fields[name] = graphField
 		case FieldEphemeral:
 			schema.Fields[name] = graph.Ephemeral(field.Clone)
 		}
@@ -144,7 +158,8 @@ func New(options Options) (*Agent, error) {
 	}
 	runtimeGraph, err := builder.Compile(graph.CompileOptions{
 		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Context: options.Context,
-		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
+		RetainThreadState: options.RetainThreadState,
+		RecursionLimit:    options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		Writer: debugGraphWriter(options.Debug),
 	})
 	if err != nil {
@@ -185,11 +200,13 @@ func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
 		values[MessagesKey] = message.EnsureIDs(input.Messages)
 	}
 	ensureMessageIDsInValues(values)
-	execution, err := agent.graph.Invoke(ctx, graph.Invocation{Config: input.Config, State: values, Resume: input.Resume})
+	execution, err := agent.graph.Invoke(ctx, graph.Invocation{
+		Config: input.Config, State: values, Resume: input.Resume, SkipValueEvents: input.SkipValueEvents,
+	})
 	if err != nil {
 		return Result{}, err
 	}
-	return resultFromExecution(execution, agent.private)
+	return resultFromExecution(execution, agent.private, input.DiscardResultState)
 }
 
 // Cancel durably appends final messages/state and clears pending graph tasks.
@@ -210,10 +227,17 @@ func (agent *Agent) Cancel(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return resultFromExecution(execution, agent.private)
+	return resultFromExecution(execution, agent.private, false)
 }
 
-func resultFromExecution(execution graph.Execution, private map[string]bool) (Result, error) {
+func resultFromExecution(execution graph.Execution, private map[string]bool, discardState bool) (Result, error) {
+	if discardState {
+		result := Result{Config: execution.Config, Steps: execution.Steps}
+		for _, interrupt := range execution.Interrupts {
+			result.Interrupts = append(result.Interrupts, Interrupt{ID: interrupt.ID, Value: interrupt.Value})
+		}
+		return result, nil
+	}
 	messages, err := messagesFrom(execution.State[MessagesKey])
 	if err != nil {
 		return Result{}, err
@@ -302,7 +326,7 @@ func (compiler *compiler) beforeAgent(ctx context.Context, values state.Values, 
 		if err != nil {
 			return graph.Command{}, fmt.Errorf("middleware %q before agent: %w", middleware.Name, err)
 		}
-		mergeUpdate(current, update, result)
+		compiler.mergeUpdate(current, update, result)
 	}
 	ensureMessageIDsInValues(update)
 	return graph.Command{Update: update}, nil
@@ -320,7 +344,7 @@ func (compiler *compiler) afterAgent(ctx context.Context, values state.Values, r
 		if err != nil {
 			return graph.Command{}, fmt.Errorf("middleware %q after agent: %w", middleware.Name, err)
 		}
-		mergeUpdate(current, update, result)
+		compiler.mergeUpdate(current, update, result)
 	}
 	command := graph.Command{Update: update}
 	if destination, exists := update[jumpToKey]; exists {
@@ -346,15 +370,22 @@ func (compiler *compiler) model(ctx context.Context, values state.Values, runtim
 		if err != nil {
 			return graph.Command{}, fmt.Errorf("middleware %q before model: %w", middleware.Name, err)
 		}
-		mergeUpdate(current, update, result)
+		compiler.mergeUpdate(current, update, result)
 	}
-	messages, err := messagesFrom(current[MessagesKey])
+	var messages []message.Message
+	var err error
+	if compiler.options.RetainThreadState {
+		messages, err = messagesView(current[MessagesKey])
+	} else {
+		messages, err = messagesFrom(current[MessagesKey])
+	}
 	if err != nil {
 		return graph.Command{}, err
 	}
 	request := ModelRequest{
 		Model: compiler.options.Model, Messages: messages, Tools: toolsSlice(compiler.tools),
 		State: current.Clone(), Runtime: convertRuntime(runtime),
+		MessagesReadOnly:   compiler.options.RetainThreadState,
 		InvocationMetadata: cloneRawMap(compiler.options.Metadata), InvocationTags: append([]string(nil), compiler.options.Tags...),
 	}
 	if compiler.options.SystemMessage != nil {
@@ -383,8 +414,13 @@ func (compiler *compiler) model(ctx context.Context, values state.Values, runtim
 	if len(response.Messages) == 0 {
 		return graph.Command{}, fmt.Errorf("%w: model returned no messages", ErrInvalidModelOutput)
 	}
-	mergeUpdate(current, update, state.Values{MessagesKey: response.Messages})
-	mergeUpdate(current, update, response.Update)
+	if compiler.hasAfterModelHook() {
+		compiler.mergeUpdate(current, update, state.Values{MessagesKey: response.Messages})
+		compiler.mergeUpdate(current, update, response.Update)
+	} else {
+		mergePendingUpdate(update, state.Values{MessagesKey: response.Messages})
+		mergePendingUpdate(update, response.Update)
+	}
 	if len(response.Structured) > 0 {
 		update[StructuredResponseKey] = append(json.RawMessage(nil), response.Structured...)
 	}
@@ -397,10 +433,19 @@ func (compiler *compiler) model(ctx context.Context, values state.Values, runtim
 		if err != nil {
 			return graph.Command{}, fmt.Errorf("middleware %q after model: %w", middleware.Name, err)
 		}
-		mergeUpdate(current, update, result)
+		compiler.mergeUpdate(current, update, result)
 	}
 	ensureMessageIDsInValues(update)
 	return graph.Command{Update: update}, nil
+}
+
+func (compiler *compiler) hasAfterModelHook() bool {
+	for _, middleware := range compiler.options.Middleware {
+		if middleware.AfterModel != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (compiler *compiler) modelHandler() ModelHandler {
@@ -413,8 +458,15 @@ func (compiler *compiler) modelHandler() ModelHandler {
 			}
 			definitions = append(definitions, definition)
 		}
-		messages := cloneMessages(request.Messages)
-		if request.SystemMessage != nil {
+		messages := request.Messages
+		if !compiler.options.RetainThreadState {
+			messages = cloneMessages(request.Messages)
+		}
+		var providerSystem *message.Message
+		if request.SystemMessage != nil && compiler.options.RetainThreadState && request.Model.Profile().SupportsSeparateSystemMessage {
+			system := request.SystemMessage.Clone()
+			providerSystem = &system
+		} else if request.SystemMessage != nil {
 			messages = append([]message.Message{request.SystemMessage.Clone()}, messages...)
 		}
 		chat := request.Model
@@ -426,7 +478,7 @@ func (compiler *compiler) modelHandler() ModelHandler {
 			chat = bound
 		}
 		providerRequest := model.Request{
-			Messages: messages, Tools: definitions, ToolChoice: request.ToolChoice,
+			Messages: messages, SystemMessage: providerSystem, Tools: definitions, ToolChoice: request.ToolChoice,
 			ResponseFormat: request.ResponseFormat, PromptCache: request.PromptCache,
 			Reasoning: request.Reasoning,
 			Metadata:  cloneRawMap(request.Metadata), Tags: append([]string(nil), request.Tags...),
@@ -987,6 +1039,22 @@ func reduceMessages(current any, writes []any) (any, error) {
 	return message.DeltaReduce(left, right)
 }
 
+func reduceMessagesOwned(current any, writes []any) (any, error) {
+	left, err := messagesView(current)
+	if err != nil {
+		return nil, err
+	}
+	right := make([][]message.Message, 0, len(writes))
+	for _, write := range writes {
+		messages, err := messagesView(write)
+		if err != nil {
+			return nil, err
+		}
+		right = append(right, messages)
+	}
+	return message.DeltaReduceOwned(left, right)
+}
+
 func messagesFrom(value any) ([]message.Message, error) {
 	if value == nil {
 		return []message.Message{}, nil
@@ -1064,6 +1132,55 @@ func mergeUpdate(current, combined, update state.Values) {
 		}
 		current[key] = value
 		combined[key] = value
+	}
+}
+
+func (compiler *compiler) mergeUpdate(current, combined, update state.Values) {
+	if !compiler.options.RetainThreadState {
+		mergeUpdate(current, combined, update)
+		return
+	}
+	for key, value := range update {
+		if key != MessagesKey {
+			current[key] = value
+			combined[key] = value
+			continue
+		}
+		if _, overwrite := value.(state.Overwrite); overwrite {
+			mergeUpdate(current, combined, update)
+			return
+		}
+		currentMessages, currentErr := messagesView(current[key])
+		incoming, incomingErr := messagesView(value)
+		if currentErr != nil || incomingErr != nil {
+			mergeUpdate(current, combined, update)
+			return
+		}
+		incoming = message.EnsureIDs(incoming)
+		merged, err := message.DeltaReduceOwned(currentMessages, [][]message.Message{incoming})
+		if err != nil {
+			mergeUpdate(current, combined, update)
+			return
+		}
+		current[key] = merged
+		pending, _ := messagesView(combined[key])
+		combined[key] = append(pending, incoming...)
+	}
+}
+
+func mergePendingUpdate(combined, update state.Values) {
+	for key, value := range update {
+		if key != MessagesKey {
+			combined[key] = value
+			continue
+		}
+		incoming, err := messagesView(value)
+		if err != nil {
+			combined[key] = value
+			continue
+		}
+		pending, _ := messagesView(combined[key])
+		combined[key] = append(pending, incoming...)
 	}
 }
 

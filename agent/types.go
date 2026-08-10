@@ -68,6 +68,9 @@ type ModelRequest struct {
 	Reasoning      *model.Reasoning
 	State          state.Values
 	Runtime        Runtime
+	// MessagesReadOnly marks an active-thread view that wrappers may scan and
+	// forward without cloning. Wrappers must clone before editing messages.
+	MessagesReadOnly bool
 	// InvocationMetadata and InvocationTags describe the agent run for
 	// middleware, tracing, and evaluation. They are never forwarded as provider
 	// request parameters.

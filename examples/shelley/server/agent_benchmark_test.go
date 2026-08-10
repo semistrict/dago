@@ -350,7 +350,7 @@ func newAgentBenchmarkModel(workspace string, gated bool) *agentBenchmarkModel {
 func (model *agentBenchmarkModel) Profile() dmodel.Profile {
 	return dmodel.Profile{
 		Provider: "benchmark", Model: "benchmark", ContextWindow: 200000,
-		MaxOutputTokens: 8192, ToolCalling: true,
+		MaxOutputTokens: 8192, ToolCalling: true, SupportsSeparateSystemMessage: true,
 	}
 }
 
@@ -407,6 +407,9 @@ func (model *agentBenchmarkModel) disableGate() {
 }
 
 func agentBenchmarkRequestHasSystem(request dmodel.Request) bool {
+	if request.SystemMessage != nil && request.SystemMessage.Role == dmessage.RoleSystem {
+		return true
+	}
 	for _, item := range request.Messages {
 		if item.Role == dmessage.RoleSystem {
 			return true

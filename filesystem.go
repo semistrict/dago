@@ -405,10 +405,10 @@ func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat
 	if chat != nil {
 		profile = chat.Profile()
 	}
-	// The common text-only path must not deep-copy the entire transcript. The
-	// request already owns an isolated message slice; clone only messages whose
-	// media blocks actually need rewriting.
-	result := append([]message.Message(nil), messages...)
+	// The common text-only path returns the read-only transcript directly. Clone
+	// the slice and affected messages only when a media block needs rewriting.
+	result := messages
+	copied := false
 	for index, item := range messages {
 		if item.Role != message.RoleHuman && item.Role != message.RoleTool {
 			continue
@@ -420,6 +420,10 @@ func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat
 				continue
 			}
 			if !cloned {
+				if !copied {
+					result = append([]message.Message(nil), messages...)
+					copied = true
+				}
 				result[index] = item.Clone()
 				cloned = true
 			}

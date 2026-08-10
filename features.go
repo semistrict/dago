@@ -83,6 +83,9 @@ type pendingToolCall struct {
 // by chat APIs: each assistant tool-call batch is followed only by its matching
 // tool results, with a synthetic error result for every unanswered call.
 func repairToolCallHistory(messages []message.Message) ([]message.Message, bool) {
+	if !toolCallHistoryNeedsRepair(messages) {
+		return messages, false
+	}
 	patched := make([]message.Message, 0, len(messages))
 	pending := map[string]pendingToolCall{}
 	order := []string{}
@@ -152,6 +155,39 @@ func repairToolCallHistory(messages []message.Message) ([]message.Message, bool)
 		patched = cloneMessageSlice(patched)
 	}
 	return patched, changed
+}
+
+func toolCallHistoryNeedsRepair(messages []message.Message) bool {
+	pending := map[string]struct{}{}
+	for _, item := range messages {
+		if item.Role == message.RoleTool {
+			if item.ToolCallID == "" {
+				return true
+			}
+			if _, exists := pending[item.ToolCallID]; !exists {
+				return true
+			}
+			delete(pending, item.ToolCallID)
+			continue
+		}
+		if len(pending) > 0 {
+			return true
+		}
+		if item.Role != message.RoleAssistant {
+			continue
+		}
+		for _, call := range item.ToolCalls {
+			if call.ID != "" {
+				pending[call.ID] = struct{}{}
+			}
+		}
+		for _, call := range item.InvalidToolCalls {
+			if call.ID != "" {
+				pending[call.ID] = struct{}{}
+			}
+		}
+	}
+	return len(pending) > 0
 }
 
 // SubagentMiddleware adds the task tool. Each invocation receives only its task
@@ -417,7 +453,10 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 	middleware.WrapModelCall = func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
 		effective := applySummarizationEvent(request.Messages, request.State[summarizationEventKey])
 		truncated, _ := truncatedToolArguments(effective, options.ArgumentTruncation)
-		prepared := request.Clone()
+		prepared := request
+		if !request.MessagesReadOnly {
+			prepared = request.Clone()
+		}
 		prepared.Messages = truncated
 
 		shouldSummarize := summarizationTriggered(options.triggerClauses, len(truncated), requestTokenCount(ctx, prepared), 1)
@@ -930,12 +969,15 @@ func isSummaryMessage(item message.Message) bool {
 }
 
 func requestTokenCount(ctx context.Context, request agent.ModelRequest) int {
-	messages := append([]message.Message(nil), request.Messages...)
+	tokens := approximateTokens(request.Messages)
 	if request.SystemMessage != nil {
-		messages = append([]message.Message{request.SystemMessage.Clone()}, messages...)
+		tokens += approximateTokens([]message.Message{*request.SystemMessage})
 	}
-	tokens := approximateTokens(messages)
 	if counter, ok := request.Model.(model.TokenCounter); ok {
+		messages := append([]message.Message(nil), request.Messages...)
+		if request.SystemMessage != nil {
+			messages = append([]message.Message{request.SystemMessage.Clone()}, messages...)
+		}
 		if counted, err := counter.CountTokens(ctx, messages); err == nil {
 			tokens = counted
 		}

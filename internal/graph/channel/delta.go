@@ -17,6 +17,7 @@ type Cloner[T any] func(T) T
 
 type deltaConfig struct {
 	snapshotFrequency uint64
+	ownedReducerInput bool
 }
 
 // DeltaOption configures a delta channel.
@@ -29,6 +30,17 @@ func WithSnapshotFrequency(frequency uint64) DeltaOption {
 			return ErrInvalidSnapshotFrequency
 		}
 		config.snapshotFrequency = frequency
+		return nil
+	}
+}
+
+// WithOwnedReducerInput allows Apply to transfer ownership of the accumulated
+// value to the reducer. It is intended for serialized, retained state machines
+// whose reducer can update its container without mutating values exposed to
+// concurrent readers.
+func WithOwnedReducerInput() DeltaOption {
+	return func(config *deltaConfig) error {
+		config.ownedReducerInput = true
 		return nil
 	}
 }
@@ -110,6 +122,7 @@ type Delta[T any] struct {
 	reduce            DeltaReducer[T]
 	clone             Cloner[T]
 	snapshotFrequency uint64
+	ownedReducerInput bool
 	value             T
 	available         bool
 }
@@ -148,6 +161,7 @@ func NewDelta[T any](
 		reduce:            reducer,
 		clone:             cloner,
 		snapshotFrequency: config.snapshotFrequency,
+		ownedReducerInput: config.ownedReducerInput,
 	}, nil
 }
 
@@ -186,6 +200,7 @@ func (channel *Delta[T]) specCopy() *Delta[T] {
 		reduce:            channel.reduce,
 		clone:             channel.clone,
 		snapshotFrequency: channel.snapshotFrequency,
+		ownedReducerInput: channel.ownedReducerInput,
 	}
 }
 
@@ -206,6 +221,16 @@ func (channel *Delta[T]) Get() (T, error) {
 		return zero, ErrEmpty
 	}
 	return channel.clone(channel.value), nil
+}
+
+// View returns the accumulated value without cloning. Graph fields use it only
+// with an explicit immutable read-view contract.
+func (channel *Delta[T]) View() (T, error) {
+	if !channel.available {
+		var zero T
+		return zero, ErrEmpty
+	}
+	return channel.value, nil
 }
 
 // Checkpoint always returns a missing value. The graph checkpoint planner writes a
@@ -249,12 +274,18 @@ func (channel *Delta[T]) Apply(writes []DeltaWrite[T]) (bool, error) {
 	}
 
 	base := channel.initial()
-	if channel.available {
+	if channel.available && channel.ownedReducerInput {
+		base = channel.value
+	} else if channel.available {
 		base = channel.clone(channel.value)
 	}
 	values := make([]T, 0, len(writes))
 	for _, write := range writes {
-		values = append(values, channel.clone(write.Value()))
+		value := write.Value()
+		if !channel.ownedReducerInput {
+			value = channel.clone(value)
+		}
+		values = append(values, value)
 	}
 	next, err := channel.reduce(base, values)
 	if err != nil {

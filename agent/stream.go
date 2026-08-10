@@ -65,8 +65,9 @@ type Event struct {
 
 // Stream is an owned, bounded agent execution stream.
 type Stream struct {
-	graph   *graph.Stream
-	private map[string]bool
+	graph              *graph.Stream
+	private            map[string]bool
+	discardResultState bool
 }
 
 // EncodeChildEvent creates the versioned custom-event envelope understood by
@@ -93,7 +94,12 @@ func (agent *Agent) Stream(ctx context.Context, input Input, buffer int) *Stream
 		values[MessagesKey] = message.EnsureIDs(input.Messages)
 	}
 	ensureMessageIDsInValues(values)
-	return &Stream{graph: agent.graph.Stream(ctx, graph.Invocation{Config: input.Config, State: values, Resume: input.Resume}, buffer), private: agent.private}
+	return &Stream{
+		graph: agent.graph.Stream(ctx, graph.Invocation{
+			Config: input.Config, State: values, Resume: input.Resume, SkipValueEvents: input.SkipValueEvents,
+		}, buffer),
+		private: agent.private, discardResultState: input.DiscardResultState,
+	}
 }
 
 func (stream *Stream) Next(ctx context.Context) (Event, error) {
@@ -138,7 +144,7 @@ func (stream *Stream) Result(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return resultFromExecution(execution, stream.private)
+	return resultFromExecution(execution, stream.private, stream.discardResultState)
 }
 
 func (stream *Stream) Close() error {

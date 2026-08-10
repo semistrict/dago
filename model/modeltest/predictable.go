@@ -341,6 +341,10 @@ func lastConversationMessage(messages []message.Message) (message.Message, bool)
 
 func cloneModelRequest(request model.Request) model.Request {
 	copy := request
+	if request.SystemMessage != nil {
+		value := request.SystemMessage.Clone()
+		copy.SystemMessage = &value
+	}
 	copy.Messages = make([]message.Message, len(request.Messages))
 	for index := range request.Messages {
 		copy.Messages[index] = request.Messages[index].Clone()

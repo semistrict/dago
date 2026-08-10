@@ -102,9 +102,10 @@ type EventWriter interface {
 
 // Invocation starts or resumes one thread.
 type Invocation struct {
-	Config checkpoint.Config
-	State  state.Values
-	Resume any
+	Config          checkpoint.Config
+	State           state.Values
+	Resume          any
+	SkipValueEvents bool
 }
 
 // Execution is the terminal or paused graph result.
@@ -117,14 +118,18 @@ type Execution struct {
 
 // CompileOptions configure one compiled graph.
 type CompileOptions struct {
-	Saver          checkpoint.Saver
-	RecursionLimit int
-	MaxConcurrency int
-	Context        any
-	Store          store.Store
-	Cache          cache.Cache
-	Writer         EventWriter
-	Retry          RetryPolicy
+	Saver checkpoint.Saver
+	// RetainThreadState keeps the reconstructed state machine for active threads.
+	// It avoids replaying durable delta history on every invocation. Callers that
+	// mutate checkpoints out of band must leave this disabled.
+	RetainThreadState bool
+	RecursionLimit    int
+	MaxConcurrency    int
+	Context           any
+	Store             store.Store
+	Cache             cache.Cache
+	Writer            EventWriter
+	Retry             RetryPolicy
 }
 
 // Builder validates and compiles a state graph.
@@ -211,10 +216,14 @@ func (builder *Builder) Compile(options CompileOptions) (*Compiled, error) {
 	if options.Retry.Attempts <= 0 {
 		options.Retry.Attempts = 1
 	}
-	return &Compiled{
+	compiled := &Compiled{
 		schema: builder.schema, nodes: cloneNodes(builder.nodes), edges: cloneEdges(builder.edges),
 		conditional: cloneRouters(builder.conditional), options: options,
-	}, nil
+	}
+	if options.RetainThreadState {
+		compiled.sessions = &threadSessions{values: make(map[threadKey]*threadSession)}
+	}
+	return compiled, nil
 }
 
 type Compiled struct {
@@ -223,6 +232,41 @@ type Compiled struct {
 	edges       map[string][]string
 	conditional map[string]Router
 	options     CompileOptions
+	sessions    *threadSessions
+}
+
+type threadKey struct {
+	threadID  string
+	namespace string
+}
+
+type threadSessions struct {
+	mu     sync.Mutex
+	values map[threadKey]*threadSession
+}
+
+type threadSession struct {
+	mu       sync.Mutex
+	valid    bool
+	machine  *stateMachine
+	config   checkpoint.Config
+	tasks    []task
+	metadata checkpoint.Metadata
+}
+
+func (graph *Compiled) threadSession(config checkpoint.Config) *threadSession {
+	if graph.sessions == nil {
+		return nil
+	}
+	key := threadKey{threadID: config.ThreadID, namespace: config.Namespace}
+	graph.sessions.mu.Lock()
+	defer graph.sessions.mu.Unlock()
+	if session := graph.sessions.values[key]; session != nil {
+		return session
+	}
+	session := &threadSession{}
+	graph.sessions.values[key] = session
+	return session
 }
 
 type task struct {

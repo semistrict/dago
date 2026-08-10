@@ -36,17 +36,19 @@ type Field struct {
 	initial           func() any
 	reducer           Reducer
 	clone             Cloner
+	readView          Cloner
+	ownedReducerInput bool
 	snapshotFrequency uint64
 }
 
 // LastValue creates a field that accepts at most one write per superstep.
 func LastValue(clone Cloner) Field {
-	return Field{kind: fieldLast, clone: clone}
+	return Field{kind: fieldLast, clone: clone, readView: clone}
 }
 
 // Aggregate creates a persistent reducer-backed field.
 func Aggregate(initial func() any, reducer Reducer, clone Cloner) Field {
-	return Field{kind: fieldAggregate, initial: initial, reducer: reducer, clone: clone}
+	return Field{kind: fieldAggregate, initial: initial, reducer: reducer, clone: clone, readView: clone}
 }
 
 // Delta creates a required delta field whose durable state is reconstructed from
@@ -58,18 +60,33 @@ func Delta(
 	snapshotFrequency uint64,
 ) Field {
 	return Field{
-		kind: fieldDelta, initial: initial, reducer: reducer, clone: clone,
+		kind: fieldDelta, initial: initial, reducer: reducer, clone: clone, readView: clone,
 		snapshotFrequency: snapshotFrequency,
 	}
 }
 
 // Ephemeral creates a last-value field omitted from checkpoints.
 func Ephemeral(clone Cloner) Field {
-	return Field{kind: fieldEphemeral, clone: clone}
+	return Field{kind: fieldEphemeral, clone: clone, readView: clone}
+}
+
+// WithReadView uses view when state is passed to nodes and routers. The view
+// must be treated as immutable; checkpoint and restore boundaries still clone.
+func (field Field) WithReadView(view Cloner) Field {
+	field.readView = view
+	return field
+}
+
+// WithOwnedReducerInput lets a delta reducer reuse the current container during
+// serialized execution. The reducer becomes responsible for preserving the
+// immutability of any nested values it retains.
+func (field Field) WithOwnedReducerInput() Field {
+	field.ownedReducerInput = true
+	return field
 }
 
 func (field Field) validate(key string) error {
-	if field.clone == nil {
+	if field.clone == nil || field.readView == nil {
 		return fmt.Errorf("state field %q: cloner is required", key)
 	}
 	switch field.kind {
@@ -144,11 +161,15 @@ func newStateMachine(
 				field.value = spec.initial()
 			}
 		case fieldDelta:
+			deltaOptions := []channel.DeltaOption{channel.WithSnapshotFrequency(spec.snapshotFrequency)}
+			if spec.ownedReducerInput {
+				deltaOptions = append(deltaOptions, channel.WithOwnedReducerInput())
+			}
 			delta, err := channel.NewDelta(
 				spec.initial,
 				channel.DeltaReducer[any](spec.reducer),
 				channel.Cloner[any](spec.clone),
-				channel.WithSnapshotFrequency(spec.snapshotFrequency))
+				deltaOptions...)
 			if err != nil {
 				return nil, fmt.Errorf("state field %q: %w", key, err)
 			}
@@ -204,7 +225,7 @@ func newStateMachine(
 			return nil, fmt.Errorf("%w %q", ErrUnknownStateField, key)
 		}
 		machine.fields[key] = &fieldState{
-			spec:  Field{kind: fieldLast, clone: identityClone},
+			spec:  Field{kind: fieldLast, clone: identityClone, readView: identityClone},
 			value: value, available: true,
 		}
 	}
@@ -215,18 +236,18 @@ func (machine *stateMachine) values() (state.Values, error) {
 	values := make(state.Values)
 	for key, field := range machine.fields {
 		if field.spec.kind == fieldDelta {
-			value, err := field.delta.Get()
+			value, err := field.delta.View()
 			if err != nil {
 				if errors.Is(err, channel.ErrEmpty) {
 					continue
 				}
 				return nil, err
 			}
-			values[key] = value
+			values[key] = field.spec.readView(value)
 			continue
 		}
 		if field.available {
-			values[key] = field.spec.clone(field.value)
+			values[key] = field.spec.readView(field.value)
 		}
 	}
 	return values, nil
@@ -260,7 +281,7 @@ func (machine *stateMachine) apply(updates []state.Values) (map[string]bool, err
 			if !machine.schema.AllowUnknown {
 				return nil, fmt.Errorf("%w %q", ErrUnknownStateField, key)
 			}
-			field = &fieldState{spec: Field{kind: fieldLast, clone: identityClone}}
+			field = &fieldState{spec: Field{kind: fieldLast, clone: identityClone, readView: identityClone}}
 			machine.fields[key] = field
 		}
 		wroteOverwrite, err := field.apply(grouped[key])

@@ -104,13 +104,17 @@ func TestRequestUsesInstructionsAndOmitsEmptySystemMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Invoke(context.Background(), model.Request{Messages: []message.Message{
-		message.System("first"), message.System("  "), message.System("second"), message.Human("hello"),
-	}})
+	separate := message.System("separate")
+	_, err = client.Invoke(context.Background(), model.Request{
+		SystemMessage: &separate,
+		Messages: []message.Message{
+			message.System("first"), message.System("  "), message.System("second"), message.Human("hello"),
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["instructions"] != "first\n\nsecond" {
+	if got["instructions"] != "separate\n\nfirst\n\nsecond" {
 		t.Fatalf("instructions = %#v", got["instructions"])
 	}
 	input, ok := got["input"].([]any)
@@ -125,7 +129,7 @@ func TestProfileReportsReasoningLevelsAndDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := client.Profile()
-	if profile.DefaultReasoningLevel != "medium" || len(profile.ReasoningLevels) != 5 || profile.ReasoningLevels[4] != "xhigh" {
+	if profile.DefaultReasoningLevel != "medium" || len(profile.ReasoningLevels) != 5 || profile.ReasoningLevels[4] != "xhigh" || !profile.SupportsSeparateSystemMessage {
 		t.Fatalf("profile = %#v", profile)
 	}
 }

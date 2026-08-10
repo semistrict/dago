@@ -56,15 +56,18 @@ type Options struct {
 	StructuredOutput           *agent.StructuredOutput
 	StateFields                map[string]agent.StateField
 	Saver                      checkpoint.Saver
-	Store                      store.Store
-	Cache                      cache.Cache
-	Context                    any
-	RecursionLimit             int
-	MaxConcurrency             int
-	FailOnToolError            bool
-	Metadata                   map[string]json.RawMessage
-	Tags                       []string
-	Debug                      bool
+	// RetainThreadState keeps active thread state in memory while checkpoints
+	// remain durable. It requires one live owner per thread.
+	RetainThreadState bool
+	Store             store.Store
+	Cache             cache.Cache
+	Context           any
+	RecursionLimit    int
+	MaxConcurrency    int
+	FailOnToolError   bool
+	Metadata          map[string]json.RawMessage
+	Tags              []string
+	Debug             bool
 }
 
 // DeepAgent is a compiled agent with the standard filesystem, subagent,
@@ -234,7 +237,8 @@ func New(options Options) (*DeepAgent, error) {
 		SystemMessage: options.SystemMessage,
 		Middleware:    middleware, StateFields: options.StateFields, StructuredOutput: options.StructuredOutput,
 		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Context: options.Context,
-		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
+		RetainThreadState: options.RetainThreadState,
+		RecursionLimit:    options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
 		Metadata:        mergeAgentMetadata(options.Metadata, options.Name), Tags: options.Tags, Debug: options.Debug,
 	})

@@ -362,71 +362,74 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		return err
 	}
 
-	l.mu.Lock()
-	tools := append([]dtool.Tool(nil), l.tools...)
-	model := l.model
-	system := append([]llm.SystemContent(nil), l.system...)
-	l.mu.Unlock()
-
-	dagoTools, err := validateTools(tools)
-	if err != nil {
-		return err
-	}
 	dagoMessages, err := messagesToDago(inputMessages)
 	if err != nil {
 		return err
 	}
 
-	harnessBackend, err := dbackend.NewLocalShell(dbackend.LocalShellOptions{
-		Filesystem: dbackend.FilesystemOptions{Root: l.currentWorkingDir(), AllowHostPaths: true},
-	})
-	if err != nil {
-		return fmt.Errorf("create Shelley harness backend: %w", err)
-	}
-	if l.filesystemTools != nil && isPredictableModel(model) && !hasToolNamed(dagoTools, "bash") {
-		aliases, aliasErr := predictableFilesystemAliases(harnessBackend, l.filesystemTools)
-		if aliasErr != nil {
-			return aliasErr
+	if l.runtime == nil {
+		l.mu.Lock()
+		tools := append([]dtool.Tool(nil), l.tools...)
+		model := l.model
+		system := append([]llm.SystemContent(nil), l.system...)
+		l.mu.Unlock()
+
+		dagoTools, validateErr := validateTools(tools)
+		if validateErr != nil {
+			return validateErr
 		}
-		dagoTools = append(dagoTools, aliases...)
+		harnessBackend, backendErr := dbackend.NewLocalShell(dbackend.LocalShellOptions{
+			Filesystem: dbackend.FilesystemOptions{Root: l.currentWorkingDir(), AllowHostPaths: true},
+		})
+		if backendErr != nil {
+			return fmt.Errorf("create Shelley harness backend: %w", backendErr)
+		}
+		if l.filesystemTools != nil && isPredictableModel(model) && !hasToolNamed(dagoTools, "bash") {
+			aliases, aliasErr := predictableFilesystemAliases(harnessBackend, l.filesystemTools)
+			if aliasErr != nil {
+				return aliasErr
+			}
+			dagoTools = append(dagoTools, aliases...)
+		}
+		options := dago.Options{
+			Name: "Shelley", Model: model,
+			Tools: dagoTools, SystemPrompt: runtimeSystemPrompt(system), Middleware: []dagent.Middleware{l.runtimeMiddleware(harnessBackend)},
+			Backend: harnessBackend,
+			Saver:   l.saver, RetainThreadState: true, MaxConcurrency: 1, FailOnToolError: false,
+			StateFields: map[string]dagent.StateField{
+				"shelley.run": {Kind: dagent.FieldEphemeral, Contract: "shelley.run.v1", Clone: func(value any) any { return value }},
+			},
+		}
+		if l.filesystemTools == nil {
+			// A nil selection is the embedding form used by direct callers that
+			// provide their complete tool surface. It still runs through Dago, but
+			// does not opt into Dago's default harness tools or prompts.
+			options.FilesystemTools = []string{}
+			options.DisableTodo = true
+			options.DisableSubagents = true
+			options.DisableSummary = true
+		} else {
+			options.FilesystemTools = cloneFilesystemTools(l.filesystemTools)
+			options.SkillCatalog = cloneSkillCatalog(l.skillCatalog)
+			options.SkillActivation = l.skillActivation
+			options.Memory = append([]string(nil), l.memory...)
+			options.MemoryContents = cloneStringMap(l.memoryContents)
+			options.MemorySystemPrompt = cloneStringPointer(l.memoryPrompt)
+			// Shelley uses Dago's conversation-subagent tool so child runs retain
+			// their application-level UI and persistence contracts.
+			options.DisableSubagents = true
+		}
+		runtime, runtimeErr := dago.New(options)
+		if runtimeErr != nil {
+			return fmt.Errorf("create Dago Shelley agent: %w", runtimeErr)
+		}
+		l.runtime = runtime
 	}
-	options := dago.Options{
-		Name: "Shelley", Model: model,
-		Tools: dagoTools, SystemPrompt: runtimeSystemPrompt(system), Middleware: []dagent.Middleware{l.runtimeMiddleware(harnessBackend)},
-		Backend: harnessBackend,
-		Saver:   l.saver, MaxConcurrency: 1, FailOnToolError: false,
-		StateFields: map[string]dagent.StateField{
-			"shelley.run": {Kind: dagent.FieldEphemeral, Contract: "shelley.run.v1", Clone: func(value any) any { return value }},
-		},
-	}
-	if l.filesystemTools == nil {
-		// A nil selection is the embedding form used by direct callers that
-		// provide their complete tool surface. It still runs through Dago, but
-		// does not opt into Dago's default harness tools or prompts.
-		options.FilesystemTools = []string{}
-		options.DisableTodo = true
-		options.DisableSubagents = true
-		options.DisableSummary = true
-	} else {
-		options.FilesystemTools = cloneFilesystemTools(l.filesystemTools)
-		options.SkillCatalog = cloneSkillCatalog(l.skillCatalog)
-		options.SkillActivation = l.skillActivation
-		options.Memory = append([]string(nil), l.memory...)
-		options.MemoryContents = cloneStringMap(l.memoryContents)
-		options.MemorySystemPrompt = cloneStringPointer(l.memoryPrompt)
-		// Shelley uses Dago's conversation-subagent tool so child runs retain
-		// their application-level UI and persistence contracts.
-		options.DisableSubagents = true
-	}
-	runtime, err := dago.New(options)
-	if err != nil {
-		return fmt.Errorf("create Dago Shelley agent: %w", err)
-	}
-	l.runtime = runtime
+	runtime := l.runtime
 
 	stream := runtime.Stream(ctx, dagent.Input{
 		Config: l.checkpointConfig(), Messages: dagoMessages,
-		State: state.Values{"shelley.run": true},
+		State: state.Values{"shelley.run": true}, SkipValueEvents: true, DiscardResultState: true,
 	}, 64)
 	defer stream.Close()
 	for {
@@ -682,7 +685,10 @@ func (l *Loop) runtimeInput(ctx context.Context) ([]llm.Message, error) {
 	seeded := l.runtimeSeeded
 	pending := append([]llm.Message(nil), l.pendingInput...)
 	l.pendingInput = nil
-	history := append([]llm.Message(nil), l.history...)
+	var history []llm.Message
+	if !seeded {
+		history = append([]llm.Message(nil), l.history...)
+	}
 	l.mu.Unlock()
 	if !seeded {
 		tuple, err := l.saver.GetTuple(ctx, l.checkpointConfig())
