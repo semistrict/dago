@@ -104,8 +104,11 @@ test.describe('Conversation Cancellation', () => {
     // Ctrl+Enter submits regardless of mobile Enter-for-newline behavior.
     await reloadedInput.press('ControlOrMeta+Enter');
 
-    // Should get a response (the echo response may come so fast the thinking indicator is never visible)
-    await expect(page.locator('text=test after cancel').first()).toBeVisible({ timeout: 10000 });
+    // Wait for the agent response, not the matching user message that is
+    // rendered immediately after submission.
+    await expect(
+      page.locator('.message-agent').filter({ hasText: 'test after cancel' }).last(),
+    ).toBeVisible({ timeout: 10000 });
 
     // Agent should not be working after response
     await expect(page.getByTestId('agent-thinking')).toBeHidden({ timeout: 5000 });
@@ -167,7 +170,10 @@ test.describe('Conversation Cancellation', () => {
     const sendButton2 = page.getByTestId('send-button');
     await sendButton2.click();
 
-    // Wait for response - use .first() to handle multiple matches
-    await expect(page.locator('text=after cancel').first()).toBeVisible({ timeout: 10000 });
+    // Wait for the agent response rather than the immediately-rendered user
+    // message with the same text.
+    await expect(
+      page.locator('.message-agent').filter({ hasText: 'after cancel' }).last(),
+    ).toBeVisible({ timeout: 10000 });
   });
 });
