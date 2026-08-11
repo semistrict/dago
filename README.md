@@ -6,9 +6,9 @@ middleware, required delta channels, durable checkpoints, virtual filesystems,
 inline and background subagents, context compaction, skills, memory, and streaming without trying
 to reproduce either framework in full.
 
-The implementation targets the pinned Python releases recorded in
-[`docs/upstream-manifest.json`](docs/upstream-manifest.json). The public API is
-currently pre-1.0.
+The public API is currently pre-1.0.
+
+[Try the Shelley browser demo](https://semistrict.github.io/dago/).
 
 ## Install
 
@@ -20,10 +20,8 @@ dago requires Go 1.26 or newer.
 
 ## Quick start
 
-Models implement the small `damodel.Chat` interface. The `damodel/modeltest` package
-includes both finite scripted responses and Shelley's reusable prompt-driven
-predictable model for tests, demos, and browser suites. This complete example uses
-the finite scripted form:
+Models implement the small `damodel.Chat` interface. This example uses the OpenAI
+adapter, but the agent and tool APIs are provider-neutral:
 
 ```go
 package main
@@ -32,23 +30,23 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
-	"github.com/semistrict/dago/damodel"
-	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/daproviders/openai"
 )
 
 func main() {
-	chat := modeltest.New(damodel.Profile{}, modeltest.Step{
-		Response: damodel.Response{Message: damessage.Assistant("Ready.")},
+	chat, err := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), openai.Options{
+		Model:         "gpt-5",
+		ContextWindow: 128_000,
 	})
-	compiled, err := dago.New(dago.Options{
-		Model:            chat,
-		DisableSubagents: true,
-		DisableSummary:   true,
-	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	compiled, err := dago.New(dago.Options{Model: chat})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -145,7 +143,7 @@ result, err := compiled.Invoke(ctx, dagent.Input{
 ```
 
 Agents expose checkpoint history, replay, thread fork, and thread deletion. SQLite
-and PostgreSQL savers match the pinned Python table layouts and delta-snapshot rules.
+and PostgreSQL savers match the supported Python table layouts and delta-snapshot rules.
 Cross-language payload compatibility is intentionally limited to the safe plain-data
 subset in [`docs/SERIALIZATION.md`](docs/SERIALIZATION.md); Python-specific object
 records are rejected with typed context instead of reconstructed.
@@ -176,20 +174,8 @@ LangChain or LangGraph compatibility.
 - [`examples/basic`](examples/basic) is a network-free invocation.
 - [`examples/openai`](examples/openai) streams a live workspace summary with an API
   key.
-- [`examples/shelley`](examples/shelley) is a copied and modified Shelley
-  application used as an end-to-end dago integration example.
-
-## Verification
-
-```sh
-make check
-make checkpoint-interop
-```
-
-`make check` runs formatting, generated-fixture drift, configured upstream-pin
-validation, vet, the deterministic suite, and race tests. PostgreSQL integration tests additionally
-require `DAGO_POSTGRES_TEST_DSN`. Cross-language SQLite fixtures require `uv` and the
-pinned Python packages resolved by the interop script.
+- [`examples/shelley`](examples/shelley) is a full web application powered by dago.
+  [Run it in your browser](https://semistrict.github.io/dago/).
 
 ## Security
 
