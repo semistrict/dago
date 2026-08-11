@@ -3,7 +3,7 @@ package browse
 import (
 	"context"
 
-	dtool "github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 )
 
 // RegisterBrowserTools returns browser tools (combined browser tool + read_image) ready to be added to an agent.
@@ -11,10 +11,10 @@ import (
 // The browser will be initialized lazily when a browser tool is first used.
 // Per-image size limits come from the native model profile in tool runtime
 // context rather than from provider-specific service interfaces.
-func RegisterBrowserTools(ctx context.Context) ([]dtool.Tool, func()) {
+func RegisterBrowserTools(ctx context.Context) ([]datool.Tool, func()) {
 	browserTools := NewBrowseTools(ctx, 0)
 
-	return []dtool.Tool{browserTools.NativeCombinedTool(), browserTools.NativeReadImageTool()}, func() {
+	return []datool.Tool{browserTools.NativeCombinedTool(), browserTools.NativeReadImageTool()}, func() {
 		browserTools.Close()
 	}
 }

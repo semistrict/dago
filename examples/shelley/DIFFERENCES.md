@@ -7,12 +7,12 @@ notifications, terminal sessions, and application-only tools.
 
 The following differences are intentional:
 
-- Dago requires delta channels. Shelley does not offer a non-delta execution or
+- dago requires delta channels. Shelley does not offer a non-delta execution or
   checkpoint mode.
 - SQLite and PostgreSQL use the Python-compatible schemas and language-neutral
   payload subset. Python-specific serialized objects, imports, constructors, and
   callable payloads are rejected instead of being deserialized.
-- Dago exposes one context-aware Go execution API rather than separate synchronous
+- dago exposes one context-aware Go execution API rather than separate synchronous
   and asynchronous Python APIs. Cancellation and streaming behavior remain part of
   the same contract.
 - Shell execution requires an explicitly configured sandbox. A filesystem backend
@@ -20,4 +20,4 @@ The following differences are intentional:
 
 Temporary migration gaps are not intentional differences and must not be added to
 this file. They remain implementation work until Shelley delegates the corresponding
-harness responsibility to Dago.
+harness responsibility to dago.

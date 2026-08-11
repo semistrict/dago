@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	dtool "github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 )
 
 func TestOutputIframeRun(t *testing.T) {
@@ -158,7 +158,7 @@ func TestOutputIframeRun(t *testing.T) {
 				t.Fatalf("failed to marshal input: %v", err)
 			}
 
-			result, executeErr := tool.NativeTool().Execute(context.Background(), inputJSON, dtool.Runtime{})
+			result, executeErr := tool.NativeTool().Execute(context.Background(), inputJSON, datool.Runtime{})
 
 			if tt.wantErr {
 				if executeErr == nil {
@@ -220,7 +220,7 @@ func TestOutputIframeLibraries(t *testing.T) {
 			"path":      "test.html",
 			"libraries": []string{"excalidraw"},
 		})
-		res, err := tool.NativeTool().Execute(context.Background(), in, dtool.Runtime{})
+		res, err := tool.NativeTool().Execute(context.Background(), in, datool.Runtime{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -243,7 +243,7 @@ func TestOutputIframeLibraries(t *testing.T) {
 			"path":      "test.html",
 			"libraries": []string{"not-a-real-lib"},
 		})
-		_, err := tool.NativeTool().Execute(context.Background(), in, dtool.Runtime{})
+		_, err := tool.NativeTool().Execute(context.Background(), in, datool.Runtime{})
 		if err == nil {
 			t.Errorf("expected error for unknown library, got none")
 		}
@@ -254,7 +254,7 @@ func TestOutputIframeLibraries(t *testing.T) {
 			"path":      "test.html",
 			"libraries": []string{"excalidraw", "excalidraw"},
 		})
-		res, err := tool.NativeTool().Execute(context.Background(), in, dtool.Runtime{})
+		res, err := tool.NativeTool().Execute(context.Background(), in, datool.Runtime{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

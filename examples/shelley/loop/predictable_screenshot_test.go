@@ -3,7 +3,7 @@ package loop
 import (
 	"testing"
 
-	"shelley.exe.dev/claudetool/browse"
+	"github.com/semistrict/dago/examples/shelley/claudetool/browse"
 )
 
 // The "screenshot image" predictable pattern hardcodes the screenshot

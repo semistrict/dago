@@ -6,9 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/gitstate"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/gitstate"
 )
+
+func (c *conversationListGitCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]conversationListGitCacheEntry)
+}
 
 func TestConversationListGitCacheTTL(t *testing.T) {
 	cache := newConversationListGitCache()

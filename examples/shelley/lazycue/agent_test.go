@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/providers/openai"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/daproviders/openai"
 )
 
 func TestIsRetryableAnthropicErr(t *testing.T) {
@@ -57,8 +57,8 @@ func newTestChat(t *testing.T, baseURL string) *retryingChat {
 	return &retryingChat{inner: client, attempts: modelMaxAttempts, backoff: 0}
 }
 
-func invokeTestChat(ctx context.Context, chat model.Chat) (model.Response, error) {
-	return chat.Invoke(ctx, model.Request{Messages: []message.Message{message.Human("hi")}})
+func invokeTestChat(ctx context.Context, chat damodel.Chat) (damodel.Response, error) {
+	return chat.Invoke(ctx, damodel.Request{Messages: []damessage.Message{damessage.Human("hi")}})
 }
 
 func TestCallAnthropicRetriesTransient5xx(t *testing.T) {

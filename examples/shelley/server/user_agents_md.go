@@ -99,7 +99,7 @@ func ensureUserAgentsMdRepo() error {
 		return fmt.Errorf("git config core.worktree: %w", err)
 	}
 	// Local identity so commits don't depend on global git config.
-	_ = runAgentsGitIn(gitDir, "config", "user.email", "shelley@exe.dev")
+	_ = runAgentsGitIn(gitDir, "config", "user.email", "shelley@example.invalid")
 	_ = runAgentsGitIn(gitDir, "config", "user.name", "Shelley")
 	_ = runAgentsGitIn(gitDir, "config", "commit.gpgsign", "false")
 

@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
-func nativeToolResultCount(request dmodel.Request) int {
+func nativeToolResultCount(request damodel.Request) int {
 	count := 0
 	for _, item := range request.Messages {
 		if item.Role == dmessage.RoleTool {
@@ -26,7 +26,7 @@ func nativeToolResultCount(request dmodel.Request) int {
 	return count
 }
 
-func nativeRequestHasText(request dmodel.Request, text string) bool {
+func nativeRequestHasText(request damodel.Request, text string) bool {
 	for _, item := range request.Messages {
 		if item.Role == dmessage.RoleHuman && item.TextContent() == text {
 			return true
@@ -35,14 +35,14 @@ func nativeRequestHasText(request dmodel.Request, text string) bool {
 	return false
 }
 
-func nativeTextResponse(text string) dmodel.Response {
-	return dmodel.Response{Message: dmessage.Assistant(text)}
+func nativeTextResponse(text string) damodel.Response {
+	return damodel.Response{Message: dmessage.Assistant(text)}
 }
 
-func nativeToolResponse(text, id, name string, arguments json.RawMessage) dmodel.Response {
+func nativeToolResponse(text, id, name string, arguments json.RawMessage) damodel.Response {
 	result := dmessage.Assistant(text)
 	result.ToolCalls = []dmessage.ToolCall{{ID: id, Name: name, Arguments: arguments}}
-	return dmodel.Response{Message: result}
+	return damodel.Response{Message: result}
 }
 
 // TestInterruptionDuringToolExecution tests that user messages queued during
@@ -55,14 +55,14 @@ func TestInterruptionDuringToolExecution(t *testing.T) {
 	var interruptionSeen atomic.Bool
 
 	// Create a slow tool
-	slowTool := dtool.Func{
-		Spec: dtool.Definition{Name: "slow_tool", Description: "A tool that takes time to execute", InputSchema: json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`)},
-		Run: func(ctx context.Context, input json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+	slowTool := datool.Func{
+		Spec: datool.Definition{Name: "slow_tool", Description: "A tool that takes time to execute", InputSchema: json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`)},
+		Run: func(ctx context.Context, input json.RawMessage, _ datool.Runtime) (datool.Result, error) {
 			toolStarted.Store(true)
 			// Sleep to simulate slow tool execution
 			time.Sleep(200 * time.Millisecond)
 			toolCompleted.Store(true)
-			return dtool.TextResult("Tool completed"), nil
+			return datool.TextResult("Tool completed"), nil
 		},
 	}
 
@@ -72,7 +72,7 @@ func TestInterruptionDuringToolExecution(t *testing.T) {
 
 	// Create a service that detects the interruption
 	service := &customPredictableService{
-		responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
+		responseFunc: func(request damodel.Request) (damodel.Response, error) {
 			// Check if we've seen the interruption
 			toolResults := nativeToolResultCount(request)
 			if nativeRequestHasText(request, "INTERRUPTION") {
@@ -93,7 +93,7 @@ func TestInterruptionDuringToolExecution(t *testing.T) {
 	loop := NewLoop(Config{
 		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []dtool.Tool{slowTool},
+		Tools:         []datool.Tool{slowTool},
 		RecordMessage: recordMessage,
 	})
 
@@ -155,13 +155,13 @@ func TestInterruptionDuringMultiToolChain(t *testing.T) {
 	var interruptionSeenAtToolResult atomic.Int32 // -1 means not seen
 
 	// Create a tool that's called multiple times
-	multiTool := dtool.Func{
-		Spec: dtool.Definition{Name: "multi_tool", Description: "A tool that might be called multiple times", InputSchema: json.RawMessage(`{"type":"object","properties":{"step":{"type":"integer"}}}`)},
-		Run: func(ctx context.Context, input json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+	multiTool := datool.Func{
+		Spec: datool.Definition{Name: "multi_tool", Description: "A tool that might be called multiple times", InputSchema: json.RawMessage(`{"type":"object","properties":{"step":{"type":"integer"}}}`)},
+		Run: func(ctx context.Context, input json.RawMessage, _ datool.Runtime) (datool.Result, error) {
 			count := toolCallCount.Add(1)
 			time.Sleep(100 * time.Millisecond) // Simulate some work
 			_ = count
-			return dtool.TextResult("Tool step completed"), nil
+			return datool.TextResult("Tool step completed"), nil
 		},
 	}
 
@@ -172,7 +172,7 @@ func TestInterruptionDuringMultiToolChain(t *testing.T) {
 	// Service that makes multiple tool calls but stops when it sees "STOP"
 	interruptionSeenAtToolResult.Store(-1)
 	service := &customPredictableService{
-		responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
+		responseFunc: func(request damodel.Request) (damodel.Response, error) {
 			// Check if we've seen the STOP message
 			toolResults := nativeToolResultCount(request)
 			if nativeRequestHasText(request, "STOP") {
@@ -193,7 +193,7 @@ func TestInterruptionDuringMultiToolChain(t *testing.T) {
 	loop := NewLoop(Config{
 		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []dtool.Tool{multiTool},
+		Tools:         []datool.Tool{multiTool},
 		RecordMessage: recordMessage,
 	})
 
@@ -254,17 +254,17 @@ func TestInterruptionDuringMultiToolChain(t *testing.T) {
 // customPredictableService allows custom response logic for testing
 type customPredictableService struct {
 	responses    []customResponse
-	responseFunc func(request dmodel.Request) (dmodel.Response, error)
+	responseFunc func(request damodel.Request) (damodel.Response, error)
 	callIndex    int
 	mu           sync.Mutex
 }
 
 type customResponse struct {
-	response dmodel.Response
+	response damodel.Response
 	err      error
 }
 
-func (s *customPredictableService) Invoke(_ context.Context, request dmodel.Request) (dmodel.Response, error) {
+func (s *customPredictableService) Invoke(_ context.Context, request damodel.Request) (damodel.Response, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -274,7 +274,7 @@ func (s *customPredictableService) Invoke(_ context.Context, request dmodel.Requ
 
 	if s.callIndex >= len(s.responses) {
 		// Default response
-		return dmodel.Response{Message: dmessage.Assistant("No more responses configured")}, nil
+		return damodel.Response{Message: dmessage.Assistant("No more responses configured")}, nil
 	}
 
 	resp := s.responses[s.callIndex]
@@ -282,11 +282,11 @@ func (s *customPredictableService) Invoke(_ context.Context, request dmodel.Requ
 	return resp.response, resp.err
 }
 
-func (*customPredictableService) Profile() dmodel.Profile {
-	return dmodel.Profile{Provider: "builtin", Model: "custom-test", ContextWindow: 100000, ToolCalling: true, SupportsImages: true, MaxImageDimension: 8000}
+func (*customPredictableService) Profile() damodel.Profile {
+	return damodel.Profile{Provider: "builtin", Model: "custom-test", ContextWindow: 100000, ToolCalling: true, SupportsImages: true, MaxImageDimension: 8000}
 }
 
-func (*customPredictableService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+func (*customPredictableService) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
 	return nil, fmt.Errorf("custom test model does not stream")
 }
 
@@ -296,11 +296,11 @@ func TestNoInterruptionNormalFlow(t *testing.T) {
 	var toolCallCount atomic.Int32
 
 	// Create a tool that tracks calls
-	multiTool := dtool.Func{
-		Spec: dtool.Definition{Name: "multi_tool", Description: "A tool", InputSchema: json.RawMessage(`{"type":"object","properties":{"step":{"type":"integer"}}}`)},
-		Run: func(ctx context.Context, input json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+	multiTool := datool.Func{
+		Spec: datool.Definition{Name: "multi_tool", Description: "A tool", InputSchema: json.RawMessage(`{"type":"object","properties":{"step":{"type":"integer"}}}`)},
+		Run: func(ctx context.Context, input json.RawMessage, _ datool.Runtime) (datool.Result, error) {
 			toolCallCount.Add(1)
-			return dtool.TextResult("done"), nil
+			return datool.TextResult("done"), nil
 		},
 	}
 
@@ -310,7 +310,7 @@ func TestNoInterruptionNormalFlow(t *testing.T) {
 
 	// Service that makes 3 tool calls then finishes
 	service := &customPredictableService{
-		responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
+		responseFunc: func(request damodel.Request) (damodel.Response, error) {
 			toolResults := nativeToolResultCount(request)
 
 			if toolResults < 3 {
@@ -324,7 +324,7 @@ func TestNoInterruptionNormalFlow(t *testing.T) {
 	loop := NewLoop(Config{
 		Model:         service,
 		History:       []llm.Message{},
-		Tools:         []dtool.Tool{multiTool},
+		Tools:         []datool.Tool{multiTool},
 		RecordMessage: recordMessage,
 	})
 

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // handleMessageImage serves an image extracted from a message's llm_data.
@@ -94,28 +94,6 @@ func (s *Server) handleMessageImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=1209600")
 	w.Header().Set("Content-Length", strconv.Itoa(len(imageBytes)))
 	w.Write(imageBytes)
-}
-
-// stripImageDataFromLLMData removes base64 image data from llm_data JSON and
-// replaces it with a URL pointing to the /api/message/{id}/image endpoint.
-// This dramatically reduces response sizes for conversations with screenshots.
-func stripImageDataFromLLMData(llmData *string, messageID string) *string {
-	if llmData == nil {
-		return nil
-	}
-	var msg llm.Message
-	if err := json.Unmarshal([]byte(*llmData), &msg); err != nil {
-		return llmData
-	}
-	if !stripImageDataFromContents(msg.Content, messageID) {
-		return llmData
-	}
-	stripped, err := json.Marshal(msg)
-	if err != nil {
-		return llmData
-	}
-	s := string(stripped)
-	return &s
 }
 
 // imageURL builds the URL for an image served from the DB.

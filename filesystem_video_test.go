@@ -8,31 +8,31 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
 )
 
 func TestReadFileExtractsVideoWindow(t *testing.T) {
 	raw := []byte{0xff, 0x00, 0x01}
-	memory, err := backend.NewMemory(map[string]backend.FileData{
-		"/movie.mp4": {Content: base64.StdEncoding.EncodeToString(raw), Encoding: backend.EncodingBase64},
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/movie.mp4": {Content: base64.StdEncoding.EncodeToString(raw), Encoding: dabackend.EncodingBase64},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var gotContent []byte
 	var gotWindow VideoWindow
-	extractor := VideoExtractorFunc(func(_ context.Context, content []byte, window VideoWindow) ([]message.ContentBlock, error) {
+	extractor := VideoExtractorFunc(func(_ context.Context, content []byte, window VideoWindow) ([]damessage.ContentBlock, error) {
 		gotContent = append([]byte(nil), content...)
 		gotWindow = window
-		return []message.ContentBlock{
-			{Type: message.BlockText, Text: "Frame at t=00:00:12.000"},
-			{Type: message.BlockImage, Data: jpegBytes("frame"), MIMEType: "image/jpeg"},
+		return []damessage.ContentBlock{
+			{Type: damessage.BlockText, Text: "Frame at t=00:00:12.000"},
+			{Type: damessage.BlockImage, Data: jpegBytes("frame"), MIMEType: "image/jpeg"},
 		}, nil
 	})
 	read := filesystemTool(t, FilesystemOptions{Backend: memory, VideoExtractor: extractor, VideoSamplingRate: 2}, "read_file")
-	result, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mp4","offset":12,"limit":7}`), tool.Runtime{})
+	result, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mp4","offset":12,"limit":7}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,11 +51,11 @@ func TestReadFileExtractsVideoWindow(t *testing.T) {
 func TestReadFileUsesDefaultVideoWindow(t *testing.T) {
 	memory := videoMemory(t, "/movie.webm", []byte{0xff, 0x01})
 	var got VideoWindow
-	read := filesystemTool(t, FilesystemOptions{Backend: memory, VideoExtractor: VideoExtractorFunc(func(_ context.Context, _ []byte, window VideoWindow) ([]message.ContentBlock, error) {
+	read := filesystemTool(t, FilesystemOptions{Backend: memory, VideoExtractor: VideoExtractorFunc(func(_ context.Context, _ []byte, window VideoWindow) ([]damessage.ContentBlock, error) {
 		got = window
 		return nil, nil
 	})}, "read_file")
-	result, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.webm"}`), tool.Runtime{})
+	result, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.webm"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +70,11 @@ func TestReadFileUsesDefaultVideoWindow(t *testing.T) {
 func TestReadFileRejectsInvalidVideoLimitBeforeExtraction(t *testing.T) {
 	memory := videoMemory(t, "/movie.mov", []byte{0xff, 0x01})
 	called := false
-	read := filesystemTool(t, FilesystemOptions{Backend: memory, VideoExtractor: VideoExtractorFunc(func(context.Context, []byte, VideoWindow) ([]message.ContentBlock, error) {
+	read := filesystemTool(t, FilesystemOptions{Backend: memory, VideoExtractor: VideoExtractorFunc(func(context.Context, []byte, VideoWindow) ([]damessage.ContentBlock, error) {
 		called = true
 		return nil, nil
 	})}, "read_file")
-	_, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mov","limit":0}`), tool.Runtime{})
+	_, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mov","limit":0}`), datool.Runtime{})
 	if err == nil || !strings.Contains(err.Error(), "limit must be > 0") || called {
 		t.Fatalf("error = %v, called = %v", err, called)
 	}
@@ -82,11 +82,11 @@ func TestReadFileRejectsInvalidVideoLimitBeforeExtraction(t *testing.T) {
 
 func TestReadFileEnforcesVideoInputCap(t *testing.T) {
 	memory := videoMemory(t, "/movie.avi", []byte{0xff, 0x01, 0x02})
-	read := filesystemTool(t, FilesystemOptions{Backend: memory, MaxVideoBytes: 2, VideoExtractor: VideoExtractorFunc(func(context.Context, []byte, VideoWindow) ([]message.ContentBlock, error) {
+	read := filesystemTool(t, FilesystemOptions{Backend: memory, MaxVideoBytes: 2, VideoExtractor: VideoExtractorFunc(func(context.Context, []byte, VideoWindow) ([]damessage.ContentBlock, error) {
 		t.Fatal("extractor called after input cap")
 		return nil, nil
 	})}, "read_file")
-	_, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.avi"}`), tool.Runtime{})
+	_, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.avi"}`), datool.Runtime{})
 	if err == nil || !strings.Contains(err.Error(), "maximum input size of 2 bytes") {
 		t.Fatalf("error = %v", err)
 	}
@@ -94,10 +94,10 @@ func TestReadFileEnforcesVideoInputCap(t *testing.T) {
 
 func TestReadFilePreservesVideoWindowOnExtractorError(t *testing.T) {
 	memory := videoMemory(t, "/movie.mkv", []byte{0xff, 0x01})
-	read := filesystemTool(t, FilesystemOptions{Backend: memory, VideoExtractor: VideoExtractorFunc(func(context.Context, []byte, VideoWindow) ([]message.ContentBlock, error) {
+	read := filesystemTool(t, FilesystemOptions{Backend: memory, VideoExtractor: VideoExtractorFunc(func(context.Context, []byte, VideoWindow) ([]damessage.ContentBlock, error) {
 		return nil, errors.New("decoder unavailable")
 	})}, "read_file")
-	_, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mkv","offset":3,"limit":4}`), tool.Runtime{})
+	_, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mkv","offset":3,"limit":4}`), datool.Runtime{})
 	if err == nil || !strings.Contains(err.Error(), "decoder unavailable") || !strings.Contains(err.Error(), "[3.000s, 7.000s)") {
 		t.Fatalf("error = %v", err)
 	}
@@ -107,32 +107,32 @@ func TestReadFileLeavesVideoOpaqueWithoutExtractor(t *testing.T) {
 	raw := []byte{0xff, 0x01}
 	memory := videoMemory(t, "/movie.mp4", raw)
 	read := filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file")
-	result, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mp4"}`), tool.Runtime{})
+	result, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mp4"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Content) != 2 || result.Content[1].Type != message.BlockVideo || string(result.Content[1].Data) != string(raw) {
+	if len(result.Content) != 2 || result.Content[1].Type != damessage.BlockVideo || string(result.Content[1].Data) != string(raw) {
 		t.Fatalf("result = %#v", result.Content)
 	}
 
 	memory = videoMemory(t, "/movie.mkv", raw)
 	read = filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file")
-	result, err = read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mkv"}`), tool.Runtime{})
+	result, err = read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.mkv"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Content[1].Type != message.BlockFile {
+	if result.Content[1].Type != damessage.BlockFile {
 		t.Fatalf("mkv block type = %q", result.Content[1].Type)
 	}
 }
 
 func TestReadFileAdvertisesVideoOnlyWhenConfigured(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	plain := filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file").Definition()
-	video := filesystemTool(t, FilesystemOptions{Backend: memory, VideoExtractor: VideoExtractorFunc(func(context.Context, []byte, VideoWindow) ([]message.ContentBlock, error) {
+	video := filesystemTool(t, FilesystemOptions{Backend: memory, VideoExtractor: VideoExtractorFunc(func(context.Context, []byte, VideoWindow) ([]damessage.ContentBlock, error) {
 		return nil, nil
 	})}, "read_file").Definition()
 	if strings.Contains(plain.Description, "videos") || strings.Contains(string(plain.InputSchema), "For videos") {
@@ -143,10 +143,10 @@ func TestReadFileAdvertisesVideoOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
-func videoMemory(t *testing.T, name string, raw []byte) *backend.Memory {
+func videoMemory(t *testing.T, name string, raw []byte) *dabackend.Memory {
 	t.Helper()
-	memory, err := backend.NewMemory(map[string]backend.FileData{
-		name: {Content: base64.StdEncoding.EncodeToString(raw), Encoding: backend.EncodingBase64},
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		name: {Content: base64.StdEncoding.EncodeToString(raw), Encoding: dabackend.EncodingBase64},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func videoMemory(t *testing.T, name string, raw []byte) *backend.Memory {
 	return memory
 }
 
-func filesystemTool(t *testing.T, options FilesystemOptions, name string) tool.Tool {
+func filesystemTool(t *testing.T, options FilesystemOptions, name string) datool.Tool {
 	t.Helper()
 	middleware, err := FilesystemMiddleware(options)
 	if err != nil {

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // streamFlusher batches LLM stream deltas and flushes them periodically.

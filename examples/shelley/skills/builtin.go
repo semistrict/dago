@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	dskill "github.com/semistrict/dago/skill"
+	dskill "github.com/semistrict/dago/daskill"
 )
 
 //go:embed builtin/*/SKILL.md
@@ -42,14 +42,9 @@ func BuiltinSkills() []Skill {
 			panic(fmt.Sprintf("embedded skill %s: name %q does not match directory %q", path, parsed.Name, parentDir))
 		}
 		parsed.Path = ""
-		out = append(out, fromDagoSkill(parsed))
+		out = append(out, parsed)
 		return nil
 	})
 
 	return out
-}
-
-// extractBody returns the markdown content after the YAML frontmatter.
-func extractBody(content string) string {
-	return dskill.ExtractBody(content)
 }

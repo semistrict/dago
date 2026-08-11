@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
 )
 
 const AsyncTasksKey = "async_tasks"
@@ -68,9 +69,9 @@ type AsyncSubagentOptions struct {
 
 // AsyncSubagentMiddleware adds tools for starting and managing durable
 // background-agent tasks.
-func AsyncSubagentMiddleware(options AsyncSubagentOptions) (agent.Middleware, error) {
+func AsyncSubagentMiddleware(options AsyncSubagentOptions) (dagent.Middleware, error) {
 	if len(options.Subagents) == 0 {
-		return agent.Middleware{}, fmt.Errorf("at least one async subagent is required")
+		return dagent.Middleware{}, fmt.Errorf("at least one async subagent is required")
 	}
 	if options.Now == nil {
 		options.Now = time.Now
@@ -78,17 +79,17 @@ func AsyncSubagentMiddleware(options AsyncSubagentOptions) (agent.Middleware, er
 	byName := make(map[string]AsyncSubagent, len(options.Subagents))
 	for _, value := range options.Subagents {
 		if strings.TrimSpace(value.Name) == "" || strings.TrimSpace(value.Description) == "" || strings.TrimSpace(value.GraphID) == "" {
-			return agent.Middleware{}, fmt.Errorf("async subagent name, description, and graph id are required")
+			return dagent.Middleware{}, fmt.Errorf("async subagent name, description, and graph id are required")
 		}
 		if value.Runner == nil {
 			runner, err := NewAgentProtocolRunner(AgentProtocolOptions{URL: value.URL, APIKey: value.APIKey, Headers: value.Headers, HTTPClient: value.HTTPClient})
 			if err != nil {
-				return agent.Middleware{}, fmt.Errorf("async subagent %q: %w", value.Name, err)
+				return dagent.Middleware{}, fmt.Errorf("async subagent %q: %w", value.Name, err)
 			}
 			value.Runner = runner
 		}
 		if _, exists := byName[value.Name]; exists {
-			return agent.Middleware{}, fmt.Errorf("duplicate async subagent %q", value.Name)
+			return dagent.Middleware{}, fmt.Errorf("duplicate async subagent %q", value.Name)
 		}
 		byName[value.Name] = value
 	}
@@ -102,24 +103,24 @@ func AsyncSubagentMiddleware(options AsyncSubagentOptions) (agent.Middleware, er
 		lines = append(lines, "- "+name+": "+byName[name].Description)
 	}
 	available := strings.Join(lines, "\n")
-	tools := []tool.Tool{
+	tools := []datool.Tool{
 		asyncStartTool(byName, names, available, options.Now),
 		asyncCheckTool(byName, options.Now),
 		asyncUpdateTool(byName, options.Now),
 		asyncCancelTool(byName, options.Now),
 		asyncListTool(byName, options.Now),
 	}
-	middleware := agent.Middleware{
+	middleware := dagent.Middleware{
 		Name: "async_subagents", SerializedName: "AsyncSubAgentMiddleware",
-		Fields: map[string]agent.StateField{AsyncTasksKey: {
-			Kind: agent.FieldDelta, Contract: "dago.async_tasks.delta.v1", SnapshotFrequency: 100,
+		Fields: map[string]dagent.StateField{AsyncTasksKey: {
+			Kind: dagent.FieldDelta, Contract: "dago.async_tasks.delta.v1", SnapshotFrequency: 100,
 			Initial: func() any { return map[string]any{} }, Reduce: reduceAsyncTasks, Clone: cloneAsyncTasks,
 		}},
 		Tools: tools,
 	}
 	if options.SystemPrompt != "" {
 		fragment := options.SystemPrompt + "\n\nAvailable async subagent types:\n\n" + available
-		middleware.WrapModelCall = func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+		middleware.WrapModelCall = func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 			appendSystem(&request, fragment)
 			return next(ctx, request)
 		}
@@ -127,15 +128,7 @@ func AsyncSubagentMiddleware(options AsyncSubagentOptions) (agent.Middleware, er
 	return middleware, nil
 }
 
-func asyncStartTool(byName map[string]AsyncSubagent, names []string, available string, now func() time.Time) tool.Tool {
-	schema, _ := json.Marshal(map[string]any{
-		"type": "object", "additionalProperties": false,
-		"properties": map[string]any{
-			"description":   map[string]any{"type": "string", "description": "A detailed description of the task for the async subagent to perform."},
-			"subagent_type": map[string]any{"type": "string", "enum": names},
-		},
-		"required": []string{"description", "subagent_type"},
-	})
+func asyncStartTool(byName map[string]AsyncSubagent, names []string, available string, now func() time.Time) datool.Tool {
 	description := `Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.
 
 Available async agent types:
@@ -147,48 +140,46 @@ Available async agent types:
 3. Use update_async_task to send new instructions to a running task.
 4. Multiple async subagents can run concurrently — launch several and let them run in the background.
 5. The subagent runs on a remote server, so it has its own tools and capabilities.`
-	return tool.Func{Spec: tool.Definition{Name: "start_async_task", Description: description, InputSchema: schema}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-		var input struct {
-			Description string `json:"description"`
-			Type        string `json:"subagent_type"`
-		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
+	type input struct {
+		Description string `json:"description" description:"A detailed description of the task for the async subagent to perform."`
+		Type        string `json:"subagent_type"`
+	}
+	return datool.MustNew("start_async_task", description, func(ctx context.Context, input input) (any, error) {
 		spec, exists := byName[input.Type]
 		if !exists {
 			quoted := make([]string, len(names))
 			for index, name := range names {
 				quoted[index] = "`" + name + "`"
 			}
-			return tool.TextResult("Unknown async subagent type `" + input.Type + "`. Available types: " + strings.Join(quoted, ", ")), nil
+			return "Unknown async subagent type `" + input.Type + "`. Available types: " + strings.Join(quoted, ", "), nil
 		}
 		run, err := spec.Runner.Start(ctx, spec.GraphID, input.Description)
 		if err != nil {
-			return tool.TextResult("Failed to launch async subagent '" + input.Type + "': " + err.Error()), nil
+			return "Failed to launch async subagent '" + input.Type + "': " + err.Error(), nil
 		}
 		if run.ThreadID == "" || run.RunID == "" {
-			return tool.Result{}, fmt.Errorf("async subagent %q returned an empty thread or run id", input.Type)
+			return datool.Result{}, fmt.Errorf("async subagent %q returned an empty thread or run id", input.Type)
 		}
 		stamp := asyncTimestamp(now())
 		task := AsyncTask{TaskID: run.ThreadID, AgentName: input.Type, ThreadID: run.ThreadID, RunID: run.RunID, Status: "running", CreatedAt: stamp, LastCheckedAt: stamp, LastUpdatedAt: stamp}
 		return asyncTaskResult("Launched async subagent. task_id: "+task.TaskID, task), nil
-	}}
+	}, datool.WithPropertyEnum("subagent_type", names...))
 }
 
-func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) tool.Tool {
-	return tool.Func{Spec: tool.Definition{Name: "check_async_task", Description: "Check the status of an async subagent task. Returns the current status and, if complete, the result. Statuses shown earlier in the conversation are always stale, so call this to get the current status rather than reporting a status from a previous tool result.", InputSchema: asyncTaskIDSchema()}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
-		task, result, err := resolveAsyncTask(raw, runtime)
-		if err != nil || result != nil {
-			return resultOrError(result, err)
+func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) datool.Tool {
+	return datool.MustNew("check_async_task", "Check the status of an async subagent task. Returns the current status and, if complete, the result. Statuses shown earlier in the conversation are always stale, so call this to get the current status rather than reporting a status from a previous tool result.", func(ctx context.Context, input asyncTaskIDInput) (any, error) {
+		runtime, _ := datool.RuntimeFromContext(ctx)
+		task, result := asyncTaskFromRuntime(strings.TrimSpace(input.TaskID), runtime)
+		if result != nil {
+			return *result, nil
 		}
 		spec, exists := byName[task.AgentName]
 		if !exists {
-			return tool.TextResult("No async subagent configuration found for tracked agent: " + task.AgentName), nil
+			return "No async subagent configuration found for tracked agent: " + task.AgentName, nil
 		}
 		run, err := spec.Runner.Check(ctx, task.ThreadID, task.RunID)
 		if err != nil {
-			return tool.TextResult("Failed to get run status: " + err.Error()), nil
+			return "Failed to get run status: " + err.Error(), nil
 		}
 		stamp := asyncTimestamp(now())
 		if run.Status != "" && run.Status != task.Status {
@@ -222,71 +213,66 @@ func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) tool.
 		}
 		encoded, _ := json.Marshal(payload)
 		return asyncTaskResult(string(encoded), task), nil
-	}}
+	})
 }
 
-func asyncUpdateTool(byName map[string]AsyncSubagent, now func() time.Time) tool.Tool {
-	schema := json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string"},"message":{"type":"string"}},"required":["task_id","message"],"additionalProperties":false}`)
-	return tool.Func{Spec: tool.Definition{Name: "update_async_task", Description: "Send updated instructions to an async subagent. Interrupts the current run and starts a new one on the same thread, so the subagent sees the full conversation history plus your new message. The task_id remains the same.", InputSchema: schema}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
-		var input struct {
-			TaskID  string `json:"task_id"`
-			Message string `json:"message"`
-		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
+func asyncUpdateTool(byName map[string]AsyncSubagent, now func() time.Time) datool.Tool {
+	type input struct {
+		TaskID  string `json:"task_id"`
+		Message string `json:"message"`
+	}
+	return datool.MustNew("update_async_task", "Send updated instructions to an async subagent. Interrupts the current run and starts a new one on the same thread, so the subagent sees the full conversation history plus your new message. The task_id remains the same.", func(ctx context.Context, input input) (any, error) {
+		runtime, _ := datool.RuntimeFromContext(ctx)
 		task, result := asyncTaskFromRuntime(strings.TrimSpace(input.TaskID), runtime)
 		if result != nil {
 			return *result, nil
 		}
 		spec, exists := byName[task.AgentName]
 		if !exists {
-			return tool.TextResult("No async subagent configuration found for tracked agent: " + task.AgentName), nil
+			return "No async subagent configuration found for tracked agent: " + task.AgentName, nil
 		}
 		run, err := spec.Runner.Update(ctx, spec.GraphID, task.ThreadID, input.Message)
 		if err != nil {
-			return tool.TextResult("Failed to update async subagent: " + err.Error()), nil
+			return "Failed to update async subagent: " + err.Error(), nil
 		}
 		if run.RunID == "" {
-			return tool.Result{}, fmt.Errorf("async subagent %q returned an empty updated run id", task.AgentName)
+			return datool.Result{}, fmt.Errorf("async subagent %q returned an empty updated run id", task.AgentName)
 		}
 		task.RunID = run.RunID
 		task.Status = "running"
 		task.LastUpdatedAt = asyncTimestamp(now())
 		return asyncTaskResult("Updated async subagent. task_id: "+task.TaskID, task), nil
-	}}
+	})
 }
 
-func asyncCancelTool(byName map[string]AsyncSubagent, now func() time.Time) tool.Tool {
-	return tool.Func{Spec: tool.Definition{Name: "cancel_async_task", Description: "Cancel a running async subagent task. Use this to stop a task that is no longer needed.", InputSchema: asyncTaskIDSchema()}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
-		task, result, err := resolveAsyncTask(raw, runtime)
-		if err != nil || result != nil {
-			return resultOrError(result, err)
+func asyncCancelTool(byName map[string]AsyncSubagent, now func() time.Time) datool.Tool {
+	return datool.MustNew("cancel_async_task", "Cancel a running async subagent task. Use this to stop a task that is no longer needed.", func(ctx context.Context, input asyncTaskIDInput) (any, error) {
+		runtime, _ := datool.RuntimeFromContext(ctx)
+		task, result := asyncTaskFromRuntime(strings.TrimSpace(input.TaskID), runtime)
+		if result != nil {
+			return *result, nil
 		}
 		spec, exists := byName[task.AgentName]
 		if !exists {
-			return tool.TextResult("No async subagent configuration found for tracked agent: " + task.AgentName), nil
+			return "No async subagent configuration found for tracked agent: " + task.AgentName, nil
 		}
 		if err := spec.Runner.Cancel(ctx, task.ThreadID, task.RunID); err != nil {
-			return tool.TextResult("Failed to cancel run: " + err.Error()), nil
+			return "Failed to cancel run: " + err.Error(), nil
 		}
 		stamp := asyncTimestamp(now())
 		task.Status, task.LastCheckedAt, task.LastUpdatedAt = "cancelled", stamp, stamp
 		return asyncTaskResult("Cancelled async subagent task: "+task.TaskID, task), nil
-	}}
+	})
 }
 
-func asyncListTool(byName map[string]AsyncSubagent, now func() time.Time) tool.Tool {
-	schema := json.RawMessage(`{"type":"object","properties":{"status_filter":{"type":"string","enum":["running","success","error","cancelled","all"]}},"additionalProperties":false}`)
-	return tool.Func{Spec: tool.Definition{Name: "list_async_tasks", Description: "List tracked async subagent tasks with their current live statuses. By default shows all tasks. Use status_filter to narrow by status. Use check_async_task to get the full result of a specific completed task. Statuses shown earlier in the conversation are always stale, so call this to read current statuses rather than reporting one from a previous tool result.", InputSchema: schema}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
-		var input struct {
-			Status string `json:"status_filter"`
-		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
+func asyncListTool(byName map[string]AsyncSubagent, now func() time.Time) datool.Tool {
+	type input struct {
+		Status string `json:"status_filter,omitempty" jsonschema:"enum=running|success|error|cancelled|all"`
+	}
+	return datool.MustNew("list_async_tasks", "List tracked async subagent tasks with their current live statuses. By default shows all tasks. Use status_filter to narrow by status. Use check_async_task to get the full result of a specific completed task. Statuses shown earlier in the conversation are always stale, so call this to read current statuses rather than reporting one from a previous tool result.", func(ctx context.Context, input input) (any, error) {
+		runtime, _ := datool.RuntimeFromContext(ctx)
 		if input.Status != "" && input.Status != "all" && input.Status != "running" && input.Status != "success" && input.Status != "error" && input.Status != "cancelled" {
-			return tool.Result{}, fmt.Errorf("invalid async task status filter %q", input.Status)
+			return datool.Result{}, fmt.Errorf("invalid async task status filter %q", input.Status)
 		}
 		tasks := asyncTasksFromRuntime(runtime)
 		ids := make([]string, 0, len(tasks))
@@ -297,7 +283,7 @@ func asyncListTool(byName map[string]AsyncSubagent, now func() time.Time) tool.T
 		}
 		sort.Strings(ids)
 		if len(ids) == 0 {
-			return tool.TextResult("No async subagent tasks tracked."), nil
+			return "No async subagent tasks tracked.", nil
 		}
 		stamp := asyncTimestamp(now())
 		updates := map[string]any{}
@@ -315,35 +301,24 @@ func asyncListTool(byName map[string]AsyncSubagent, now func() time.Time) tool.T
 			updates[id] = asyncTaskMap(task)
 			lines = append(lines, fmt.Sprintf("- task_id: %s  agent: %s  status: %s", task.TaskID, task.AgentName, task.Status))
 		}
-		return tool.Result{Content: tool.TextResult(fmt.Sprintf("%d tracked task(s):\n%s", len(lines), strings.Join(lines, "\n"))).Content, Update: map[string]any{AsyncTasksKey: updates}}, nil
-	}}
+		return datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: fmt.Sprintf("%d tracked task(s):\n%s", len(lines), strings.Join(lines, "\n"))}}, Update: map[string]any{AsyncTasksKey: updates}}, nil
+	})
 }
 
-func asyncTaskIDSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"],"additionalProperties":false}`)
+type asyncTaskIDInput struct {
+	TaskID string `json:"task_id" description:"The tracked async task ID."`
 }
 
-func resolveAsyncTask(raw json.RawMessage, runtime tool.Runtime) (AsyncTask, *tool.Result, error) {
-	var input struct {
-		TaskID string `json:"task_id"`
-	}
-	if err := decodeArguments(raw, &input); err != nil {
-		return AsyncTask{}, nil, err
-	}
-	task, result := asyncTaskFromRuntime(strings.TrimSpace(input.TaskID), runtime)
-	return task, result, nil
-}
-
-func asyncTaskFromRuntime(taskID string, runtime tool.Runtime) (AsyncTask, *tool.Result) {
+func asyncTaskFromRuntime(taskID string, runtime datool.Runtime) (AsyncTask, *datool.Result) {
 	task, exists := asyncTasksFromRuntime(runtime)[taskID]
 	if !exists {
-		result := tool.TextResult(fmt.Sprintf("No tracked task found for task_id: %q", taskID))
+		result := datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: fmt.Sprintf("No tracked task found for task_id: %q", taskID)}}}
 		return AsyncTask{}, &result
 	}
 	return task, nil
 }
 
-func asyncTasksFromRuntime(runtime tool.Runtime) map[string]AsyncTask {
+func asyncTasksFromRuntime(runtime datool.Runtime) map[string]AsyncTask {
 	if runtime.State == nil {
 		return map[string]AsyncTask{}
 	}
@@ -351,15 +326,8 @@ func asyncTasksFromRuntime(runtime tool.Runtime) map[string]AsyncTask {
 	return decodeAsyncTasks(value)
 }
 
-func asyncTaskResult(text string, task AsyncTask) tool.Result {
-	return tool.Result{Content: tool.TextResult(text).Content, Update: map[string]any{AsyncTasksKey: map[string]any{task.TaskID: asyncTaskMap(task)}}}
-}
-
-func resultOrError(result *tool.Result, err error) (tool.Result, error) {
-	if err != nil {
-		return tool.Result{}, err
-	}
-	return *result, nil
+func asyncTaskResult(text string, task AsyncTask) datool.Result {
+	return datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: text}}, Update: map[string]any{AsyncTasksKey: map[string]any{task.TaskID: asyncTaskMap(task)}}}
 }
 
 func asyncTaskMap(task AsyncTask) map[string]any {

@@ -17,7 +17,7 @@ const (
 )
 
 // formatShellForegroundOutput is shared by Shelley's yielding shell and its
-// copied command-output contract tests. Dago owns ordinary execute results.
+// copied command-output contract tests. dago owns ordinary execute results.
 func formatShellForegroundOutput(out string) (string, error) {
 	if len(out) <= shellLargeOutputThreshold {
 		return out, nil

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // flusherRecorder wraps httptest.ResponseRecorder to implement http.Flusher

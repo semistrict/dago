@@ -4,7 +4,7 @@ import (
 	"io"
 	"net/http"
 
-	"shelley.exe.dev/ui"
+	"github.com/semistrict/dago/examples/shelley/ui"
 )
 
 // handleDebugConversationsPage serves the conversations list debug page

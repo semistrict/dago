@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 // TestGenerateLoremConversation verifies the synthetic conversation

@@ -5,10 +5,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/semistrict/dago/checkpoint"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
 )
 
 func TestGeneratedContractsDecodeIntoPublicTypes(t *testing.T) {
@@ -19,16 +19,16 @@ func TestGeneratedContractsDecodeIntoPublicTypes(t *testing.T) {
 	var envelope struct {
 		Generated bool `json:"generated"`
 		Contract  struct {
-			Message       message.Message       `json:"message"`
-			Tool          tool.Definition       `json:"tool"`
-			ModelResponse model.Response        `json:"model_response"`
-			Checkpoint    checkpoint.Checkpoint `json:"checkpoint"`
+			Message       damessage.Message       `json:"message"`
+			Tool          datool.Definition       `json:"tool"`
+			ModelResponse damodel.Response        `json:"model_response"`
+			Checkpoint    dacheckpoint.Checkpoint `json:"checkpoint"`
 		} `json:"contract"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if !envelope.Generated || envelope.Contract.Message.Role != message.RoleAssistant || envelope.Contract.Tool.Name != "lookup" || envelope.Contract.Checkpoint.Version != checkpoint.LatestVersion {
+	if !envelope.Generated || envelope.Contract.Message.Role != damessage.RoleAssistant || envelope.Contract.Tool.Name != "lookup" || envelope.Contract.Checkpoint.Version != dacheckpoint.LatestVersion {
 		t.Fatalf("fixture = %#v", envelope)
 	}
 	if err := envelope.Contract.Message.Validate(); err != nil {

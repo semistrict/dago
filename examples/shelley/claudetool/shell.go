@@ -13,11 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/claudetool/bashkit"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/claudetool/bashkit"
 )
 
 // ShellTool runs commands without unconditionally killing
@@ -86,35 +85,9 @@ on yield and otherwise returns it in full. Filter only when targeting a
 specific pattern (e.g. grep).
 `
 
-// shellInputSchema is built dynamically so the description reflects the
-// configured default and max yield times.
-func (s *ShellTool) inputSchema() string {
-	def := max(secondsCeil(s.defaultYield()), 1)
-	maxs := max(secondsCeil(s.maxYield()), 1)
-	if def > maxs {
-		def = maxs
-	}
-	return fmt.Sprintf(`{
-  "type": "object",
-  "required": ["command"],
-  "properties": {
-    "command": {
-      "type": "string",
-      "description": "Shell command to execute"
-    },
-    "yield_time_seconds": {
-      "type": "integer",
-      "description": "Seconds to wait synchronously before yielding control while the command continues running in the background. Default %d. Maximum %d.",
-      "minimum": 1,
-      "maximum": %d
-    }
-  }
-}`, def, maxs, maxs)
-}
-
 type shellInput struct {
-	Command          string `json:"command"`
-	YieldTimeSeconds int    `json:"yield_time_seconds,omitempty"`
+	Command          string `json:"command" description:"Shell command to execute"`
+	YieldTimeSeconds int    `json:"yield_time_seconds,omitempty" jsonschema:"minimum=1"`
 }
 
 // ShellDisplayData is the display data sent to the UI for shell tool results.
@@ -177,32 +150,30 @@ func (s *ShellTool) yieldDuration(req shellInput) time.Duration {
 	return d
 }
 
-// NativeTool executes shell commands through Dago's tool contract.
-func (s *ShellTool) NativeTool() dtool.Tool {
-	return dtool.Func{
-		Spec: dtool.Definition{
-			Name: shellName, Description: strings.TrimSpace(shellDescription),
-			InputSchema: json.RawMessage(s.inputSchema()),
-		},
-		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
-			var input shellInput
-			if err := json.Unmarshal(raw, &input); err != nil {
-				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
-			}
-			execution, err := s.execute(ctx, input, true)
-			if err != nil {
-				return dtool.Result{}, err
-			}
-			artifact, err := json.Marshal(execution.Display)
-			if err != nil {
-				return dtool.Result{}, fmt.Errorf("encode shell display: %w", err)
-			}
-			return dtool.Result{
-				Content:  []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}},
-				Artifact: artifact,
-			}, nil
-		},
+// NativeTool executes shell commands through dago's tool contract.
+func (s *ShellTool) NativeTool() datool.Tool {
+	def := max(secondsCeil(s.defaultYield()), 1)
+	maximum := max(secondsCeil(s.maxYield()), 1)
+	if def > maximum {
+		def = maximum
 	}
+	return datool.MustNew(shellName, strings.TrimSpace(shellDescription), func(ctx context.Context, input shellInput) (datool.Result, error) {
+		execution, err := s.execute(ctx, input, true)
+		if err != nil {
+			return datool.Result{}, err
+		}
+		artifact, err := json.Marshal(execution.Display)
+		if err != nil {
+			return datool.Result{}, fmt.Errorf("encode shell display: %w", err)
+		}
+		return datool.Result{
+			Content:  []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}},
+			Artifact: artifact,
+		}, nil
+	},
+		datool.WithPropertyValue("yield_time_seconds", "maximum", maximum),
+		datool.WithPropertyValue("yield_time_seconds", "description", fmt.Sprintf("Seconds to wait synchronously before yielding control while the command continues running in the background. Default %d. Maximum %d.", def, maximum)),
+	)
 }
 
 func (s *ShellTool) execute(ctx context.Context, req shellInput, nativeModelCalls bool) (shellExecution, error) {
@@ -232,7 +203,7 @@ func (s *ShellTool) execute(ctx context.Context, req shellInput, nativeModelCall
 	}
 
 	if !isNoTrailerSet() {
-		req.Command = bashkit.AddCoauthorTrailer(req.Command, "Co-authored-by: Shelley <shelley@exe.dev>")
+		req.Command = bashkit.AddCoauthorTrailer(req.Command, "Co-authored-by: Shelley <shelley@example.invalid>")
 	}
 
 	yield := s.yieldDuration(req)
@@ -288,15 +259,9 @@ func (s *ShellTool) execute(ctx context.Context, req shellInput, nativeModelCall
 	tmpFile.Close()
 
 	// Live tail to UI while we wait.
-	progressFn := GetToolProgress(ctx)
-	toolID := ToolUseID(ctx)
 	progressDone := make(chan struct{})
 	progressStop := make(chan struct{})
-	if progressFn != nil && toolID != "" {
-		go shellProgressLoop(progressFn, toolID, logPath, progressStop, progressDone)
-	} else {
-		close(progressDone)
-	}
+	go shellProgressLoop(ctx, logPath, progressStop, progressDone)
 	stopProgress := func() {
 		select {
 		case <-progressStop:
@@ -432,7 +397,7 @@ func buildYieldPayload(command string, pid, pgid int, logPath, tail string, yiel
 
 const shellProgressInterval = 500 * time.Millisecond
 
-func shellProgressLoop(progress llm.ToolProgressFunc, toolID, path string, stop <-chan struct{}, done chan<- struct{}) {
+func shellProgressLoop(ctx context.Context, path string, stop <-chan struct{}, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(shellProgressInterval)
 	defer ticker.Stop()
@@ -441,11 +406,7 @@ func shellProgressLoop(progress llm.ToolProgressFunc, toolID, path string, stop 
 		t := readTailString(path, shellProgressMaxBytes)
 		if t != last {
 			last = t
-			progress(llm.ToolProgress{
-				ToolUseID: toolID,
-				ToolName:  shellName,
-				Output:    t,
-			})
+			_ = datool.EmitProgress(ctx, datool.Progress{Name: shellName, Output: t})
 		}
 	}
 	for {

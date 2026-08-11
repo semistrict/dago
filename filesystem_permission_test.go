@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/message"
-	memorystore "github.com/semistrict/dago/store"
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/damessage"
+	memorystore "github.com/semistrict/dago/dastore"
 )
 
 func TestPermissionGlobSemantics(t *testing.T) {
@@ -73,9 +73,9 @@ func TestDeletePermissionsDistinguishLeafAndSubtree(t *testing.T) {
 		t.Fatalf("subtree deny patterns = %v", got)
 	}
 
-	memory, err := backend.NewMemory(map[string]backend.FileData{
-		"/work/a.txt":             {Content: "a", Encoding: backend.EncodingUTF8},
-		"/work/secrets/token.txt": {Content: "secret", Encoding: backend.EncodingUTF8},
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/work/a.txt":             {Content: "a", Encoding: dabackend.EncodingUTF8},
+		"/work/secrets/token.txt": {Content: "secret", Encoding: dabackend.EncodingUTF8},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -90,19 +90,19 @@ func TestDeletePermissionsDistinguishLeafAndSubtree(t *testing.T) {
 
 func TestFilesystemFiltersDeniedBulkResults(t *testing.T) {
 	rules := []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/secret/**"}, Mode: PermissionDeny}}
-	values := []backend.FileInfo{{Path: "/public/a.txt"}, {Path: "/secret/b.txt"}}
+	values := []dabackend.FileInfo{{Path: "/public/a.txt"}, {Path: "/secret/b.txt"}}
 	filtered := filterFileInfo(rules, FilesystemRead, values)
 	if len(filtered) != 1 || filtered[0].Path != "/public/a.txt" {
 		t.Fatalf("filtered files = %#v", filtered)
 	}
-	grep := filterGrepMatches(rules, FilesystemRead, []backend.GrepMatch{{Path: "/public/a.txt"}, {Path: "/secret/b.txt"}})
+	grep := filterGrepMatches(rules, FilesystemRead, []dabackend.GrepMatch{{Path: "/public/a.txt"}, {Path: "/secret/b.txt"}})
 	if len(grep) != 1 || grep[0].Path != "/public/a.txt" {
 		t.Fatalf("filtered grep = %#v", grep)
 	}
 }
 
 func TestFilesystemPermissionsRejectExecuteCapability(t *testing.T) {
-	shell, err := backend.NewLocalShell(backend.LocalShellOptions{Filesystem: backend.FilesystemOptions{Root: t.TempDir()}})
+	shell, err := dabackend.NewLocalShell(dabackend.LocalShellOptions{Filesystem: dabackend.FilesystemOptions{Root: t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,15 +116,15 @@ func TestFilesystemPermissionsRejectExecuteCapability(t *testing.T) {
 }
 
 func TestFilesystemPermissionsAllowOnlyShellInaccessibleRoutes(t *testing.T) {
-	shell, err := backend.NewLocalShell(backend.LocalShellOptions{Filesystem: backend.FilesystemOptions{Root: t.TempDir()}})
+	shell, err := dabackend.NewLocalShell(dabackend.LocalShellOptions{Filesystem: dabackend.FilesystemOptions{Root: t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistent, err := backend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
+	persistent, err := dabackend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	composite, err := backend.NewComposite(shell, map[string]backend.Backend{"/memories/": persistent})
+	composite, err := dabackend.NewComposite(shell, map[string]dabackend.Backend{"/memories/": persistent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,11 +141,11 @@ func TestFilesystemPermissionsAllowOnlyShellInaccessibleRoutes(t *testing.T) {
 		t.Fatal("route-scoped permissions hid execute")
 	}
 
-	localRoute, err := backend.NewFilesystem(backend.FilesystemOptions{Root: t.TempDir()})
+	localRoute, err := dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accessible, err := backend.NewComposite(shell, map[string]backend.Backend{"/work/": localRoute})
+	accessible, err := dabackend.NewComposite(shell, map[string]dabackend.Backend{"/work/": localRoute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestFilesystemBulkInterruptCannotBeBypassed(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			call := message.ToolCall{ID: test.name, Name: test.tool, Arguments: json.RawMessage(test.args)}
+			call := damessage.ToolCall{ID: test.name, Name: test.tool, Arguments: json.RawMessage(test.args)}
 			if got := filesystemBulkInterrupt(rules, FilesystemRead, call); got != test.want {
 				t.Fatalf("filesystemBulkInterrupt(%s, %s) = %v, want %v", test.tool, test.args, got, test.want)
 			}

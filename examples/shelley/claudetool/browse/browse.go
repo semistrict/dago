@@ -22,10 +22,10 @@ import (
 	"github.com/chromedp/cdproto/tracing"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
-	dmessage "github.com/semistrict/dago/message"
-	dtool "github.com/semistrict/dago/tool"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/imageutil"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/llm/imageutil"
 )
 
 // ScreenshotDir is the directory where screenshots are stored
@@ -633,7 +633,7 @@ func (b *BrowseTools) screenshot(ctx context.Context, input screenshotInput) (br
 
 // browserDefinition describes the single browser tool that dispatches every
 // browser action through its action field.
-func browserDefinition() dtool.Definition {
+func browserDefinition() datool.Definition {
 	description := `Browser automation tool. Use the "action" field to select an operation:
 
 - action: "navigate"
@@ -811,32 +811,26 @@ Performance profiling (profile_* actions):
 		"required": ["action"]
 	}`
 
-	return dtool.Definition{
+	return datool.Definition{
 		Name: "browser", Description: description, InputSchema: json.RawMessage(schema),
 	}
 }
 
-// NativeCombinedTool executes every browser action through Dago's tool and
+// NativeCombinedTool executes every browser action through dago's tool and
 // multimodal content contracts.
-func (b *BrowseTools) NativeCombinedTool() dtool.Tool {
-	return dtool.Func{
-		Spec: browserDefinition(),
-		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
-			var input combinedInput
-			if err := json.Unmarshal(raw, &input); err != nil {
-				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
-			}
-			execution, err := b.executeCombined(ctx, input)
-			if err != nil {
-				return dtool.Result{}, err
-			}
-			return execution.dagoResult()
-		},
-	}
+func (b *BrowseTools) NativeCombinedTool() datool.Tool {
+	definition := browserDefinition()
+	return datool.MustNew(definition.Name, definition.Description, func(ctx context.Context, input combinedInput) (datool.Result, error) {
+		execution, err := b.executeCombined(ctx, input)
+		if err != nil {
+			return datool.Result{}, err
+		}
+		return execution.dagoResult()
+	})
 }
 
-func readImageDefinition() dtool.Definition {
-	return dtool.Definition{
+func readImageDefinition() datool.Definition {
+	return datool.Definition{
 		Name: "read_image", Description: "Read an image file (such as a screenshot) and encode it for sending to the LLM",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -855,75 +849,69 @@ func readImageDefinition() dtool.Definition {
 	}
 }
 
-// NativeReadImageTool returns image content through Dago's multimodal tool
+// NativeReadImageTool returns image content through dago's multimodal tool
 // contract while preserving the established Shelley display artifact.
-func (b *BrowseTools) NativeReadImageTool() dtool.Tool {
-	return dtool.Func{
-		Spec: readImageDefinition(),
-		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
-			var input readImageInput
-			if err := json.Unmarshal(raw, &input); err != nil {
-				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
-			}
-			execution, err := b.readImage(ctx, input)
-			if err != nil {
-				return dtool.Result{}, err
-			}
-			artifact, err := json.Marshal(execution.Display)
-			if err != nil {
-				return dtool.Result{}, fmt.Errorf("encode read_image display: %w", err)
-			}
-			width, _ := json.Marshal(execution.Image.Width)
-			height, _ := json.Marshal(execution.Image.Height)
-			return dtool.Result{
-				Content: []dmessage.ContentBlock{
-					{Type: dmessage.BlockText, Text: execution.Description},
-					{
-						Type: dmessage.BlockImage, Data: execution.Image.Data, MIMEType: execution.Image.MediaType,
-						Extra: map[string]json.RawMessage{browserImageWidthKey: width, browserImageHeightKey: height},
-					},
+func (b *BrowseTools) NativeReadImageTool() datool.Tool {
+	definition := readImageDefinition()
+	return datool.MustNew(definition.Name, definition.Description, func(ctx context.Context, input readImageInput) (datool.Result, error) {
+		execution, err := b.readImage(ctx, input)
+		if err != nil {
+			return datool.Result{}, err
+		}
+		artifact, err := json.Marshal(execution.Display)
+		if err != nil {
+			return datool.Result{}, fmt.Errorf("encode read_image display: %w", err)
+		}
+		width, _ := json.Marshal(execution.Image.Width)
+		height, _ := json.Marshal(execution.Image.Height)
+		return datool.Result{
+			Content: []dmessage.ContentBlock{
+				{Type: dmessage.BlockText, Text: execution.Description},
+				{
+					Type: dmessage.BlockImage, Data: execution.Image.Data, MIMEType: execution.Image.MediaType,
+					Extra: map[string]json.RawMessage{browserImageWidthKey: width, browserImageHeightKey: height},
 				},
-				Artifact: artifact,
-			}, nil
-		},
-	}
+			},
+			Artifact: artifact,
+		}, nil
+	})
 }
 
 // combinedInput is the unified input for the combined browser tool.
 type combinedInput struct {
-	Action        string `json:"action"`
-	URL           string `json:"url,omitempty"`
-	Expression    string `json:"expression,omitempty"`
-	Await         *bool  `json:"await,omitempty"`
-	Width         int    `json:"width,omitempty"`
-	Height        int    `json:"height,omitempty"`
-	Limit         int    `json:"limit,omitempty"`
-	Selector      string `json:"selector,omitempty"`
-	Timeout       string `json:"timeout,omitempty"`
-	Format        string `json:"format,omitempty"`
-	Quality       int64  `json:"quality,omitempty"`
-	MaxWidth      int64  `json:"max_width,omitempty"`
-	MaxHeight     int64  `json:"max_height,omitempty"`
-	EveryNthFrame int64  `json:"every_nth_frame,omitempty"`
+	Action        string `json:"action" description:"The browser action to perform" jsonschema:"enum=navigate|eval|resize|screenshot|console_logs|clear_console_logs|screencast_start|screencast_stop|screencast_status|emulate_help|emulate_device|emulate_custom|emulate_reset|emulate_dark_mode|emulate_media|network_help|network_enable|network_disable|network_get_log|network_clear|network_cookies|network_clear_cache|accessibility_help|accessibility_tree|accessibility_query|accessibility_node|profile_help|profile_metrics|profile_cpu_start|profile_cpu_stop|profile_trace_start|profile_trace_stop|profile_coverage_start|profile_coverage_stop"`
+	URL           string `json:"url,omitempty" description:"URL to navigate to (navigate action)"`
+	Expression    string `json:"expression,omitempty" description:"JavaScript expression to evaluate (eval action)"`
+	Await         *bool  `json:"await,omitempty" description:"Wait for promises to resolve (eval action, default true)"`
+	Width         int    `json:"width,omitempty" description:"Viewport width in pixels"`
+	Height        int    `json:"height,omitempty" description:"Viewport height in pixels"`
+	Limit         int    `json:"limit,omitempty" description:"Maximum log entries to return"`
+	Selector      string `json:"selector,omitempty" description:"CSS selector for the target element"`
+	Timeout       string `json:"timeout,omitempty" description:"Timeout as a Go duration string (default: 15s)"`
+	Format        string `json:"format,omitempty" description:"Image format for screencast frames" jsonschema:"enum=jpeg|png"`
+	Quality       int64  `json:"quality,omitempty" description:"Image quality from 0 through 100" jsonschema:"minimum=0,maximum=100"`
+	MaxWidth      int64  `json:"max_width,omitempty" description:"Maximum frame width in pixels"`
+	MaxHeight     int64  `json:"max_height,omitempty" description:"Maximum frame height in pixels"`
+	EveryNthFrame int64  `json:"every_nth_frame,omitempty" description:"Capture every Nth frame"`
 
 	// Emulation fields (emulate_* actions).
-	Device            string  `json:"device,omitempty"`
-	DeviceScaleFactor float64 `json:"device_scale_factor,omitempty"`
-	Mobile            bool    `json:"mobile,omitempty"`
-	Touch             bool    `json:"touch,omitempty"`
-	Enabled           *bool   `json:"enabled,omitempty"`
-	Media             string  `json:"media,omitempty"`
+	Device            string  `json:"device,omitempty" description:"Device preset name"`
+	DeviceScaleFactor float64 `json:"device_scale_factor,omitempty" description:"Device scale factor"`
+	Mobile            bool    `json:"mobile,omitempty" description:"Emulate a mobile device"`
+	Touch             bool    `json:"touch,omitempty" description:"Enable touch emulation"`
+	Enabled           *bool   `json:"enabled,omitempty" description:"Enable or disable the selected emulation"`
+	Media             string  `json:"media,omitempty" description:"CSS media type to emulate"`
 
 	// Network fields (network_* actions).
-	Filter string `json:"filter,omitempty"`
+	Filter string `json:"filter,omitempty" description:"Filter requests by URL substring"`
 
 	// Accessibility fields (accessibility_* actions).
-	Depth int    `json:"depth,omitempty"`
-	Name  string `json:"name,omitempty"`
-	Role  string `json:"role,omitempty"`
+	Depth int    `json:"depth,omitempty" description:"Maximum accessibility tree depth"`
+	Name  string `json:"name,omitempty" description:"Accessible name to search for"`
+	Role  string `json:"role,omitempty" description:"ARIA role to search for"`
 
 	// Profiling fields (profile_* actions).
-	Categories string `json:"categories,omitempty"`
+	Categories string `json:"categories,omitempty" description:"Comma-separated trace categories"`
 }
 
 func (b *BrowseTools) executeCombined(ctx context.Context, input combinedInput) (browserExecution, error) {
@@ -1067,8 +1055,8 @@ func GetScreenshotPath(id string) string {
 }
 
 type readImageInput struct {
-	Path    string `json:"path"`
-	Timeout string `json:"timeout,omitempty"`
+	Path    string `json:"path" description:"Path to the image file to read"`
+	Timeout string `json:"timeout,omitempty" description:"Timeout as a Go duration string (default: 15s)"`
 }
 
 type readImageExecution struct {

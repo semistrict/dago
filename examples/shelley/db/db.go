@@ -21,10 +21,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/semistrict/dago/checkpoint"
-	checkpointsqlite "github.com/semistrict/dago/checkpoint/sqlite"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/dacheckpoint"
+	checkpointsqlite "github.com/semistrict/dago/dacheckpoint/sqlite"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
 
 	_ "modernc.org/sqlite"
 )
@@ -89,7 +89,7 @@ func New(cfg Config) (*DB, error) {
 	saver, err := checkpointsqlite.Open(dsn)
 	if err != nil {
 		_ = pool.Close()
-		return nil, fmt.Errorf("initialize Dago checkpoint store: %w", err)
+		return nil, fmt.Errorf("initialize dago checkpoint store: %w", err)
 	}
 
 	return &DB{pool: pool, saver: saver}, nil
@@ -104,9 +104,9 @@ func (db *DB) Close() error {
 	return errors.Join(saverErr, db.pool.Close())
 }
 
-// CheckpointSaver returns the durable Dago runtime store backed by the same
+// CheckpointSaver returns the durable dago runtime store backed by the same
 // SQLite database as Shelley's UI projection.
-func (db *DB) CheckpointSaver() checkpoint.Saver { return db.saver }
+func (db *DB) CheckpointSaver() dacheckpoint.Saver { return db.saver }
 
 // Migrate runs the database migrations.
 //
@@ -513,7 +513,7 @@ type QueuedMessage struct {
 	// Model is the model id chosen at queue time, used to start/continue the
 	// loop when the queue drains.
 	Model string `json:"model"`
-	// UserEmail is the exe.dev account (from the X-ExeDev-Email header) that
+	// UserEmail is the authenticated user (from the X-User-Email header) that
 	// authored the queued message, captured at queue time. It is persisted
 	// here (rather than read at drain) because drain runs on a background
 	// context with no request/header available. Stamped onto the messages row
@@ -702,9 +702,9 @@ type ConversationListItem struct {
 	Preview          string
 	PreviewUpdatedAt string // RFC 3339 (trailing Z), empty if there's no preview message
 	MaxSequenceID    int64
-	// Participants are the distinct exe.dev accounts that authored messages in
+	// Participants are the distinct authenticated users that authored messages in
 	// this conversation, sorted. Nil for conversations whose messages all
-	// predate user_email or arrived without the X-ExeDev-Email header.
+	// predate user_email or arrived without the X-User-Email header.
 	Participants []string
 }
 
@@ -1161,7 +1161,7 @@ type CreateMessageParams struct {
 	// NULL (only assistant/agent messages with usage carry them).
 	LLMAPIURL string
 	ModelName string
-	// UserEmail is the exe.dev account (from the X-ExeDev-Email header the
+	// UserEmail is the authenticated user (from the X-User-Email header the
 	// HTTPS proxy stamps) that authored a user message. Empty strings are
 	// stored as NULL: only user messages carry it, and requests without the
 	// header (direct/local access) leave it unset.
@@ -1740,7 +1740,7 @@ func (db *DB) DeleteConversation(ctx context.Context, conversationID string) err
 	}
 	if db.saver != nil {
 		if err := db.saver.DeleteThread(ctx, conversationID); err != nil {
-			return fmt.Errorf("delete Dago conversation checkpoint: %w", err)
+			return fmt.Errorf("delete dago conversation checkpoint: %w", err)
 		}
 	}
 	return nil

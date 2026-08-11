@@ -25,7 +25,7 @@ stdin JSON:
   "readonly": {
     "conversation_id": "cXXXXXX",
     "is_subagent": false, "parent_id": "...",
-    "headers": [["X-Exedev-Email", "user@example.com"]]
+    "headers": [["X-User-Email", "user@example.com"]]
   }
 }
 ```
@@ -52,7 +52,7 @@ stdin JSON:
     "model": "claude-sonnet-4.5",
     "reasoning_level": "high",
     "queued": false,
-    "headers": [["X-Exedev-Email", "user@example.com"]]
+    "headers": [["X-User-Email", "user@example.com"]]
   }
 }
 ```

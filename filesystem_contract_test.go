@@ -8,48 +8,48 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
-	memorystore "github.com/semistrict/dago/store"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
+	memorystore "github.com/semistrict/dago/dastore"
+	"github.com/semistrict/dago/datool"
 )
 
 type blockingGlobBackend struct {
-	backend.Backend
+	dabackend.Backend
 	release <-chan struct{}
 	err     error
 }
 
 type recordingConfigurableSandbox struct {
-	backend.Backend
-	options []backend.ExecuteOptions
+	dabackend.Backend
+	options []dabackend.ExecuteOptions
 }
 
 func (sandbox *recordingConfigurableSandbox) ID() string { return "recording" }
 
-func (sandbox *recordingConfigurableSandbox) Execute(context.Context, string, time.Duration) (backend.ExecuteResult, error) {
+func (sandbox *recordingConfigurableSandbox) Execute(context.Context, string, time.Duration) (dabackend.ExecuteResult, error) {
 	panic("legacy Execute called for configurable sandbox")
 }
 
-func (sandbox *recordingConfigurableSandbox) ExecuteWithOptions(_ context.Context, _ string, options backend.ExecuteOptions) (backend.ExecuteResult, error) {
+func (sandbox *recordingConfigurableSandbox) ExecuteWithOptions(_ context.Context, _ string, options dabackend.ExecuteOptions) (dabackend.ExecuteResult, error) {
 	sandbox.options = append(sandbox.options, options)
 	code := 0
-	return backend.ExecuteResult{ExitCode: &code}, nil
+	return dabackend.ExecuteResult{ExitCode: &code}, nil
 }
 
-func (value blockingGlobBackend) Glob(context.Context, string, string) (backend.GlobResult, error) {
+func (value blockingGlobBackend) Glob(context.Context, string, string) (dabackend.GlobResult, error) {
 	if value.err != nil {
-		return backend.GlobResult{}, value.err
+		return dabackend.GlobResult{}, value.err
 	}
 	<-value.release
-	return backend.GlobResult{}, nil
+	return dabackend.GlobResult{}, nil
 }
 
 func TestFilesystemToolSchemasDescribeEveryArgument(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,24 +93,24 @@ func TestFilesystemToolSchemasDescribeEveryArgument(t *testing.T) {
 }
 
 func TestFilesystemToolsNormalizePathsAndRejectAmbiguousHostSyntax(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	read := filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file")
-	if _, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"C:\\Users\\test.txt"}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "Windows absolute") {
+	if _, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"C:\\Users\\test.txt"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "Windows absolute") {
 		t.Fatalf("Windows path error = %v", err)
 	}
 	edit := filesystemTool(t, FilesystemOptions{Backend: memory}, "edit_file")
-	if _, err := edit.Execute(context.Background(), json.RawMessage(`{"file_path":"./question/..","old_string":"a","new_string":"b"}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
+	if _, err := edit.Execute(context.Background(), json.RawMessage(`{"file_path":"./question/..","old_string":"a","new_string":"b"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
 		t.Fatalf("traversal path error = %v", err)
 	}
 	glob := filesystemTool(t, FilesystemOptions{Backend: memory}, "glob")
-	if _, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"../*.txt"}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
+	if _, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"../*.txt"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
 		t.Fatalf("traversal glob error = %v", err)
 	}
 	write := filesystemTool(t, FilesystemOptions{Backend: memory}, "write_file")
-	if _, err := write.Execute(context.Background(), json.RawMessage(`{"file_path":"notes/today.txt","content":"hello"}`), tool.Runtime{}); err != nil {
+	if _, err := write.Execute(context.Background(), json.RawMessage(`{"file_path":"notes/today.txt","content":"hello"}`), datool.Runtime{}); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := memory.Read(context.Background(), "/notes/today.txt", 0, 10)
@@ -120,7 +120,7 @@ func TestFilesystemToolsNormalizePathsAndRejectAmbiguousHostSyntax(t *testing.T)
 }
 
 func TestFilesystemDescriptionsRespectVisibilityAndOverrides(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestFilesystemDescriptionsRespectVisibilityAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	definitions := map[string]tool.Definition{}
+	definitions := map[string]datool.Definition{}
 	for _, executable := range middleware.Tools {
 		definition := executable.Definition()
 		definitions[definition.Name] = definition
@@ -145,22 +145,22 @@ func TestFilesystemDescriptionsRespectVisibilityAndOverrides(t *testing.T) {
 }
 
 func TestReadFileDistinguishesZeroWindowFromEmptyFile(t *testing.T) {
-	memory, err := backend.NewMemory(map[string]backend.FileData{
-		"/full.txt":  {Content: "contents", Encoding: backend.EncodingUTF8},
-		"/empty.txt": {Content: " \n\t", Encoding: backend.EncodingUTF8},
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/full.txt":  {Content: "contents", Encoding: dabackend.EncodingUTF8},
+		"/empty.txt": {Content: " \n\t", Encoding: dabackend.EncodingUTF8},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	read := filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file")
-	zero, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/full.txt","limit":0}`), tool.Runtime{})
+	zero, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/full.txt","limit":0}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if text := zero.Content[0].Text; !strings.Contains(text, "file was not inspected") || !strings.Contains(text, "limit` was 0") {
 		t.Fatalf("zero-window result = %q", text)
 	}
-	empty, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/empty.txt"}`), tool.Runtime{})
+	empty, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/empty.txt"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,21 +170,21 @@ func TestReadFileDistinguishesZeroWindowFromEmptyFile(t *testing.T) {
 }
 
 func TestReadFilePaginationAndNegativeOffset(t *testing.T) {
-	memory, err := backend.NewMemory(map[string]backend.FileData{
-		"/lines.txt": {Content: "first\nsecond\nthird", Encoding: backend.EncodingUTF8},
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/lines.txt": {Content: "first\nsecond\nthird", Encoding: dabackend.EncodingUTF8},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	read := filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file")
-	page, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/lines.txt","limit":2}`), tool.Runtime{})
+	page, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/lines.txt","limit":2}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if text := page.Content[0].Text; !strings.Contains(text, "[Read 2 lines (lines 1-2 of 3 total). 1 line remaining from offset 2.]") {
 		t.Fatalf("page result = %q", text)
 	}
-	clamped, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/lines.txt","offset":-2}`), tool.Runtime{})
+	clamped, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/lines.txt","offset":-2}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,15 +202,15 @@ func TestNumberLinesUsesStableContinuationMarkers(t *testing.T) {
 }
 
 func TestExecuteReportsExitStatusAndCaptureTruncation(t *testing.T) {
-	shell, err := backend.NewLocalShell(backend.LocalShellOptions{
-		Filesystem: backend.FilesystemOptions{Root: t.TempDir()},
+	shell, err := dabackend.NewLocalShell(dabackend.LocalShellOptions{
+		Filesystem: dabackend.FilesystemOptions{Root: t.TempDir()},
 		MaxOutput:  4,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	execute := filesystemTool(t, FilesystemOptions{Backend: shell}, "execute")
-	result, err := execute.Execute(context.Background(), json.RawMessage(`{"command":"printf 123456; exit 3","timeout":1}`), tool.Runtime{})
+	result, err := execute.Execute(context.Background(), json.RawMessage(`{"command":"printf 123456; exit 3","timeout":1}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,20 +222,20 @@ func TestExecuteReportsExitStatusAndCaptureTruncation(t *testing.T) {
 		t.Fatalf("execute artifact = %s", result.Artifact)
 	}
 	capped := filesystemTool(t, FilesystemOptions{Backend: shell, MaxExecuteTimeout: 1}, "execute")
-	if _, err := capped.Execute(context.Background(), json.RawMessage(`{"command":"true","timeout":2}`), tool.Runtime{}); err == nil || !strings.Contains(err.Error(), "exceeds maximum 1") {
+	if _, err := capped.Execute(context.Background(), json.RawMessage(`{"command":"true","timeout":2}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "exceeds maximum 1") {
 		t.Fatalf("execute timeout error = %v", err)
 	}
 }
 
 func TestExecuteDistinguishesOmittedAndZeroTimeouts(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sandbox := &recordingConfigurableSandbox{Backend: memory}
 	execute := filesystemTool(t, FilesystemOptions{Backend: sandbox}, "execute")
 	for _, arguments := range []string{`{"command":"true"}`, `{"command":"true","timeout":0}`, `{"command":"true","timeout":3}`} {
-		if _, err := execute.Execute(context.Background(), json.RawMessage(arguments), tool.Runtime{}); err != nil {
+		if _, err := execute.Execute(context.Background(), json.RawMessage(arguments), datool.Runtime{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -251,19 +251,19 @@ func TestExecuteDistinguishesOmittedAndZeroTimeouts(t *testing.T) {
 }
 
 func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
-	shell, err := backend.NewLocalShell(backend.LocalShellOptions{Filesystem: backend.FilesystemOptions{Root: t.TempDir()}})
+	shell, err := dabackend.NewLocalShell(dabackend.LocalShellOptions{Filesystem: dabackend.FilesystemOptions{Root: t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mounted, err := backend.NewFilesystem(backend.FilesystemOptions{Root: t.TempDir()})
+	mounted, err := dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistent, err := backend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
+	persistent, err := dabackend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	composite, err := backend.NewComposite(shell, map[string]backend.Backend{"/common/": mounted, "/memories/": persistent})
+	composite, err := dabackend.NewComposite(shell, map[string]dabackend.Backend{"/common/": mounted, "/memories/": persistent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,8 +271,8 @@ func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	system := message.System("base prompt")
-	_, err = middleware.WrapModelCall(context.Background(), agent.ModelRequest{SystemMessage: &system, Tools: middleware.Tools}, func(_ context.Context, request agent.ModelRequest) (agent.ModelResponse, error) {
+	system := damessage.System("base prompt")
+	_, err = middleware.WrapModelCall(context.Background(), dagent.ModelRequest{SystemMessage: &system, Tools: middleware.Tools}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
 		text := request.SystemMessage.TextContent()
 		if !strings.Contains(text, "## Shell paths vs. virtual paths") || !strings.Contains(text, "`/common/` -> `") || !strings.Contains(text, "`/memories/`") || !strings.Contains(text, "not accessible from the shell") {
 			t.Fatalf("system prompt = %q", text)
@@ -284,7 +284,7 @@ func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
 		if !foundExecute {
 			t.Fatal("composite default shell did not expose execute")
 		}
-		return agent.ModelResponse{}, nil
+		return dagent.ModelResponse{}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -292,11 +292,11 @@ func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
 }
 
 func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	composite, err := backend.NewCompositeWithOptions(backend.CompositeOptions{Default: memory, ArtifactsRoot: "/workspace"})
+	composite, err := dabackend.NewCompositeWithOptions(dabackend.CompositeOptions{Default: memory, ArtifactsRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,10 +304,10 @@ func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := middleware.WrapToolCall(context.Background(), agent.ToolCallRequest{
-		Call: message.ToolCall{ID: "evict", Name: "custom"},
-	}, func(context.Context, agent.ToolCallRequest) (agent.ToolCallResponse, error) {
-		return agent.ToolCallResponse{Result: tool.TextResult(strings.Repeat("x", 50))}, nil
+	response, err := middleware.WrapToolCall(context.Background(), dagent.ToolCallRequest{
+		Call: damessage.ToolCall{ID: "evict", Name: "custom"},
+	}, func(context.Context, dagent.ToolCallRequest) (dagent.ToolCallResponse, error) {
+		return dagent.ToolCallResponse{Result: datool.TextResult(strings.Repeat("x", 50))}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -323,46 +323,46 @@ func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
 
 func TestFilesystemScrubsOnlyUnsupportedModelFacingMedia(t *testing.T) {
 	pathMetadata, _ := json.Marshal("/report.pdf")
-	pdf := message.ContentBlock{
-		Type: message.BlockFile, MIMEType: "application/pdf", Data: []byte("pdf"),
+	pdf := damessage.ContentBlock{
+		Type: damessage.BlockFile, MIMEType: "application/pdf", Data: []byte("pdf"),
 		Extra: map[string]json.RawMessage{readFilePathMetadata: pathMetadata},
 	}
-	original := message.Message{Role: message.RoleTool, ToolCallID: "read", Content: []message.ContentBlock{pdf}}
-	unknown := scrubUnsupportedFilesystemMedia([]message.Message{original}, modeltest.New(model.Profile{}))
-	if unknown[0].Content[0].Type != message.BlockFile {
+	original := damessage.Message{Role: damessage.RoleTool, ToolCallID: "read", Content: []damessage.ContentBlock{pdf}}
+	unknown := scrubUnsupportedFilesystemMedia([]damessage.Message{original}, modeltest.New(damodel.Profile{}))
+	if unknown[0].Content[0].Type != damessage.BlockFile {
 		t.Fatalf("unknown profile should preserve PDF: %#v", unknown)
 	}
 
 	falseValue := false
-	rejecting := modeltest.New(model.Profile{
+	rejecting := modeltest.New(damodel.Profile{
 		Provider: "anthropic", SupportsPDF: true, SupportsPDFToolMessages: &falseValue,
 	})
-	scrubbed := scrubUnsupportedFilesystemMedia([]message.Message{original}, rejecting)
-	if block := scrubbed[0].Content[0]; block.Type != message.BlockText || !strings.Contains(block.Text, "/report.pdf") || !strings.Contains(block.Text, "does not support file content") {
+	scrubbed := scrubUnsupportedFilesystemMedia([]damessage.Message{original}, rejecting)
+	if block := scrubbed[0].Content[0]; block.Type != damessage.BlockText || !strings.Contains(block.Text, "/report.pdf") || !strings.Contains(block.Text, "does not support file content") {
 		t.Fatalf("scrubbed PDF = %#v", block)
 	}
-	if original.Content[0].Type != message.BlockFile || string(original.Content[0].Data) != "pdf" {
+	if original.Content[0].Type != damessage.BlockFile || string(original.Content[0].Data) != "pdf" {
 		t.Fatalf("scrub mutated persisted input: %#v", original)
 	}
 
 	docx := pdf
 	docx.MIMEType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-	if block := scrubUnsupportedFilesystemMedia([]message.Message{{Role: message.RoleTool, Content: []message.ContentBlock{docx}}}, modeltest.New(model.Profile{Provider: "anthropic"}))[0].Content[0]; block.Type != message.BlockText {
+	if block := scrubUnsupportedFilesystemMedia([]damessage.Message{{Role: damessage.RoleTool, Content: []damessage.ContentBlock{docx}}}, modeltest.New(damodel.Profile{Provider: "anthropic"}))[0].Content[0]; block.Type != damessage.BlockText {
 		t.Fatalf("unsupported document = %#v", block)
 	}
-	if block := scrubUnsupportedFilesystemMedia([]message.Message{{Role: message.RoleTool, Content: []message.ContentBlock{docx}}}, modeltest.New(model.Profile{Provider: "openai", SupportsFiles: true}))[0].Content[0]; block.Type != message.BlockFile {
+	if block := scrubUnsupportedFilesystemMedia([]damessage.Message{{Role: damessage.RoleTool, Content: []damessage.ContentBlock{docx}}}, modeltest.New(damodel.Profile{Provider: "openai", SupportsFiles: true}))[0].Content[0]; block.Type != damessage.BlockFile {
 		t.Fatalf("supported document = %#v", block)
 	}
 	reference := docx
 	reference.Data = nil
 	reference.URL = "https://example.test/file"
-	if block := scrubUnsupportedFilesystemMedia([]message.Message{{Role: message.RoleHuman, Content: []message.ContentBlock{reference}}}, modeltest.New(model.Profile{Provider: "anthropic"}))[0].Content[0]; block.Type != message.BlockFile {
+	if block := scrubUnsupportedFilesystemMedia([]damessage.Message{{Role: damessage.RoleHuman, Content: []damessage.ContentBlock{reference}}}, modeltest.New(damodel.Profile{Provider: "anthropic"}))[0].Content[0]; block.Type != damessage.BlockFile {
 		t.Fatalf("provider-managed reference = %#v", block)
 	}
 }
 
 func TestFilesystemSearchResultsUseStableModelFacingShapes(t *testing.T) {
-	result := backend.GrepResult{Matches: []backend.GrepMatch{
+	result := dabackend.GrepResult{Matches: []dabackend.GrepMatch{
 		{Path: "/b.go", Line: 3, Text: "needle b"},
 		{Path: "/a.go", Line: 2, Text: "needle a"},
 		{Path: "/a.go", Line: 8, Text: "needle again"},
@@ -377,31 +377,31 @@ func TestFilesystemSearchResultsUseStableModelFacingShapes(t *testing.T) {
 	if text := formatGrep(truncated, "count", "needle", true); !strings.Contains(text, "/a.go: 2") || !strings.Contains(text, "valid but incomplete") {
 		t.Fatalf("count grep = %q", text)
 	}
-	if text := formatGrep(backend.GrepResult{}, "files_with_matches", `foo|bar`, false); !strings.Contains(text, "No matches found") || !strings.Contains(text, "literal text, not regex") {
+	if text := formatGrep(dabackend.GrepResult{}, "files_with_matches", `foo|bar`, false); !strings.Contains(text, "No matches found") || !strings.Contains(text, "literal text, not regex") {
 		t.Fatalf("empty regex-like grep = %q", text)
 	}
-	if text := formatGrep(backend.GrepResult{}, "files_with_matches", `foo|bar`, true); strings.Contains(text, "literal text, not regex") {
+	if text := formatGrep(dabackend.GrepResult{}, "files_with_matches", `foo|bar`, true); strings.Contains(text, "literal text, not regex") {
 		t.Fatalf("redacted grep leaked a regex hint = %q", text)
 	}
 
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ls := filesystemTool(t, FilesystemOptions{Backend: memory}, "ls")
-	listing, err := ls.Execute(context.Background(), json.RawMessage(`{"path":"/"}`), tool.Runtime{})
+	listing, err := ls.Execute(context.Background(), json.RawMessage(`{"path":"/"}`), datool.Runtime{})
 	if err != nil || listing.Content[0].Text != "No files found" {
 		t.Fatalf("empty listing = %#v, %v", listing, err)
 	}
 	glob := filesystemTool(t, FilesystemOptions{Backend: memory}, "glob")
-	matches, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.go"}`), tool.Runtime{})
+	matches, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.go"}`), datool.Runtime{})
 	if err != nil || matches.Content[0].Text != "No files found" {
 		t.Fatalf("empty glob = %#v, %v", matches, err)
 	}
 }
 
 func TestFilesystemGlobBoundsUnresponsiveBackends(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,19 +411,19 @@ func TestFilesystemGlobBoundsUnresponsiveBackends(t *testing.T) {
 		Backend: blockingGlobBackend{Backend: memory, release: release}, GlobTimeout: 10 * time.Millisecond,
 	}, "glob")
 	for index := 0; index < 4; index++ {
-		_, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), tool.Runtime{})
+		_, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), datool.Runtime{})
 		if err == nil || !strings.Contains(err.Error(), "glob timed out after 10ms") {
 			t.Fatalf("timeout %d error = %v", index, err)
 		}
 	}
-	_, err = glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), tool.Runtime{})
+	_, err = glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), datool.Runtime{})
 	if err == nil || !strings.Contains(err.Error(), "too many glob calls") {
 		t.Fatalf("overload error = %v", err)
 	}
 }
 
 func TestFilesystemGlobPreservesBackendTimeoutErrors(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func TestFilesystemGlobPreservesBackendTimeoutErrors(t *testing.T) {
 	glob := filesystemTool(t, FilesystemOptions{
 		Backend: blockingGlobBackend{Backend: memory, err: want}, GlobTimeout: time.Second,
 	}, "glob")
-	_, err = glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), tool.Runtime{})
+	_, err = glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), datool.Runtime{})
 	if !errors.Is(err, want) || strings.Contains(err.Error(), "glob timed out after") {
 		t.Fatalf("backend timeout error = %v", err)
 	}

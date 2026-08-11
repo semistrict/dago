@@ -14,7 +14,7 @@ import (
 
 func TestRequireHeaderMiddleware_BlocksAPIWithoutHeader(t *testing.T) {
 	t.Parallel()
-	handler := RequireHeaderMiddleware("X-Exedev-Userid")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireHeaderMiddleware("X-User-ID")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -30,12 +30,12 @@ func TestRequireHeaderMiddleware_BlocksAPIWithoutHeader(t *testing.T) {
 
 func TestRequireHeaderMiddleware_AllowsAPIWithHeader(t *testing.T) {
 	t.Parallel()
-	handler := RequireHeaderMiddleware("X-Exedev-Userid")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireHeaderMiddleware("X-User-ID")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest("GET", "/api/conversations", nil)
-	req.Header.Set("X-Exedev-Userid", "user123")
+	req.Header.Set("X-User-ID", "user123")
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -47,7 +47,7 @@ func TestRequireHeaderMiddleware_AllowsAPIWithHeader(t *testing.T) {
 
 func TestRequireHeaderMiddleware_AllowsNonAPIWithoutHeader(t *testing.T) {
 	t.Parallel()
-	handler := RequireHeaderMiddleware("X-Exedev-Userid")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireHeaderMiddleware("X-User-ID")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -63,7 +63,7 @@ func TestRequireHeaderMiddleware_AllowsNonAPIWithoutHeader(t *testing.T) {
 
 func TestRequireHeaderMiddleware_AllowsVersionEndpointWithoutHeader(t *testing.T) {
 	t.Parallel()
-	handler := RequireHeaderMiddleware("X-Exedev-Userid")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireHeaderMiddleware("X-User-ID")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

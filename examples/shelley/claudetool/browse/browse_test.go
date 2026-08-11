@@ -21,8 +21,8 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/go-json-experiment/json/jsontext"
-	dmodel "github.com/semistrict/dago/model"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 func TestCombinedTool(t *testing.T) {
@@ -282,7 +282,7 @@ func TestScreenshotRunGatesOnImageSupport(t *testing.T) {
 	}
 
 	t.Run("image-capable model includes image", func(t *testing.T) {
-		ctx := llm.WithModelProfile(baseCtx, dmodel.Profile{SupportsImages: true})
+		ctx := llm.WithModelProfile(baseCtx, damodel.Profile{SupportsImages: true})
 		out := probeNativeTool(tools.NativeCombinedTool()).Run(ctx, json.RawMessage(`{"action":"screenshot"}`))
 		if out.Error != nil {
 			t.Fatalf("screenshotRun: %v", out.Error)
@@ -293,7 +293,7 @@ func TestScreenshotRunGatesOnImageSupport(t *testing.T) {
 	})
 
 	t.Run("non-image model omits image", func(t *testing.T) {
-		ctx := llm.WithModelProfile(baseCtx, dmodel.Profile{SupportsImages: false})
+		ctx := llm.WithModelProfile(baseCtx, damodel.Profile{SupportsImages: false})
 		out := probeNativeTool(tools.NativeCombinedTool()).Run(ctx, json.RawMessage(`{"action":"screenshot"}`))
 		if out.Error != nil {
 			t.Fatalf("screenshotRun: %v", out.Error)
@@ -526,7 +526,7 @@ func TestReadImageToolResizesOversizedImage(t *testing.T) {
 		browseTools.Close()
 	})
 	// Model limit: 200px on a side. Oversized images are silently downscaled.
-	ctx := llm.WithModelProfile(context.Background(), dmodel.Profile{SupportsImages: true, MaxImageDimension: 200})
+	ctx := llm.WithModelProfile(context.Background(), damodel.Profile{SupportsImages: true, MaxImageDimension: 200})
 
 	testDir := t.TempDir()
 	testImagePath := filepath.Join(testDir, "large_image.png")
@@ -587,7 +587,7 @@ func TestReadImageToolRejectsOversizedBytes(t *testing.T) {
 		browseTools.Close()
 	})
 	// Pick a byte limit so small that any encoded PNG will exceed it.
-	ctx := llm.WithModelProfile(context.Background(), dmodel.Profile{SupportsImages: true, MaxImageBytes: 16})
+	ctx := llm.WithModelProfile(context.Background(), damodel.Profile{SupportsImages: true, MaxImageBytes: 16})
 
 	testDir := t.TempDir()
 	testImagePath := filepath.Join(testDir, "big_bytes.png")

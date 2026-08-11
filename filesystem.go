@@ -14,12 +14,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/state"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 )
 
 type FilesystemOperation string
@@ -48,9 +48,9 @@ type FilesystemPermission struct {
 }
 
 type FilesystemOptions struct {
-	Backend           backend.Backend
+	Backend           dabackend.Backend
 	Permissions       []FilesystemPermission
-	ApprovalOverrides []agent.ApprovalRule
+	ApprovalOverrides []dagent.ApprovalRule
 	Tools             []string
 	ToolDescriptions  map[string]string
 	ReadLimit         int
@@ -162,7 +162,7 @@ Quote paths containing spaces, use absolute paths where practical, and use read_
 	return description
 }
 
-func describeFilesystemTools(values []tool.Tool, custom map[string]string) []tool.Tool {
+func describeFilesystemTools(values []datool.Tool, custom map[string]string) []datool.Tool {
 	visible := map[string]bool{}
 	for _, value := range values {
 		visible[value.Definition().Name] = true
@@ -183,9 +183,9 @@ func describeFilesystemTools(values []tool.Tool, custom map[string]string) []too
 }
 
 // FilesystemMiddleware constructs the standard file tools and permission boundary.
-func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
+func FilesystemMiddleware(options FilesystemOptions) (dagent.Middleware, error) {
 	if options.Backend == nil {
-		return agent.Middleware{}, fmt.Errorf("filesystem backend is required")
+		return dagent.Middleware{}, fmt.Errorf("filesystem backend is required")
 	}
 	if options.ReadLimit <= 0 {
 		options.ReadLimit = 100
@@ -200,15 +200,15 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 		options.MaxExecuteTimeout = 3600
 	}
 	if options.LargeResultBytes < 0 {
-		return agent.Middleware{}, fmt.Errorf("large result byte limit cannot be negative")
+		return dagent.Middleware{}, fmt.Errorf("large result byte limit cannot be negative")
 	}
 	if options.ToolResultTokenLimit != nil && options.LargeResultBytes > 0 {
-		return agent.Middleware{}, fmt.Errorf("tool result token limit and large result byte limit are mutually exclusive")
+		return dagent.Middleware{}, fmt.Errorf("tool result token limit and large result byte limit are mutually exclusive")
 	}
 	if options.ToolResultTokenLimit != nil {
 		limit, err := tokenCharacterLimit("tool result", *options.ToolResultTokenLimit)
 		if err != nil {
-			return agent.Middleware{}, err
+			return dagent.Middleware{}, err
 		}
 		options.toolResultLimit = limit
 	} else if options.LargeResultBytes > 0 {
@@ -224,13 +224,13 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 	var err error
 	options.humanMessageLimit, err = tokenCharacterLimit("human message", humanTokens)
 	if err != nil {
-		return agent.Middleware{}, err
+		return dagent.Middleware{}, err
 	}
 	if options.ArtifactsRoot == "" {
-		options.ArtifactsRoot = backend.ArtifactPath(options.Backend, "large_tool_results")
+		options.ArtifactsRoot = dabackend.ArtifactPath(options.Backend, "large_tool_results")
 	}
 	if options.ConversationHistoryRoot == "" {
-		options.ConversationHistoryRoot = backend.ArtifactPath(options.Backend, "conversation_history")
+		options.ConversationHistoryRoot = dabackend.ArtifactPath(options.Backend, "conversation_history")
 	}
 	if options.MaxVideoBytes <= 0 {
 		options.MaxVideoBytes = DefaultMaxVideoInputBytes
@@ -239,20 +239,20 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 		options.VideoSamplingRate = DefaultVideoSamplingRate
 	}
 	if err := validatePermissions(options.Permissions); err != nil {
-		return agent.Middleware{}, err
+		return dagent.Middleware{}, err
 	}
-	if err := agent.ValidateApprovalRules(options.ApprovalOverrides); err != nil {
-		return agent.Middleware{}, err
+	if err := dagent.ValidateApprovalRules(options.ApprovalOverrides); err != nil {
+		return dagent.Middleware{}, err
 	}
 	available := makeFilesystemTools(options)
-	selected := []tool.Tool{}
+	selected := []datool.Tool{}
 	if options.Tools == nil {
 		options.Tools = []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
 	}
 	seen := map[string]bool{}
 	for _, name := range options.Tools {
 		if seen[name] {
-			return agent.Middleware{}, fmt.Errorf("duplicate filesystem tool %q", name)
+			return dagent.Middleware{}, fmt.Errorf("duplicate filesystem tool %q", name)
 		}
 		seen[name] = true
 		executable := available[name]
@@ -260,23 +260,23 @@ func FilesystemMiddleware(options FilesystemOptions) (agent.Middleware, error) {
 			if name == "execute" {
 				continue
 			}
-			return agent.Middleware{}, fmt.Errorf("unknown filesystem tool %q", name)
+			return dagent.Middleware{}, fmt.Errorf("unknown filesystem tool %q", name)
 		}
 		if name == "execute" && len(options.Permissions) > 0 && !permissionsScopedToInaccessibleRoutes(options.Backend, options.Permissions) {
-			return agent.Middleware{}, fmt.Errorf("filesystem permissions cannot constrain execute; configure an isolated sandbox or omit execute")
+			return dagent.Middleware{}, fmt.Errorf("filesystem permissions cannot constrain execute; configure an isolated sandbox or omit execute")
 		}
 		selected = append(selected, executable)
 	}
 	selected = describeFilesystemTools(selected, options.ToolDescriptions)
-	middleware := agent.Middleware{Name: "filesystem", SerializedName: "FilesystemMiddleware", Tools: selected}
-	if fields := backend.RuntimeStateFields(options.Backend); len(fields) > 0 {
-		middleware.Fields = make(map[string]agent.StateField, len(fields))
+	middleware := dagent.Middleware{Name: "filesystem", SerializedName: "FilesystemMiddleware", Tools: selected}
+	if fields := dabackend.RuntimeStateFields(options.Backend); len(fields) > 0 {
+		middleware.Fields = make(map[string]dagent.StateField, len(fields))
 		for _, field := range fields {
 			if _, duplicate := middleware.Fields[field.Key]; duplicate {
-				return agent.Middleware{}, fmt.Errorf("duplicate backend state field %q", field.Key)
+				return dagent.Middleware{}, fmt.Errorf("duplicate backend state field %q", field.Key)
 			}
-			middleware.Fields[field.Key] = agent.StateField{
-				Kind: agent.FieldDelta, Contract: field.Contract,
+			middleware.Fields[field.Key] = dagent.StateField{
+				Kind: dagent.FieldDelta, Contract: field.Contract,
 				SnapshotFrequency: field.SnapshotFrequency, Initial: field.Initial,
 				Reduce: field.Reduce, Clone: field.Clone,
 			}
@@ -298,8 +298,8 @@ func tokenCharacterLimit(subject string, tokens int) (int, error) {
 	return tokens * charactersPerToken, nil
 }
 
-func permissionsScopedToInaccessibleRoutes(value backend.Backend, rules []FilesystemPermission) bool {
-	routes := backend.ShellPathRoutes(value)
+func permissionsScopedToInaccessibleRoutes(value dabackend.Backend, rules []FilesystemPermission) bool {
+	routes := dabackend.ShellPathRoutes(value)
 	if len(routes) == 0 || len(rules) == 0 {
 		return false
 	}
@@ -321,8 +321,8 @@ func permissionsScopedToInaccessibleRoutes(value backend.Backend, rules []Filesy
 	return true
 }
 
-func filesystemModelWrapper(options FilesystemOptions) agent.ModelWrapper {
-	return func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+func filesystemModelWrapper(options FilesystemOptions) dagent.ModelWrapper {
+	return func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		visible := map[string]bool{}
 		for _, executable := range request.Tools {
 			visible[executable.Definition().Name] = true
@@ -351,11 +351,11 @@ func filesystemModelWrapper(options FilesystemOptions) agent.ModelWrapper {
 		if visible["execute"] {
 			if routePrompt := filesystemRoutePrompt(options.Backend); routePrompt != "" {
 				if request.SystemMessage == nil {
-					system := message.System(routePrompt)
+					system := damessage.System(routePrompt)
 					request.SystemMessage = &system
 				} else {
 					system := request.SystemMessage.Clone()
-					system.Content = append(system.Content, message.ContentBlock{Type: message.BlockText, Text: "\n\n" + routePrompt})
+					system.Content = append(system.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: "\n\n" + routePrompt})
 					request.SystemMessage = &system
 				}
 			}
@@ -363,18 +363,18 @@ func filesystemModelWrapper(options FilesystemOptions) agent.ModelWrapper {
 		request.Messages = scrubUnsupportedFilesystemMedia(request.Messages, request.Model)
 		processed, update, boundCtx, err := evictHumanMessages(ctx, options, request)
 		if err != nil {
-			return agent.ModelResponse{}, err
+			return dagent.ModelResponse{}, err
 		}
 		response, err := next(ctx, processed)
 		if err != nil || len(update) == 0 {
 			return response, err
 		}
-		if runtimeUpdates := backend.RuntimeUpdates(boundCtx, options.Backend); len(runtimeUpdates) > 0 {
+		if runtimeUpdates := dabackend.RuntimeUpdates(boundCtx, options.Backend); len(runtimeUpdates) > 0 {
 			for key, value := range runtimeUpdates {
 				if existing, exists := update[key]; exists {
 					merged, mergeErr := mergeFilesystemModelUpdate(existing, value)
 					if mergeErr != nil {
-						return agent.ModelResponse{}, fmt.Errorf("filesystem backend produced conflicting state update %q: %w", key, mergeErr)
+						return dagent.ModelResponse{}, fmt.Errorf("filesystem backend produced conflicting state update %q: %w", key, mergeErr)
 					}
 					update[key] = merged
 				} else {
@@ -383,13 +383,13 @@ func filesystemModelWrapper(options FilesystemOptions) agent.ModelWrapper {
 			}
 		}
 		if response.Update == nil {
-			response.Update = state.Values{}
+			response.Update = dastate.Values{}
 		}
 		for key, value := range update {
 			if existing, exists := response.Update[key]; exists {
 				merged, mergeErr := mergeFilesystemModelUpdate(existing, value)
 				if mergeErr != nil {
-					return agent.ModelResponse{}, fmt.Errorf("filesystem model produced conflicting state update %q: %w", key, mergeErr)
+					return dagent.ModelResponse{}, fmt.Errorf("filesystem model produced conflicting state update %q: %w", key, mergeErr)
 				}
 				response.Update[key] = merged
 			} else {
@@ -400,8 +400,8 @@ func filesystemModelWrapper(options FilesystemOptions) agent.ModelWrapper {
 	}
 }
 
-func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat) []message.Message {
-	profile := model.Profile{}
+func scrubUnsupportedFilesystemMedia(messages []damessage.Message, chat damodel.Chat) []damessage.Message {
+	profile := damodel.Profile{}
 	if chat != nil {
 		profile = chat.Profile()
 	}
@@ -410,10 +410,10 @@ func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat
 	result := messages
 	copied := false
 	for index, item := range messages {
-		if item.Role != message.RoleHuman && item.Role != message.RoleTool {
+		if item.Role != damessage.RoleHuman && item.Role != damessage.RoleTool {
 			continue
 		}
-		inToolMessage := item.Role == message.RoleTool
+		inToolMessage := item.Role == damessage.RoleTool
 		cloned := false
 		for blockIndex, block := range item.Content {
 			if filesystemMediaSupported(block, profile, inToolMessage) {
@@ -421,7 +421,7 @@ func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat
 			}
 			if !cloned {
 				if !copied {
-					result = append([]message.Message(nil), messages...)
+					result = append([]damessage.Message(nil), messages...)
 					copied = true
 				}
 				result[index] = item.Clone()
@@ -432,7 +432,7 @@ func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat
 			if mimeType == "" {
 				mimeType = "unknown"
 			}
-			result[index].Content[blockIndex] = message.ContentBlock{Type: message.BlockText, Text: fmt.Sprintf(
+			result[index].Content[blockIndex] = damessage.ContentBlock{Type: damessage.BlockText, Text: fmt.Sprintf(
 				"[read_file: %s was not attached because this model does not support %s content (%s).]",
 				path, block.Type, mimeType,
 			)}
@@ -441,18 +441,18 @@ func scrubUnsupportedFilesystemMedia(messages []message.Message, chat model.Chat
 	return result
 }
 
-func filesystemMediaSupported(block message.ContentBlock, profile model.Profile, inToolMessage bool) bool {
+func filesystemMediaSupported(block damessage.ContentBlock, profile damodel.Profile, inToolMessage bool) bool {
 	switch block.Type {
-	case message.BlockImage:
+	case damessage.BlockImage:
 		if inToolMessage && profile.SupportsImageToolMessages != nil && !*profile.SupportsImageToolMessages {
 			return false
 		}
 		return profile.Provider == "" || profile.SupportsImages
-	case message.BlockAudio:
+	case damessage.BlockAudio:
 		return profile.Provider == "" || profile.SupportsAudio
-	case message.BlockVideo:
+	case damessage.BlockVideo:
 		return profile.Provider == "" || profile.SupportsVideo
-	case message.BlockFile:
+	case damessage.BlockFile:
 		if len(block.Data) == 0 {
 			return true
 		}
@@ -473,7 +473,7 @@ func filesystemProviderAcceptsFiles(provider string) bool {
 	return provider == "openai" || provider == "azure-openai" || provider == "google" || provider == "google-genai"
 }
 
-func filesystemMediaPath(block message.ContentBlock) string {
+func filesystemMediaPath(block damessage.ContentBlock) string {
 	if raw := block.Extra[readFilePathMetadata]; len(raw) > 0 {
 		var value string
 		if json.Unmarshal(raw, &value) == nil && value != "" {
@@ -486,13 +486,13 @@ func filesystemMediaPath(block message.ContentBlock) string {
 	return "the requested file"
 }
 
-func evictHumanMessages(ctx context.Context, options FilesystemOptions, request agent.ModelRequest) (agent.ModelRequest, state.Values, context.Context, error) {
+func evictHumanMessages(ctx context.Context, options FilesystemOptions, request dagent.ModelRequest) (dagent.ModelRequest, dastate.Values, context.Context, error) {
 	if options.humanMessageLimit == 0 {
 		return request, nil, ctx, nil
 	}
 	hasTagged := false
 	for _, item := range request.Messages {
-		if item.Role == message.RoleHuman && evictedMessagePath(item) != "" {
+		if item.Role == damessage.RoleHuman && evictedMessagePath(item) != "" {
 			hasTagged = true
 			break
 		}
@@ -500,24 +500,24 @@ func evictHumanMessages(ctx context.Context, options FilesystemOptions, request 
 	newEviction := false
 	if len(request.Messages) > 0 {
 		last := request.Messages[len(request.Messages)-1]
-		newEviction = last.Role == message.RoleHuman && evictedMessagePath(last) == "" && utf8.RuneCountInString(messageText(last)) > options.humanMessageLimit
+		newEviction = last.Role == damessage.RoleHuman && evictedMessagePath(last) == "" && utf8.RuneCountInString(messageText(last)) > options.humanMessageLimit
 	}
 	if !hasTagged && !newEviction {
 		return request, nil, ctx, nil
 	}
 
 	processed := request.Clone()
-	update := state.Values{}
+	update := dastate.Values{}
 	boundCtx := ctx
 	if newEviction {
 		var err error
-		boundCtx, err = backend.BindRuntime(ctx, options.Backend, request.State, backendRuntime(request.Runtime))
+		boundCtx, err = dabackend.BindRuntime(ctx, options.Backend, request.State, backendRuntime(request.Runtime))
 		if err != nil {
-			return agent.ModelRequest{}, nil, ctx, fmt.Errorf("bind human message eviction backend: %w", err)
+			return dagent.ModelRequest{}, nil, ctx, fmt.Errorf("bind human message eviction backend: %w", err)
 		}
 		identifier, err := randomFilesystemID()
 		if err != nil {
-			return agent.ModelRequest{}, nil, ctx, fmt.Errorf("name evicted human message: %w", err)
+			return dagent.ModelRequest{}, nil, ctx, fmt.Errorf("name evicted human message: %w", err)
 		}
 		filePath := path.Join(options.ConversationHistoryRoot, identifier+".md")
 		lastIndex := len(processed.Messages) - 1
@@ -529,11 +529,11 @@ func evictHumanMessages(ctx context.Context, options FilesystemOptions, request 
 			encodedPath, _ := json.Marshal(filePath)
 			tagged.Metadata["lc_evicted_to"] = encodedPath
 			processed.Messages[lastIndex] = tagged
-			update[agent.MessagesKey] = []message.Message{tagged}
+			update[dagent.MessagesKey] = []damessage.Message{tagged}
 		}
 	}
 	for index, item := range processed.Messages {
-		if item.Role == message.RoleHuman {
+		if item.Role == damessage.RoleHuman {
 			if filePath := evictedMessagePath(item); filePath != "" {
 				processed.Messages[index] = truncateEvictedHumanMessage(item, filePath)
 			}
@@ -542,7 +542,7 @@ func evictHumanMessages(ctx context.Context, options FilesystemOptions, request 
 	return processed, update, boundCtx, nil
 }
 
-func evictedMessagePath(value message.Message) string {
+func evictedMessagePath(value damessage.Message) string {
 	raw := value.Metadata["lc_evicted_to"]
 	if len(raw) == 0 {
 		return ""
@@ -554,22 +554,22 @@ func evictedMessagePath(value message.Message) string {
 	return result
 }
 
-func messageText(value message.Message) string {
+func messageText(value damessage.Message) string {
 	parts := make([]string, 0, len(value.Content))
 	for _, block := range value.Content {
-		if block.Type == message.BlockText {
+		if block.Type == damessage.BlockText {
 			parts = append(parts, block.Text)
 		}
 	}
 	return strings.Join(parts, "\n")
 }
 
-func truncateEvictedHumanMessage(value message.Message, filePath string) message.Message {
+func truncateEvictedHumanMessage(value damessage.Message, filePath string) damessage.Message {
 	replacement := fmt.Sprintf(oversizedHumanMessage, filePath, humanMessagePreview(messageText(value)))
 	result := value.Clone()
-	content := []message.ContentBlock{{Type: message.BlockText, Text: replacement}}
+	content := []damessage.ContentBlock{{Type: damessage.BlockText, Text: replacement}}
 	for _, block := range result.Content {
-		if block.Type != message.BlockText {
+		if block.Type != damessage.BlockText {
 			content = append(content, block)
 		}
 	}
@@ -615,23 +615,23 @@ func randomFilesystemID() (string, error) {
 }
 
 func mergeFilesystemModelUpdate(existing, incoming any) (any, error) {
-	if existingMessages, ok := existing.([]message.Message); ok {
-		incomingMessages, messagesOK := incoming.([]message.Message)
+	if existingMessages, ok := existing.([]damessage.Message); ok {
+		incomingMessages, messagesOK := incoming.([]damessage.Message)
 		if !messagesOK {
 			return nil, fmt.Errorf("cannot combine message and %T updates", incoming)
 		}
 		return append(existingMessages, incomingMessages...), nil
 	}
-	if overwrite, ok := existing.(state.Overwrite); ok {
-		incomingMessages, messagesOK := incoming.([]message.Message)
+	if overwrite, ok := existing.(dastate.Overwrite); ok {
+		incomingMessages, messagesOK := incoming.([]damessage.Message)
 		if !messagesOK {
 			return nil, fmt.Errorf("cannot combine overwrite and %T updates", incoming)
 		}
-		messages, messagesOK := overwrite.Value.([]message.Message)
+		messages, messagesOK := overwrite.Value.([]damessage.Message)
 		if !messagesOK {
 			return nil, fmt.Errorf("message overwrite has type %T", overwrite.Value)
 		}
-		byID := make(map[string]message.Message, len(incomingMessages))
+		byID := make(map[string]damessage.Message, len(incomingMessages))
 		for _, item := range incomingMessages {
 			byID[item.ID] = item
 		}
@@ -660,8 +660,8 @@ func mergeFilesystemModelUpdate(existing, incoming any) (any, error) {
 	return nil, fmt.Errorf("cannot combine %T and %T updates", existing, incoming)
 }
 
-func filesystemRoutePrompt(value backend.Backend) string {
-	routes := backend.ShellPathRoutes(value)
+func filesystemRoutePrompt(value dabackend.Backend) string {
+	routes := dabackend.ShellPathRoutes(value)
 	if len(routes) == 0 {
 		return ""
 	}
@@ -726,24 +726,62 @@ func validatePermissions(rules []FilesystemPermission) error {
 	return nil
 }
 
-func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
-	values := map[string]tool.Tool{}
+type filesystemListInput struct {
+	Path string `json:"path" description:"Absolute path to the directory to list. Must be absolute, not relative."`
+}
+
+type filesystemReadInput struct {
+	FilePath string `json:"file_path" description:"Absolute path to the file to read. Must be absolute, not relative."`
+	Offset   int    `json:"offset,omitempty" jsonschema:"default=0"`
+	Limit    *int   `json:"limit,omitempty"`
+}
+
+type filesystemWriteInput struct {
+	FilePath string `json:"file_path" description:"Absolute path where the file should be written. Must be absolute, not relative."`
+	Content  string `json:"content" description:"The text content to write to the file. This parameter is required."`
+}
+
+type filesystemEditInput struct {
+	FilePath string `json:"file_path" description:"Absolute path to the file to edit. Must be absolute, not relative."`
+	Old      string `json:"old_string" description:"The exact text to find and replace. Must be unique in the file unless replace_all is true."`
+	New      string `json:"new_string" description:"The text to replace old_string with. Must be different from old_string."`
+	All      bool   `json:"replace_all,omitempty" description:"If true, replace all occurrences of old_string. If false, old_string must be unique." jsonschema:"default=false"`
+}
+
+type filesystemDeleteInput struct {
+	FilePath string `json:"file_path" description:"Absolute path to the file or directory to delete. Must be absolute, not relative."`
+}
+
+type filesystemGlobInput struct {
+	Pattern string  `json:"pattern" description:"Glob pattern to match files, such as **/*.go, *.txt, or /subdir/**/*.md."`
+	Path    *string `json:"path,omitempty" description:"Base directory to search from. Defaults to the backend's default root."`
+}
+
+type filesystemGrepInput struct {
+	Pattern    string  `json:"pattern" description:"Text pattern to search for (literal string, not regex)."`
+	Path       *string `json:"path,omitempty" description:"Directory to search in. Defaults to the backend's default root."`
+	Glob       *string `json:"glob,omitempty" description:"Glob pattern (not regex) limiting which files are searched."`
+	OutputMode string  `json:"output_mode,omitempty" description:"Shape of the result: matching paths, matching lines grouped by file, or match counts by file." jsonschema:"enum=files_with_matches|content|count,default=files_with_matches"`
+	MaxCount   *int    `json:"max_count,omitempty" description:"Optional cap on matches across all files. Leave unset to use the configured default." jsonschema:"minimum=1"`
+}
+
+type filesystemExecuteInput struct {
+	Command string `json:"command" description:"Shell command to execute in the sandbox environment."`
+	Timeout *int   `json:"timeout,omitempty"`
+}
+
+func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
+	values := map[string]datool.Tool{}
 	globSlots := make(chan struct{}, 4)
-	values["ls"] = tool.Func{Spec: tool.Definition{Name: "ls", Description: FilesystemListDescription, InputSchema: schema(`{"path":{"type":"string","description":"Absolute path to the directory to list. Must be absolute, not relative."}}`, "path")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-		var input struct {
-			Path string `json:"path"`
-		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
+	values["ls"] = datool.MustNew("ls", FilesystemListDescription, func(ctx context.Context, input filesystemListInput) (string, error) {
 		validatedPath, err := validateFilesystemToolPath(input.Path, false)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
 		input.Path = validatedPath
 		result, err := options.Backend.List(ctx, input.Path)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
 		result.Entries = filterFileInfo(options.Permissions, FilesystemRead, result.Entries)
 		lines := make([]string, len(result.Entries))
@@ -751,10 +789,10 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 			lines[i] = item.Path
 		}
 		if len(lines) == 0 {
-			return tool.TextResult("No files found"), nil
+			return "No files found", nil
 		}
-		return tool.TextResult(strings.Join(lines, "\n")), nil
-	}}
+		return strings.Join(lines, "\n"), nil
+	})
 	readDescription := FilesystemReadDescription
 	offsetDescription := "Line number to start reading from (0-indexed). Use for pagination of large files."
 	limitDescription := "Maximum number of lines to read. Use for pagination of large files."
@@ -763,23 +801,10 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		offsetDescription = "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling."
 		limitDescription = "Maximum number of lines to read for text files. For videos, seconds of source to sample."
 	}
-	readSchema, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-		"file_path": map[string]any{"type": "string", "description": "Absolute path to the file to read. Must be absolute, not relative."},
-		"offset":    map[string]any{"type": "integer", "default": 0, "description": offsetDescription},
-		"limit":     map[string]any{"type": "integer", "default": 100, "description": limitDescription},
-	}, "required": []string{"file_path"}})
-	values["read_file"] = tool.Func{Spec: tool.Definition{Name: "read_file", Description: readDescription, InputSchema: readSchema}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-		var input struct {
-			FilePath string `json:"file_path"`
-			Offset   int    `json:"offset"`
-			Limit    *int   `json:"limit"`
-		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
+	values["read_file"] = datool.MustNew("read_file", readDescription, func(ctx context.Context, input filesystemReadInput) (any, error) {
 		validatedPath, err := validateFilesystemToolPath(input.FilePath, false)
 		if err != nil {
-			return tool.Result{}, err
+			return datool.Result{}, err
 		}
 		input.FilePath = validatedPath
 		limit := options.ReadLimit
@@ -788,26 +813,26 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		}
 		video := options.VideoExtractor != nil && isVideoPath(input.FilePath)
 		if video && limit <= 0 {
-			return tool.Result{}, fmt.Errorf("error reading video %s: limit must be > 0, got %d", input.FilePath, limit)
+			return datool.Result{}, fmt.Errorf("error reading video %s: limit must be > 0, got %d", input.FilePath, limit)
 		}
 		result, err := options.Backend.Read(ctx, input.FilePath, input.Offset, limit)
 		if err != nil {
-			return tool.Result{}, err
+			return datool.Result{}, err
 		}
 		if result.Data == nil {
-			return tool.Result{}, fmt.Errorf("read %q returned no data", input.FilePath)
+			return datool.Result{}, fmt.Errorf("read %q returned no data", input.FilePath)
 		}
 		if result.NoLinesRequested {
-			return tool.TextResult(fmt.Sprintf("System reminder: no lines were read because `limit` was %d. The file was not inspected and may have contents; retry with `limit` >= 1 to read it.", limit)), nil
+			return fmt.Sprintf("System reminder: no lines were read because `limit` was %d. The file was not inspected and may have contents; retry with `limit` >= 1 to read it.", limit), nil
 		}
-		if result.Data.Encoding == backend.EncodingBase64 {
+		if result.Data.Encoding == dabackend.EncodingBase64 {
 			if video {
 				return videoResult(ctx, options, input.FilePath, result.Data, input.Offset, limit)
 			}
 			return mediaResult(ctx, options.Backend, input.FilePath, result.Data)
 		}
 		if strings.TrimSpace(result.Data.Content) == "" {
-			return tool.TextResult("System reminder: File exists but has empty contents"), nil
+			return "System reminder: File exists but has empty contents", nil
 		}
 		start := max(input.Offset, 0) + 1
 		if result.StartLine != nil {
@@ -818,89 +843,68 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if input.Offset < 0 {
 			text += fmt.Sprintf("\n\n[Requested offset %d is before the start of the file; read from line 1 instead.]", input.Offset)
 		}
-		return tool.TextResult(text), nil
-	}}
-	values["write_file"] = tool.Func{Spec: tool.Definition{Name: "write_file", Description: FilesystemWriteDescription, InputSchema: schema(`{"file_path":{"type":"string","description":"Absolute path where the file should be written. Must be absolute, not relative."},"content":{"type":"string","description":"The text content to write to the file. This parameter is required."}}`, "file_path", "content")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-		var input struct {
-			FilePath string `json:"file_path"`
-			Content  string `json:"content"`
-		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
+		return text, nil
+	},
+		datool.WithPropertyValue("offset", "description", offsetDescription),
+		datool.WithPropertyType("limit", "integer"),
+		datool.WithPropertyValue("limit", "default", options.ReadLimit),
+		datool.WithPropertyValue("limit", "description", limitDescription),
+	)
+	values["write_file"] = datool.MustNew("write_file", FilesystemWriteDescription, func(ctx context.Context, input filesystemWriteInput) (string, error) {
 		validatedPath, err := validateFilesystemToolPath(input.FilePath, false)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
 		input.FilePath = validatedPath
 		result, err := options.Backend.Write(ctx, input.FilePath, input.Content)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
-		return tool.TextResult("Wrote " + result.Path), nil
-	}}
-	values["edit_file"] = tool.Func{Spec: tool.Definition{Name: "edit_file", Description: FilesystemEditDescription, InputSchema: schema(`{"file_path":{"type":"string","description":"Absolute path to the file to edit. Must be absolute, not relative."},"old_string":{"type":"string","description":"The exact text to find and replace. Must be unique in the file unless replace_all is true."},"new_string":{"type":"string","description":"The text to replace old_string with. Must be different from old_string."},"replace_all":{"type":"boolean","default":false,"description":"If true, replace all occurrences of old_string. If false, old_string must be unique."}}`, "file_path", "old_string", "new_string")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-		var input struct {
-			FilePath string `json:"file_path"`
-			Old      string `json:"old_string"`
-			New      string `json:"new_string"`
-			All      bool   `json:"replace_all"`
-		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
+		return "Wrote " + result.Path, nil
+	})
+	values["edit_file"] = datool.MustNew("edit_file", FilesystemEditDescription, func(ctx context.Context, input filesystemEditInput) (string, error) {
 		validatedPath, err := validateFilesystemToolPath(input.FilePath, false)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
 		input.FilePath = validatedPath
 		result, err := options.Backend.Edit(ctx, input.FilePath, input.Old, input.New, input.All)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
-		return tool.TextResult(fmt.Sprintf("Edited %s (%d replacement(s)).", result.Path, result.Occurrences)), nil
-	}}
-	values["delete"] = tool.Func{Spec: tool.Definition{Name: "delete", Description: FilesystemDeleteDescription, InputSchema: schema(`{"file_path":{"type":"string","description":"Absolute path to the file or directory to delete. Must be absolute, not relative."}}`, "file_path")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-		var input struct {
-			FilePath string `json:"file_path"`
-		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
+		return fmt.Sprintf("Edited %s (%d replacement(s)).", result.Path, result.Occurrences), nil
+	})
+	values["delete"] = datool.MustNew("delete", FilesystemDeleteDescription, func(ctx context.Context, input filesystemDeleteInput) (string, error) {
 		validatedPath, err := validateFilesystemToolPath(input.FilePath, false)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
 		input.FilePath = validatedPath
 		result, err := options.Backend.Delete(ctx, input.FilePath)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
-		return tool.TextResult("Deleted " + result.Path), nil
-	}}
-	values["glob"] = tool.Func{Spec: tool.Definition{Name: "glob", Description: FilesystemGlobDescription, InputSchema: schema(`{"pattern":{"type":"string","description":"Glob pattern to match files, such as **/*.go, *.txt, or /subdir/**/*.md."},"path":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"Base directory to search from. Defaults to the backend's default root."}}`, "pattern")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-		var input struct {
-			Pattern string `json:"pattern"`
-			Path    string `json:"path"`
+		return "Deleted " + result.Path, nil
+	})
+	values["glob"] = datool.MustNew("glob", FilesystemGlobDescription, func(ctx context.Context, input filesystemGlobInput) (string, error) {
+		basePath := ""
+		if input.Path != nil {
+			basePath = *input.Path
 		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
-		validatedPath, err := validateFilesystemToolPath(input.Path, true)
+		validatedPath, err := validateFilesystemToolPath(basePath, true)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
-		input.Path = validatedPath
 		if err := validateFilesystemGlob(input.Pattern); err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
 		select {
 		case globSlots <- struct{}{}:
 		default:
-			return tool.Result{}, fmt.Errorf("too many glob calls are already running; try again later with a more specific pattern or a narrower path")
+			return "", fmt.Errorf("too many glob calls are already running; try again later with a more specific pattern or a narrower path")
 		}
 		type globResponse struct {
-			result backend.GlobResult
+			result dabackend.GlobResult
 			err    error
 		}
 		workerCtx, cancel := context.WithCancel(ctx)
@@ -908,22 +912,22 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		response := make(chan globResponse, 1)
 		go func() {
 			defer func() { <-globSlots }()
-			result, err := options.Backend.Glob(workerCtx, input.Pattern, input.Path)
+			result, err := options.Backend.Glob(workerCtx, input.Pattern, validatedPath)
 			response <- globResponse{result: result, err: err}
 		}()
 		timer := time.NewTimer(options.GlobTimeout)
 		defer timer.Stop()
-		var result backend.GlobResult
+		var result dabackend.GlobResult
 		select {
 		case completed := <-response:
 			if completed.err != nil {
-				return tool.Result{}, completed.err
+				return "", completed.err
 			}
 			result = completed.result
 		case <-timer.C:
-			return tool.Result{}, fmt.Errorf("glob timed out after %s; try a more specific pattern or a narrower path", options.GlobTimeout)
+			return "", fmt.Errorf("glob timed out after %s; try a more specific pattern or a narrower path", options.GlobTimeout)
 		case <-ctx.Done():
-			return tool.Result{}, ctx.Err()
+			return "", ctx.Err()
 		}
 		result.Matches = filterFileInfo(options.Permissions, FilesystemRead, result.Matches)
 		lines := make([]string, len(result.Matches))
@@ -937,65 +941,52 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 		if result.Truncated {
 			text += "\n\nNote: the search stopped early because it hit its time or size limit. The paths above are valid but incomplete. Narrow the pattern or path to see the rest."
 		}
-		return tool.TextResult(text), nil
-	}}
-	values["grep"] = tool.Func{Spec: tool.Definition{Name: "grep", Description: filesystemGrepDescription(true), InputSchema: schema(`{"pattern":{"type":"string","description":"Text pattern to search for (literal string, not regex)."},"path":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"Directory to search in. Defaults to the backend's default root."},"glob":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"Glob pattern (not regex) limiting which files are searched. A pattern without / matches file names at any depth; a pattern containing / matches paths relative to the search root."},"output_mode":{"type":"string","enum":["files_with_matches","content","count"],"default":"files_with_matches","description":"Shape of the result: matching paths, matching lines grouped by file, or match counts by file."},"max_count":{"anyOf":[{"type":"integer","minimum":1},{"type":"null"}],"default":null,"description":"Optional cap on matches across all files. Leave unset to use the configured default."}}`, "pattern")}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-		var input struct {
-			Pattern    string `json:"pattern"`
-			Path       string `json:"path"`
-			Glob       string `json:"glob"`
-			OutputMode string `json:"output_mode"`
-			MaxCount   int    `json:"max_count"`
+		return text, nil
+	})
+	values["grep"] = datool.MustNew("grep", filesystemGrepDescription(true), func(ctx context.Context, input filesystemGrepInput) (string, error) {
+		basePath := ""
+		if input.Path != nil {
+			basePath = *input.Path
 		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
-		validatedPath, err := validateFilesystemToolPath(input.Path, true)
+		validatedPath, err := validateFilesystemToolPath(basePath, true)
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
-		input.Path = validatedPath
-		if input.Glob != "" {
-			if err := validateFilesystemGlob(input.Glob); err != nil {
-				return tool.Result{}, err
+		globPattern := ""
+		if input.Glob != nil {
+			globPattern = *input.Glob
+		}
+		if globPattern != "" {
+			if err := validateFilesystemGlob(globPattern); err != nil {
+				return "", err
 			}
 		}
-		if input.MaxCount == 0 {
-			input.MaxCount = options.GrepLimit
+		maxCount := options.GrepLimit
+		if input.MaxCount != nil {
+			maxCount = *input.MaxCount
 		}
-		result, err := options.Backend.Grep(ctx, input.Pattern, backend.GrepOptions{Path: input.Path, Glob: input.Glob, MaxCount: input.MaxCount})
+		result, err := options.Backend.Grep(ctx, input.Pattern, dabackend.GrepOptions{Path: validatedPath, Glob: globPattern, MaxCount: maxCount})
 		if err != nil {
-			return tool.Result{}, err
+			return "", err
 		}
 		backendHadMatches := len(result.Matches) > 0
 		result.Matches = filterGrepMatches(options.Permissions, FilesystemRead, result.Matches)
 		text := formatGrep(result, input.OutputMode, input.Pattern, backendHadMatches)
-		return tool.TextResult(text), nil
-	}}
-	if sandbox, ok := backend.SandboxOf(options.Backend); ok {
-		executeSchema, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-			"command": map[string]any{"type": "string", "description": "Shell command to execute in the sandbox environment."},
-			"timeout": map[string]any{"anyOf": []any{map[string]any{"type": "integer", "minimum": 0, "maximum": options.MaxExecuteTimeout}, map[string]any{"type": "null"}}, "default": nil, "description": fmt.Sprintf("Optional timeout in seconds, capped at %d. Omit it to use the backend default; zero disables the command timeout when supported.", options.MaxExecuteTimeout)},
-		}, "required": []string{"command"}})
-		values["execute"] = tool.Func{Spec: tool.Definition{Name: "execute", Description: filesystemExecuteDescription(true, true), InputSchema: executeSchema}, Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-			var input struct {
-				Command string `json:"command"`
-				Timeout *int   `json:"timeout"`
-			}
-			if err := decodeArguments(raw, &input); err != nil {
-				return tool.Result{}, err
-			}
+		return text, nil
+	})
+	if sandbox, ok := dabackend.SandboxOf(options.Backend); ok {
+		values["execute"] = datool.MustNew("execute", filesystemExecuteDescription(true, true), func(ctx context.Context, input filesystemExecuteInput) (datool.Result, error) {
 			if input.Timeout != nil && *input.Timeout > options.MaxExecuteTimeout {
-				return tool.Result{}, fmt.Errorf("execute timeout %d exceeds maximum %d", *input.Timeout, options.MaxExecuteTimeout)
+				return datool.Result{}, fmt.Errorf("execute timeout %d exceeds maximum %d", *input.Timeout, options.MaxExecuteTimeout)
 			}
 			var timeout *time.Duration
 			if input.Timeout != nil {
 				value := time.Duration(*input.Timeout) * time.Second
 				timeout = &value
 			}
-			result, err := backend.ExecuteSandbox(ctx, sandbox, input.Command, backend.ExecuteOptions{Timeout: timeout})
+			result, err := dabackend.ExecuteSandbox(ctx, sandbox, input.Command, dabackend.ExecuteOptions{Timeout: timeout})
 			if err != nil {
-				return tool.Result{}, err
+				return datool.Result{}, err
 			}
 			artifact, _ := json.Marshal(map[string]any{"exit_code": result.ExitCode, "truncated": result.Truncated})
 			text := result.Output
@@ -1009,17 +1000,21 @@ func makeFilesystemTools(options FilesystemOptions) map[string]tool.Tool {
 			if result.Truncated {
 				text += "\n[Output was truncated because it exceeded the capture size limit]"
 			}
-			return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: text}}, Artifact: artifact}, nil
-		}}
+			return datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: text}}, Artifact: artifact}, nil
+		}, datool.WithPropertySchema("timeout", map[string]any{
+			"anyOf":       []any{map[string]any{"type": "integer", "minimum": 0, "maximum": options.MaxExecuteTimeout}, map[string]any{"type": "null"}},
+			"default":     nil,
+			"description": fmt.Sprintf("Optional timeout in seconds, capped at %d. Omit it to use the backend default; zero disables the command timeout when supported.", options.MaxExecuteTimeout),
+		}))
 	}
 	return values
 }
 
-func filesystemPermissionWrapper(options FilesystemOptions) agent.ToolWrapper {
-	return func(ctx context.Context, request agent.ToolCallRequest, next agent.ToolHandler) (agent.ToolCallResponse, error) {
-		boundCtx, err := backend.BindRuntime(ctx, options.Backend, request.State, backendRuntime(request.Runtime))
+func filesystemPermissionWrapper(options FilesystemOptions) dagent.ToolWrapper {
+	return func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
+		boundCtx, err := dabackend.BindRuntime(ctx, options.Backend, request.State, backendRuntime(request.Runtime))
 		if err != nil {
-			return agent.ToolCallResponse{}, err
+			return dagent.ToolCallResponse{}, err
 		}
 		ctx = boundCtx
 		operation, known := filesystemToolOperations[request.Call.Name]
@@ -1028,10 +1023,10 @@ func filesystemPermissionWrapper(options FilesystemOptions) agent.ToolWrapper {
 			if request.Call.Name == "delete" {
 				hasDescendants := deleteTargetMayHaveDescendants(ctx, options.Backend, target, len(options.Permissions) > 0)
 				if patterns := findDeletePatterns(options.Permissions, target, hasDescendants, PermissionDeny); len(patterns) > 0 {
-					return agent.ToolCallResponse{}, fmt.Errorf("permission denied for %s on %s by %s", operation, target, strings.Join(patterns, ", "))
+					return dagent.ToolCallResponse{}, fmt.Errorf("permission denied for %s on %s by %s", operation, target, strings.Join(patterns, ", "))
 				}
 			} else if permissionDecision(options.Permissions, operation, target) == PermissionDeny {
-				return agent.ToolCallResponse{}, fmt.Errorf("permission denied for %s on %s", operation, target)
+				return dagent.ToolCallResponse{}, fmt.Errorf("permission denied for %s on %s", operation, target)
 			}
 		}
 		response, err := next(ctx, request)
@@ -1055,17 +1050,17 @@ func filesystemPermissionWrapper(options FilesystemOptions) agent.ToolWrapper {
 				artifactPath := path.Join(options.ArtifactsRoot, request.Call.ID+".txt")
 				if _, writeErr := options.Backend.Write(ctx, artifactPath, combined.String()); writeErr == nil {
 					preview := previewText(combined.String(), 2000)
-					response.Result.Content = []message.ContentBlock{{Type: message.BlockText, Text: fmt.Sprintf("Result saved to %s. Preview:\n%s", artifactPath, preview)}}
+					response.Result.Content = []damessage.ContentBlock{{Type: damessage.BlockText, Text: fmt.Sprintf("Result saved to %s. Preview:\n%s", artifactPath, preview)}}
 				}
 			}
 		}
-		updates := backend.RuntimeUpdates(ctx, options.Backend)
+		updates := dabackend.RuntimeUpdates(ctx, options.Backend)
 		if len(updates) > 0 && response.Result.Update == nil {
 			response.Result.Update = map[string]any{}
 		}
 		for key, value := range updates {
 			if _, exists := response.Result.Update[key]; exists {
-				return agent.ToolCallResponse{}, fmt.Errorf("filesystem backend produced conflicting state update %q", key)
+				return dagent.ToolCallResponse{}, fmt.Errorf("filesystem backend produced conflicting state update %q", key)
 			}
 			response.Result.Update[key] = value
 		}
@@ -1073,21 +1068,21 @@ func filesystemPermissionWrapper(options FilesystemOptions) agent.ToolWrapper {
 	}
 }
 
-func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission, overrides []agent.ApprovalRule) agent.ToolBatchHook {
-	return func(ctx context.Context, request agent.ToolBatchRequest) (agent.ToolBatchResponse, error) {
-		boundCtx, err := backend.BindRuntime(ctx, value, request.State, backendRuntime(request.Runtime))
+func filesystemApprovalHook(value dabackend.Backend, rules []FilesystemPermission, overrides []dagent.ApprovalRule) dagent.ToolBatchHook {
+	return func(ctx context.Context, request dagent.ToolBatchRequest) (dagent.ToolBatchResponse, error) {
+		boundCtx, err := dabackend.BindRuntime(ctx, value, request.State, backendRuntime(request.Runtime))
 		if err != nil {
-			return agent.ToolBatchResponse{}, err
+			return dagent.ToolBatchResponse{}, err
 		}
 		ctx = boundCtx
-		var pending []agent.ApprovalRequest
+		var pending []dagent.ApprovalRequest
 		gated := map[string]bool{}
 		for _, call := range request.Calls {
 			overridden := false
 			for _, rule := range overrides {
 				matched, matchErr := rule.MatchesName(call.Name)
 				if matchErr != nil {
-					return agent.ToolBatchResponse{}, matchErr
+					return dagent.ToolBatchResponse{}, matchErr
 				}
 				if matched {
 					overridden = true
@@ -1112,22 +1107,22 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission,
 				decision = PermissionInterrupt
 			}
 			if decision == PermissionInterrupt {
-				pending = append(pending, agent.ApprovalRequest{Call: call, Description: fmt.Sprintf("Allow %s access to %s?", operation, target), AllowedDecisions: []agent.ApprovalDecision{agent.ApprovalApprove, agent.ApprovalEdit, agent.ApprovalReject, agent.ApprovalRespond}})
+				pending = append(pending, dagent.ApprovalRequest{Call: call, Description: fmt.Sprintf("Allow %s access to %s?", operation, target), AllowedDecisions: []dagent.ApprovalDecision{dagent.ApprovalApprove, dagent.ApprovalEdit, dagent.ApprovalReject, dagent.ApprovalRespond}})
 				gated[call.ID] = true
 			}
 		}
 		if len(pending) == 0 {
-			return agent.ToolBatchResponse{}, nil
+			return dagent.ToolBatchResponse{}, nil
 		}
 		if request.Runtime.Resume == nil {
-			return agent.ToolBatchResponse{Interrupt: &agent.Interrupt{ID: "filesystem_approval", Value: pending}}, nil
+			return dagent.ToolBatchResponse{Interrupt: &dagent.Interrupt{ID: "filesystem_approval", Value: pending}}, nil
 		}
-		resume, ok := request.Runtime.Resume.(agent.ApprovalResponse)
+		resume, ok := request.Runtime.Resume.(dagent.ApprovalResponse)
 		if !ok {
-			return agent.ToolBatchResponse{}, fmt.Errorf("filesystem approval resume has type %T", request.Runtime.Resume)
+			return dagent.ToolBatchResponse{}, fmt.Errorf("filesystem approval resume has type %T", request.Runtime.Resume)
 		}
-		calls := make([]message.ToolCall, 0, len(request.Calls))
-		var rejected []message.Message
+		calls := make([]damessage.ToolCall, 0, len(request.Calls))
+		var rejected []damessage.Message
 		for _, call := range request.Calls {
 			if !gated[call.ID] {
 				calls = append(calls, call)
@@ -1135,19 +1130,19 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission,
 			}
 			choice, exists := resume.Decisions[call.ID]
 			if !exists {
-				return agent.ToolBatchResponse{}, fmt.Errorf("filesystem approval missing call %q", call.ID)
+				return dagent.ToolBatchResponse{}, fmt.Errorf("filesystem approval missing call %q", call.ID)
 			}
 			switch choice.Decision {
-			case agent.ApprovalApprove:
+			case dagent.ApprovalApprove:
 				calls = append(calls, call)
-			case agent.ApprovalEdit:
+			case dagent.ApprovalEdit:
 				if choice.Call == nil || choice.Call.Name == "" || !json.Valid(choice.Call.Arguments) || (choice.Call.ID != "" && choice.Call.ID != call.ID) {
-					return agent.ToolBatchResponse{}, fmt.Errorf("invalid filesystem approval edit for %q", call.ID)
+					return dagent.ToolBatchResponse{}, fmt.Errorf("invalid filesystem approval edit for %q", call.ID)
 				}
 				edited := *choice.Call
 				edited.ID = call.ID
 				calls = append(calls, edited)
-			case agent.ApprovalReject:
+			case dagent.ApprovalReject:
 				text := choice.Message
 				if text == "" {
 					text = choice.Reason
@@ -1155,26 +1150,26 @@ func filesystemApprovalHook(value backend.Backend, rules []FilesystemPermission,
 				if text == "" {
 					text = "Filesystem operation rejected."
 				}
-				item := message.Tool(call.ID, text)
+				item := damessage.Tool(call.ID, text)
 				item.Name = call.Name
-				item.ToolStatus = message.ToolStatusError
+				item.ToolStatus = damessage.ToolStatusError
 				rejected = append(rejected, item)
-			case agent.ApprovalRespond:
+			case dagent.ApprovalRespond:
 				if choice.Message == "" {
-					return agent.ToolBatchResponse{}, fmt.Errorf("filesystem response for %q requires a message", call.ID)
+					return dagent.ToolBatchResponse{}, fmt.Errorf("filesystem response for %q requires a message", call.ID)
 				}
-				item := message.Tool(call.ID, choice.Message)
+				item := damessage.Tool(call.ID, choice.Message)
 				item.Name = call.Name
 				rejected = append(rejected, item)
 			default:
-				return agent.ToolBatchResponse{}, fmt.Errorf("invalid filesystem approval decision %q", choice.Decision)
+				return dagent.ToolBatchResponse{}, fmt.Errorf("invalid filesystem approval decision %q", choice.Decision)
 			}
 		}
-		return agent.ToolBatchResponse{Calls: calls, Messages: rejected, ResumeConsumed: true}, nil
+		return dagent.ToolBatchResponse{Calls: calls, Messages: rejected, ResumeConsumed: true}, nil
 	}
 }
 
-func filesystemBulkInterrupt(rules []FilesystemPermission, operation FilesystemOperation, call message.ToolCall) bool {
+func filesystemBulkInterrupt(rules []FilesystemPermission, operation FilesystemOperation, call damessage.ToolCall) bool {
 	if call.Name != "ls" && call.Name != "glob" && call.Name != "grep" {
 		return false
 	}
@@ -1279,7 +1274,7 @@ func permissionDecision(rules []FilesystemPermission, operation FilesystemOperat
 	return PermissionAllow
 }
 
-func filesystemCallPath(call message.ToolCall) string {
+func filesystemCallPath(call damessage.ToolCall) string {
 	var values map[string]any
 	if json.Unmarshal(call.Arguments, &values) != nil {
 		return "/"
@@ -1356,7 +1351,7 @@ func expandBraces(pattern string) []string {
 	return result
 }
 
-func deleteTargetMayHaveDescendants(ctx context.Context, value backend.Backend, target string, configured bool) bool {
+func deleteTargetMayHaveDescendants(ctx context.Context, value dabackend.Backend, target string, configured bool) bool {
 	if !configured || value == nil {
 		return false
 	}
@@ -1485,8 +1480,8 @@ func normalizedMode(mode PermissionMode) PermissionMode {
 	return mode
 }
 
-func filterFileInfo(rules []FilesystemPermission, operation FilesystemOperation, values []backend.FileInfo) []backend.FileInfo {
-	result := make([]backend.FileInfo, 0, len(values))
+func filterFileInfo(rules []FilesystemPermission, operation FilesystemOperation, values []dabackend.FileInfo) []dabackend.FileInfo {
+	result := make([]dabackend.FileInfo, 0, len(values))
 	for _, value := range values {
 		if permissionDecision(rules, operation, normalizeMatchPath(value.Path)) != PermissionDeny {
 			result = append(result, value)
@@ -1495,34 +1490,14 @@ func filterFileInfo(rules []FilesystemPermission, operation FilesystemOperation,
 	return result
 }
 
-func filterGrepMatches(rules []FilesystemPermission, operation FilesystemOperation, values []backend.GrepMatch) []backend.GrepMatch {
-	result := make([]backend.GrepMatch, 0, len(values))
+func filterGrepMatches(rules []FilesystemPermission, operation FilesystemOperation, values []dabackend.GrepMatch) []dabackend.GrepMatch {
+	result := make([]dabackend.GrepMatch, 0, len(values))
 	for _, value := range values {
 		if permissionDecision(rules, operation, normalizeMatchPath(value.Path)) != PermissionDeny {
 			result = append(result, value)
 		}
 	}
 	return result
-}
-
-func schema(properties string, required ...string) json.RawMessage {
-	var props map[string]json.RawMessage
-	_ = json.Unmarshal([]byte(properties), &props)
-	value := map[string]any{"type": "object", "additionalProperties": false, "properties": props}
-	if len(required) > 0 {
-		value["required"] = required
-	}
-	data, _ := json.Marshal(value)
-	return data
-}
-func decodeArguments(raw json.RawMessage, target any) error {
-	if !json.Valid(raw) {
-		return tool.ErrInvalidArguments
-	}
-	if err := json.Unmarshal(raw, target); err != nil {
-		return fmt.Errorf("%w: %v", tool.ErrInvalidArguments, err)
-	}
-	return nil
 }
 
 func validateFilesystemToolPath(value string, defaultRoot bool) (string, error) {
@@ -1559,7 +1534,7 @@ func validateFilesystemGlob(pattern string) error {
 	return nil
 }
 
-func readPaginationNotice(result backend.ReadResult) string {
+func readPaginationNotice(result dabackend.ReadResult) string {
 	if result.StartLine == nil || result.EndLine == nil || result.NextOffset == nil {
 		return ""
 	}
@@ -1619,28 +1594,28 @@ func numberLines(content string, start int) string {
 	return strings.Join(output, "\n")
 }
 
-func mediaResult(ctx context.Context, value backend.Backend, filePath string, data *backend.FileData) (tool.Result, error) {
+func mediaResult(ctx context.Context, value dabackend.Backend, filePath string, data *dabackend.FileData) (datool.Result, error) {
 	raw, err := binaryFileBytes(ctx, value, filePath, data)
 	if err != nil {
-		return tool.Result{}, err
+		return datool.Result{}, err
 	}
 	mimeType := mime.TypeByExtension(path.Ext(filePath))
-	blockType := message.BlockFile
+	blockType := damessage.BlockFile
 	if strings.HasPrefix(mimeType, "image/") {
-		blockType = message.BlockImage
+		blockType = damessage.BlockImage
 	} else if strings.HasPrefix(mimeType, "audio/") {
-		blockType = message.BlockAudio
+		blockType = damessage.BlockAudio
 	} else if strings.HasPrefix(mimeType, "video/") && strings.ToLower(path.Ext(filePath)) != ".mkv" {
-		blockType = message.BlockVideo
+		blockType = damessage.BlockVideo
 	}
 	encodedPath, _ := json.Marshal(filePath)
-	return tool.Result{Content: []message.ContentBlock{{Type: message.BlockText, Text: "Read binary file " + filePath}, {
+	return datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: "Read binary file " + filePath}, {
 		Type: blockType, Data: raw, MIMEType: mimeType, Name: path.Base(filePath),
 		Extra: map[string]json.RawMessage{readFilePathMetadata: encodedPath},
 	}}}, nil
 }
 
-func binaryFileBytes(ctx context.Context, value backend.Backend, filePath string, data *backend.FileData) ([]byte, error) {
+func binaryFileBytes(ctx context.Context, value dabackend.Backend, filePath string, data *dabackend.FileData) ([]byte, error) {
 	downloads := value.Download(ctx, []string{filePath})
 	if len(downloads) == 1 && downloads[0].Error == "" {
 		return append([]byte(nil), downloads[0].Content...), nil
@@ -1652,22 +1627,22 @@ func binaryFileBytes(ctx context.Context, value backend.Backend, filePath string
 	return raw, nil
 }
 
-func videoResult(ctx context.Context, options FilesystemOptions, filePath string, data *backend.FileData, offset, limit int) (tool.Result, error) {
+func videoResult(ctx context.Context, options FilesystemOptions, filePath string, data *dabackend.FileData, offset, limit int) (datool.Result, error) {
 	raw, err := binaryFileBytes(ctx, options.Backend, filePath, data)
 	if err != nil {
-		return tool.Result{}, err
+		return datool.Result{}, err
 	}
 	if len(raw) > options.MaxVideoBytes {
-		return tool.Result{}, fmt.Errorf("error reading video %s: video payload exceeds maximum input size of %d bytes", filePath, options.MaxVideoBytes)
+		return datool.Result{}, fmt.Errorf("error reading video %s: video payload exceeds maximum input size of %d bytes", filePath, options.MaxVideoBytes)
 	}
 	window := VideoWindow{OffsetSeconds: float64(max(0, offset)), DurationSeconds: float64(limit), SamplingRate: options.VideoSamplingRate}
 	blocks, err := options.VideoExtractor.Extract(ctx, raw, window)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("error reading video %s: %w\n%s", filePath, err, videoWindowHeader(filePath, window))
+		return datool.Result{}, fmt.Errorf("error reading video %s: %w\n%s", filePath, err, videoWindowHeader(filePath, window))
 	}
 	frameCount := 0
 	for _, block := range blocks {
-		if block.Type == message.BlockImage {
+		if block.Type == damessage.BlockImage {
 			frameCount++
 		}
 	}
@@ -1675,14 +1650,14 @@ func videoResult(ctx context.Context, options FilesystemOptions, filePath string
 	if frameCount == 1 {
 		frameLabel = "frame"
 	}
-	content := make([]message.ContentBlock, 0, len(blocks)+2)
+	content := make([]damessage.ContentBlock, 0, len(blocks)+2)
 	content = append(content,
-		message.ContentBlock{Type: message.BlockText, Text: fmt.Sprintf("Read video %s: sampled %d %s.", filePath, frameCount, frameLabel)},
-		message.ContentBlock{Type: message.BlockText, Text: videoWindowHeader(filePath, window)},
+		damessage.ContentBlock{Type: damessage.BlockText, Text: fmt.Sprintf("Read video %s: sampled %d %s.", filePath, frameCount, frameLabel)},
+		damessage.ContentBlock{Type: damessage.BlockText, Text: videoWindowHeader(filePath, window)},
 	)
 	encodedPath, _ := json.Marshal(filePath)
 	for index := range blocks {
-		if blocks[index].Type == message.BlockText {
+		if blocks[index].Type == damessage.BlockText {
 			continue
 		}
 		if blocks[index].Extra == nil {
@@ -1691,7 +1666,7 @@ func videoResult(ctx context.Context, options FilesystemOptions, filePath string
 		blocks[index].Extra[readFilePathMetadata] = encodedPath
 	}
 	content = append(content, blocks...)
-	return tool.Result{Content: content}, nil
+	return datool.Result{Content: content}, nil
 }
 
 func videoWindowHeader(filePath string, window VideoWindow) string {
@@ -1711,7 +1686,7 @@ func isVideoPath(filePath string) bool {
 	}
 }
 
-func formatGrep(result backend.GrepResult, mode, pattern string, backendHadMatches bool) string {
+func formatGrep(result dabackend.GrepResult, mode, pattern string, backendHadMatches bool) string {
 	if mode == "" {
 		mode = "files_with_matches"
 	}
@@ -1728,7 +1703,7 @@ func formatGrep(result backend.GrepResult, mode, pattern string, backendHadMatch
 	var text string
 	switch mode {
 	case "content":
-		grouped := map[string][]backend.GrepMatch{}
+		grouped := map[string][]dabackend.GrepMatch{}
 		for _, item := range result.Matches {
 			grouped[item.Path] = append(grouped[item.Path], item)
 		}

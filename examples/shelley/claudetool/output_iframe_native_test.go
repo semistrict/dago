@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	dtool "github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 )
 
 func TestOutputIframeNativeToolReturnsDisplayArtifact(t *testing.T) {
@@ -16,7 +16,7 @@ func TestOutputIframeNativeToolReturnsDisplayArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	executable := (&OutputIframeTool{WorkingDir: NewMutableWorkingDir(root)}).NativeTool()
-	result, err := executable.Execute(context.Background(), json.RawMessage(`{"path":"view.html","title":"View"}`), dtool.Runtime{})
+	result, err := executable.Execute(context.Background(), json.RawMessage(`{"path":"view.html","title":"View"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

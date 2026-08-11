@@ -18,8 +18,8 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X shelley.exe.dev/version.Version={{ .Version }}
-      - -X shelley.exe.dev/version.Tag={{ .Tag }}
+      - -X github.com/semistrict/dago/examples/shelley/version.Version={{ .Version }}
+      - -X github.com/semistrict/dago/examples/shelley/version.Tag={{ .Tag }}
 
 archives:
   - id: shelley

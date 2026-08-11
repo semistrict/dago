@@ -6,11 +6,11 @@ import (
 	"sync"
 
 	dago "github.com/semistrict/dago"
-	dbackend "github.com/semistrict/dago/backend"
-	dmodel "github.com/semistrict/dago/model"
-	dtool "github.com/semistrict/dago/tool"
+	dbackend "github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/claudetool/browse"
+	"github.com/semistrict/dago/examples/shelley/claudetool/browse"
 )
 
 // WorkingDir is a thread-safe mutable working directory.
@@ -99,25 +99,25 @@ type ToolSetConfig struct {
 // ToolSet holds a set of tools for a single conversation.
 // Each conversation should have its own ToolSet.
 type ToolSet struct {
-	definitions []dtool.Definition
-	nativeTools []dtool.Tool
+	definitions []datool.Definition
+	nativeTools []datool.Tool
 	filesystem  []string
 	cleanup     func()
 	wd          *MutableWorkingDir
 }
 
 // Tools returns display-safe definitions for all local and provider-hosted tools.
-func (ts *ToolSet) Tools() []dtool.Definition {
-	return append([]dtool.Definition(nil), ts.definitions...)
+func (ts *ToolSet) Tools() []datool.Definition {
+	return append([]datool.Definition(nil), ts.definitions...)
 }
 
-// NativeTools returns production Dago executables. A fresh slice prevents
+// NativeTools returns production dago executables. A fresh slice prevents
 // callers from changing the tool set after construction.
-func (ts *ToolSet) NativeTools() []dtool.Tool {
-	return append([]dtool.Tool(nil), ts.nativeTools...)
+func (ts *ToolSet) NativeTools() []datool.Tool {
+	return append([]datool.Tool(nil), ts.nativeTools...)
 }
 
-// FilesystemTools returns the canonical Dago filesystem tool names selected by
+// FilesystemTools returns the canonical dago filesystem tool names selected by
 // Shelley's user-facing tool settings.
 func (ts *ToolSet) FilesystemTools() []string {
 	if ts.filesystem == nil {
@@ -142,12 +142,12 @@ func (ts *ToolSet) WorkingDir() *MutableWorkingDir {
 
 // serverSideTools returns display definitions for provider-hosted tools.
 // Server-side tools are executed on the LLM provider's infrastructure.
-func serverSideTools(profile dmodel.Profile) []dtool.Definition {
+func serverSideTools(profile damodel.Profile) []datool.Definition {
 	if !profile.SupportsWebSearch {
 		return nil
 	}
 	if profile.Provider == "openai" {
-		return []dtool.Definition{{Name: "web_search", Description: "Search the web using the model provider."}}
+		return []datool.Definition{{Name: "web_search", Description: "Search the web using the model provider."}}
 	}
 	return nil
 }
@@ -174,10 +174,10 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 
 	outputIframeTool := &OutputIframeTool{WorkingDir: wd}
 
-	nativeTools := []dtool.Tool{changeDirTool.NativeTool(), outputIframeTool.NativeTool()}
-	filesystemTools := selectedDagoFilesystemTools(cfg.ToolOverrides, cfg.DisableAllTools)
+	nativeTools := []datool.Tool{changeDirTool.NativeTool(), outputIframeTool.NativeTool()}
+	filesystemTools := selectedNativeFilesystemTools(cfg.ToolOverrides, cfg.DisableAllTools)
 	// Shelley's yielding shell remains an application-specific opt-in. The
-	// ordinary command path is Dago's execute tool.
+	// ordinary command path is dago's execute tool.
 	if IsToolEnabled("shell", cfg.ToolOverrides, cfg.DisableAllTools) {
 		nativeTools = append(nativeTools, (&ShellTool{
 			WorkingDir: wd, LLMProvider: cfg.LLMProvider, EnableJITInstall: cfg.EnableJITInstall,
@@ -254,7 +254,7 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		cleanup = browserCleanup
 	}
 
-	definitions := make([]dtool.Definition, 0, len(nativeTools)+1)
+	definitions := make([]datool.Definition, 0, len(nativeTools)+1)
 	nativeTools = FilterTools(nativeTools, cfg.ToolOverrides, cfg.DisableAllTools)
 	for _, item := range nativeTools {
 		definitions = append(definitions, item.Definition())
@@ -262,7 +262,7 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	filesystemDefinitions := dagoFilesystemDefinitions(workingDir, filesystemTools)
 	// Preserve the legacy settings label at the application metadata boundary
 	// when it is the sole explicitly enabled command tool. Execution still uses
-	// Dago's canonical execute tool.
+	// dago's canonical execute tool.
 	if cfg.DisableAllTools && cfg.ToolOverrides["bash"] == "on" {
 		if _, canonical := cfg.ToolOverrides["execute"]; !canonical {
 			for index := range filesystemDefinitions {
@@ -294,7 +294,7 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	}
 }
 
-func selectedDagoFilesystemTools(overrides map[string]string, disableAll bool) []string {
+func selectedNativeFilesystemTools(overrides map[string]string, disableAll bool) []string {
 	aliases := map[string]string{
 		"execute":    "bash",
 		"write_file": "patch", "edit_file": "patch", "delete": "patch",
@@ -323,7 +323,7 @@ func selectedDagoFilesystemTools(overrides map[string]string, disableAll bool) [
 	return selected
 }
 
-func dagoFilesystemDefinitions(root string, names []string) []dtool.Definition {
+func dagoFilesystemDefinitions(root string, names []string) []datool.Definition {
 	files, err := dbackend.NewLocalShell(dbackend.LocalShellOptions{Filesystem: dbackend.FilesystemOptions{Root: root}})
 	if err != nil {
 		return nil
@@ -332,7 +332,7 @@ func dagoFilesystemDefinitions(root string, names []string) []dtool.Definition {
 	if err != nil {
 		return nil
 	}
-	result := make([]dtool.Definition, 0, len(middleware.Tools))
+	result := make([]datool.Definition, 0, len(middleware.Tools))
 	for _, executable := range middleware.Tools {
 		result = append(result, executable.Definition())
 	}

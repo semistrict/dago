@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"shelley.exe.dev/db/generated"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
 )
 
 func TestSlugifyModelID(t *testing.T) {

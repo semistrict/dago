@@ -8,10 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 func TestCustomModelWithThinking(t *testing.T) {
@@ -29,7 +29,7 @@ func TestCustomModelWithThinking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := chat.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("test")}})
+	response, err := chat.Invoke(context.Background(), damodel.Request{Messages: []dmessage.Message{dmessage.Human("test")}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // queuedMessages reads the conversation's queued_messages array from the DB.

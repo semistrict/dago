@@ -12,8 +12,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/dtach"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/dtach"
 )
 
 // ExecMessage is the message format for terminal websocket communication.
@@ -44,7 +44,7 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 	cwd := q.Get("cwd")
 	conversationID := q.Get("conversation_id")
 	model := q.Get("model")
-	userEmail := r.Header.Get("X-ExeDev-Email")
+	userEmail := r.Header.Get("X-User-Email")
 
 	if termID == "" && cmd == "" {
 		http.Error(w, "cmd or term_id parameter required", http.StatusBadRequest)

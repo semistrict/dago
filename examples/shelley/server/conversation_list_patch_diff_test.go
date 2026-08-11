@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db/generated"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
 )
 
 func mkConv(id, slug string, working bool) ConversationWithState {

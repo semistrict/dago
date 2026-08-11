@@ -11532,7 +11532,7 @@ kbd {
  * tightly-packed pills. Tapping a pill opens the full
  * CoalescedToolCall view in a modal. Diffs, screenshots, image
  * reads and output_iframe results continue to render inline.
- * Mirrors iOS/exe.dev/ToolPillsRow.swift.
+ * Mirrors mobile/ToolPillsRow.swift.
  * ============================================================ */
 
 .tool-pills-row-wrap .message-content {

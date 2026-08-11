@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 // TestConversationListParticipants verifies that the conversation list carries
-// the exe.dev accounts that authored messages, both in the /api/stream2 patch
+// the authenticated users that authored messages, both in the /api/stream2 patch
 // stream (so clients can filter to "my" conversations without refetching) and
 // in the snapshot the stream is seeded from.
 func TestConversationListParticipants(t *testing.T) {
@@ -47,7 +47,7 @@ func TestConversationListParticipants(t *testing.T) {
 		w := httptest.NewRecorder()
 		chatReq := httptest.NewRequest(http.MethodPost, "/api/conversation/"+conversationID+"/chat", strings.NewReader(string(body)))
 		chatReq.Header.Set("Content-Type", "application/json")
-		chatReq.Header.Set("X-ExeDev-Email", email)
+		chatReq.Header.Set("X-User-Email", email)
 		server.handleChatConversation(w, chatReq, conversationID)
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("chat as %s: expected 202, got %d: %s", email, w.Code, w.Body.String())

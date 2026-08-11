@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"unicode/utf8"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
+	dmessage "github.com/semistrict/dago/damessage"
+
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	loopapp "github.com/semistrict/dago/examples/shelley/loop"
 )
 
 // performDistillation and its default-strategy helpers were removed when we
@@ -179,7 +182,11 @@ func (s *Server) broadcastEstimatedContextSize(ctx context.Context, conversation
 		if cerr != nil {
 			continue
 		}
-		estimate += int64(estimatePiMessageTokens(llmMsg))
+		nativeMessages, cerr := loopapp.MessagesToNative([]llm.Message{llmMsg})
+		if cerr != nil {
+			continue
+		}
+		estimate += int64(dmessage.ApproximateTokens(nativeMessages))
 	}
 	if estimate <= 0 {
 		return

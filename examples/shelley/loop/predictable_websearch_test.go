@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 )
 
 // TestPredictableWebSearchCitations verifies the "web search" predictable
@@ -18,7 +18,7 @@ func TestPredictableWebSearchCitations(t *testing.T) {
 	for _, trigger := range []string{"web search", "citations"} {
 		t.Run(trigger, func(t *testing.T) {
 			svc := NewPredictableService()
-			resp, err := svc.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human(trigger)}})
+			resp, err := svc.Invoke(context.Background(), damodel.Request{Messages: []dmessage.Message{dmessage.Human(trigger)}})
 			if err != nil {
 				t.Fatalf("Do: %v", err)
 			}

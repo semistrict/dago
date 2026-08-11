@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	dmessage "github.com/semistrict/dago/message"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
 )
 
 // OutputIframeTool displays sandboxed HTML content to the user.
@@ -18,31 +18,21 @@ type OutputIframeTool struct {
 	WorkingDir *MutableWorkingDir
 }
 
-func (t *OutputIframeTool) NativeTool() dtool.Tool {
-	return dtool.Func{
-		Spec: dtool.Definition{
-			Name: outputIframeName, Description: outputIframeDescription,
-			InputSchema: json.RawMessage(outputIframeInputSchema),
-		},
-		Run: func(_ context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
-			var input outputIframeInput
-			if err := json.Unmarshal(raw, &input); err != nil {
-				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
-			}
-			display, err := t.execute(input)
-			if err != nil {
-				return dtool.Result{}, err
-			}
-			artifact, err := json.Marshal(display)
-			if err != nil {
-				return dtool.Result{}, fmt.Errorf("encode output iframe display: %w", err)
-			}
-			return dtool.Result{
-				Content:  []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: "displayed"}},
-				Artifact: artifact,
-			}, nil
-		},
-	}
+func (t *OutputIframeTool) NativeTool() datool.Tool {
+	return datool.MustNew(outputIframeName, outputIframeDescription, func(_ context.Context, input outputIframeInput) (datool.Result, error) {
+		display, err := t.execute(input)
+		if err != nil {
+			return datool.Result{}, err
+		}
+		artifact, err := json.Marshal(display)
+		if err != nil {
+			return datool.Result{}, fmt.Errorf("encode output iframe display: %w", err)
+		}
+		return datool.Result{
+			Content:  []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: "displayed"}},
+			Artifact: artifact,
+		}, nil
+	})
 }
 
 const (
@@ -76,35 +66,6 @@ Libraries are streamed into the sandboxed iframe by the host page (so their byte
 in the conversation) and exposed as a Promise at window.__LIBS__:
   const { render } = (await window.__LIBS__).excalidraw;
 Valid library names: "excalidraw".`
-
-	outputIframeInputSchema = `
-{
-  "type": "object",
-  "required": ["path"],
-  "properties": {
-    "path": {
-      "type": "string",
-      "description": "Path to the HTML file to display. Relative paths are resolved from the working directory."
-    },
-    "title": {
-      "type": "string", 
-      "description": "Optional title describing the visualization"
-    },
-    "files": {
-      "type": "object",
-      "description": "Additional small files to bundle (e.g., data.json, styles.css). Keys are the names to use in the HTML, values are file paths. CSS files are injected as <style> tags; everything else (JSON, CSV, JS, text) is surfaced as a raw string at window.__FILES__['filename']. These files are stored in the conversation — keep them small.",
-      "additionalProperties": {
-        "type": "string"
-      }
-    },
-    "libraries": {
-      "type": "array",
-      "description": "Names of shelley-hosted runtime libraries to load. The host page fetches each library and streams it into the iframe via postMessage; the bytes do NOT go into the conversation. The page can await window.__LIBS__ to get a {name: module} map. Allowed: \"excalidraw\".",
-      "items": { "type": "string" }
-    }
-  }
-}
-`
 )
 
 // allowedLibraries maps library names (as the agent specifies them) to the
@@ -283,10 +244,10 @@ func escapeJSString(s string) string {
 }
 
 type outputIframeInput struct {
-	Path      string            `json:"path"`
-	Title     string            `json:"title"`
-	Files     map[string]string `json:"files"`
-	Libraries []string          `json:"libraries"`
+	Path      string            `json:"path" description:"Path to the HTML file to display. Relative paths are resolved from the working directory."`
+	Title     string            `json:"title,omitempty" description:"Optional title describing the visualization"`
+	Files     map[string]string `json:"files,omitempty" description:"Additional small files to bundle. Keys are names used in the HTML and values are file paths."`
+	Libraries []string          `json:"libraries,omitempty" description:"Names of hosted runtime libraries to load. Allowed: excalidraw."`
 }
 
 func (t *OutputIframeTool) execute(input outputIframeInput) (OutputIframeDisplay, error) {

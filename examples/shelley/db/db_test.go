@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db/generated"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
 )
 
 // setupTestDB creates a test database with schema migrated
@@ -375,51 +375,6 @@ func TestDropMessageTypeCheckMigrationPreservesSearch(t *testing.T) {
 		t.Fatalf("DeleteMessage: %v", err)
 	}
 	assertSearchMisses(t, database, ctx, "cormorant")
-}
-
-// setupDBMigratedSkipping migrates the test DB through every embedded
-// migration except those whose numeric prefix is in skip. Lets us exercise
-// a specific migration in isolation (run it after CreateConversation/
-// CreateMessage have populated data) while still ensuring the rest of the
-// schema is recent enough for sqlc-generated queries to work.
-func setupDBMigratedSkipping(t *testing.T, skip ...int) *DB {
-	t.Helper()
-	skipSet := make(map[int]struct{}, len(skip))
-	for _, n := range skip {
-		skipSet[n] = struct{}{}
-	}
-
-	tmpDir := t.TempDir()
-	database, err := New(Config{DSN: tmpDir + "/test.db"})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	entries, err := schemaFS.ReadDir("schema")
-	if err != nil {
-		database.Close()
-		t.Fatalf("read schema: %v", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || len(entry.Name()) < 3 {
-			continue
-		}
-		var migrationNumber int
-		if _, err := fmt.Sscanf(entry.Name()[:3], "%d", &migrationNumber); err != nil {
-			continue
-		}
-		if _, skipped := skipSet[migrationNumber]; skipped {
-			continue
-		}
-		if err := database.runMigration(ctx, entry.Name(), migrationNumber); err != nil {
-			database.Close()
-			t.Fatalf("run migration %s: %v", entry.Name(), err)
-		}
-	}
-	return database
 }
 
 func setupDBMigratedThrough(t *testing.T, lastMigration int) *DB {

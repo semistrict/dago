@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 // Link represents a link displayed in the UI overflow menu.

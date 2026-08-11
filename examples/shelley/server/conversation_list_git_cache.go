@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"shelley.exe.dev/gitstate"
+	"github.com/semistrict/dago/examples/shelley/gitstate"
 )
 
 // conversationListGitCacheTTL bounds how long we'll trust a cache entry without
@@ -60,12 +60,6 @@ func (c *conversationListGitCache) set(cwd string, entry conversationListGitCach
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[cwd] = entry
-}
-
-func (c *conversationListGitCache) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries = make(map[string]conversationListGitCacheEntry)
 }
 
 // resolveGitDir returns the .git directory backing the given worktree. For

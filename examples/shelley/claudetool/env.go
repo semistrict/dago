@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"shelley.exe.dev/gitstate"
+	"github.com/semistrict/dago/examples/shelley/gitstate"
 )
 
 // ShelleyEnv holds the conversation context that Shelley exposes to commands it
@@ -25,7 +25,7 @@ type ShelleyEnv struct {
 	ConversationSlug string
 	// Model is exposed as SHELLEY_MODEL.
 	Model string
-	// UserEmail is the exe.dev auth email, exposed as SHELLEY_USER_EMAIL.
+	// UserEmail is the authenticated user email, exposed as SHELLEY_USER_EMAIL.
 	UserEmail string
 	// Port is the TCP port the shelley server listens on locally. When >0,
 	// SHELLEY_PORT and SHELLEY_URL (http://localhost:<port>) are exported so

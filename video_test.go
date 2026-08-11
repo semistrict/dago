@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/dago/message"
+	"github.com/semistrict/dago/damessage"
 )
 
 func TestValidateVideoWindow(t *testing.T) {
@@ -73,10 +73,10 @@ func TestFFmpegVideoExtractorInterleavesAndCapsFrames(t *testing.T) {
 	if blocks[0].Text != "Frame at t=00:00:03.000" || blocks[2].Text != "Frame at t=00:00:05.000" {
 		t.Fatalf("timestamps = %q, %q", blocks[0].Text, blocks[2].Text)
 	}
-	if blocks[1].Type != message.BlockImage || string(blocks[1].Data) != string(jpegBytes("one")) || blocks[1].MIMEType != "image/jpeg" {
+	if blocks[1].Type != damessage.BlockImage || string(blocks[1].Data) != string(jpegBytes("one")) || blocks[1].MIMEType != "image/jpeg" {
 		t.Fatalf("first image = %#v", blocks[1])
 	}
-	if blocks[3].Type != message.BlockImage || string(blocks[3].Data) != string(jpegBytes("two")) {
+	if blocks[3].Type != damessage.BlockImage || string(blocks[3].Data) != string(jpegBytes("two")) {
 		t.Fatalf("second image = %#v", blocks[3])
 	}
 	if !strings.Contains(blocks[4].Text, "Coverage truncated") || !strings.Contains(blocks[4].Text, "offset=5.000") {

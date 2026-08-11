@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
-import dmessage "github.com/semistrict/dago/message"
+import dmessage "github.com/semistrict/dago/damessage"
 
 // TestOrphanToolResultAfterCancellation reproduces the bug where a tool_result
 // is written after CancelConversation has already written an end-turn message.

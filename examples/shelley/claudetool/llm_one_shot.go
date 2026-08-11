@@ -14,10 +14,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
-	dtool "github.com/semistrict/dago/tool"
-	"shelley.exe.dev/llm/imageutil"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/examples/shelley/llm/imageutil"
 )
 
 // LLMOneShotTool sends a one-shot prompt to an LLM and returns the result.
@@ -68,43 +68,6 @@ Short results are returned inline; long results are written to a file.`
 	return base
 }
 
-// llmOneShotInputSchema builds the JSON schema, including model enum when models are available.
-func (t *LLMOneShotTool) llmOneShotInputSchema() string {
-	modelProp := ""
-	if len(t.AvailableModels) > 0 {
-		var enumItems []string
-		for _, m := range t.AvailableModels {
-			enumItems = append(enumItems, fmt.Sprintf("%q", m.ID))
-		}
-		modelProp = fmt.Sprintf(`,
-    "model": {
-      "type": "string",
-      "description": "LLM model to use. Defaults to the conversation's current model.",
-      "enum": [%s]
-    }`, strings.Join(enumItems, ", "))
-	}
-
-	return fmt.Sprintf(`{
-  "type": "object",
-  "required": ["prompt_files"],
-  "properties": {
-    "prompt_files": {
-      "type": ["array", "string"],
-      "items": { "type": "string" },
-      "description": "Paths to files for the prompt. Image files are attached as images. Relative paths resolved from working dir."
-    },
-    "output_file": {
-      "type": "string",
-      "description": "Path to write the response to. If omitted, short responses are returned inline and long responses are written to a temp file."
-    },
-    "system_prompt": {
-      "type": "string",
-      "description": "Optional system prompt to include."
-    }%s
-  }
-}`, modelProp)
-}
-
 // stringOrList unmarshals from either a JSON string or an array of strings.
 type stringOrList []string
 
@@ -121,69 +84,69 @@ func (s *stringOrList) UnmarshalJSON(data []byte) error {
 }
 
 type llmOneShotInput struct {
-	PromptFiles  stringOrList `json:"prompt_files,omitempty"`
-	OutputFile   string       `json:"output_file,omitempty"`
-	Model        string       `json:"model,omitempty"`
-	SystemPrompt string       `json:"system_prompt,omitempty"`
+	PromptFiles  stringOrList `json:"prompt_files" description:"Paths to files for the prompt. Image files are attached as images. Relative paths resolve from the working directory." jsonschema:"type=array|string"`
+	OutputFile   string       `json:"output_file,omitempty" description:"Path to write the response to. If omitted, short responses are returned inline and long responses are written to a temporary file."`
+	Model        string       `json:"model,omitempty" description:"LLM model to use. Defaults to the conversation's current model."`
+	SystemPrompt string       `json:"system_prompt,omitempty" description:"Optional system prompt to include."`
 }
 
-// NativeTool executes the one-shot request through Dago's tool and model contracts.
-func (t *LLMOneShotTool) NativeTool() dtool.Tool {
-	return dtool.Func{
-		Spec: dtool.Definition{
-			Name: llmOneShotName, Description: t.llmOneShotDescription(),
-			InputSchema: json.RawMessage(t.llmOneShotInputSchema()),
-		},
-		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
-			var input llmOneShotInput
-			if err := json.Unmarshal(raw, &input); err != nil {
-				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
-			}
-			prepared, err := t.prepare(ctx, input)
-			if err != nil {
-				return dtool.Result{}, err
-			}
-			message := dmessage.Message{Role: dmessage.RoleHuman}
-			if strings.TrimSpace(prepared.prompt) != "" {
-				message.Content = append(message.Content, dmessage.ContentBlock{Type: dmessage.BlockText, Text: prepared.prompt})
-			}
-			for _, image := range prepared.images {
-				message.Content = append(message.Content, dmessage.ContentBlock{
-					Type: dmessage.BlockImage, Data: image.Data, MIMEType: image.MediaType,
-				})
-			}
-			messages := []dmessage.Message{message}
-			if input.SystemPrompt != "" {
-				messages = append([]dmessage.Message{dmessage.System(input.SystemPrompt)}, messages...)
-			}
-			started := time.Now()
-			response, err := prepared.chat.Invoke(ctx, dmodel.Request{Messages: messages})
-			finished := time.Now()
-			if err != nil {
-				return dtool.Result{}, fmt.Errorf("LLM request failed: %w", err)
-			}
-			var inputTokens, outputTokens uint64
-			if response.Message.Usage != nil {
-				inputTokens = uint64(response.Message.Usage.InputTokens)
-				outputTokens = uint64(response.Message.Usage.OutputTokens)
-			}
-			execution, err := finishOneShot(input, prepared, response.Message.TextContent(), inputTokens, outputTokens)
-			if err != nil {
-				return dtool.Result{}, err
-			}
-			var artifact json.RawMessage
-			if execution.Display != nil {
-				artifact, err = json.Marshal(execution.Display)
-				if err != nil {
-					return dtool.Result{}, fmt.Errorf("encode one-shot display: %w", err)
-				}
-			}
-			return dtool.Result{
-				Content: []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}}, Artifact: artifact,
-				OtherUsage: nativePurposedUsage("llm_one_shot", prepared.chat, response.Message.Usage, started, finished),
-			}, nil
-		},
+// NativeTool executes the one-shot request through dago's tool and model contracts.
+func (t *LLMOneShotTool) NativeTool() datool.Tool {
+	options := []datool.Option{datool.WithPropertyType("prompt_files", []string{"array", "string"})}
+	if len(t.AvailableModels) == 0 {
+		options = append(options, datool.WithoutProperty("model"))
+	} else {
+		models := make([]string, 0, len(t.AvailableModels))
+		for _, model := range t.AvailableModels {
+			models = append(models, model.ID)
+		}
+		options = append(options, datool.WithPropertyEnum("model", models...))
 	}
+	return datool.MustNew(llmOneShotName, t.llmOneShotDescription(), func(ctx context.Context, input llmOneShotInput) (datool.Result, error) {
+		prepared, err := t.prepare(ctx, input)
+		if err != nil {
+			return datool.Result{}, err
+		}
+		message := dmessage.Message{Role: dmessage.RoleHuman}
+		if strings.TrimSpace(prepared.prompt) != "" {
+			message.Content = append(message.Content, dmessage.ContentBlock{Type: dmessage.BlockText, Text: prepared.prompt})
+		}
+		for _, image := range prepared.images {
+			message.Content = append(message.Content, dmessage.ContentBlock{
+				Type: dmessage.BlockImage, Data: image.Data, MIMEType: image.MediaType,
+			})
+		}
+		messages := []dmessage.Message{message}
+		if input.SystemPrompt != "" {
+			messages = append([]dmessage.Message{dmessage.System(input.SystemPrompt)}, messages...)
+		}
+		started := time.Now()
+		response, err := prepared.chat.Invoke(ctx, damodel.Request{Messages: messages})
+		finished := time.Now()
+		if err != nil {
+			return datool.Result{}, fmt.Errorf("LLM request failed: %w", err)
+		}
+		var inputTokens, outputTokens uint64
+		if response.Message.Usage != nil {
+			inputTokens = uint64(response.Message.Usage.InputTokens)
+			outputTokens = uint64(response.Message.Usage.OutputTokens)
+		}
+		execution, err := finishOneShot(input, prepared, response.Message.TextContent(), inputTokens, outputTokens)
+		if err != nil {
+			return datool.Result{}, err
+		}
+		var artifact json.RawMessage
+		if execution.Display != nil {
+			artifact, err = json.Marshal(execution.Display)
+			if err != nil {
+				return datool.Result{}, fmt.Errorf("encode one-shot display: %w", err)
+			}
+		}
+		return datool.Result{
+			Content: []dmessage.ContentBlock{{Type: dmessage.BlockText, Text: execution.Output}}, Artifact: artifact,
+			OtherUsage: nativePurposedUsage("llm_one_shot", prepared.chat, response.Message.Usage, started, finished),
+		}, nil
+	}, options...)
 }
 
 // isImageData reports whether data looks like an image file.
@@ -211,7 +174,7 @@ func saveOneShotImage(ctx context.Context, prepared imageutil.Prepared) string {
 type oneShotPrepared struct {
 	modelID string
 	wd      string
-	chat    dmodel.Chat
+	chat    damodel.Chat
 	prompt  string
 	images  []imageutil.Prepared
 	display any

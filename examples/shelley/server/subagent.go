@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // SubagentRunner implements claudetool.SubagentRunner.
@@ -480,7 +480,7 @@ Provide your summary now:`
 	summaryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	resp, err := chat.Invoke(summaryCtx, dmodel.Request{Messages: []dmessage.Message{dmessage.Human(summaryPrompt)}})
+	resp, err := chat.Invoke(summaryCtx, damodel.Request{Messages: []dmessage.Message{dmessage.Human(summaryPrompt)}})
 	if err != nil {
 		s.logger.Error("Failed to generate progress summary via LLM", "error", err)
 		return "[Subagent is still working (timeout reached). Failed to generate progress summary.]", nil

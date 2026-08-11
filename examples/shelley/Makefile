@@ -36,9 +36,9 @@ build-custom: ui templates
 	}; \
 	SHA=$$(git rev-parse --short HEAD); \
 	go build -ldflags "\
-	  -X shelley.exe.dev/version.Version=$${TAG#v}-custom.$$SHA \
-	  -X shelley.exe.dev/version.Tag=$$TAG \
-	  -X shelley.exe.dev/version.Customized=true" \
+	  -X github.com/semistrict/dago/examples/shelley/version.Version=$${TAG#v}-custom.$$SHA \
+	  -X github.com/semistrict/dago/examples/shelley/version.Tag=$$TAG \
+	  -X github.com/semistrict/dago/examples/shelley/version.Customized=true" \
 	  -o bin/shelley ./cmd/shelley; \
 	echo "Built bin/shelley: customized, based on $$TAG, HEAD $$SHA"
 

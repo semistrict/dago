@@ -10,12 +10,14 @@ import (
 	"strings"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dago "github.com/semistrict/dago"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	loopapp "github.com/semistrict/dago/examples/shelley/loop"
 )
 
 // This file implements a second distillation strategy modeled on the
@@ -31,18 +33,7 @@ import (
 // is inserted as the first context message, wrapped so the LLM understands it
 // replaces compacted history.
 
-// piDistillSettings mirrors pi's CompactionSettings defaults.
-type piDistillSettings struct {
-	// reserveTokens caps the summary output budget (0.8 * reserveTokens).
-	reserveTokens int
-	// keepRecentTokens is the approximate recent-context budget kept verbatim.
-	keepRecentTokens int
-}
-
-var defaultPiDistillSettings = piDistillSettings{
-	reserveTokens:    16384,
-	keepRecentTokens: 20000,
-}
+const defaultPiKeepRecentTokens = 20000
 
 // piSummarizationSystemPrompt and the prompt bodies are ported verbatim from
 // pi's compaction.ts so behavior matches the upstream implementation.
@@ -93,27 +84,6 @@ const piCompactionSummaryPrefix = `The conversation history before this point wa
 const piCompactionSummarySuffix = `
 </summary>`
 
-// estimatePiMessageTokens ports pi's character/4 heuristic for one message.
-func estimatePiMessageTokens(msg llm.Message) int {
-	chars := 0
-	for _, c := range msg.Content {
-		switch c.Type {
-		case llm.ContentTypeText:
-			chars += len(c.Text)
-		case llm.ContentTypeThinking, llm.ContentTypeRedactedThinking:
-			chars += len(c.Thinking)
-		case llm.ContentTypeToolUse:
-			chars += len(c.ToolName) + len(c.ToolInput)
-		case llm.ContentTypeToolResult:
-			for _, r := range c.ToolResult {
-				chars += len(r.Text)
-			}
-		}
-	}
-	// ceil(chars / 4)
-	return (chars + 3) / 4
-}
-
 // isToolResultMessage reports whether a message carries only tool_result
 // content. Such messages are never valid cut points: they must stay paired
 // with the assistant tool_use that produced them.
@@ -130,41 +100,6 @@ func isToolResultMessage(msg llm.Message) bool {
 		}
 	}
 	return hasToolResult
-}
-
-// findPiCutPoint ports pi's findCutPoint to a flat message list. It returns the
-// index of the first message to KEEP verbatim. Messages [0, cut) are
-// summarized; [cut, len) are kept. The cut never lands on a tool_result
-// message, so kept history never starts with an orphaned tool result.
-func findPiCutPoint(messages []llm.Message, keepRecentTokens int) int {
-	// Collect valid cut points (non-tool-result messages).
-	var cutPoints []int
-	for i, m := range messages {
-		if !isToolResultMessage(m) {
-			cutPoints = append(cutPoints, i)
-		}
-	}
-	if len(cutPoints) == 0 {
-		// No valid cut point: keep everything, summarize nothing.
-		return 0
-	}
-
-	cutIndex := cutPoints[0]
-	accumulated := 0
-	for i := len(messages) - 1; i >= 0; i-- {
-		accumulated += estimatePiMessageTokens(messages[i])
-		if accumulated >= keepRecentTokens {
-			// Pick the first valid cut point at or after i.
-			for _, c := range cutPoints {
-				if c >= i {
-					cutIndex = c
-					break
-				}
-			}
-			break
-		}
-	}
-	return cutIndex
 }
 
 // serializePiConversation renders messages into the plain-text transcript pi
@@ -417,41 +352,7 @@ func userDataForCopy(m generated.Message) map[string]string {
 	return userData
 }
 
-// generatePiSummary runs the structured pi summarization prompt over the older
-// messages and returns the summary text (with file-operation tags appended).
-func (s *Server) generatePiSummary(ctx context.Context, chat dmodel.Chat, older []llm.Message, instructions string) (string, []llm.PurposedUsage, error) {
-	conversationText := serializePiConversation(older)
-	promptText := fmt.Sprintf("<conversation>\n%s\n</conversation>\n\n%s", conversationText, piSummarizationPrompt)
-	if steer := strings.TrimSpace(instructions); steer != "" {
-		promptText += steeringSection(steer)
-	}
-
-	started := time.Now()
-	resp, err := chat.Invoke(ctx, dmodel.Request{
-		Messages:  []dmessage.Message{dmessage.System(piSummarizationSystemPrompt), dmessage.Human(promptText)},
-		Reasoning: &dmodel.Reasoning{Effort: "off"},
-	})
-	finished := time.Now()
-	if err != nil {
-		return "", nil, err
-	}
-
-	var summary string
-	for _, c := range resp.Message.Content {
-		if c.Type == dmessage.BlockText {
-			summary += c.Text
-		}
-	}
-	if strings.TrimSpace(summary) == "" {
-		return "", nil, fmt.Errorf("summarization returned empty result")
-	}
-
-	readFiles, modifiedFiles := extractPiFileOps(older)
-	summary += formatPiFileOperations(readFiles, modifiedFiles)
-	return summary, piPurposedUsage(chat, resp.Message.Usage, started, finished), nil
-}
-
-func piPurposedUsage(chat dmodel.Chat, tokens *dmessage.Usage, started, finished time.Time) []llm.PurposedUsage {
+func piPurposedUsage(chat damodel.Chat, tokens *dmessage.Usage, started, finished time.Time) []llm.PurposedUsage {
 	if tokens == nil {
 		return nil
 	}
@@ -531,7 +432,7 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 		return ""
 	}
 
-	keepRecentTokens := defaultPiDistillSettings.keepRecentTokens
+	keepRecentTokens := defaultPiKeepRecentTokens
 	if s.piDistillKeepRecentTokens > 0 {
 		keepRecentTokens = s.piDistillKeepRecentTokens
 	}
@@ -539,64 +440,68 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	for i, entry := range ctxMsgs {
 		llmMsgs[i] = entry.llm
 	}
-	cut := findPiCutPoint(llmMsgs, keepRecentTokens)
+	var nativeMessages []dmessage.Message
+	validCutoffs := []int{0}
+	sourceCutoff := map[int]int{0: 0}
+	for i, message := range llmMsgs {
+		converted, convertErr := loopapp.MessagesToNative([]llm.Message{message})
+		if convertErr != nil {
+			logger.Error("failed to convert messages for compaction", "error", convertErr)
+			s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: %v", convertErr), sourceGeneration)
+			return ""
+		}
+		nativeMessages = append(nativeMessages, converted...)
+		validCutoffs = append(validCutoffs, len(nativeMessages))
+		sourceCutoff[len(nativeMessages)] = i + 1
+	}
+	steering := ""
+	if strings.TrimSpace(instructions) != "" {
+		steering = steeringSection(instructions)
+	}
+	var olderMsgs []llm.Message
+	distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	compacted, err := dago.CompactConversation(distillCtx, nativeMessages, dago.ConversationCompactionOptions{
+		Model:        chat,
+		KeepTokens:   keepRecentTokens,
+		ValidCutoffs: validCutoffs,
+		SystemPrompt: piSummarizationSystemPrompt,
+		Prompt:       piSummarizationPrompt,
+		Instructions: steering,
+		Reasoning:    &damodel.Reasoning{Effort: "off"},
+		FormatHistory: func(older []dmessage.Message) (string, error) {
+			cut, ok := sourceCutoff[len(older)]
+			if !ok {
+				return "", fmt.Errorf("compaction selected non-record cutoff %d", len(older))
+			}
+			olderMsgs = make([]llm.Message, cut)
+			for i := range olderMsgs {
+				olderMsgs[i] = resolvePiSummarizationText(logger, ctxMsgs[i])
+			}
+			return fmt.Sprintf("<conversation>\n%s\n</conversation>", serializePiConversation(olderMsgs)), nil
+		},
+	})
+	cancel()
+	if err != nil {
+		logger.Error("pi summarization failed", "error", err)
+		s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: %v", err), sourceGeneration)
+		return ""
+	}
+	cut, ok := sourceCutoff[compacted.Cutoff]
+	if !ok {
+		logger.Error("compaction returned non-record cutoff", "cutoff", compacted.Cutoff)
+		s.rollbackCompactionFailure(ctx, logger, conversationID, "Compaction failed: invalid message boundary", sourceGeneration)
+		return ""
+	}
 	older := ctxMsgs[:cut]
 	recent := ctxMsgs[cut:]
 	logger.Info("pi cut point computed", "total", len(ctxMsgs), "summarized", len(older), "kept", len(recent))
 
-	// Resolve any previously-distilled placeholder text in the older slice to
-	// the real prior summary before summarizing, so re-distillation doesn't
-	// feed the summarizer "Distillation written to ..." placeholders.
-	olderMsgs := make([]llm.Message, len(older))
-	for i, entry := range older {
-		olderMsgs[i] = resolvePiSummarizationText(logger, entry)
+	summary := compacted.Summary
+	if summary != "" {
+		readFiles, modifiedFiles := extractPiFileOps(olderMsgs)
+		summary += formatPiFileOperations(readFiles, modifiedFiles)
 	}
-
-	var summary string
-	var fallbackNotice string
-	var otherUsage []llm.PurposedUsage
-	if len(older) > 0 {
-		distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-		var usage []llm.PurposedUsage
-		summary, usage, err = s.generatePiSummary(distillCtx, chat, olderMsgs, instructions)
-		otherUsage = append(otherUsage, usage...)
-		cancel()
-		if err != nil {
-			// Some models decline summarization prompts (e.g. fable returns
-			// stop_reason=refusal with empty content on tool-heavy
-			// transcripts). Retry once with the server's default model before
-			// giving up.
-			fallbackID := s.effectiveDefaultModel(s.getModelList())
-			if fallbackID == "" || fallbackID == modelID {
-				logger.Warn("no fallback model available for summarization retry", "model", modelID, "default_model", fallbackID)
-			} else {
-				fallbackErr := err
-				logger.Warn("pi summarization failed; retrying with default model", "error", err, "fallback_model", fallbackID)
-				if fallbackChat, ferr := nativeChatFor(s.llmManager, fallbackID); ferr != nil {
-					logger.Error("Failed to get fallback native model", "model", fallbackID, "error", ferr)
-				} else {
-					distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-					var usage []llm.PurposedUsage
-					summary, usage, err = s.generatePiSummary(distillCtx, fallbackChat, olderMsgs, instructions)
-					otherUsage = append(otherUsage, usage...)
-					cancel()
-					if err == nil {
-						fallbackNotice = fmt.Sprintf("Note: %s failed to summarize the conversation (%v); the summary was generated by %s instead.", modelID, fallbackErr, fallbackID)
-					}
-				}
-			}
-		}
-		if err != nil {
-			logger.Error("pi summarization failed", "error", err)
-			// The generation was already incremented before this goroutine
-			// started, so failing here would leave the new generation empty:
-			// the conversation's context (and any fork of it) would be wiped.
-			// Roll back to the old generation so the failure is loud but
-			// harmless.
-			s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: %v", err), sourceGeneration)
-			return ""
-		}
-	}
+	otherUsage := piPurposedUsage(chat, compacted.Usage, compacted.Started, compacted.Finished)
 
 	// Insert the summary as the opening context message. Unlike the default
 	// distill flow, the compaction summary is NOT editable: it is a generated
@@ -611,16 +516,6 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	// which made the stream load visibly slow — you could watch the carried
 	// count tick up. A single batch is one commit, one recompute, one SSE frame.
 	var batch []recordMessageInput
-	if fallbackNotice != "" {
-		// A visible note that a different model wrote the summary. Excluded
-		// from context: informational, not part of the conversation. Written
-		// in the same batch as the summary so it can't outlive a failed write.
-		batch = append(batch, recordMessageInput{message: llm.Message{
-			Role:                llm.MessageRoleAssistant,
-			ExcludedFromContext: true,
-			Content:             []llm.Content{{Type: llm.ContentTypeText, Text: fallbackNotice}},
-		}})
-	}
 	if summary != "" {
 		// The summary is a user-role message; the kept tail (recent[0]) may also
 		// be a user message, producing two consecutive user messages. That is

@@ -44,7 +44,7 @@ After a successful build, offer the user both options:
    ~/.config/shelley/shelley-customization/bin/shelley -db /tmp/shelley-custom-preview.db serve -port 8010
    ```
 
-   Run it in tmux so it survives the turn. On exe.dev VMs the user reaches it at `https://<host>.exe.xyz:8010/`.
+   Run it in tmux so it survives the turn, then open `http://localhost:8010/`.
 
 2. **Install over the running binary and restart**: find where the running Shelley lives — don't guess:
 

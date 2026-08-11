@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/loop"
 )
 
 // seedConversation creates a conversation with N alternating user/agent

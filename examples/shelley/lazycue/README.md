@@ -31,7 +31,7 @@ The lazy is self-congratulatory.
 ## Prerequisites
 
 LazyCue uses the chromedp package to talk to a Chromium-based browser.
-Its generation and healing agent is a Dago-native tool-calling graph backed by
+Its generation and healing agent is a dago-native tool-calling graph backed by
 the OpenAI Responses API. Set `OPENAI_API_KEY` before asking it to generate or
 heal a cached test.
 On Linux, [Headless Shell](https://hub.docker.com/r/chromedp/headless-shell/) is good, and you

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/claudetool/browse"
+	"github.com/semistrict/dago/examples/shelley/claudetool/browse"
 )
 
 func TestUploadEndpoint(t *testing.T) {

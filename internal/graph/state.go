@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/semistrict/dago/checkpoint"
+	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/internal/graph/channel"
-	"github.com/semistrict/dago/state"
 )
 
 var (
@@ -143,7 +143,7 @@ type stateMachine struct {
 func newStateMachine(
 	schema Schema,
 	stored map[string]any,
-	histories map[string]checkpoint.DeltaHistory,
+	histories map[string]dacheckpoint.DeltaHistory,
 ) (*stateMachine, error) {
 	if err := schema.Validate(); err != nil {
 		return nil, err
@@ -175,13 +175,13 @@ func newStateMachine(
 			}
 			var seed channel.CheckpointValue[any]
 			if present {
-				if snapshot, ok := value.(checkpoint.DeltaSnapshot); ok {
+				if snapshot, ok := value.(dacheckpoint.DeltaSnapshot); ok {
 					seed = channel.SnapshotCheckpoint(snapshot.Value)
 				} else {
 					seed = channel.LegacyCheckpoint(value)
 				}
 			} else if history, ok := histories[key]; ok && history.HasSeed {
-				if snapshot, ok := history.Seed.(checkpoint.DeltaSnapshot); ok {
+				if snapshot, ok := history.Seed.(dacheckpoint.DeltaSnapshot); ok {
 					seed = channel.SnapshotCheckpoint(snapshot.Value)
 				} else {
 					seed = channel.LegacyCheckpoint(history.Seed)
@@ -197,7 +197,7 @@ func newStateMachine(
 				if history, ok := histories[key]; ok {
 					writes := make([]channel.DeltaWrite[any], 0, len(history.Writes))
 					for _, write := range history.Writes {
-						if overwrite, ok := write.Value.(state.Overwrite); ok {
+						if overwrite, ok := write.Value.(dastate.Overwrite); ok {
 							writes = append(writes, channel.OverwriteValue(overwrite.Value))
 						} else {
 							writes = append(writes, channel.UpdateValue(write.Value))
@@ -232,8 +232,8 @@ func newStateMachine(
 	return machine, nil
 }
 
-func (machine *stateMachine) values() (state.Values, error) {
-	values := make(state.Values)
+func (machine *stateMachine) values() (dastate.Values, error) {
+	values := make(dastate.Values)
 	for key, field := range machine.fields {
 		if field.spec.kind == fieldDelta {
 			value, err := field.delta.View()
@@ -253,7 +253,7 @@ func (machine *stateMachine) values() (state.Values, error) {
 	return values, nil
 }
 
-func (machine *stateMachine) apply(updates []state.Values) (map[string]bool, error) {
+func (machine *stateMachine) apply(updates []dastate.Values) (map[string]bool, error) {
 	grouped := make(map[string][]any)
 	for _, update := range updates {
 		keys := make([]string, 0, len(update))
@@ -262,7 +262,7 @@ func (machine *stateMachine) apply(updates []state.Values) (map[string]bool, err
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			if batch, ok := update[key].(state.Batch); ok {
+			if batch, ok := update[key].(dastate.Batch); ok {
 				grouped[key] = append(grouped[key], batch.Values...)
 			} else {
 				grouped[key] = append(grouped[key], update[key])
@@ -307,7 +307,7 @@ func (machine *stateMachine) consumeEphemeral() {
 func (field *fieldState) apply(writes []any) (bool, error) {
 	overwriteIndex := -1
 	for index, write := range writes {
-		if _, ok := write.(state.Overwrite); ok {
+		if _, ok := write.(dastate.Overwrite); ok {
 			if overwriteIndex != -1 {
 				return false, ErrInvalidStateUpdate
 			}
@@ -317,7 +317,7 @@ func (field *fieldState) apply(writes []any) (bool, error) {
 	if field.spec.kind == fieldDelta {
 		deltaWrites := make([]channel.DeltaWrite[any], 0, len(writes))
 		for _, write := range writes {
-			if overwrite, ok := write.(state.Overwrite); ok {
+			if overwrite, ok := write.(dastate.Overwrite); ok {
 				deltaWrites = append(deltaWrites, channel.OverwriteValue(overwrite.Value))
 			} else {
 				deltaWrites = append(deltaWrites, channel.UpdateValue(write))
@@ -327,7 +327,7 @@ func (field *fieldState) apply(writes []any) (bool, error) {
 		return overwriteIndex >= 0, err
 	}
 	if overwriteIndex >= 0 {
-		field.value = field.spec.clone(writes[overwriteIndex].(state.Overwrite).Value)
+		field.value = field.spec.clone(writes[overwriteIndex].(dastate.Overwrite).Value)
 		field.available = true
 		return true, nil
 	}
@@ -367,7 +367,7 @@ func (machine *stateMachine) checkpointValues(snapshots map[string]bool) (map[st
 				if err != nil {
 					return nil, err
 				}
-				values[key] = checkpoint.DeltaSnapshot{Value: value}
+				values[key] = dacheckpoint.DeltaSnapshot{Value: value}
 			}
 		case fieldEphemeral:
 			continue

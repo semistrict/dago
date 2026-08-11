@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 // newUsageCollectingServer builds a Server whose LLM goes through a real

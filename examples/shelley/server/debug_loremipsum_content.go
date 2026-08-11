@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 const loremWords = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat"
@@ -163,7 +163,7 @@ func (g *loremGen) shellCall(i, k int) toolCall {
 				"slow_ok": true,
 			}),
 		},
-		result: textResult(fmt.Sprintf("ok  \tshelley.exe.dev/pkg%d\t%s\n", i%9, lorem(i, 4))),
+		result: textResult(fmt.Sprintf("ok  \tgithub.com/semistrict/dago/examples/shelley/pkg%d\t%s\n", i%9, lorem(i, 4))),
 		display: claudetool.ShellDisplayData{
 			WorkingDir: g.cwd,
 			PID:        1000 + i,

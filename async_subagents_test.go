@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/checkpoint"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
-	"github.com/semistrict/dago/state"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 )
 
 type asyncRunnerStub struct {
@@ -51,32 +51,32 @@ func (runner *asyncRunnerStub) Cancel(context.Context, string, string) error {
 
 func TestAsyncSubagentTaskStatePersistsAcrossAgentTurns(t *testing.T) {
 	runner := &asyncRunnerStub{}
-	script := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Check: func(request model.Request) error {
-			if request.Messages[0].Role != message.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "background guidance") || !strings.Contains(request.Messages[0].TextContent(), "researcher") {
+	script := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Check: func(request damodel.Request) error {
+			if request.Messages[0].Role != damessage.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "background guidance") || !strings.Contains(request.Messages[0].TextContent(), "researcher") {
 				return errors.New("async subagent prompt missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "start-1", Name: "start_async_task", Arguments: json.RawMessage(`{"description":"research","subagent_type":"researcher"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("started")}},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "check-1", Name: "check_async_task", Arguments: json.RawMessage(`{"task_id":"task-1"}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+		}, Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "start-1", Name: "start_async_task", Arguments: json.RawMessage(`{"description":"research","subagent_type":"researcher"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("started")}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "check-1", Name: "check_async_task", Arguments: json.RawMessage(`{"task_id":"task-1"}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), `"result":"report"`) {
 				return errors.New("async result missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("checked")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("checked")}},
 	)
 	compiled, err := New(Options{
-		Model: script, Saver: checkpoint.NewMemorySaver(), DisableSubagents: true, DisableSummary: true, FilesystemTools: []string{},
+		Model: script, Saver: dacheckpoint.NewMemorySaver(), DisableSubagents: true, DisableSummary: true, FilesystemTools: []string{},
 		AsyncSubagents:      []AsyncSubagent{{Name: "researcher", Description: "Researches topics", GraphID: "research", Runner: runner}},
 		AsyncSubagentPrompt: "background guidance",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := checkpoint.Config{ThreadID: "async-tasks"}
-	first, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("start")}})
+	config := dacheckpoint.Config{ThreadID: "async-tasks"}
+	first, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("start")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestAsyncSubagentTaskStatePersistsAcrossAgentTurns(t *testing.T) {
 		t.Fatalf("tasks = %#v", first.State[AsyncTasksKey])
 	}
 	runner.run.Status, runner.run.Result = "success", "report"
-	second, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("status")}})
+	second, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("status")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,14 +102,14 @@ func TestAsyncSubagentManagementTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byName := map[string]tool.Tool{}
+	byName := map[string]datool.Tool{}
 	for _, value := range middleware.Tools {
 		byName[value.Definition().Name] = value
 	}
 	tasks := map[string]any{}
-	execute := func(name, arguments string) tool.Result {
+	execute := func(name, arguments string) datool.Result {
 		t.Helper()
-		result, err := byName[name].Execute(context.Background(), json.RawMessage(arguments), tool.Runtime{CallID: name, State: state.Values{AsyncTasksKey: tasks}})
+		result, err := byName[name].Execute(context.Background(), json.RawMessage(arguments), datool.Runtime{CallID: name, State: dastate.Values{AsyncTasksKey: tasks}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,14 +153,14 @@ func TestAsyncCheckPreservesAnIntentionallyEmptyFinalMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var check tool.Tool
+	var check datool.Tool
 	for _, candidate := range middleware.Tools {
 		if candidate.Definition().Name == "check_async_task" {
 			check = candidate
 		}
 	}
 	tasks := map[string]any{"task-1": asyncTaskMap(AsyncTask{TaskID: "task-1", AgentName: "worker", ThreadID: "task-1", RunID: "run-1", Status: "running"})}
-	result, err := check.Execute(context.Background(), json.RawMessage(`{"task_id":"task-1"}`), tool.Runtime{State: state.Values{AsyncTasksKey: tasks}})
+	result, err := check.Execute(context.Background(), json.RawMessage(`{"task_id":"task-1"}`), datool.Runtime{State: dastate.Values{AsyncTasksKey: tasks}})
 	if err != nil {
 		t.Fatal(err)
 	}

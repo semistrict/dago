@@ -10,8 +10,8 @@ import (
 	"os"
 	"testing"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/loop"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/loop"
 )
 
 // newCacheKeyTestServer makes a Server wired with the requireHeader so that

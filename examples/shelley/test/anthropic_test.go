@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/models"
-	"shelley.exe.dev/modelsources"
-	"shelley.exe.dev/server"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/models"
+	"github.com/semistrict/dago/examples/shelley/modelsources"
+	"github.com/semistrict/dago/examples/shelley/server"
 )
 
 func TestWithAnthropicAPI(t *testing.T) {

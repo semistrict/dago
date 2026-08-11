@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	dmessage "github.com/semistrict/dago/message"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
 )
 
 const (
@@ -37,14 +37,14 @@ func browserImage(description string, data []byte, mimeType string, width, heigh
 	}
 }
 
-func (execution browserExecution) dagoResult() (dtool.Result, error) {
+func (execution browserExecution) dagoResult() (datool.Result, error) {
 	var artifact json.RawMessage
 	var err error
 	if execution.Display != nil {
 		artifact, err = json.Marshal(execution.Display)
 		if err != nil {
-			return dtool.Result{}, fmt.Errorf("encode browser display: %w", err)
+			return datool.Result{}, fmt.Errorf("encode browser display: %w", err)
 		}
 	}
-	return dtool.Result{Content: execution.Content, Artifact: artifact}, nil
+	return datool.Result{Content: execution.Content, Artifact: artifact}, nil
 }

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // TestMessageOtherUsageRoundTrip verifies that CreateMessage persists
@@ -84,15 +84,6 @@ func TestMessageOtherUsageRoundTrip(t *testing.T) {
 	if forkedMsgs[1].OtherUsageData != nil {
 		t.Errorf("forked message[1].OtherUsageData = %v, want nil", *forkedMsgs[1].OtherUsageData)
 	}
-}
-
-func mustOtherUsageJSON(t *testing.T, entries []llm.PurposedUsage) string {
-	t.Helper()
-	data, err := json.Marshal(entries)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
 }
 
 func TestCreateSlugMessage(t *testing.T) {

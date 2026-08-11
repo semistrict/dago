@@ -3,7 +3,7 @@ package server
 import (
 	"testing"
 
-	"shelley.exe.dev/featureflags"
+	"github.com/semistrict/dago/examples/shelley/featureflags"
 )
 
 func TestFlagToolPillsRegistered(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
 )
 
 // These tests cover sending a message to a subagent whose current turn is

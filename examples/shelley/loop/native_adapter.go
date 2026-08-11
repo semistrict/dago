@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 const (
@@ -37,10 +37,10 @@ type toolArtifactEnvelope struct {
 	OtherUsage []llm.PurposedUsage `json:"other_usage,omitempty"`
 }
 
-// validateTools validates the Dago-native executable set before agent creation.
-func validateTools(items []dtool.Tool) ([]dtool.Tool, error) {
+// validateTools validates the dago-native executable set before agent creation.
+func validateTools(items []datool.Tool) ([]datool.Tool, error) {
 	names := make(map[string]struct{}, len(items))
-	result := make([]dtool.Tool, 0, len(items))
+	result := make([]datool.Tool, 0, len(items))
 	for _, item := range items {
 		if item == nil {
 			return nil, fmt.Errorf("native tool is nil")
@@ -58,8 +58,8 @@ func validateTools(items []dtool.Tool) ([]dtool.Tool, error) {
 	return result, nil
 }
 
-// messagesToDago converts persisted Shelley context into Dago checkpoint state.
-func messagesToDago(items []llm.Message) ([]dmessage.Message, error) {
+// messagesToNative converts persisted Shelley context into dago checkpoint state.
+func messagesToNative(items []llm.Message) ([]dmessage.Message, error) {
 	var result []dmessage.Message
 	for _, item := range items {
 		if item.ExcludedFromContext || item.ErrorType != llm.ErrorTypeNone {
@@ -89,10 +89,10 @@ func messagesToDago(items []llm.Message) ([]dmessage.Message, error) {
 				}
 				toolMessages = append(toolMessages, dmessage.Message{
 					Role: dmessage.RoleTool, ToolCallID: content.ToolUseID,
-					ToolStatus: status, Content: contentToDago(content.ToolResult), Artifact: artifact,
+					ToolStatus: status, Content: contentToNative(content.ToolResult), Artifact: artifact,
 				})
 			default:
-				base.Content = append(base.Content, contentToDago([]llm.Content{content})...)
+				base.Content = append(base.Content, contentToNative([]llm.Content{content})...)
 			}
 		}
 		if len(base.Content) > 0 || len(base.ToolCalls) > 0 || len(toolMessages) == 0 {
@@ -116,8 +116,14 @@ func messagesToDago(items []llm.Message) ([]dmessage.Message, error) {
 	return result, nil
 }
 
+// MessagesToNative converts Shelley's persisted/UI message shape to dago's
+// provider-neutral message contract.
+func MessagesToNative(items []llm.Message) ([]dmessage.Message, error) {
+	return messagesToNative(items)
+}
+
 func shelleyMessageRoundTrips(original llm.Message, native dmessage.Message) bool {
-	projected, err := messagesFromDago([]dmessage.Message{native})
+	projected, err := messagesFromNative([]dmessage.Message{native})
 	if err != nil || len(projected) != 1 {
 		return false
 	}
@@ -126,9 +132,9 @@ func shelleyMessageRoundTrips(original llm.Message, native dmessage.Message) boo
 	return originalErr == nil && projectedErr == nil && bytes.Equal(originalJSON, projectedJSON)
 }
 
-// messagesFromDago returns the Shelley representation used by the existing UI
+// messagesFromNative returns the Shelley representation used by the existing UI
 // projection and provider adapters.
-func messagesFromDago(items []dmessage.Message) ([]llm.Message, error) {
+func messagesFromNative(items []dmessage.Message) ([]llm.Message, error) {
 	result := make([]llm.Message, 0, len(items))
 	for _, item := range items {
 		if raw := item.Metadata[shelleyMessageMetadata]; len(raw) > 0 {
@@ -143,7 +149,7 @@ func messagesFromDago(items []dmessage.Message) ([]llm.Message, error) {
 			continue
 		}
 		if item.Role == dmessage.RoleTool {
-			content, _, err := toolResultFromDago(item)
+			content, _, err := toolResultFromNative(item)
 			if err != nil {
 				return nil, err
 			}
@@ -155,7 +161,7 @@ func messagesFromDago(items []dmessage.Message) ([]llm.Message, error) {
 			converted.Role = llm.MessageRoleAssistant
 			converted.EndOfTurn = len(item.ToolCalls) == 0
 		}
-		converted.Content = contentFromDago(item.Content)
+		converted.Content = contentFromNative(item.Content)
 		for _, call := range item.ToolCalls {
 			converted.Content = append(converted.Content, llm.Content{
 				ID: call.ID, Type: llm.ContentTypeToolUse, ToolName: call.Name,
@@ -167,29 +173,29 @@ func messagesFromDago(items []dmessage.Message) ([]llm.Message, error) {
 	return combineToolResultMessages(result), nil
 }
 
-// responseFromDago recovers exact provider response metadata when available and
+// responseFromNative recovers exact provider response metadata when available and
 // otherwise projects a native assistant message into Shelley's UI record.
-func responseFromDago(item dmessage.Message) (*llm.Response, bool, error) {
+func responseFromNative(item dmessage.Message) (*llm.Response, bool, error) {
 	if item.Role != dmessage.RoleAssistant {
 		return nil, false, nil
 	}
-	if len(item.ResponseMetadata[dmodel.ResponseMetadataKey]) == 0 {
+	if len(item.ResponseMetadata[damodel.ResponseMetadataKey]) == 0 {
 		return nil, false, nil
 	}
 	response := llm.Response{
 		ID: item.ID, Role: llm.MessageRoleAssistant,
-		Content: contentFromDago(item.Content), StopReason: llm.StopReasonEndTurn,
+		Content: contentFromNative(item.Content), StopReason: llm.StopReasonEndTurn,
 	}
-	finishReason, refusal := dmodel.Outcome(item)
+	finishReason, refusal := damodel.Outcome(item)
 	switch finishReason {
-	case dmodel.FinishReasonMaxTokens:
+	case damodel.FinishReasonMaxTokens:
 		response.StopReason = llm.StopReasonMaxTokens
-	case dmodel.FinishReasonRefusal:
+	case damodel.FinishReasonRefusal:
 		response.StopReason = llm.StopReasonRefusal
 		if refusal != nil {
 			response.RefusalDetails = &llm.RefusalDetails{Category: refusal.Category, Explanation: refusal.Explanation}
 		}
-	case dmodel.FinishReasonToolCalls:
+	case damodel.FinishReasonToolCalls:
 		response.StopReason = llm.StopReasonToolUse
 	}
 	for _, call := range item.ToolCalls {
@@ -213,16 +219,16 @@ func responseFromDago(item dmessage.Message) (*llm.Response, bool, error) {
 	return &response, true, nil
 }
 
-// toolResultFromDago recovers one exact tool result and its indirect usage.
-func toolResultFromDago(item dmessage.Message) (llm.Content, []llm.PurposedUsage, error) {
+// toolResultFromNative recovers one exact tool result and its indirect usage.
+func toolResultFromNative(item dmessage.Message) (llm.Content, []llm.PurposedUsage, error) {
 	if len(item.Artifact) > 0 {
 		var artifact toolArtifactEnvelope
 		if err := json.Unmarshal(item.Artifact, &artifact); err == nil && artifact.Kind == shelleyToolArtifact {
 			return artifact.Content, artifact.OtherUsage, nil
 		}
 	}
-	blocks := contentFromDago(item.Content)
-	// Dago follows the canonical tool-node contract for unknown tools. Preserve
+	blocks := contentFromNative(item.Content)
+	// dago follows the canonical tool-node contract for unknown tools. Preserve
 	// Shelley's established UI/database wording at this projection boundary.
 	if item.ToolStatus == dmessage.ToolStatusError && item.Name != "" && len(blocks) == 1 &&
 		strings.HasPrefix(blocks[0].Text, "Error: "+item.Name+" is not a valid tool, try one of [") {
@@ -233,10 +239,10 @@ func toolResultFromDago(item dmessage.Message) (llm.Content, []llm.PurposedUsage
 		ToolError:  item.ToolStatus == dmessage.ToolStatusError,
 		ToolResult: blocks,
 	}
-	return content, purposedUsageFromDago(item.OtherUsage), nil
+	return content, purposedUsageFromNative(item.OtherUsage), nil
 }
 
-func purposedUsageFromDago(items []dmessage.PurposedUsage) []llm.PurposedUsage {
+func purposedUsageFromNative(items []dmessage.PurposedUsage) []llm.PurposedUsage {
 	if len(items) == 0 {
 		return nil
 	}
@@ -262,7 +268,7 @@ func purposedUsageFromDago(items []dmessage.PurposedUsage) []llm.PurposedUsage {
 	return result
 }
 
-func contentToDago(items []llm.Content) []dmessage.ContentBlock {
+func contentToNative(items []llm.Content) []dmessage.ContentBlock {
 	result := make([]dmessage.ContentBlock, 0, len(items))
 	for _, item := range items {
 		switch item.Type {
@@ -308,7 +314,7 @@ func contentToDago(items []llm.Content) []dmessage.ContentBlock {
 			}
 			result = append(result, dmessage.ContentBlock{Type: dmessage.BlockServerTool, ID: item.ID, Name: item.ToolName, Extra: extra})
 		case llm.ContentTypeToolUse, llm.ContentTypeToolResult:
-			// Calls/results use the dedicated Dago fields.
+			// Calls/results use the dedicated dago fields.
 		default:
 			raw, err := json.Marshal(item)
 			if err == nil {
@@ -319,7 +325,7 @@ func contentToDago(items []llm.Content) []dmessage.ContentBlock {
 	return result
 }
 
-func contentFromDago(items []dmessage.ContentBlock) []llm.Content {
+func contentFromNative(items []dmessage.ContentBlock) []llm.Content {
 	result := make([]llm.Content, 0, len(items))
 	for _, item := range items {
 		switch item.Type {

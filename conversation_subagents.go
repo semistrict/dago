@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
 )
 
 // ConversationSubagentRunner executes a turn in a persistent child conversation.
@@ -29,12 +29,12 @@ type ConversationSubagentModel struct {
 
 // ConversationSubagentInput is the input accepted by ConversationSubagentTool.
 type ConversationSubagentInput struct {
-	Slug           string `json:"slug"`
-	Prompt         string `json:"prompt"`
+	Slug           string `json:"slug" description:"A short identifier for this subagent (e.g., 'research-api', 'test-runner')"`
+	Prompt         string `json:"prompt" description:"The message to send to the subagent"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
-	Wait           *bool  `json:"wait,omitempty"`
-	Model          string `json:"model,omitempty"`
-	Reasoning      string `json:"reasoning,omitempty"`
+	Wait           *bool  `json:"wait,omitempty" description:"Whether to wait for completion. If false, returns immediately and completion is delivered asynchronously."`
+	Model          string `json:"model,omitempty" description:"LLM model for the subagent. Defaults to the parent conversation's model."`
+	Reasoning      string `json:"reasoning,omitempty" description:"Reasoning/thinking effort level for the subagent. If omitted, the subagent inherits the parent conversation's reasoning level."`
 }
 
 // ConversationSubagentDisplay identifies the persistent conversation created or reused by a call.
@@ -60,7 +60,7 @@ type ConversationSubagentOptions struct {
 var defaultConversationSubagentReasoningLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
 
 // ConversationSubagentTool creates a tool that delegates work to named, persistent child conversations.
-func ConversationSubagentTool(options ConversationSubagentOptions) tool.Tool {
+func ConversationSubagentTool(options ConversationSubagentOptions) datool.Tool {
 	if len(options.ReasoningLevels) == 0 {
 		options.ReasoningLevels = append([]string(nil), defaultConversationSubagentReasoningLevels...)
 	}
@@ -70,31 +70,43 @@ func ConversationSubagentTool(options ConversationSubagentOptions) tool.Tool {
 	if options.MaxTimeout <= 0 {
 		options.MaxTimeout = 60 * time.Minute
 	}
-	return tool.Func{
-		Spec: tool.Definition{Name: "subagent", Description: conversationSubagentDescription(options), InputSchema: conversationSubagentSchema(options)},
-		Run: func(ctx context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-			var input ConversationSubagentInput
-			if err := json.Unmarshal(raw, &input); err != nil {
-				return tool.Result{}, fmt.Errorf("%w: %v", tool.ErrInvalidArguments, err)
-			}
+	defaultSeconds := int(options.DefaultTimeout / time.Second)
+	maxSeconds := int(options.MaxTimeout / time.Second)
+	toolOptions := []datool.Option{
+		datool.WithPropertyValue("timeout_seconds", "description", fmt.Sprintf("How long to wait for a synchronous response, in seconds (default: %d, max: %d). Only applies when wait=true; ignored otherwise. If the subagent hasn't finished by this deadline, the tool returns a progress summary and the subagent keeps running in the background; its eventual completion will then be delivered asynchronously.", defaultSeconds, maxSeconds)),
+		datool.WithPropertyEnum("reasoning", options.ReasoningLevels...),
+	}
+	if len(options.AvailableModels) == 0 {
+		toolOptions = append(toolOptions, datool.WithoutProperty("model"))
+	} else {
+		models := make([]string, 0, len(options.AvailableModels))
+		for _, value := range options.AvailableModels {
+			models = append(models, value.ID)
+		}
+		toolOptions = append(toolOptions, datool.WithPropertyEnum("model", models...))
+	}
+	return datool.MustNew(
+		"subagent", conversationSubagentDescription(options),
+		func(ctx context.Context, input ConversationSubagentInput) (datool.Result, error) {
 			return executeConversationSubagent(ctx, options, input)
 		},
-	}
+		toolOptions...,
+	)
 }
 
-func executeConversationSubagent(ctx context.Context, options ConversationSubagentOptions, input ConversationSubagentInput) (tool.Result, error) {
+func executeConversationSubagent(ctx context.Context, options ConversationSubagentOptions, input ConversationSubagentInput) (datool.Result, error) {
 	if input.Slug == "" {
-		return tool.Result{}, fmt.Errorf("slug is required")
+		return datool.Result{}, fmt.Errorf("slug is required")
 	}
 	input.Slug = SanitizeSubagentSlug(input.Slug)
 	if input.Slug == "" {
-		return tool.Result{}, fmt.Errorf("slug must contain alphanumeric characters")
+		return datool.Result{}, fmt.Errorf("slug must contain alphanumeric characters")
 	}
 	if input.Prompt == "" {
-		return tool.Result{}, fmt.Errorf("prompt is required")
+		return datool.Result{}, fmt.Errorf("prompt is required")
 	}
 	if options.Store == nil || options.Runner == nil || options.WorkingDirectory == nil {
-		return tool.Result{}, fmt.Errorf("conversation subagent store, runner, and working directory are required")
+		return datool.Result{}, fmt.Errorf("conversation subagent store, runner, and working directory are required")
 	}
 	timeout := options.DefaultTimeout
 	if input.TimeoutSeconds > 0 {
@@ -115,24 +127,24 @@ func executeConversationSubagent(ctx context.Context, options ConversationSubage
 			for _, value := range options.AvailableModels {
 				ids = append(ids, value.ID)
 			}
-			return tool.Result{}, fmt.Errorf("unknown model %q; available: %s", input.Model, strings.Join(ids, ", "))
+			return datool.Result{}, fmt.Errorf("unknown model %q; available: %s", input.Model, strings.Join(ids, ", "))
 		}
 		modelID = input.Model
 	}
 	reasoning := options.ParentReasoning
 	if input.Reasoning != "" {
 		if !stringIn(options.ReasoningLevels, input.Reasoning) {
-			return tool.Result{}, fmt.Errorf("unknown reasoning level %q; available: %s", input.Reasoning, strings.Join(options.ReasoningLevels, ", "))
+			return datool.Result{}, fmt.Errorf("unknown reasoning level %q; available: %s", input.Reasoning, strings.Join(options.ReasoningLevels, ", "))
 		}
 		reasoning = input.Reasoning
 	}
 	conversationID, actualSlug, err := options.Store.GetOrCreateSubagentConversation(ctx, input.Slug, options.ParentConversationID, options.WorkingDirectory())
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("failed to get/create subagent conversation: %w", err)
+		return datool.Result{}, fmt.Errorf("failed to get/create subagent conversation: %w", err)
 	}
 	response, err := options.Runner.RunSubagent(ctx, conversationID, input.Prompt, wait, timeout, modelID, reasoning)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("subagent error: %w", err)
+		return datool.Result{}, fmt.Errorf("subagent error: %w", err)
 	}
 	slugNote := ""
 	if actualSlug != input.Slug {
@@ -140,10 +152,10 @@ func executeConversationSubagent(ctx context.Context, options ConversationSubage
 	}
 	display, err := json.Marshal(ConversationSubagentDisplay{Slug: actualSlug, ConversationID: conversationID})
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("encode subagent display: %w", err)
+		return datool.Result{}, fmt.Errorf("encode subagent display: %w", err)
 	}
-	return tool.Result{
-		Content:  []message.ContentBlock{{Type: message.BlockText, Text: fmt.Sprintf("Subagent '%s' response:%s\n%s", actualSlug, slugNote, response)}},
+	return datool.Result{
+		Content:  []damessage.ContentBlock{{Type: damessage.BlockText, Text: fmt.Sprintf("Subagent '%s' response:%s\n%s", actualSlug, slugNote, response)}},
 		Artifact: display,
 	}, nil
 }
@@ -198,27 +210,6 @@ parent conversation's reasoning level.`
 		}
 	}
 	return description
-}
-
-func conversationSubagentSchema(options ConversationSubagentOptions) json.RawMessage {
-	defaultSeconds := int(options.DefaultTimeout / time.Second)
-	maxSeconds := int(options.MaxTimeout / time.Second)
-	properties := map[string]any{
-		"slug":            map[string]any{"type": "string", "description": "A short identifier for this subagent (e.g., 'research-api', 'test-runner')"},
-		"prompt":          map[string]any{"type": "string", "description": "The message to send to the subagent"},
-		"timeout_seconds": map[string]any{"type": "integer", "description": fmt.Sprintf("How long to wait for a synchronous response, in seconds (default: %d, max: %d). Only applies when wait=true; ignored otherwise. If the subagent hasn't finished by this deadline, the tool returns a progress summary and the subagent keeps running in the background; its eventual completion will then be delivered asynchronously.", defaultSeconds, maxSeconds)},
-		"wait":            map[string]any{"type": "boolean", "description": "Whether to wait for completion (default: true). If false, returns immediately; when the subagent eventually finishes, its response is delivered asynchronously. If wait=true and the subagent completes before timeout, no later asynchronous duplicate is delivered. Sending a new message to a subagent that is still working does NOT interrupt it: the message is queued and delivered after the current turn finishes."},
-		"reasoning":       map[string]any{"type": "string", "description": "Reasoning/thinking effort level for the subagent. If omitted, the subagent inherits the parent conversation's reasoning level.", "enum": options.ReasoningLevels},
-	}
-	if len(options.AvailableModels) > 0 {
-		models := make([]string, 0, len(options.AvailableModels))
-		for _, value := range options.AvailableModels {
-			models = append(models, value.ID)
-		}
-		properties["model"] = map[string]any{"type": "string", "description": "LLM model for the subagent. Defaults to the parent conversation's model.", "enum": models}
-	}
-	schema, _ := json.Marshal(map[string]any{"type": "object", "required": []string{"slug", "prompt"}, "properties": properties})
-	return schema
 }
 
 // SanitizeSubagentSlug converts a user label to a lowercase ASCII slug.

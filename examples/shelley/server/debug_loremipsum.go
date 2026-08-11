@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // sizePresets maps friendly size names to a turn count. A "turn" is one
@@ -177,7 +177,7 @@ func commaInt(n int) string {
 // generateLoremConversation creates a conversation and fills it with turns
 // batches of synthetic messages. Returns the conversation id.
 func (s *Server) generateLoremConversation(ctx context.Context, turns int, model string) (string, error) {
-	cwd := "/home/exedev/exe-loremipsum"
+	cwd := "/home/user/exe-loremipsum"
 	conv, err := s.db.CreateConversation(ctx, nil, true, &cwd, &model, db.ConversationOptions{
 		ThinkingLevel: "medium",
 		// Synthetic data should never ping the user.

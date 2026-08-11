@@ -13,10 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/loop"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/loop"
 )
 
 // TestChangeDirAffectsBash tests that change_dir updates the working directory
@@ -151,11 +150,6 @@ func waitForMessageContaining(t *testing.T, database *db.DB, conversationID, tex
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("did not find message containing %q within %v", text, timeout)
-}
-
-// getConversationMessages retrieves all messages for a conversation.
-func getConversationMessages(database *db.DB, conversationID string) ([]generated.Message, error) {
-	return database.ListMessages(context.Background(), conversationID)
 }
 
 // truncate truncates a string to maxLen characters.

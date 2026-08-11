@@ -25,13 +25,6 @@ var (
 	sketchWipWarningShown bool
 )
 
-// ResetSketchWipWarning resets the warning state for testing purposes
-func ResetSketchWipWarning() {
-	sketchWipWarningMu.Lock()
-	sketchWipWarningShown = false
-	sketchWipWarningMu.Unlock()
-}
-
 // Check inspects bashScript and returns an error if it ought not be executed.
 // Check DOES NOT PROVIDE SECURITY against malicious actors.
 // It is intended to catch straightforward mistakes in which a model
@@ -74,103 +67,6 @@ func Check(bashScript string) error {
 	})
 
 	return err
-}
-
-// WillRunGitCommit reports whether bashScript contains a git commit command.
-func WillRunGitCommit(bashScript string) (bool, error) {
-	r := strings.NewReader(bashScript)
-	parser := syntax.NewParser()
-	file, err := parser.Parse(r, "")
-	if err != nil {
-		// Parsing failed, but let's not consider this an error for the same reasons as in Check
-		return false, nil
-	}
-
-	willCommit := false
-
-	syntax.Walk(file, func(node syntax.Node) bool {
-		callExpr, ok := node.(*syntax.CallExpr)
-		if !ok {
-			return true
-		}
-		if isGitCommitCommand(callExpr) {
-			willCommit = true
-			return false
-		}
-		return true
-	})
-
-	return willCommit, nil
-}
-
-// ChainsCdWithCommand reports whether bashScript chains a top-level
-// `cd <path>` with a subsequent command via `&&` or `;`, e.g.
-// `cd /tmp && ls` or `cd /tmp; ls`. Such patterns are better expressed by
-// calling the change_dir tool first, since `cd` inside a bash invocation
-// does not persist across tool calls.
-//
-// Patterns intentionally NOT flagged:
-//   - bare `cd` or a standalone `cd <path>` with nothing chained;
-//   - `cd <path> || ...` (fallback/error path);
-//   - `cd` inside a subshell like `(cd /tmp && ls)`, which is the
-//     idiomatic way to scope a directory change without persistence.
-func ChainsCdWithCommand(bashScript string) bool {
-	r := strings.NewReader(bashScript)
-	parser := syntax.NewParser()
-	file, err := parser.Parse(r, "")
-	if err != nil {
-		return false
-	}
-	isCdWithArg := func(s *syntax.Stmt) bool {
-		if s == nil || s.Cmd == nil {
-			return false
-		}
-		call, ok := s.Cmd.(*syntax.CallExpr)
-		if !ok || len(call.Args) < 2 {
-			return false
-		}
-		return call.Args[0].Lit() == "cd"
-	}
-	var checkStmts func(stmts []*syntax.Stmt) bool
-	var checkStmt func(s *syntax.Stmt) bool
-	checkStmts = func(stmts []*syntax.Stmt) bool {
-		// `a; b` at the same level: flag if any non-final stmt is `cd <path>`.
-		for i := 0; i+1 < len(stmts); i++ {
-			if isCdWithArg(stmts[i]) {
-				return true
-			}
-		}
-		for _, s := range stmts {
-			if checkStmt(s) {
-				return true
-			}
-		}
-		return false
-	}
-	checkStmt = func(s *syntax.Stmt) bool {
-		if s == nil || s.Cmd == nil {
-			return false
-		}
-		switch c := s.Cmd.(type) {
-		case *syntax.BinaryCmd:
-			if c.Op == syntax.AndStmt && isCdWithArg(c.X) {
-				return true
-			}
-			if checkStmt(c.X) || checkStmt(c.Y) {
-				return true
-			}
-		case *syntax.Block:
-			if checkStmts(c.Stmts) {
-				return true
-			}
-		case *syntax.Subshell:
-			// Intentionally do not recurse: `(cd ... && ...)` is scoped
-			// and does not affect the caller's working directory.
-			return false
-		}
-		return false
-	}
-	return checkStmts(file.Stmts)
 }
 
 // noDangerousRmRf checks for rm -rf commands that could delete critical directories.

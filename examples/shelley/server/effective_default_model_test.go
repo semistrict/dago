@@ -3,7 +3,7 @@ package server
 import (
 	"testing"
 
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 // ifactory regression: the configured defaultModel isn't ready on

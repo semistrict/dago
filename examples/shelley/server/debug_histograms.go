@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 // handleDebugHistograms renders a page summarizing the size distribution of

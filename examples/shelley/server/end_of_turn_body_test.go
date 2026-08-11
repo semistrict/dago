@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 func agentMsg(t *testing.T, contents ...llm.Content) generated.Message {
@@ -119,9 +119,9 @@ func TestPushTitleAndSubtitle(t *testing.T) {
 		host, slug      string
 		wantTitle, want string
 	}{
-		{"phil-dev.exe.xyz", "fix-the-bug", "fix-the-bug", "phil-dev.exe.xyz"},
+		{"host.example.test", "fix-the-bug", "fix-the-bug", "host.example.test"},
 		{"", "fix-the-bug", "fix-the-bug", ""},
-		{"phil-dev.exe.xyz", "", "phil-dev.exe.xyz", ""},
+		{"host.example.test", "", "host.example.test", ""},
 		{"", "", "Shelley", ""},
 	}
 	for _, tc := range tests {

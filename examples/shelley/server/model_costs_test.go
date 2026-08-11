@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/models/modelsdev"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/models/modelsdev"
 )
 
 func TestModelCostsHandler(t *testing.T) {
@@ -15,8 +15,8 @@ func TestModelCostsHandler(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 
 	body := `{"models":[` +
-		`{"model":"gpt-5.3-codex","url":"https://llm.int.exe.xyz/v1/responses"},` +
-		`{"model":"gpt-5.5-2026-04-23","url":"https://llm.int.exe.xyz/v1/responses"},` +
+		`{"model":"gpt-5.3-codex","url":"https://api.example.test/v1/responses"},` +
+		`{"model":"gpt-5.5-2026-04-23","url":"https://api.example.test/v1/responses"},` +
 		`{"model":"predictable-v1"}]}`
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/model-costs", strings.NewReader(body))
@@ -78,9 +78,9 @@ func TestSubagentUsageHandler(t *testing.T) {
 		}
 	}
 	// Parent usage must NOT be counted.
-	addUsage(parent.ConversationID, "gpt-5.5", "https://llm.int.exe.xyz/v1/responses", 1_000_000, 0, 0)
+	addUsage(parent.ConversationID, "gpt-5.5", "https://api.example.test/v1/responses", 1_000_000, 0, 0)
 	// Child: priced. 1M input @$5 + 1M output @$30 = $35.
-	addUsage(child.ConversationID, "gpt-5.5", "https://llm.int.exe.xyz/v1/responses", 1_000_000, 1_000_000, 1.25)
+	addUsage(child.ConversationID, "gpt-5.5", "https://api.example.test/v1/responses", 1_000_000, 1_000_000, 1.25)
 	// Grandchild (recursive): unpriced model.
 	addUsage(grandchild.ConversationID, "mystery-model", "", 500, 500, 0)
 

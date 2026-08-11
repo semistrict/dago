@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"shelley.exe.dev/server/notifications"
+	"github.com/semistrict/dago/examples/shelley/server/notifications"
 )
 
 const emailGatewayURL = "http://169.254.169.254/gateway/email/send"

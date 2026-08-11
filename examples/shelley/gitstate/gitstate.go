@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"shelley.exe.dev/pathutil"
+	"github.com/semistrict/dago/examples/shelley/pathutil"
 )
 
 // GitState represents the current state of a git repository.

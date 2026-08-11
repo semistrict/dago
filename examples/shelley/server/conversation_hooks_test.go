@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 func TestRegisterConversationHookDedupes(t *testing.T) {
@@ -20,7 +20,7 @@ func TestRegisterConversationHookDedupes(t *testing.T) {
 		t.Fatalf("failed to create conversation: %v", err)
 	}
 
-	body, err := json.Marshal(RegisterConversationHookRequest{URL: "http://notify.int.exe.xyz/"})
+	body, err := json.Marshal(RegisterConversationHookRequest{URL: "http://notify.example.test/"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestRegisterConversationHookDedupes(t *testing.T) {
 	if len(opts.EndOfTurnHooks) != 1 {
 		t.Fatalf("len(EndOfTurnHooks) = %d, want 1", len(opts.EndOfTurnHooks))
 	}
-	if opts.EndOfTurnHooks[0].URL != "http://notify.int.exe.xyz/" {
+	if opts.EndOfTurnHooks[0].URL != "http://notify.example.test/" {
 		t.Fatalf("hook URL = %q", opts.EndOfTurnHooks[0].URL)
 	}
 }
@@ -51,7 +51,7 @@ func TestEndOfTurnHooksPersistAfterRead(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
 	conversation, err := database.CreateConversation(context.Background(), nil, true, nil, nil, db.ConversationOptions{
-		EndOfTurnHooks: []db.ConversationHook{{URL: "http://notify.int.exe.xyz/"}},
+		EndOfTurnHooks: []db.ConversationHook{{URL: "http://notify.example.test/"}},
 	})
 	if err != nil {
 		t.Fatalf("failed to create conversation: %v", err)
@@ -66,7 +66,7 @@ func TestEndOfTurnHooksPersistAfterRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load hooks: %v", err)
 	}
-	if len(hooks) != 1 || hooks[0].URL != "http://notify.int.exe.xyz/" {
+	if len(hooks) != 1 || hooks[0].URL != "http://notify.example.test/" {
 		t.Fatalf("hooks = %#v", hooks)
 	}
 

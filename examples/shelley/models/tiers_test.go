@@ -58,7 +58,7 @@ func TestAssignTiers(t *testing.T) {
 	})
 
 	t.Run("every input id is assigned a tier", func(t *testing.T) {
-		avail := IDs()
+		avail := testIDs()
 		tiers := AssignTiers(avail)
 		for _, id := range avail {
 			if tiers[id] != Tier1 && tiers[id] != Tier2 {

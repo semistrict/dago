@@ -3,7 +3,7 @@ package dago
 import (
 	"context"
 
-	"github.com/semistrict/dago/agent"
+	"github.com/semistrict/dago/dagent"
 )
 
 var nemotronModelSpecs = []string{
@@ -110,8 +110,8 @@ func init() {
 	}
 }
 
-func nemotronProfileMiddleware() []agent.Middleware {
-	return []agent.Middleware{
+func nemotronProfileMiddleware() []dagent.Middleware {
+	return []dagent.Middleware{
 		NemotronProgressBudget(NemotronProgressBudgetOptions{}),
 		nemotronPolicyNudgeMiddleware(),
 		NemotronToolCallShim(),
@@ -129,9 +129,9 @@ func nemotronProfileMiddleware() []agent.Middleware {
 
 // Canonical messages already preserve tool-call fields and tool-result names,
 // so the compatibility layer that upstream needs before provider serialization
-// is an explicit no-op at Dago's provider-neutral boundary.
-func nemotronCanonicalMessageCompatibility() agent.Middleware {
-	return agent.Middleware{Name: "ChatNVIDIAMessageCompatibilityMiddleware", WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+// is an explicit no-op at dago's provider-neutral boundary.
+func nemotronCanonicalMessageCompatibility() dagent.Middleware {
+	return dagent.Middleware{Name: "ChatNVIDIAMessageCompatibilityMiddleware", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		return next(ctx, request)
 	}}
 }

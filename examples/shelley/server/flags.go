@@ -1,6 +1,6 @@
 package server
 
-import "shelley.exe.dev/featureflags"
+import "github.com/semistrict/dago/examples/shelley/featureflags"
 
 // FlagToolPills toggles the iOS-style pill rendering of tool bursts in the
 // web conversation UI. When false (the default), each tool call renders as

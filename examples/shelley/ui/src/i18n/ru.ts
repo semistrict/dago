@@ -204,9 +204,6 @@ export const ru: TranslationKeys = {
   notifications: "Уведомления",
   browserNotifications: "Уведомления браузера",
   faviconBadge: "Значок на иконке",
-  exeDevPushNotifications: "Push-уведомления",
-  exeDevPushNotificationsDescription:
-    "Уведомления на ваши устройства через приложение exe.dev по завершении агента",
   editChannel: "Редактировать канал",
   addChannel: "Добавить канал",
   customChannels: "Пользовательские каналы",
@@ -248,14 +245,10 @@ export const ru: TranslationKeys = {
   // Welcome / Empty State
   welcomeTitle: "Shelley Agent",
   welcomeSubtitle: "",
-  welcomeMessage:
-    "Shelley — это агент, работающий на {hostname}. Вы можете попросить Shelley выполнить задачи. Если вы создали веб-сайт с помощью Shelley, вы можете использовать прокси-функции exe.dev (см. {docsLink}), чтобы открыть его по адресу {proxyLink}.",
+  welcomeMessage: "Shelley is running on {hostname}.",
   sendMessageToStart: "Отправьте сообщение, чтобы начать диалог.",
   noModelsTitle: "Нет доступных моделей ИИ",
-  noModelsExeNote:
-    "Shelley получает модели из интеграции llm в exe.dev. Выполните одну из этих команд, чтобы исправить:",
   noModelsLocalNote: "Добавьте модель через Ctrl+K или ⌘+K.",
-  noModelsExeRefresh: "Затем нажмите Refresh в списке моделей.",
   noModelSelectedPlaceholder: "Нет доступных моделей",
 
   // Status Bar

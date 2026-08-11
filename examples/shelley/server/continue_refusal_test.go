@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/slug"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/slug"
 )
 
 // refuseThenOKService refuses the first *agent* request (stop_reason=refusal)
@@ -41,8 +41,8 @@ type refuseThenOKService struct {
 	calls int
 }
 
-func (s *refuseThenOKService) Profile() dmodel.Profile { return s.inner.Profile() }
-func (s *refuseThenOKService) Invoke(ctx context.Context, req dmodel.Request) (dmodel.Response, error) {
+func (s *refuseThenOKService) Profile() damodel.Profile { return s.inner.Profile() }
+func (s *refuseThenOKService) Invoke(ctx context.Context, req damodel.Request) (damodel.Response, error) {
 	for _, message := range req.Messages {
 		if strings.Contains(message.TextContent(), slug.PromptPreamble) {
 			return s.inner.Invoke(ctx, req)
@@ -53,13 +53,13 @@ func (s *refuseThenOKService) Invoke(ctx context.Context, req dmodel.Request) (d
 	s.calls++
 	s.mu.Unlock()
 	if n == 0 {
-		return s.inner.Invoke(ctx, dmodel.Request{Messages: []dmessage.Message{dmessage.Human("refusal")}})
+		return s.inner.Invoke(ctx, damodel.Request{Messages: []dmessage.Message{dmessage.Human("refusal")}})
 	}
 	message := dmessage.Assistant("Continuing after the switch.")
 	message.Usage = &dmessage.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2, Provider: "builtin", Model: "predictable-v1"}
-	return dmodel.Response{Message: message}, nil
+	return damodel.Response{Message: message}, nil
 }
-func (*refuseThenOKService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+func (*refuseThenOKService) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
 	return nil, fmt.Errorf("refusal test model does not stream")
 }
 

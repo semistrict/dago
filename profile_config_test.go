@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/agent"
+	"github.com/semistrict/dago/dagent"
 	"gopkg.in/yaml.v3"
 )
 
@@ -97,7 +97,7 @@ func TestHarnessProfileConfigRejectsInvalidAndRuntimeOnlyValues(t *testing.T) {
 		}
 	}
 	if _, err := HarnessProfileConfigFromProfile(Profile{
-		Kind: ProfileHarness, Middleware: []agent.Middleware{{Name: "runtime"}},
+		Kind: ProfileHarness, Middleware: []dagent.Middleware{{Name: "runtime"}},
 	}); err == nil {
 		t.Fatal("runtime middleware should not serialize")
 	}

@@ -12,11 +12,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/state"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 )
 
 const (
@@ -62,9 +62,9 @@ type RubricEvaluation struct {
 }
 
 type RubricOptions struct {
-	Model         model.Chat
+	Model         damodel.Chat
 	SystemPrompt  string
-	Tools         []tool.Tool
+	Tools         []datool.Tool
 	MaxIterations int
 	OnEvaluation  func(RubricEvaluation)
 }
@@ -81,30 +81,30 @@ var rubricResponseSchema = json.RawMessage(`{"type":"object","properties":{"resu
 
 // RubricMiddleware grades natural agent completions and, when necessary,
 // injects actionable feedback before routing back to the model.
-func RubricMiddleware(options RubricOptions) (agent.Middleware, error) {
+func RubricMiddleware(options RubricOptions) (dagent.Middleware, error) {
 	if options.Model == nil {
-		return agent.Middleware{}, fmt.Errorf("rubric model is required")
+		return dagent.Middleware{}, fmt.Errorf("rubric model is required")
 	}
 	if options.MaxIterations == 0 {
 		options.MaxIterations = 3
 	}
 	if options.MaxIterations < 1 {
-		return agent.Middleware{}, fmt.Errorf("rubric max iterations must be positive, got %d", options.MaxIterations)
+		return dagent.Middleware{}, fmt.Errorf("rubric max iterations must be positive, got %d", options.MaxIterations)
 	}
 	if options.SystemPrompt == "" {
 		options.SystemPrompt = defaultRubricSystemPrompt
 	}
 
 	var graderOnce sync.Once
-	var grader *agent.Agent
+	var grader *dagent.Agent
 	var graderErr error
-	ensureGrader := func() (*agent.Agent, error) {
+	ensureGrader := func() (*dagent.Agent, error) {
 		graderOnce.Do(func() {
-			grader, graderErr = agent.New(agent.Options{
-				Name: RubricGraderSource, Model: options.Model, Tools: append([]tool.Tool(nil), options.Tools...),
+			grader, graderErr = dagent.New(dagent.Options{
+				Name: RubricGraderSource, Model: options.Model, Tools: append([]datool.Tool(nil), options.Tools...),
 				SystemPrompt: options.SystemPrompt, RecursionLimit: 9_999,
-				StructuredOutput: &agent.StructuredOutput{
-					Strategy: agent.StructuredAuto, Name: "GraderResponse",
+				StructuredOutput: &dagent.StructuredOutput{
+					Strategy: dagent.StructuredAuto, Name: "GraderResponse",
 					Description: "A rubric verdict with per-criterion evidence.", Schema: rubricResponseSchema, Strict: true,
 				},
 			})
@@ -112,18 +112,18 @@ func RubricMiddleware(options RubricOptions) (agent.Middleware, error) {
 		return grader, graderErr
 	}
 
-	fields := map[string]agent.StateField{
-		RubricKey:            {Kind: agent.FieldLast, Contract: "dago.rubric.input.v1", Clone: cloneRubricScalar},
-		RubricStatusKey:      {Kind: agent.FieldLast, Contract: "dago.rubric.status.v1", Private: true, Clone: cloneRubricScalar},
-		RubricIterationsKey:  {Kind: agent.FieldLast, Contract: "dago.rubric.iterations.v1", Private: true, Clone: cloneRubricScalar},
-		RubricEvaluationsKey: {Kind: agent.FieldLast, Contract: "dago.rubric.evaluations.v1", Private: true, Clone: cloneRubricEvaluations},
-		RubricRunIDKey:       {Kind: agent.FieldLast, Contract: "dago.rubric.run.v1", Private: true, Clone: cloneRubricScalar},
-		RubricActiveKey:      {Kind: agent.FieldLast, Contract: "dago.rubric.active.v1", Private: true, Clone: cloneRubricScalar},
+	fields := map[string]dagent.StateField{
+		RubricKey:            {Kind: dagent.FieldLast, Contract: "dago.rubric.input.v1", Clone: cloneRubricScalar},
+		RubricStatusKey:      {Kind: dagent.FieldLast, Contract: "dago.rubric.status.v1", Private: true, Clone: cloneRubricScalar},
+		RubricIterationsKey:  {Kind: dagent.FieldLast, Contract: "dago.rubric.iterations.v1", Private: true, Clone: cloneRubricScalar},
+		RubricEvaluationsKey: {Kind: dagent.FieldLast, Contract: "dago.rubric.evaluations.v1", Private: true, Clone: cloneRubricEvaluations},
+		RubricRunIDKey:       {Kind: dagent.FieldLast, Contract: "dago.rubric.run.v1", Private: true, Clone: cloneRubricScalar},
+		RubricActiveKey:      {Kind: dagent.FieldLast, Contract: "dago.rubric.active.v1", Private: true, Clone: cloneRubricScalar},
 	}
 
-	return agent.Middleware{
+	return dagent.Middleware{
 		Name: "rubric", Fields: fields,
-		BeforeAgent: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
+		BeforeAgent: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
 			rubric, _ := values[RubricKey].(string)
 			if rubric == "" {
 				return nil, nil
@@ -137,12 +137,12 @@ func RubricMiddleware(options RubricOptions) (agent.Middleware, error) {
 			if err != nil {
 				return nil, err
 			}
-			return state.Values{
+			return dastate.Values{
 				RubricIterationsKey: 0, RubricStatusKey: nil,
 				RubricRunIDKey: runID, RubricActiveKey: rubric,
 			}, nil
 		},
-		AfterAgent: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
+		AfterAgent: func(ctx context.Context, values dastate.Values, runtime dagent.Runtime) (dastate.Values, error) {
 			rubric, _ := values[RubricKey].(string)
 			if rubric == "" {
 				return nil, nil
@@ -158,7 +158,7 @@ func RubricMiddleware(options RubricOptions) (agent.Middleware, error) {
 			}
 			emitRubricEvent(ctx, runtime, "rubric_evaluation_start", runID, iteration, nil)
 
-			messages, err := featureMessages(values[agent.MessagesKey])
+			messages, err := featureMessages(values[dagent.MessagesKey])
 			if err != nil {
 				return nil, err
 			}
@@ -169,7 +169,7 @@ func RubricMiddleware(options RubricOptions) (agent.Middleware, error) {
 				if payloadErr != nil {
 					err = payloadErr
 				} else {
-					result, invokeErr := compiled.Invoke(ctx, agent.Input{Messages: []message.Message{message.Human(payload)}})
+					result, invokeErr := compiled.Invoke(ctx, dagent.Input{Messages: []damessage.Message{damessage.Human(payload)}})
 					err = invokeErr
 					if err == nil {
 						err = json.Unmarshal(result.Structured, &graded)
@@ -206,10 +206,10 @@ func RubricMiddleware(options RubricOptions) (agent.Middleware, error) {
 	}, nil
 }
 
-func rubricTerminalUpdate(values state.Values, evaluation RubricEvaluation) state.Values {
+func rubricTerminalUpdate(values dastate.Values, evaluation RubricEvaluation) dastate.Values {
 	evaluations := rubricEvaluations(values[RubricEvaluationsKey])
 	evaluations = append(evaluations, evaluation)
-	update := state.Values{
+	update := dastate.Values{
 		RubricEvaluationsKey: rubricEvaluationsToState(evaluations),
 		RubricIterationsKey:  evaluation.Iteration + 1,
 		RubricStatusKey:      string(evaluation.Result),
@@ -217,11 +217,11 @@ func rubricTerminalUpdate(values state.Values, evaluation RubricEvaluation) stat
 	if evaluation.Result != RubricNeedsRevision {
 		return update
 	}
-	feedback := message.Human(rubricRevisionPrompt(evaluation))
+	feedback := damessage.Human(rubricRevisionPrompt(evaluation))
 	feedback.Name = RubricGraderSource
 	feedback.Metadata = map[string]json.RawMessage{"lc_source": json.RawMessage(`"rubric_grader"`)}
-	update[agent.MessagesKey] = []message.Message{feedback}
-	for key, value := range agent.JumpUpdate("model") {
+	update[dagent.MessagesKey] = []damessage.Message{feedback}
+	for key, value := range dagent.JumpUpdate("model") {
 		update[key] = value
 	}
 	return update
@@ -249,7 +249,7 @@ func validateRubricResponse(value RubricGraderResponse) error {
 	return nil
 }
 
-func buildRubricPayload(rubric string, messages []message.Message, iteration int) (string, error) {
+func buildRubricPayload(rubric string, messages []damessage.Message, iteration int) (string, error) {
 	nonce, err := newRubricRunID()
 	if err != nil {
 		return "", err
@@ -263,13 +263,13 @@ func sanitizeRubricPayload(value string) string {
 	return rubricPayloadCloser.ReplaceAllString(value, `<\/$1`)
 }
 
-func buildRubricTranscript(messages []message.Message) string {
+func buildRubricTranscript(messages []damessage.Message) string {
 	if len(messages) == 0 {
 		return "(empty transcript)"
 	}
 	firstHuman := -1
 	for index, item := range messages {
-		if item.Role == message.RoleHuman && !rubricFeedbackMessage(item) {
+		if item.Role == damessage.RoleHuman && !rubricFeedbackMessage(item) {
 			firstHuman = index
 			break
 		}
@@ -295,12 +295,12 @@ func buildRubricTranscript(messages []message.Message) string {
 	return strings.Join(chunks, "\n\n")
 }
 
-func rubricMessageText(item message.Message) string {
+func rubricMessageText(item damessage.Message) string {
 	var parts []string
 	for _, block := range item.Content {
-		if block.Type == message.BlockText && block.Text != "" {
+		if block.Type == damessage.BlockText && block.Text != "" {
 			parts = append(parts, block.Text)
-		} else if block.Type != message.BlockText {
+		} else if block.Type != damessage.BlockText {
 			parts = append(parts, "("+string(block.Type)+")")
 		}
 	}
@@ -313,13 +313,13 @@ func rubricMessageText(item message.Message) string {
 	return strings.Join(parts, "\n")
 }
 
-func rubricRole(item message.Message) string {
+func rubricRole(item damessage.Message) string {
 	switch item.Role {
-	case message.RoleHuman:
+	case damessage.RoleHuman:
 		return "user"
-	case message.RoleAssistant:
+	case damessage.RoleAssistant:
 		return "assistant"
-	case message.RoleTool:
+	case damessage.RoleTool:
 		if item.Name != "" {
 			return "tool:" + item.Name
 		}
@@ -329,7 +329,7 @@ func rubricRole(item message.Message) string {
 	}
 }
 
-func rubricFeedbackMessage(item message.Message) bool {
+func rubricFeedbackMessage(item damessage.Message) bool {
 	var source string
 	return json.Unmarshal(item.Metadata["lc_source"], &source) == nil && source == RubricGraderSource
 }
@@ -359,7 +359,7 @@ func rubricRevisionPrompt(value RubricEvaluation) string {
 	return strings.Join(append(lines, "", "Please address every failing criterion and respond when you believe the rubric is satisfied."), "\n")
 }
 
-func emitRubricEvent(ctx context.Context, runtime agent.Runtime, eventType, runID string, iteration int, evaluation *RubricEvaluation) {
+func emitRubricEvent(ctx context.Context, runtime dagent.Runtime, eventType, runID string, iteration int, evaluation *RubricEvaluation) {
 	if runtime.Writer == nil {
 		return
 	}

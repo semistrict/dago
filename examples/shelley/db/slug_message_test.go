@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // TestGetLatestActionableMessageIgnoresSlugMarkers guards the retry/continue affordances.

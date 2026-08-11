@@ -7,27 +7,27 @@ import (
 	"sync/atomic"
 	"testing"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // recordingService captures native model requests.
 type recordingService struct {
 	*customPredictableService
 	mu   sync.Mutex
-	reqs []dmodel.Request
+	reqs []damodel.Request
 }
 
-func (service *recordingService) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
+func (service *recordingService) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
 	service.mu.Lock()
 	service.reqs = append(service.reqs, request)
 	service.mu.Unlock()
 	return service.customPredictableService.Invoke(ctx, request)
 }
-func (service *recordingService) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
+func (service *recordingService) Stream(ctx context.Context, request damodel.Request) (damodel.Stream, error) {
 	return service.customPredictableService.Stream(ctx, request)
 }
 
@@ -36,15 +36,15 @@ func (service *recordingService) Stream(ctx context.Context, request dmodel.Requ
 // the very next LLM request already carries them (e.g. a subagent completion
 // notification the parent should react to immediately, mid-turn).
 func TestInjectMessagesMidTurn(t *testing.T) {
-	echoTool := dtool.Func{
-		Spec: dtool.Definition{Name: "echo", Description: "echoes", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
-		Run: func(context.Context, json.RawMessage, dtool.Runtime) (dtool.Result, error) {
-			return dtool.TextResult("echoed"), nil
+	echoTool := datool.Func{
+		Spec: datool.Definition{Name: "echo", Description: "echoes", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+		Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+			return datool.TextResult("echoed"), nil
 		},
 	}
 
 	service := &recordingService{customPredictableService: &customPredictableService{
-		responseFunc: func(request dmodel.Request) (dmodel.Response, error) {
+		responseFunc: func(request damodel.Request) (damodel.Response, error) {
 			// Any request that already carries a tool result ends the turn;
 			// the first request calls the tool.
 			for _, item := range request.Messages {
@@ -70,7 +70,7 @@ func TestInjectMessagesMidTurn(t *testing.T) {
 	var calls atomic.Int64
 	loop := NewLoop(Config{
 		Model: service,
-		Tools: []dtool.Tool{echoTool},
+		Tools: []datool.Tool{echoTool},
 		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, purposed []llm.PurposedUsage) error {
 			return nil
 		},

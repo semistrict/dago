@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
 )
 
 type ProfileKind string
@@ -29,7 +29,7 @@ type Profile struct {
 	SystemPrompt       string
 	ToolDescriptions   map[string]string
 	ExcludeTools       []string
-	Middleware         []agent.Middleware
+	Middleware         []dagent.Middleware
 	ExcludeMiddleware  []string
 	GeneralPurpose     *GeneralPurposeSubagentProfile
 }
@@ -142,7 +142,7 @@ func MergeProfiles(profiles ...Profile) Profile {
 	return result
 }
 
-func resolveProfiles(chat model.Chat, names []string, inline []Profile) (Profile, error) {
+func resolveProfiles(chat damodel.Chat, names []string, inline []Profile) (Profile, error) {
 	values := make([]Profile, 0, len(names)+len(inline)+2)
 	modelProfile := chat.Profile()
 	if modelProfile.Provider != "" {
@@ -199,7 +199,7 @@ func cloneProfile(profile Profile) Profile {
 		copy.ToolDescriptions[name] = description
 	}
 	copy.ExcludeTools = append([]string(nil), profile.ExcludeTools...)
-	copy.Middleware = append([]agent.Middleware(nil), profile.Middleware...)
+	copy.Middleware = append([]dagent.Middleware(nil), profile.Middleware...)
 	copy.ExcludeMiddleware = append([]string(nil), profile.ExcludeMiddleware...)
 	if profile.GeneralPurpose != nil {
 		value := *profile.GeneralPurpose
@@ -247,8 +247,8 @@ func isRequiredMiddlewareExclusion(name string) bool {
 	}
 }
 
-func mergeMiddlewareByName(base, override []agent.Middleware) []agent.Middleware {
-	result := append([]agent.Middleware(nil), base...)
+func mergeMiddlewareByName(base, override []dagent.Middleware) []dagent.Middleware {
+	result := append([]dagent.Middleware(nil), base...)
 	positions := make(map[string]int, len(result))
 	for index, item := range result {
 		positions[item.Name] = index
@@ -335,18 +335,18 @@ func appendUnique(values []string, additions ...string) []string {
 }
 
 type profileTool struct {
-	tool.Tool
+	datool.Tool
 	description string
 }
 
-func (wrapped profileTool) Definition() tool.Definition {
+func (wrapped profileTool) Definition() datool.Definition {
 	definition := wrapped.Tool.Definition()
 	definition.Description = wrapped.description
 	return definition
 }
 
-func applyToolProfile(values []tool.Tool, descriptions map[string]string, excluded map[string]bool) []tool.Tool {
-	result := make([]tool.Tool, 0, len(values))
+func applyToolProfile(values []datool.Tool, descriptions map[string]string, excluded map[string]bool) []datool.Tool {
+	result := make([]datool.Tool, 0, len(values))
 	for _, executable := range values {
 		definition := executable.Definition()
 		if excluded[definition.Name] {
@@ -364,13 +364,13 @@ func applyToolProfile(values []tool.Tool, descriptions map[string]string, exclud
 // boundary, after custom middleware has had an opportunity to alter the request.
 // It intentionally leaves the executor registry intact so historical or resumed
 // tool calls retain the same behavior as the canonical middleware.
-func ToolExclusionMiddleware(names []string) agent.Middleware {
+func ToolExclusionMiddleware(names []string) dagent.Middleware {
 	excluded := make(map[string]bool, len(names))
 	for _, name := range names {
 		excluded[name] = true
 	}
-	return agent.Middleware{Name: "tool_exclusion", WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
-		filtered := make([]tool.Tool, 0, len(request.Tools))
+	return dagent.Middleware{Name: "tool_exclusion", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
+		filtered := make([]datool.Tool, 0, len(request.Tools))
 		for _, item := range request.Tools {
 			if !excluded[item.Definition().Name] {
 				filtered = append(filtered, item)

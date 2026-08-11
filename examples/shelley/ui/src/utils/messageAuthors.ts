@@ -1,6 +1,6 @@
 import type { Message } from "../types";
 
-// hasMultipleUsers reports whether more than one distinct exe.dev user has
+// hasMultipleUsers reports whether more than one distinct authenticated user has
 // participated in a conversation. Only non-empty user_email values count as
 // distinct participants: empty strings (unauthenticated/direct access) are
 // ignored, so a mix of empty and a single real email is still one participant.

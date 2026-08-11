@@ -14,7 +14,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 // TestStreamCompressionGzip verifies the SSE stream is gzip-encoded when the

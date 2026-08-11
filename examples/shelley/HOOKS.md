@@ -63,7 +63,7 @@ non-empty result is required.
       ["Content-Type", "application/json"],
       ["User-Agent", "curl/8.5.0"],
       ["X-Custom", "demo"],
-      ["X-Exedev-Email", "test@example.com"]
+      ["X-User-Email", "test@example.com"]
     ]
   }
 }
@@ -93,7 +93,7 @@ For subagent conversations, `readonly.is_subagent` is `true`,
       ["Content-Length", "54"],
       ["Content-Type", "application/json"],
       ["User-Agent", "curl/8.5.0"],
-      ["X-Exedev-Email", "test@example.com"]
+      ["X-User-Email", "test@example.com"]
     ]
   }
 }

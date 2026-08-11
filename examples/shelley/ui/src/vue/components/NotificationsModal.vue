@@ -1,5 +1,5 @@
 <!-- Vue port of components/NotificationsModal.tsx. Server channel CRUD/test +
-     browser-notification permission + favicon/browser/exe.dev push toggles.
+     browser-notification permission + favicon/browser toggles.
      Preserves the notifications-* / model-card / provider-btn / form-* /
      test-result / overflow-menu-label / btn-link class contract and all i18n
      text. Uses Modal.vue, ConfigFieldInput.vue, useI18n, and
@@ -121,22 +121,6 @@
         </div>
       </div>
 
-      <!-- exe.dev push notifications (auto-configured) -->
-      <div v-if="exeNotifyAvailable" class="model-card notifications-card">
-        <div>
-          <div class="notifications-card-title">{{ t("exeDevPushNotifications") }}</div>
-          <div class="notifications-card-description">
-            {{ t("exeDevPushNotificationsDescription") }}
-          </div>
-        </div>
-        <Button
-          size="small"
-          :severity="exeNotifyEnabled ? undefined : 'secondary'"
-          :label="exeNotifyEnabled ? t('on') : t('off')"
-          @click="handleToggleExeNotify"
-        />
-      </div>
-
       <!-- Favicon -->
       <div class="model-card notifications-card">
         <div>
@@ -249,9 +233,6 @@ const browserEnabled = ref(isChannelEnabled("browser"));
 const faviconEnabled = ref(isChannelEnabled("favicon"));
 const browserPermission = ref(getBrowserNotificationState());
 
-const exeNotifyAvailable = window.__SHELLEY_INIT__?.exe_notify_available ?? false;
-const exeNotifyEnabled = ref(true);
-
 const showForm = ref(false);
 const editingChannelId = ref<string | null>(null);
 const form = reactive<FormData>({ ...emptyForm, config: {} });
@@ -280,18 +261,6 @@ async function loadChannels() {
     error.value = err instanceof Error ? err.message : "Failed to load channels";
   } finally {
     loading.value = false;
-  }
-}
-
-async function handleToggleExeNotify() {
-  const newVal = !exeNotifyEnabled.value;
-  exeNotifyEnabled.value = newVal;
-  try {
-    error.value = null;
-    await api.setSetting("exe_notify", newVal ? "true" : "false");
-  } catch (err) {
-    exeNotifyEnabled.value = !newVal;
-    error.value = err instanceof Error ? err.message : "Failed to update setting";
   }
 }
 
@@ -448,12 +417,6 @@ watch(
       browserPermission.value = getBrowserNotificationState();
       browserEnabled.value = isChannelEnabled("browser");
       faviconEnabled.value = isChannelEnabled("favicon");
-      if (exeNotifyAvailable) {
-        api
-          .getSettings()
-          .then((settings) => (exeNotifyEnabled.value = settings.exe_notify !== "false"))
-          .catch(() => {});
-      }
     }
   },
   { immediate: true },

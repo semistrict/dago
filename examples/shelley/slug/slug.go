@@ -8,18 +8,18 @@ import (
 	"strings"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 // LLMServiceProvider supplies native chat models and their catalog metadata.
 type LLMServiceProvider interface {
-	GetChat(modelID string) (dmodel.Chat, error)
+	GetChat(modelID string) (damodel.Chat, error)
 	GetAvailableModels() []string
 	GetModelInfo(modelID string) *models.ModelInfo
 }
@@ -227,7 +227,7 @@ type slugUsage struct {
 	finished time.Time
 }
 
-func callSlugLLM(ctx context.Context, chat dmodel.Chat, userMessage string) (string, *slugUsage, error) {
+func callSlugLLM(ctx context.Context, chat damodel.Chat, userMessage string) (string, *slugUsage, error) {
 	slugPrompt := fmt.Sprintf(PromptPreamble+`
 
 %s
@@ -244,7 +244,7 @@ Respond with only the slug, nothing else.`, userMessage)
 	defer cancel()
 
 	started := time.Now()
-	response, err := chat.Invoke(ctxWithTimeout, dmodel.Request{Messages: []dmessage.Message{dmessage.Human(slugPrompt)}})
+	response, err := chat.Invoke(ctxWithTimeout, damodel.Request{Messages: []dmessage.Message{dmessage.Human(slugPrompt)}})
 	finished := time.Now()
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to generate slug: %w", err)

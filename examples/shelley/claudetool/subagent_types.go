@@ -2,7 +2,7 @@ package claudetool
 
 import dago "github.com/semistrict/dago"
 
-// These aliases are Shelley's application configuration boundary for Dago's
+// These aliases are Shelley's application configuration boundary for dago's
 // persistent conversation subagents.
 type SubagentRunner = dago.ConversationSubagentRunner
 type SubagentDB = dago.ConversationSubagentStore

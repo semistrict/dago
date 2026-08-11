@@ -20,28 +20,10 @@ func TestContextFunctions(t *testing.T) {
 		t.Errorf("ConversationIDFromContext() = %q, want %q", got, "conv-123")
 	}
 
-	// Test ModelID
-	ctx = WithModelID(ctx, "model-456")
-	if got := ModelIDFromContext(ctx); got != "model-456" {
-		t.Errorf("ModelIDFromContext() = %q, want %q", got, "model-456")
-	}
-
-	// Test Provider
-	ctx = WithProvider(ctx, "anthropic")
-	if got := ProviderFromContext(ctx); got != "anthropic" {
-		t.Errorf("ProviderFromContext() = %q, want %q", got, "anthropic")
-	}
-
 	// Test empty context
 	emptyCtx := context.Background()
 	if got := ConversationIDFromContext(emptyCtx); got != "" {
 		t.Errorf("ConversationIDFromContext(empty) = %q, want empty", got)
-	}
-	if got := ModelIDFromContext(emptyCtx); got != "" {
-		t.Errorf("ModelIDFromContext(empty) = %q, want empty", got)
-	}
-	if got := ProviderFromContext(emptyCtx); got != "" {
-		t.Errorf("ProviderFromContext(empty) = %q, want empty", got)
 	}
 }
 
@@ -98,7 +80,6 @@ func TestTransportAddsSessionAffinityForFireworks(t *testing.T) {
 	// Legacy provider metadata must not re-enable unsupported wire headers.
 	ctx := context.Background()
 	ctx = WithConversationID(ctx, "test-conv-id")
-	ctx = WithProvider(ctx, "fireworks")
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 
 	resp, err := client.Do(req)
@@ -279,11 +260,11 @@ func TestRequestTraceCapturesIDs(t *testing.T) {
 	if gotShelleyID == "" {
 		t.Fatalf("server did not receive a Shelley-Request-Id header")
 	}
-	if trace.ShelleyRequestID() != gotShelleyID {
-		t.Errorf("trace ShelleyRequestID = %q, want %q", trace.ShelleyRequestID(), gotShelleyID)
+	if trace.shelleyRequestID != gotShelleyID {
+		t.Errorf("trace Shelley request ID = %q, want %q", trace.shelleyRequestID, gotShelleyID)
 	}
-	if trace.UpstreamRequestID() != "req_upstream_123" {
-		t.Errorf("trace UpstreamRequestID = %q, want req_upstream_123", trace.UpstreamRequestID())
+	if trace.upstreamID != "req_upstream_123" {
+		t.Errorf("trace upstream request ID = %q, want req_upstream_123", trace.upstreamID)
 	}
 	if s := trace.String(); !strings.Contains(s, gotShelleyID) || !strings.Contains(s, "req_upstream_123") {
 		t.Errorf("trace String = %q, want both ids", s)
@@ -317,7 +298,7 @@ func TestRequestTraceHasShelleyIDOnStall(t *testing.T) {
 	if !errors.Is(err, ErrIdleTimeout) {
 		t.Fatalf("error = %v, want ErrIdleTimeout", err)
 	}
-	if trace.ShelleyRequestID() == "" {
+	if trace.shelleyRequestID == "" {
 		t.Fatalf("trace missing Shelley request id after stall")
 	}
 }
@@ -344,8 +325,8 @@ func TestRequestTraceHonorsExistingID(t *testing.T) {
 	if gotID != "preset-id" {
 		t.Errorf("server got Shelley-Request-Id %q, want preset-id", gotID)
 	}
-	if trace.ShelleyRequestID() != "preset-id" {
-		t.Errorf("trace ShelleyRequestID = %q, want preset-id", trace.ShelleyRequestID())
+	if trace.shelleyRequestID != "preset-id" {
+		t.Errorf("trace Shelley request ID = %q, want preset-id", trace.shelleyRequestID)
 	}
 }
 
@@ -369,8 +350,8 @@ func TestRequestTraceCapturesIDOnErrorResponse(t *testing.T) {
 	}
 	io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if trace.UpstreamRequestID() != "req_err_500" {
-		t.Errorf("UpstreamRequestID = %q, want req_err_500", trace.UpstreamRequestID())
+	if trace.upstreamID != "req_err_500" {
+		t.Errorf("upstream request ID = %q, want req_err_500", trace.upstreamID)
 	}
 }
 
@@ -393,7 +374,7 @@ func TestRequestTraceCapturesIDWhenIdleDisabled(t *testing.T) {
 	}
 	io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if trace.UpstreamRequestID() != "req_nodeadline" {
-		t.Errorf("UpstreamRequestID = %q, want req_nodeadline", trace.UpstreamRequestID())
+	if trace.upstreamID != "req_nodeadline" {
+		t.Errorf("upstream request ID = %q, want req_nodeadline", trace.upstreamID)
 	}
 }

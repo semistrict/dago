@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	dtool "github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 )
 
 func TestChangeDirTool(t *testing.T) {
@@ -26,7 +26,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(tmpDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: subDir})
-		_, err := tool.NativeTool().Execute(context.Background(), input, dtool.Runtime{})
+		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -42,7 +42,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(tmpDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: "subdir"})
-		_, err := tool.NativeTool().Execute(context.Background(), input, dtool.Runtime{})
+		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -57,7 +57,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(subDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: ".."})
-		_, err := tool.NativeTool().Execute(context.Background(), input, dtool.Runtime{})
+		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -72,7 +72,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(tmpDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: "/nonexistent/path"})
-		_, err := tool.NativeTool().Execute(context.Background(), input, dtool.Runtime{})
+		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err == nil {
 			t.Fatal("expected error for non-existent path")
@@ -89,7 +89,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(tmpDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: filePath})
-		_, err := tool.NativeTool().Execute(context.Background(), input, dtool.Runtime{})
+		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err == nil {
 			t.Fatal("expected error for file path")
@@ -108,7 +108,7 @@ func TestChangeDirTool(t *testing.T) {
 		}
 
 		input, _ := json.Marshal(changeDirInput{Path: subDir})
-		_, err := toolWithCallback.NativeTool().Execute(context.Background(), input, dtool.Runtime{})
+		_, err := toolWithCallback.NativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -118,102 +118,6 @@ func TestChangeDirTool(t *testing.T) {
 			t.Errorf("expected callback dir %q, got %q", subDir, callbackDir)
 		}
 	})
-}
-
-func TestChangeDirWithBash(t *testing.T) {
-	// Create a temp directory structure
-	tmpDir := t.TempDir()
-	subDir := filepath.Join(tmpDir, "subdir")
-	if err := os.Mkdir(subDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a file in subdir
-	testFile := filepath.Join(subDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	wd := NewMutableWorkingDir(tmpDir)
-	changeDirTool := &ChangeDirTool{WorkingDir: wd}
-	bashTool := &BashTool{WorkingDir: wd}
-
-	ctx := context.Background()
-
-	// Run pwd to verify starting directory
-	input, _ := json.Marshal(bashInput{Command: "pwd"})
-	_, err := bashTool.NativeTool().Execute(ctx, input, dtool.Runtime{})
-	if err != nil {
-		t.Fatalf("bash pwd failed: %v", err)
-	}
-
-	// Change directory
-	cdInput, _ := json.Marshal(changeDirInput{Path: subDir})
-	_, err = changeDirTool.NativeTool().Execute(ctx, cdInput, dtool.Runtime{})
-	if err != nil {
-		t.Fatalf("change_dir failed: %v", err)
-	}
-
-	// Run ls - should now see test.txt
-	result, err := bashTool.NativeTool().Execute(ctx, json.RawMessage(`{"command": "ls"}`), dtool.Runtime{})
-	if err != nil {
-		t.Fatalf("bash ls failed: %v", err)
-	}
-
-	// Verify we can see test.txt (indicating we're in subdir)
-	if len(result.Content) == 0 {
-		t.Fatal("expected output from ls")
-	}
-	output := result.Content[0].Text
-	if output == "" {
-		t.Fatal("expected non-empty output from ls")
-	}
-	// The output should contain "test.txt"
-	if !contains(output, "test.txt") {
-		t.Errorf("expected ls output to contain 'test.txt', got: %q", output)
-	}
-}
-
-func contains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
-func TestBashToolMissingWorkingDir(t *testing.T) {
-	// Create a temp directory, then remove it
-	tmpDir := t.TempDir()
-	subDir := filepath.Join(tmpDir, "subdir")
-	if err := os.Mkdir(subDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	wd := NewMutableWorkingDir(subDir)
-	bashTool := &BashTool{WorkingDir: wd}
-
-	// Remove the directory
-	if err := os.RemoveAll(subDir); err != nil {
-		t.Fatal(err)
-	}
-
-	// Try to run a command - should get a clear error
-	input, _ := json.Marshal(bashInput{Command: "ls"})
-	_, err := bashTool.NativeTool().Execute(context.Background(), input, dtool.Runtime{})
-
-	if err == nil {
-		t.Fatal("expected error when working directory doesn't exist")
-	}
-
-	errStr := err.Error()
-	if !contains(errStr, "working directory does not exist") {
-		t.Errorf("expected error about missing working directory, got: %s", errStr)
-	}
-	if !contains(errStr, "change_dir") {
-		t.Errorf("expected error to mention change_dir tool, got: %s", errStr)
-	}
 }
 
 func TestChangeDirTool_Method(t *testing.T) {

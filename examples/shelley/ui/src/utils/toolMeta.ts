@@ -1,5 +1,5 @@
 // Tool metadata helpers mirroring the iOS client (see
-// iOS/exe.dev/Support/ToolEmoji.swift, ToolHeadline.swift, and
+// mobile/Support/ToolEmoji.swift, ToolHeadline.swift, and
 // ToolPillsRow.swift). Used by the conversation UI to render
 // consecutive tool calls as a wrapped row of tightly packed,
 // color-coded "pills" instead of one full-width card per call.

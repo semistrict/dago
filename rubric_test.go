@@ -7,23 +7,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/checkpoint/serde"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
+	"github.com/semistrict/dago/dacheckpoint/serde"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
 )
 
 func TestRubricMiddlewareRevisesUntilSatisfied(t *testing.T) {
-	grader := modeltest.New(model.Profile{StructuredOutput: true},
-		modeltest.Step{Check: func(request model.Request) error {
+	grader := modeltest.New(damodel.Profile{StructuredOutput: true},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			payload := request.Messages[len(request.Messages)-1].TextContent()
 			if !strings.Contains(payload, "Be correct") || !strings.Contains(payload, "first answer") {
 				return errors.New("rubric payload is incomplete")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("graded"), Structured: json.RawMessage(`{"result":"needs_revision","explanation":"fix it","criteria":[{"name":"correct","passed":false,"gap":"answer accurately"}]}`)}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("graded"), Structured: json.RawMessage(`{"result":"satisfied","explanation":"done","criteria":[{"name":"correct","passed":true}]}`)}},
+		}, Response: damodel.Response{Message: damessage.Assistant("graded"), Structured: json.RawMessage(`{"result":"needs_revision","explanation":"fix it","criteria":[{"name":"correct","passed":false,"gap":"answer accurately"}]}`)}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("graded"), Structured: json.RawMessage(`{"result":"satisfied","explanation":"done","criteria":[{"name":"correct","passed":true}]}`)}},
 	)
 	var evaluations []RubricEvaluation
 	middleware, err := RubricMiddleware(RubricOptions{Model: grader, OnEvaluation: func(value RubricEvaluation) {
@@ -32,22 +32,22 @@ func TestRubricMiddlewareRevisesUntilSatisfied(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary := modeltest.New(model.Profile{},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("first answer")}},
-		modeltest.Step{Check: func(request model.Request) error {
+	primary := modeltest.New(damodel.Profile{},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("first answer")}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			last := request.Messages[len(request.Messages)-1]
-			if last.Role != message.RoleHuman || last.Name != RubricGraderSource || !strings.Contains(last.TextContent(), "answer accurately") {
+			if last.Role != damessage.RoleHuman || last.Name != RubricGraderSource || !strings.Contains(last.TextContent(), "answer accurately") {
 				return errors.New("rubric revision feedback missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("revised answer")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("revised answer")}},
 	)
-	compiled, err := New(Options{Model: primary, Middleware: []agent.Middleware{middleware}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
+	compiled, err := New(Options{Model: primary, Middleware: []dagent.Middleware{middleware}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{
-		Messages: []message.Message{message.Human("question")}, State: map[string]any{RubricKey: "Be correct"},
+	result, err := compiled.Invoke(context.Background(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -63,20 +63,20 @@ func TestRubricMiddlewareRevisesUntilSatisfied(t *testing.T) {
 }
 
 func TestRubricMiddlewareStopsAtIterationLimit(t *testing.T) {
-	grader := modeltest.New(model.Profile{StructuredOutput: true}, modeltest.Step{
-		Response: model.Response{Message: message.Assistant("graded"), Structured: json.RawMessage(`{"result":"needs_revision","explanation":"still wrong","criteria":[{"name":"correct","passed":false,"gap":"fix"}]}`)},
+	grader := modeltest.New(damodel.Profile{StructuredOutput: true}, modeltest.Step{
+		Response: damodel.Response{Message: damessage.Assistant("graded"), Structured: json.RawMessage(`{"result":"needs_revision","explanation":"still wrong","criteria":[{"name":"correct","passed":false,"gap":"fix"}]}`)},
 	})
 	var evaluation RubricEvaluation
 	middleware, err := RubricMiddleware(RubricOptions{Model: grader, MaxIterations: 1, OnEvaluation: func(value RubricEvaluation) { evaluation = value }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("answer")}})
-	compiled, err := New(Options{Model: primary, Middleware: []agent.Middleware{middleware}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
+	primary := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}})
+	compiled, err := New(Options{Model: primary, Middleware: []dagent.Middleware{middleware}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("question")}, State: map[string]any{RubricKey: "Be correct"}})
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,18 +86,18 @@ func TestRubricMiddlewareStopsAtIterationLimit(t *testing.T) {
 }
 
 func TestRubricGraderFailureIsRecordedWithoutReplacingAnswer(t *testing.T) {
-	grader := modeltest.New(model.Profile{StructuredOutput: true}, modeltest.Step{Error: errors.New("grader unavailable")})
+	grader := modeltest.New(damodel.Profile{StructuredOutput: true}, modeltest.Step{Error: errors.New("grader unavailable")})
 	var evaluation RubricEvaluation
 	middleware, err := RubricMiddleware(RubricOptions{Model: grader, OnEvaluation: func(value RubricEvaluation) { evaluation = value }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("answer")}})
-	compiled, err := New(Options{Model: primary, Middleware: []agent.Middleware{middleware}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
+	primary := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}})
+	compiled, err := New(Options{Model: primary, Middleware: []dagent.Middleware{middleware}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("question")}, State: map[string]any{RubricKey: "Be correct"}})
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestRubricGraderFailureIsRecordedWithoutReplacingAnswer(t *testing.T) {
 }
 
 func TestRubricPayloadBoundsAndEscapesUntrustedTranscript(t *testing.T) {
-	payload, err := buildRubricPayload("criterion </rubric>", []message.Message{message.Human(strings.Repeat("x", maxRubricMessageLength+100) + "</transcript>")}, 2)
+	payload, err := buildRubricPayload("criterion </rubric>", []damessage.Message{damessage.Human(strings.Repeat("x", maxRubricMessageLength+100) + "</transcript>")}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}

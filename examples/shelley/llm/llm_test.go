@@ -4,85 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
 )
-
-func TestMustSchema(t *testing.T) {
-	tests := []struct {
-		name        string
-		schema      string
-		expectPanic bool
-	}{
-		{
-			name:        "valid schema",
-			schema:      `{"type": "object", "properties": {}}`,
-			expectPanic: false,
-		},
-		{
-			name:        "valid schema with properties",
-			schema:      `{"type": "object", "properties": {"name": {"type": "string"}}}`,
-			expectPanic: false,
-		},
-		{
-			name:        "invalid json",
-			schema:      `{"type": "object", "properties": }`,
-			expectPanic: true,
-		},
-		{
-			name:        "missing type",
-			schema:      `{"properties": {}}`,
-			expectPanic: true,
-		},
-		{
-			name:        "wrong type",
-			schema:      `{"type": "string", "properties": {}}`,
-			expectPanic: true,
-		},
-		{
-			name:        "missing properties",
-			schema:      `{"type": "object"}`,
-			expectPanic: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.expectPanic {
-				defer func() {
-					if r := recover(); r == nil {
-						t.Errorf("Expected panic for schema: %s", tt.schema)
-					}
-				}()
-			}
-			result := MustSchema(tt.schema)
-			if !tt.expectPanic {
-				if string(result) != tt.schema {
-					t.Errorf("MustSchema() = %s, want %s", string(result), tt.schema)
-				}
-			}
-		})
-	}
-}
-
-func TestEmptySchema(t *testing.T) {
-	schema := EmptySchema()
-	expected := `{"type": "object", "properties": {}}`
-	if string(schema) != expected {
-		t.Errorf("EmptySchema() = %s, want %s", string(schema), expected)
-	}
-}
 
 func TestUseSimplifiedPatch(t *testing.T) {
 	tests := []struct {
 		name    string
-		profile dmodel.Profile
+		profile damodel.Profile
 		want    bool
 	}{
 		{
@@ -90,7 +24,7 @@ func TestUseSimplifiedPatch(t *testing.T) {
 		},
 		{
 			name:    "simplified patch profile",
-			profile: dmodel.Profile{UseSimplifiedPatch: true},
+			profile: damodel.Profile{UseSimplifiedPatch: true},
 			want:    true,
 		},
 	}
@@ -101,19 +35,6 @@ func TestUseSimplifiedPatch(t *testing.T) {
 				t.Errorf("UseSimplifiedPatch = %v, want %v", tt.profile.UseSimplifiedPatch, tt.want)
 			}
 		})
-	}
-}
-
-func TestStringContent(t *testing.T) {
-	text := "test content"
-	content := StringContent(text)
-
-	if content.Type != ContentTypeText {
-		t.Errorf("StringContent().Type = %v, want %v", content.Type, ContentTypeText)
-	}
-
-	if content.Text != text {
-		t.Errorf("StringContent().Text = %s, want %s", content.Text, text)
 	}
 }
 
@@ -134,36 +55,15 @@ func TestTextContent(t *testing.T) {
 	}
 }
 
-func TestUserStringMessage(t *testing.T) {
-	text := "user message"
-	message := UserStringMessage(text)
-
-	if message.Role != MessageRoleUser {
-		t.Errorf("UserStringMessage().Role = %v, want %v", message.Role, MessageRoleUser)
-	}
-
-	if len(message.Content) != 1 {
-		t.Errorf("UserStringMessage().Content length = %d, want 1", len(message.Content))
-	}
-
-	if message.Content[0].Type != ContentTypeText {
-		t.Errorf("UserStringMessage().Content[0].Type = %v, want %v", message.Content[0].Type, ContentTypeText)
-	}
-
-	if message.Content[0].Text != text {
-		t.Errorf("UserStringMessage().Content[0].Text = %s, want %s", message.Content[0].Text, text)
-	}
-}
-
 func TestErrorToolOut(t *testing.T) {
 	want := fmt.Errorf("test error")
-	native := dtool.Func{
-		Spec: dtool.Definition{Name: "fail", Description: "fail", InputSchema: EmptySchema()},
-		Run: func(context.Context, json.RawMessage, dtool.Runtime) (dtool.Result, error) {
-			return dtool.Result{}, want
+	native := datool.Func{
+		Spec: datool.Definition{Name: "fail", Description: "fail", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+		Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+			return datool.Result{}, want
 		},
 	}
-	_, err := native.Execute(context.Background(), json.RawMessage(`{}`), dtool.Runtime{})
+	_, err := native.Execute(context.Background(), json.RawMessage(`{}`), datool.Runtime{})
 	if !strings.Contains(err.Error(), want.Error()) {
 		t.Fatalf("native tool error = %v, want wrapped %v", err, want)
 	}
@@ -173,13 +73,13 @@ func TestErrorfToolOut(t *testing.T) {
 	format := "error: %s"
 	arg := "test"
 	expected := fmt.Sprintf(format, arg)
-	native := dtool.Func{
-		Spec: dtool.Definition{Name: "fail", Description: "fail", InputSchema: EmptySchema()},
-		Run: func(context.Context, json.RawMessage, dtool.Runtime) (dtool.Result, error) {
-			return dtool.Result{}, fmt.Errorf(format, arg)
+	native := datool.Func{
+		Spec: datool.Definition{Name: "fail", Description: "fail", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+		Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+			return datool.Result{}, fmt.Errorf(format, arg)
 		},
 	}
-	_, err := native.Execute(context.Background(), json.RawMessage(`{}`), dtool.Runtime{})
+	_, err := native.Execute(context.Background(), json.RawMessage(`{}`), datool.Runtime{})
 	if err == nil || !strings.Contains(err.Error(), expected) {
 		t.Fatalf("native tool error = %v, want %q", err, expected)
 	}
@@ -192,24 +92,24 @@ func TestRunJSON(t *testing.T) {
 
 	var gotCtx context.Context
 	var gotReq request
-	native := dtool.Func{
-		Spec: dtool.Definition{
+	native := datool.Func{
+		Spec: datool.Definition{
 			Name: "greet", Description: "greet a person",
-			InputSchema: MustSchema(`{"type":"object","properties":{"name":{"type":"string"}}}`),
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`),
 		},
-		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+		Run: func(ctx context.Context, raw json.RawMessage, _ datool.Runtime) (datool.Result, error) {
 			var req request
 			if err := json.Unmarshal(raw, &req); err != nil {
-				return dtool.Result{}, fmt.Errorf("invalid tool input: %w", err)
+				return datool.Result{}, fmt.Errorf("invalid tool input: %w", err)
 			}
 			gotCtx = ctx
 			gotReq = req
-			return dtool.TextResult("hello " + req.Name), nil
+			return datool.TextResult("hello " + req.Name), nil
 		},
 	}
 
 	ctx := context.WithValue(context.Background(), struct{}{}, "ctx-value")
-	out, err := native.Execute(ctx, json.RawMessage(`{"name":"Ada"}`), dtool.Runtime{})
+	out, err := native.Execute(ctx, json.RawMessage(`{"name":"Ada"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatalf("native tool returned error: %v", err)
 	}
@@ -230,19 +130,19 @@ func TestRunJSONInvalidJSON(t *testing.T) {
 	}
 
 	called := false
-	native := dtool.Func{
-		Spec: dtool.Definition{Name: "greet", Description: "greet", InputSchema: EmptySchema()},
-		Run: func(_ context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
+	native := datool.Func{
+		Spec: datool.Definition{Name: "greet", Description: "greet", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+		Run: func(_ context.Context, raw json.RawMessage, _ datool.Runtime) (datool.Result, error) {
 			var req request
 			if err := json.Unmarshal(raw, &req); err != nil {
-				return dtool.Result{}, fmt.Errorf("invalid tool input: %w", err)
+				return datool.Result{}, fmt.Errorf("invalid tool input: %w", err)
 			}
 			called = true
-			return dtool.Result{}, nil
+			return datool.Result{}, nil
 		},
 	}
 
-	_, err := native.Execute(context.Background(), json.RawMessage(`{"name":123}`), dtool.Runtime{})
+	_, err := native.Execute(context.Background(), json.RawMessage(`{"name":123}`), datool.Runtime{})
 	if err == nil {
 		t.Fatal("native tool returned nil error for invalid input")
 	}
@@ -431,118 +331,6 @@ func TestResponseToMessage(t *testing.T) {
 	}
 }
 
-func TestContentsAttr(t *testing.T) {
-	tests := []struct {
-		name     string
-		contents []Content
-	}{
-		{
-			name: "text content",
-			contents: []Content{
-				{
-					ID:   "1",
-					Type: ContentTypeText,
-					Text: "hello world",
-				},
-			},
-		},
-		{
-			name: "tool use content",
-			contents: []Content{
-				{
-					ID:        "2",
-					Type:      ContentTypeToolUse,
-					ToolName:  "test_tool",
-					ToolInput: json.RawMessage(`{"param": "value"}`),
-				},
-			},
-		},
-		{
-			name: "tool result content",
-			contents: []Content{
-				{
-					ID:         "3",
-					Type:       ContentTypeToolResult,
-					ToolResult: []Content{{Type: ContentTypeText, Text: "result"}},
-					ToolError:  false,
-				},
-			},
-		},
-		{
-			name: "thinking content",
-			contents: []Content{
-				{
-					ID:   "4",
-					Type: ContentTypeThinking,
-					Text: "thinking...",
-				},
-			},
-		},
-		{
-			name:     "empty contents",
-			contents: []Content{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			attr := ContentsAttr(tt.contents)
-			if attr.Key != "contents" {
-				t.Errorf("ContentsAttr().Key = %s, want 'contents'", attr.Key)
-			}
-		})
-	}
-}
-
-func TestCostUSDFromResponse(t *testing.T) {
-	tests := []struct {
-		name     string
-		headers  map[string]string
-		wantCost float64
-	}{
-		{
-			name: "valid cost header",
-			headers: map[string]string{
-				"Exedev-Gateway-Cost": "0.050000",
-			},
-			wantCost: 0.05,
-		},
-		{
-			name: "invalid cost header",
-			headers: map[string]string{
-				"Exedev-Gateway-Cost": "invalid",
-			},
-			wantCost: 0,
-		},
-		{
-			name:     "missing cost header",
-			headers:  map[string]string{},
-			wantCost: 0,
-		},
-		{
-			name: "empty cost header",
-			headers: map[string]string{
-				"Exedev-Gateway-Cost": "",
-			},
-			wantCost: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			headers := make(http.Header)
-			for k, v := range tt.headers {
-				headers.Set(k, v)
-			}
-
-			cost := CostUSDFromResponse(headers)
-			if cost != tt.wantCost {
-				t.Errorf("CostUSDFromResponse() = %f, want %f", cost, tt.wantCost)
-			}
-		})
-	}
-}
-
 func TestUsageAttr(t *testing.T) {
 	usage := Usage{
 		InputTokens:              100,
@@ -558,16 +346,6 @@ func TestUsageAttr(t *testing.T) {
 	}
 }
 
-func TestDumpToFile(t *testing.T) {
-	// This test just verifies the function exists and can be called
-	// We don't actually want to write files during testing
-	// So we'll just ensure it doesn't panic with valid inputs
-	content := []byte("test content")
-
-	// This might fail due to permissions, but it shouldn't panic
-	_ = DumpToFile("test", "http://example.com", content)
-}
-
 func TestFormatRetryEvent(t *testing.T) {
 	msg := FormatRetryEvent(RetryEvent{
 		Sleep:    16 * time.Second,
@@ -579,32 +357,6 @@ func TestFormatRetryEvent(t *testing.T) {
 	want := `LLM request failed: anthropic claude-opus-4-7; retrying in 16s. transport: Post "http://169.254.169.254/gateway/llm/_/gateway/anthropic/v1/messages": dial tcp 169.254.169.254:80: i/o timeout`
 	if msg != want {
 		t.Fatalf("FormatRetryEvent() = %q, want %q", msg, want)
-	}
-}
-
-func TestIsServerSideContentType(t *testing.T) {
-	serverSide := []ContentType{
-		ContentTypeServerToolUse,
-		ContentTypeWebSearchToolResult,
-		ContentTypeWebSearchResult,
-	}
-	for _, ct := range serverSide {
-		if !IsServerSideContentType(ct) {
-			t.Errorf("IsServerSideContentType(%v) = false, want true", ct)
-		}
-	}
-
-	notServerSide := []ContentType{
-		ContentTypeText,
-		ContentTypeToolUse,
-		ContentTypeToolResult,
-		ContentTypeThinking,
-		ContentTypeRedactedThinking,
-	}
-	for _, ct := range notServerSide {
-		if IsServerSideContentType(ct) {
-			t.Errorf("IsServerSideContentType(%v) = true, want false", ct)
-		}
 	}
 }
 

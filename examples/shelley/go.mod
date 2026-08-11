@@ -1,4 +1,4 @@
-module shelley.exe.dev
+module github.com/semistrict/dago/examples/shelley
 
 go 1.26.5
 
@@ -11,9 +11,6 @@ require (
 	github.com/fynelabs/selfupdate v0.2.1
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.19.0
-	github.com/oklog/ulid/v2 v2.1.1
-	github.com/pkg/diff v0.0.0-20241224192749-4e6772a4315c
-	github.com/richardlehane/crock32 v1.0.1
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/samber/slog-http v1.12.1
 	go.skia.org/infra v0.0.0-20260709164234-a736e8709729
@@ -21,7 +18,6 @@ require (
 	golang.org/x/image v0.44.0
 	golang.org/x/sync v0.22.0
 	mvdan.cc/sh/v3 v3.13.1
-	sketch.dev v0.0.33
 	tailscale.com v1.100.0
 )
 

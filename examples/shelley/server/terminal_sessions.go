@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"shelley.exe.dev/dtach"
+	"github.com/semistrict/dago/examples/shelley/dtach"
 )
 
 // TerminalSession is the on-disk + in-memory record of a persistent terminal.
@@ -305,31 +305,6 @@ func (t *TerminalSessions) spawnSubprocess(socket, logFile, cwd, command string,
 	pid := cmd.Process.Pid
 	go func() { _ = cmd.Wait() }()
 	return pid, nil
-}
-
-// InProcessSpawner runs the dtach server in a goroutine inside the current
-// process. Sessions die when this process exits. Intended for tests; blocks
-// until the listener is ready.
-func InProcessSpawner(socket, logFile, cwd, command string, cols, rows uint16, extraEnv []string) (int, error) {
-	ready := make(chan struct{})
-	var env []string
-	if len(extraEnv) > 0 {
-		env = append(os.Environ(), extraEnv...)
-	}
-	go func() {
-		_ = dtach.Serve(dtach.ServerOptions{
-			SocketPath: socket,
-			Command:    "bash",
-			Args:       []string{"--login", "-c", command},
-			Dir:        cwd,
-			Cols:       cols,
-			Rows:       rows,
-			Env:        env,
-			Ready:      ready,
-		})
-	}()
-	<-ready
-	return os.Getpid(), nil
 }
 
 // LockAttach returns a function that releases the attach mutex. Callers use

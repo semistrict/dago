@@ -737,7 +737,7 @@ Subcommands:
       Print this help text.
 
 Connecting over HTTP with auth headers:
-  shelley client -url http://localhost:9999 -H "X-Exedev-Userid: user" list
+  shelley client -url http://localhost:9999 -H "X-User-ID: user" list
 
 Examples:
   # Start a conversation and wait for the agent

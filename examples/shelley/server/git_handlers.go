@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"shelley.exe.dev/pathutil"
+	"github.com/semistrict/dago/examples/shelley/pathutil"
 )
 
 // GitDiffInfo represents a commit or working changes

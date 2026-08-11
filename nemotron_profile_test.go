@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
 )
 
 func TestNemotronProfilesRegisteredForSupportedModels(t *testing.T) {
@@ -51,8 +51,8 @@ func TestNemotronProfilesRegisteredForSupportedModels(t *testing.T) {
 }
 
 func TestNemotronProfileAutoResolvesPromptAndToolOverride(t *testing.T) {
-	script := modeltest.New(model.Profile{Provider: "nvidia", Model: "nvidia/nemotron-3-ultra-550b-a55b"}, modeltest.Step{
-		Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{Provider: "nvidia", Model: "nvidia/nemotron-3-ultra-550b-a55b"}, modeltest.Step{
+		Check: func(request damodel.Request) error {
 			if !strings.Contains(request.Messages[0].TextContent(), "<state_changes>") {
 				return errors.New("profile prompt missing")
 			}
@@ -63,13 +63,13 @@ func TestNemotronProfileAutoResolvesPromptAndToolOverride(t *testing.T) {
 			}
 			return nil
 		},
-		Response: model.Response{Message: message.Assistant("done")},
+		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
 	compiled, err := New(Options{Model: script, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("hello")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("hello")}}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // TestLoopWithClaude preserves the upstream end-to-end loop contract while
-// running it through the native deterministic model used by the Dago port.
+// running it through the native deterministic model used by the dago port.
 func TestLoopWithClaude(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	conversation := NewLoop(Config{
@@ -20,7 +20,7 @@ func TestLoopWithClaude(t *testing.T) {
 			return nil
 		},
 	})
-	conversation.QueueUserMessage(llm.UserStringMessage("Hello"))
+	conversation.QueueUserMessage(userStringMessage("Hello"))
 	if err := conversation.Go(ctx); err != context.Canceled {
 		t.Fatalf("Go error = %v, want context cancellation after assistant reply", err)
 	}

@@ -1,5 +1,5 @@
 -- Index for the conversation-list participants column, which collects the
--- distinct exe.dev authors (messages.user_email) of each listed conversation
+-- distinct authenticated users (messages.user_email) of each listed conversation
 -- so clients can filter the list to "my" conversations.
 --
 -- Partial + covering: only user messages from authenticated requests carry a

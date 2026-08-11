@@ -5,7 +5,7 @@ symlink escape. Ordered allow, deny, and ask rules are enforced in code before t
 execution. Delete rules must cover the target and descendants. Prompts and tool names
 cannot grant authority.
 
-`backend.LocalShell` executes trusted host commands and is not a sandbox. Applications
+`dabackend.LocalShell` executes trusted host commands and is not a sandbox. Applications
 must opt into it explicitly and should prefer a remote sandbox for untrusted work.
 Command output and duration are bounded, but those limits are not isolation.
 

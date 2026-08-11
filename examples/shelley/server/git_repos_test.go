@@ -17,6 +17,14 @@ import (
 	"time"
 )
 
+func gitInfoFast(dirPath string) (branch string, isRepo, isWorktree bool) {
+	info, ok := inspectGitRepo(dirPath)
+	if !ok {
+		return "", false, false
+	}
+	return info.Branch, true, info.Worktree
+}
+
 func mkRepo(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

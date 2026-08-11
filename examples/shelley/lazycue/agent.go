@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/providers/openai"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/daproviders/openai"
+	"github.com/semistrict/dago/datool"
 )
 
 // AgentMode specifies whether the agent should generate new steps or fix existing ones.
@@ -72,16 +72,16 @@ var modelRetryBackoff = 2 * time.Second
 // --- Tool input types ---
 
 type runStepsInput struct {
-	Steps json.RawMessage `json:"steps"`
+	Steps json.RawMessage `json:"steps" description:"Array of DSL step objects to execute"`
 	// Final marks this as the complete test to save (not an exploratory probe).
 	// When true and all steps pass, the harness caches exactly these steps.
-	Final bool `json:"final,omitempty"`
+	Final bool `json:"final,omitempty" description:"True only for the complete final test"`
 }
 
 type screenshotInput struct{}
 
 type gitCommandInput struct {
-	Command string `json:"command"`
+	Command string `json:"command" description:"A read-only git command"`
 }
 
 // --- Agent implementation ---
@@ -238,21 +238,14 @@ func (state *agentRunState) snapshot() (lastSteps []byte, lastResults []StepResu
 	return append([]byte(nil), state.lastSteps...), append([]StepResult(nil), state.lastResults...), append([]byte(nil), state.finalSteps...), append([]StepResult(nil), state.finalResult...), state.lastError
 }
 
-func buildTools(cfg *AgentConfig, state *agentRunState, logf func(string, ...any)) []tool.Tool {
-	runSteps := tool.Func{
-		Spec: tool.Definition{
-			Name:        "run_steps",
-			Description: "Execute an array of DSL test steps against the browser. When the complete test passes, call this tool with final=true so those exact steps can be cached.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"steps":{"type":"array","description":"Array of DSL step objects to execute","items":{"type":"object"}},"final":{"type":"boolean","description":"True only for the complete final test"}},"required":["steps"]}`),
-		},
-		Run: func(ctx context.Context, arguments json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-			var input runStepsInput
-			if err := json.Unmarshal(arguments, &input); err != nil {
-				return tool.Result{}, fmt.Errorf("parse input: %w", err)
-			}
+func buildTools(cfg *AgentConfig, state *agentRunState, logf func(string, ...any)) []datool.Tool {
+	runSteps := datool.MustNew(
+		"run_steps",
+		"Execute an array of DSL test steps against the browser. When the complete test passes, call this tool with final=true so those exact steps can be cached.",
+		func(ctx context.Context, input runStepsInput) (string, error) {
 			steps, err := ParseSteps(input.Steps)
 			if err != nil {
-				return tool.Result{}, fmt.Errorf("parse steps: %w", err)
+				return "", fmt.Errorf("parse steps: %w", err)
 			}
 			logf("tool: run_steps (%d steps, final=%t)", len(steps), input.Final)
 			for index, step := range steps {
@@ -280,43 +273,27 @@ func buildTools(cfg *AgentConfig, state *agentRunState, logf func(string, ...any
 			} else {
 				summary.WriteString("\nOverall: ALL STEPS PASSED")
 			}
-			return tool.TextResult(summary.String()), nil
+			return summary.String(), nil
 		},
-	}
-	screenshot := tool.Func{
-		Spec: tool.Definition{
-			Name:        "screenshot",
-			Description: "Take a screenshot of the current browser page and return it as a PNG image.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		},
-		Run: func(ctx context.Context, _ json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-			logf("tool: screenshot")
-			png, err := cfg.Browser.Screenshot(ctx)
-			if err != nil {
-				return tool.Result{}, fmt.Errorf("screenshot: %w", err)
-			}
-			return tool.Result{Content: []message.ContentBlock{{Type: message.BlockImage, MIMEType: "image/png", Data: png}}}, nil
-		},
-	}
-	gitCommand := tool.Func{
-		Spec: tool.Definition{
-			Name:        "git_command",
-			Description: "Run one read-only git command in the repository root to inspect tracked source and history.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"A read-only git command"}},"required":["command"]}`),
-		},
-		Run: func(_ context.Context, arguments json.RawMessage, _ tool.Runtime) (tool.Result, error) {
-			var input gitCommandInput
-			if err := json.Unmarshal(arguments, &input); err != nil {
-				return tool.Result{}, fmt.Errorf("parse input: %w", err)
-			}
-			logf("tool: git_command %s", input.Command)
-			return tool.TextResult(executeGitCommand(cfg.RepoRoot, input.Command)), nil
-		},
-	}
-	return []tool.Tool{runSteps, screenshot, gitCommand}
+		datool.WithPropertyType("steps", "array"),
+		datool.WithPropertyValue("steps", "items", map[string]any{"type": "object"}),
+	)
+	screenshot := datool.MustNew("screenshot", "Take a screenshot of the current browser page and return it as a PNG image.", func(ctx context.Context, _ screenshotInput) (datool.Result, error) {
+		logf("tool: screenshot")
+		png, err := cfg.Browser.Screenshot(ctx)
+		if err != nil {
+			return datool.Result{}, fmt.Errorf("screenshot: %w", err)
+		}
+		return datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockImage, MIMEType: "image/png", Data: png}}}, nil
+	})
+	gitCommand := datool.MustNew("git_command", "Run one read-only git command in the repository root to inspect tracked source and history.", func(_ context.Context, input gitCommandInput) (string, error) {
+		logf("tool: git_command %s", input.Command)
+		return executeGitCommand(cfg.RepoRoot, input.Command), nil
+	})
+	return []datool.Tool{runSteps, screenshot, gitCommand}
 }
 
-// RunAgent generates or heals one browser test through Dago's native agent
+// RunAgent generates or heals one browser test through dago's native agent
 // graph. Model messages and tool results remain provider-neutral throughout;
 // only the OpenAI Responses adapter knows the wire protocol.
 func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
@@ -347,7 +324,7 @@ func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
 	}
 	retrying := &retryingChat{inner: chat, attempts: modelMaxAttempts, backoff: modelRetryBackoff, verbose: cfg.Verbose}
 	state := &agentRunState{}
-	compiled, err := agent.New(agent.Options{
+	compiled, err := dagent.New(dagent.Options{
 		Name: "lazycue", Model: retrying, SystemPrompt: buildSystemPrompt(),
 		Tools: buildTools(cfg, state, logf), RecursionLimit: maxAgentTurns*2 + 3,
 		MaxConcurrency: 1,
@@ -359,13 +336,13 @@ func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
 	if cfg.Mode == AgentModeFix {
 		userPrompt = buildFixUserPrompt(cfg.Description, cfg.PreviousSteps, cfg.PreviousError, cfg.CacheFilePath)
 	}
-	result, err := compiled.Invoke(ctx, agent.Input{Messages: []message.Message{message.Human(userPrompt)}})
+	result, err := compiled.Invoke(ctx, dagent.Input{Messages: []damessage.Message{damessage.Human(userPrompt)}})
 	if err != nil {
 		return nil, fmt.Errorf("run native agent: %w", err)
 	}
 
 	if _, _, finalSteps, finalResults, _ := state.snapshot(); finalSteps == nil || !allPassed(finalResults) {
-		result, err = compiled.Invoke(ctx, agent.Input{Messages: append(result.Messages, message.Human("You have not produced a complete passing test. Call run_steps with the full test and final=true. If the application is genuinely broken, state that explicitly."))})
+		result, err = compiled.Invoke(ctx, dagent.Input{Messages: append(result.Messages, damessage.Human("You have not produced a complete passing test. Call run_steps with the full test and final=true. If the application is genuinely broken, state that explicitly."))})
 		if err != nil {
 			return nil, fmt.Errorf("finalize native agent: %w", err)
 		}
@@ -374,7 +351,7 @@ func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
 	lastSteps, lastResults, finalSteps, finalResults, lastError := state.snapshot()
 	inputTokens, outputTokens := usageFromMessages(result.Messages)
 	for _, item := range result.Messages {
-		if item.Role != message.RoleAssistant {
+		if item.Role != damessage.RoleAssistant {
 			continue
 		}
 		text := item.TextContent()
@@ -395,7 +372,7 @@ func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
 	return &AgentResult{Success: false, Error: lastError, StepsJSON: lastSteps, StepResults: lastResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
 }
 
-func usageFromMessages(messages []message.Message) (inputTokens, outputTokens int) {
+func usageFromMessages(messages []damessage.Message) (inputTokens, outputTokens int) {
 	for _, item := range messages {
 		if item.Usage == nil {
 			continue
@@ -477,15 +454,15 @@ func executeGitCommand(repoRoot, command string) string {
 }
 
 type retryingChat struct {
-	inner    model.Chat
+	inner    damodel.Chat
 	attempts int
 	backoff  time.Duration
 	verbose  bool
 }
 
-func (chat *retryingChat) Profile() model.Profile { return chat.inner.Profile() }
+func (chat *retryingChat) Profile() damodel.Profile { return chat.inner.Profile() }
 
-func (chat *retryingChat) Invoke(ctx context.Context, request model.Request) (model.Response, error) {
+func (chat *retryingChat) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
 	var lastErr error
 	for attempt := 1; attempt <= chat.attempts; attempt++ {
 		callCtx, cancel := context.WithTimeout(ctx, modelCallTimeout)
@@ -499,13 +476,13 @@ func (chat *retryingChat) Invoke(ctx context.Context, request model.Request) (mo
 			break
 		}
 		if err := chat.wait(ctx, attempt, lastErr); err != nil {
-			return model.Response{}, err
+			return damodel.Response{}, err
 		}
 	}
-	return model.Response{}, lastErr
+	return damodel.Response{}, lastErr
 }
 
-func (chat *retryingChat) Stream(ctx context.Context, request model.Request) (model.Stream, error) {
+func (chat *retryingChat) Stream(ctx context.Context, request damodel.Request) (damodel.Stream, error) {
 	var lastErr error
 	for attempt := 1; attempt <= chat.attempts; attempt++ {
 		stream, err := chat.inner.Stream(ctx, request)

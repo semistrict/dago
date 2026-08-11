@@ -204,9 +204,6 @@ export const en: TranslationKeys = {
   notifications: "Notifications",
   browserNotifications: "Browser Notifications",
   faviconBadge: "Favicon Badge",
-  exeDevPushNotifications: "Push notifications",
-  exeDevPushNotificationsDescription:
-    "Push to your devices via the exe.dev app when an agent finishes",
   editChannel: "Edit Channel",
   addChannel: "Add Channel",
   customChannels: "Custom Channels",
@@ -248,14 +245,10 @@ export const en: TranslationKeys = {
   // Welcome / Empty State
   welcomeTitle: "Shelley Agent",
   welcomeSubtitle: "",
-  welcomeMessage:
-    "Shelley is an agent, running on {hostname}. You can ask Shelley to do stuff. If you build a web site with Shelley, you can use exe.dev's proxy features (see {docsLink}) to visit it over the web at {proxyLink}.",
+  welcomeMessage: "Shelley is running on {hostname}.",
   sendMessageToStart: "Send a message to start the conversation.",
   noModelsTitle: "No AI models available",
-  noModelsExeNote:
-    "Shelley gets its models from the exe.dev llm integration. Run one of these to fix it:",
   noModelsLocalNote: "Add a model with Ctrl+K or ⌘+K.",
-  noModelsExeRefresh: "Then Refresh in the model picker.",
   noModelSelectedPlaceholder: "No model available",
 
   // Status Bar

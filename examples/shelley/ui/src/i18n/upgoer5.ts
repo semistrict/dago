@@ -203,9 +203,6 @@ export const upgoer5: TranslationKeys = {
   notifications: "Things to Tell You",
   browserNotifications: "Pop ups to tell you",
   faviconBadge: "Little Mark on the Small Picture",
-  exeDevPushNotifications: "Phone Buzzes",
-  exeDevPushNotificationsDescription:
-    "Makes your phone buzz through the exe.dev app when the computer helper is done",
   editChannel: "Change a Way to Hear",
   addChannel: "Add a Way to Hear",
   customChannels: "Your Own Ways to Hear",
@@ -247,14 +244,10 @@ export const upgoer5: TranslationKeys = {
   // Welcome / Empty State
   welcomeTitle: "Your Helper",
   welcomeSubtitle: "",
-  welcomeMessage:
-    "This is a helper, running on {hostname}. You can ask it to do stuff. If you build something for people to see, you can use the pass through (see {docsLink}) to visit it at {proxyLink}.",
+  welcomeMessage: "Shelley is running on {hostname}.",
   sendMessageToStart: "Send a note to start talking.",
   noModelsTitle: "No brains to talk to",
-  noModelsExeNote:
-    "Shelley gets its thinking friends from the exe.dev llm thing. Run one of these to fix it:",
   noModelsLocalNote: "Add a brain with Ctrl+K or ⌘+K.",
-  noModelsExeRefresh: "Then press Refresh in the brain picker.",
   noModelSelectedPlaceholder: "No brain to use",
 
   // Status Bar

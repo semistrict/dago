@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/loop"
 )
 
 func ExampleLoop() {
@@ -18,14 +18,14 @@ func ExampleLoop() {
 	}
 
 	// Create a simple tool
-	testTool := tool.Func{
-		Spec: tool.Definition{Name: "greet", Description: "Greets the user with a friendly message", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)},
-		Run: func(_ context.Context, arguments json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+	testTool := datool.Func{
+		Spec: datool.Definition{Name: "greet", Description: "Greets the user with a friendly message", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)},
+		Run: func(_ context.Context, arguments json.RawMessage, _ datool.Runtime) (datool.Result, error) {
 			var request greetInput
 			if err := json.Unmarshal(arguments, &request); err != nil {
-				return tool.Result{}, err
+				return datool.Result{}, err
 			}
-			return tool.TextResult(fmt.Sprintf("Hello, %s! Nice to meet you.", request.Name)), nil
+			return datool.TextResult(fmt.Sprintf("Hello, %s! Nice to meet you.", request.Name)), nil
 		},
 	}
 
@@ -54,7 +54,7 @@ func ExampleLoop() {
 	myLoop := loop.NewLoop(loop.Config{
 		Model:         service,
 		History:       initialHistory,
-		Tools:         []tool.Tool{testTool},
+		Tools:         []datool.Tool{testTool},
 		RecordMessage: recordMessage,
 	})
 

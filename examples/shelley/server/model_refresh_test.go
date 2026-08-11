@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 func TestHandleModelRefreshReturnsRefreshedModels(t *testing.T) {
@@ -108,8 +108,8 @@ func TestHandleModelsAssignsTiers(t *testing.T) {
 
 func TestAssignModelTiersKeepsCustomModelsProminent(t *testing.T) {
 	modelList := []ModelInfo{
-		{ID: "gpt-5.6-sol", Source: "llm.int.exe.xyz", Ready: true},
-		{ID: "upstream-only", Source: "llm.int.exe.xyz", Ready: true},
+		{ID: "gpt-5.6-sol", Source: "remote catalog", Ready: true},
+		{ID: "upstream-only", Source: "remote catalog", Ready: true},
 		{ID: "my-custom-model", Source: models.SourceCustomLabel, Ready: true},
 	}
 

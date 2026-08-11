@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/featureflags"
+	"github.com/semistrict/dago/examples/shelley/featureflags"
 )
 
 func TestFeatureFlagsHandlers(t *testing.T) {

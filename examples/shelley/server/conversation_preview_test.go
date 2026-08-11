@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // writeAgentMsg writes an agent message with the given content blocks.

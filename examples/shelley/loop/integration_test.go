@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 func TestLoopWithClaudeTools(t *testing.T) {

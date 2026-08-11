@@ -765,8 +765,8 @@ SELECT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.updated_at, 
   CAST(COALESCE((
     SELECT MAX(m.sequence_id) FROM messages m
      WHERE m.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
-  -- participants_json: the distinct exe.dev accounts that authored messages in
-  -- this conversation (messages.user_email, stamped from the X-ExeDev-Email
+  -- participants_json: the distinct authenticated users that authored messages in
+  -- this conversation (messages.user_email, stamped from the X-User-Email
   -- header), as a JSON array. The order is SQLite's business, so
   -- db.decodeParticipants sorts it: the conversation-list patch stream hashes
   -- the marshalled list, and an unstable order would emit spurious diffs.

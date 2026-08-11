@@ -1,9 +1,6 @@
 package llm
 
 import (
-	"cmp"
-	"maps"
-	"slices"
 	"strings"
 )
 
@@ -173,76 +170,4 @@ func StripInlineCitationMarkers(s string) string {
 	}
 	var f inlineCitationFilter
 	return f.filter(s) + f.finish()
-}
-
-type citationStreamKey struct {
-	outputIndex  int
-	contentIndex int
-}
-
-// CitationStreamFilter carries citation-group state across streamed text
-// deltas. Responses API content_index is scoped to an output item, so both
-// indexes are part of the key. Keying per index costs nothing on well-formed
-// streams — a filter is allocated only once a marker appears — and keeps a
-// group open in one output item from swallowing another's text.
-type CitationStreamFilter struct {
-	filters map[citationStreamKey]*inlineCitationFilter
-}
-
-func NewCitationStreamFilter() *CitationStreamFilter {
-	return &CitationStreamFilter{filters: map[citationStreamKey]*inlineCitationFilter{}}
-}
-
-// Filter returns delta with citation markup removed, carrying any open group
-// forward to the next delta for the same (outputIndex, contentIndex).
-func (f *CitationStreamFilter) Filter(outputIndex, contentIndex int, delta string) string {
-	key := citationStreamKey{outputIndex: outputIndex, contentIndex: contentIndex}
-	filter := f.filters[key]
-	if filter == nil {
-		if !hasInlineCitationMarker(delta) {
-			return delta
-		}
-		filter = &inlineCitationFilter{}
-		f.filters[key] = filter
-	}
-	filtered := filter.filter(delta)
-	if !filter.inGroup {
-		delete(f.filters, key)
-	}
-	return filtered
-}
-
-// Finish fails open any group still open for one content block and returns the
-// text to emit.
-func (f *CitationStreamFilter) Finish(outputIndex, contentIndex int) string {
-	key := citationStreamKey{outputIndex: outputIndex, contentIndex: contentIndex}
-	filter := f.filters[key]
-	if filter == nil {
-		return ""
-	}
-	delete(f.filters, key)
-	return filter.finish()
-}
-
-// FinishAll fails open every still-open citation group, in index order, and
-// returns the deltas to emit. Streams can end without a text-done event (an
-// incomplete response, an error mid-stream), and the held payload is assistant
-// text until proven otherwise.
-//
-// Placement of these deltas within the stream is best-effort: a group held
-// open in an earlier output item is emitted after any later item's text. The
-// recorded message is authoritative and puts the text back in its own block,
-// so the transient misordering resolves on the next render. Only malformed
-// framing can reach this.
-func (f *CitationStreamFilter) FinishAll() []StreamDelta {
-	keys := slices.SortedFunc(maps.Keys(f.filters), func(a, b citationStreamKey) int {
-		return cmp.Or(cmp.Compare(a.outputIndex, b.outputIndex), cmp.Compare(a.contentIndex, b.contentIndex))
-	})
-	var deltas []StreamDelta
-	for _, k := range keys {
-		if s := f.Finish(k.outputIndex, k.contentIndex); s != "" {
-			deltas = append(deltas, StreamDelta{Type: "text", Text: s, Index: k.contentIndex})
-		}
-	}
-	return deltas
 }

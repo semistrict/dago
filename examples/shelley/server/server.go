@@ -20,18 +20,18 @@ import (
 	"syscall"
 	"time"
 
-	dmodel "github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/damodel"
 	"tailscale.com/util/singleflight"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/models"
-	"shelley.exe.dev/pathutil"
-	"shelley.exe.dev/server/notifications"
-	"shelley.exe.dev/subpub"
-	"shelley.exe.dev/ui"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/models"
+	"github.com/semistrict/dago/examples/shelley/pathutil"
+	"github.com/semistrict/dago/examples/shelley/server/notifications"
+	"github.com/semistrict/dago/examples/shelley/subpub"
+	"github.com/semistrict/dago/examples/shelley/ui"
 )
 
 // APIMessage is the message format sent to clients
@@ -61,8 +61,8 @@ type APIMessage struct {
 	LLMAPIURL           *string `json:"llm_api_url,omitempty"`
 	ModelName           *string `json:"model_name,omitempty"`
 	ForkedFromMessageID *string `json:"forked_from_message_id,omitempty"`
-	// UserEmail is the exe.dev account that authored a user message (from the
-	// X-ExeDev-Email header the HTTPS proxy stamps). Only user messages carry
+	// UserEmail is the authenticated user that authored a user message (from the
+	// X-User-Email header the HTTPS proxy stamps). Only user messages carry
 	// it; nil otherwise (agent/tool/system rows, or direct/unauthenticated
 	// access without the header).
 	UserEmail *string `json:"user_email,omitempty"`
@@ -94,7 +94,7 @@ type ConversationWithState struct {
 	// conversation. Clients use it to decide whether their cached snapshot
 	// is up to date without a separate /api/conversation/<id> roundtrip.
 	MaxSequenceID int64 `json:"max_sequence_id"`
-	// Participants are the distinct exe.dev accounts (from the X-ExeDev-Email
+	// Participants are the distinct authenticated users (from the X-User-Email
 	// header) that authored messages in this conversation, sorted. Clients use
 	// it to filter the list down to their own conversations. Empty for
 	// conversations whose messages all arrived without the header (direct or
@@ -144,9 +144,9 @@ type StreamResponse struct {
 	SnapshotComplete bool `json:"snapshot_complete,omitempty"`
 }
 
-// LLMProvider resolves native Dago chat models and their catalog metadata.
+// LLMProvider resolves native dago chat models and their catalog metadata.
 type LLMProvider interface {
-	GetChat(modelID string) (dmodel.Chat, error)
+	GetChat(modelID string) (damodel.Chat, error)
 	GetAvailableModels() []string
 	HasModel(modelID string) bool
 	GetModelInfo(modelID string) *models.ModelInfo
@@ -367,10 +367,6 @@ type Server struct {
 	// fileListCache memoizes working-directory file listings for the fuzzy
 	// file finder (/api/find-files) so a burst of queries lists the tree once.
 	fileListCache *fileListCache
-	// exeNotifyOnce guards lazy detection of the exe.dev "notify" integration
-	// (push notifications). exeNotifyDetected caches the result.
-	exeNotifyOnce     sync.Once
-	exeNotifyDetected bool
 	// streamPub is the server-wide subpub that fans out per-conversation
 	// events to every /api/stream2 subscriber. Events are tagged with their
 	// ConversationID so clients can route them.
@@ -1194,7 +1190,7 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 // can't re-feed an already-delivered message as a duplicate. Mirrors
 // recordMessage's manager-sync + notify tail.
 //
-// userEmail is the exe.dev author captured at queue time (drain runs on a
+// userEmail is the authenticated user captured at queue time (drain runs on a
 // background context, so it can't be read from the request here); it is
 // stamped onto the new row. Empty when the queuing request carried no header.
 func (s *Server) recordDrainedQueuedMessage(ctx context.Context, conversationID, queuedID string, message llm.Message, userEmail string) error {
@@ -1221,8 +1217,8 @@ func (s *Server) recordDrainedQueuedMessage(ctx context.Context, conversationID,
 	return nil
 }
 
-// userEmailContextKey carries the authenticated exe.dev account (from the
-// X-ExeDev-Email header the HTTPS proxy stamps) from an HTTP handler down to
+// userEmailContextKey carries the authenticated authenticated user (from the
+// X-User-Email header the HTTPS proxy stamps) from an HTTP handler down to
 // the message recorder, so a user turn's row can be attributed to its author.
 // Only the immediate-send path uses this; queued messages persist the email in
 // their QueuedMessage entry instead (drain runs on a background context).
@@ -1234,7 +1230,7 @@ func contextWithUserEmail(ctx context.Context, userEmail string) context.Context
 	return context.WithValue(ctx, userEmailContextKey{}, userEmail)
 }
 
-// userEmailFromContext returns the exe.dev email stamped by contextWithUserEmail,
+// userEmailFromContext returns the user email stamped by contextWithUserEmail,
 // or "" if none was set.
 func userEmailFromContext(ctx context.Context) string {
 	email, _ := ctx.Value(userEmailContextKey{}).(string)
@@ -1584,9 +1580,6 @@ func (s *Server) publishConversationListUpdate(update ConversationListUpdate) {
 // publicHostname returns the server's public hostname.
 func publicHostname() string {
 	if h, err := os.Hostname(); err == nil {
-		if !strings.Contains(h, ".") {
-			return h + ".exe.xyz"
-		}
 		return h
 	}
 	return "localhost"
@@ -1599,10 +1592,13 @@ func (s *Server) conversationURL(slug string) string {
 	if slug != "" {
 		path = "/c/" + slug
 	}
-	if s.listenPort == 443 || s.listenPort == 0 {
+	if s.listenPort == 443 {
 		return fmt.Sprintf("https://%s%s", hostname, path)
 	}
-	return fmt.Sprintf("https://%s:%d%s", hostname, s.listenPort, path)
+	if s.listenPort == 0 || s.listenPort == 80 {
+		return fmt.Sprintf("http://%s%s", hostname, path)
+	}
+	return fmt.Sprintf("http://%s:%d%s", hostname, s.listenPort, path)
 }
 
 // publishConversationState broadcasts a conversation state update to ALL active
@@ -1637,13 +1633,6 @@ func (s *Server) publishConversationState(state ConversationState) {
 					s.logger.Warn("failed to load end-of-turn hooks", "conversationID", state.ConversationID, "error", err)
 				}
 			}
-			// Auto-configure exe.dev push: deliver end-of-turn notifications
-			// to the notify gateway when the VM has the integration and the
-			// user hasn't disabled it. This reuses the existing end-of-turn
-			// hook path, deduped by URL so it collapses with the hook the iOS
-			// app registers (one push, not two); when disabled it strips any
-			// gateway hook so the toggle reliably silences pushes.
-			hooks = withExeNotifyHook(hooks, s.exeNotifyEnabled(context.Background()))
 		}
 
 		var slug string
@@ -1656,7 +1645,7 @@ func (s *Server) publishConversationState(state ConversationState) {
 			Model:             state.Model,
 			ConversationTitle: slug,
 			ConversationURL:   s.conversationURL(slug),
-			VMName:            strings.TrimSuffix(hostname, ".exe.xyz"),
+			VMName:            hostname,
 		}
 		// The literal latest agent message is often a tool-only turn (e.g.
 		// agent ended on `git status`), which produces a useless "Agent
@@ -2155,29 +2144,6 @@ func getPortOwnerInfo(port string) string {
 	return "(could not parse lsof output)"
 }
 
-// withExeNotifyHook reconciles the exe.dev notify-gateway end-of-turn hook with
-// the enabled state. When enabled it ensures exactly one gateway hook is
-// present (deduping against the iOS app's own registration of the same URL).
-// When disabled it removes any gateway hook — including one the iOS app
-// registered — so the toggle reliably means "no exe.dev pushes".
-func withExeNotifyHook(hooks []db.ConversationHook, enabled bool) []db.ConversationHook {
-	out := hooks[:0:0] // never mutate the caller's backing array
-	hasGateway := false
-	for _, h := range hooks {
-		if h.URL == exeNotifyGatewayURL {
-			if !enabled || hasGateway {
-				continue // drop when disabled, or dedupe duplicates
-			}
-			hasGateway = true
-		}
-		out = append(out, h)
-	}
-	if enabled && !hasGateway {
-		out = append(out, db.ConversationHook{URL: exeNotifyGatewayURL})
-	}
-	return out
-}
-
 // endOfTurnPushCategory is the APNs notification category attached to
 // end-of-turn pushes. It is a contract with the client: the client
 // registers the inline "Reply" action against this exact identifier and
@@ -2272,9 +2238,6 @@ func validateConversationHookURL(rawURL string) error {
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("url scheme must be http or https")
-	}
-	if _, err := os.Stat("/exe.dev"); err == nil && !strings.HasSuffix(u.Hostname(), ".int.exe.xyz") {
-		return fmt.Errorf("hook url host must end in .int.exe.xyz")
 	}
 	return nil
 }

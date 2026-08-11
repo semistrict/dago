@@ -227,16 +227,6 @@ func crawlGitReposWithReader(
 	return out, truncated
 }
 
-// gitInfoFast preserves the older signature for tests that only care
-// about repo-ness / branch / worktree.
-func gitInfoFast(dirPath string) (branch string, isRepo, isWorktree bool) {
-	info, ok := inspectGitRepo(dirPath)
-	if !ok {
-		return "", false, false
-	}
-	return info.Branch, true, info.Worktree
-}
-
 // inspectGitRepo stats .git, parses HEAD, and returns the repo metadata
 // we surface in the picker. Cheap: a Lstat plus at most three more
 // stats and one short file read. No git fork.

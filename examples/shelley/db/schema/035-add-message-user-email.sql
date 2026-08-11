@@ -1,6 +1,6 @@
--- Record which exe.dev user authored a user message.
+-- Record which authenticated user authored a user message.
 --
--- The exe.dev HTTPS proxy stamps proxied user traffic with an X-ExeDev-Email
+-- A deployment proxy may stamp authenticated traffic with an X-User-Email
 -- header identifying the authenticated account (see exeweb/proxy.go). Shelley
 -- already threads that value through as userEmail for system-prompt and hook
 -- purposes; this column persists it on the message row so the author of each

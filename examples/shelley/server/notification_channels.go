@@ -9,21 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/server/notifications"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/server/notifications"
 )
-
-// exeNotifySettingKey is the settings key controlling whether end-of-turn
-// pushes to the exe.dev notify gateway are auto-configured. Enabled by default
-// when the VM's "notify" integration is available; setting this to "false"
-// turns it off.
-const exeNotifySettingKey = "exe_notify"
-
-// exeNotifyGatewayURL is the exe.dev push-notification gateway, reachable from
-// inside the VM via the built-in "notify" integration. It is the same URL the
-// iOS app registers as an end-of-turn hook, so auto-configuring it here
-// collapses with the iOS registration into a single hook (one push).
-const exeNotifyGatewayURL = "https://notify.int.exe.xyz/"
 
 type NotificationChannelAPI struct {
 	ChannelID   string `json:"channel_id"`
@@ -73,7 +61,7 @@ var channelTypeInfo = map[string]ChannelTypeInfo{
 	},
 	"email": {
 		Type:  "email",
-		Label: "Email (exe.dev)",
+		Label: "Email",
 		ConfigFields: []ConfigField{
 			{Name: "to", Label: "Recipient Email", Type: "string", Required: true, Placeholder: "you@example.com"},
 		},
@@ -392,36 +380,6 @@ func (s *Server) getNotificationChannelTypes() []ChannelTypeInfo {
 		}
 	}
 	return result
-}
-
-// exeNotifyAvailable reports whether the VM has a "notify" integration
-// (exe.dev push notifications). Detected once (lazily, via exeNotifyOnce) and
-// cached for the process lifetime, so attaching/detaching the integration at
-// runtime requires a Shelley restart to take effect.
-func (s *Server) exeNotifyAvailable() bool {
-	s.exeNotifyOnce.Do(func() {
-		s.exeNotifyDetected = exeDevHasNotifyIntegration()
-	})
-	return s.exeNotifyDetected
-}
-
-// exeNotifyEnabled reports whether end-of-turn pushes to the exe.dev notify
-// gateway should be auto-configured: the VM must have a "notify" integration
-// and the user must not have disabled it via the exe_notify setting.
-func (s *Server) exeNotifyEnabled(ctx context.Context) bool {
-	// Never send exe.dev push notifications in predictable-only mode. This mode
-	// is used by automated browser tests (the LazyCue/Playwright predictable
-	// server), which drive many end-of-turn events; we don't want those to fire
-	// real push notifications to the VM owner's devices.
-	if s.predictableOnly {
-		return false
-	}
-	if !s.exeNotifyAvailable() {
-		return false
-	}
-	// Default to enabled; only an explicit "false" disables it.
-	val, err := s.db.GetSetting(ctx, exeNotifySettingKey)
-	return !(err == nil && val == "false")
 }
 
 // ReloadNotificationChannels reads enabled channels from DB and replaces the dispatcher's channel set.

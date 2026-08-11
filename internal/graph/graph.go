@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semistrict/dago/cache"
-	"github.com/semistrict/dago/checkpoint"
-	"github.com/semistrict/dago/state"
-	"github.com/semistrict/dago/store"
+	"github.com/semistrict/dago/dacache"
+	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/dastore"
 )
 
 const (
@@ -27,15 +27,15 @@ var (
 )
 
 // Node performs one graph task.
-type Node func(context.Context, state.Values, Runtime) (Command, error)
+type Node func(context.Context, dastate.Values, Runtime) (Command, error)
 
 // Router chooses destinations after a node's state update has been applied.
-type Router func(context.Context, state.Values) ([]string, error)
+type Router func(context.Context, dastate.Values) ([]string, error)
 
 // Send schedules a node with an isolated state overlay.
 type Send struct {
 	Node  string
-	Input state.Values
+	Input dastate.Values
 }
 
 // Interrupt pauses execution until the same thread is invoked with a resume value.
@@ -46,7 +46,7 @@ type Interrupt struct {
 
 // Command is a node's state update and routing intent.
 type Command struct {
-	Update    state.Values
+	Update    dastate.Values
 	Goto      []string
 	Sends     []Send
 	Interrupt *Interrupt
@@ -55,10 +55,10 @@ type Command struct {
 // Runtime contains task-scoped values.
 type Runtime struct {
 	Context  any
-	Config   checkpoint.Config
-	Store    store.Store
-	Cache    cache.Cache
-	Previous state.Values
+	Config   dacheckpoint.Config
+	Store    dastore.Store
+	Cache    dacache.Cache
+	Previous dastate.Values
 	TaskID   string
 	Resume   any
 	Writer   EventWriter
@@ -89,8 +89,8 @@ type Event struct {
 	Step      int
 	Node      string
 	TaskID    string
-	Update    state.Values
-	Values    state.Values
+	Update    dastate.Values
+	Values    dastate.Values
 	Interrupt *Interrupt
 	Custom    json.RawMessage
 }
@@ -102,23 +102,23 @@ type EventWriter interface {
 
 // Invocation starts or resumes one thread.
 type Invocation struct {
-	Config          checkpoint.Config
-	State           state.Values
+	Config          dacheckpoint.Config
+	State           dastate.Values
 	Resume          any
 	SkipValueEvents bool
 }
 
 // Execution is the terminal or paused graph result.
 type Execution struct {
-	Config     checkpoint.Config
-	State      state.Values
+	Config     dacheckpoint.Config
+	State      dastate.Values
 	Interrupts []Interrupt
 	Steps      int
 }
 
 // CompileOptions configure one compiled graph.
 type CompileOptions struct {
-	Saver checkpoint.Saver
+	Saver dacheckpoint.Saver
 	// RetainThreadState keeps the reconstructed state machine for active threads.
 	// It avoids replaying durable delta history on every invocation. Callers that
 	// mutate checkpoints out of band must leave this disabled.
@@ -126,8 +126,8 @@ type CompileOptions struct {
 	RecursionLimit    int
 	MaxConcurrency    int
 	Context           any
-	Store             store.Store
-	Cache             cache.Cache
+	Store             dastore.Store
+	Cache             dacache.Cache
 	Writer            EventWriter
 	Retry             RetryPolicy
 }
@@ -249,12 +249,12 @@ type threadSession struct {
 	mu       sync.Mutex
 	valid    bool
 	machine  *stateMachine
-	config   checkpoint.Config
+	config   dacheckpoint.Config
 	tasks    []task
-	metadata checkpoint.Metadata
+	metadata dacheckpoint.Metadata
 }
 
-func (graph *Compiled) threadSession(config checkpoint.Config) *threadSession {
+func (graph *Compiled) threadSession(config dacheckpoint.Config) *threadSession {
 	if graph.sessions == nil {
 		return nil
 	}
@@ -271,7 +271,7 @@ func (graph *Compiled) threadSession(config checkpoint.Config) *threadSession {
 
 type task struct {
 	node  string
-	input state.Values
+	input dastate.Values
 	id    string
 	path  string
 }
@@ -326,7 +326,7 @@ func (graph *Compiled) executeTasks(
 	ctx context.Context,
 	machine *stateMachine,
 	tasks []task,
-	config checkpoint.Config,
+	config dacheckpoint.Config,
 	resume any,
 	step int,
 ) []taskResult {
@@ -379,7 +379,7 @@ func (graph *Compiled) executeTasks(
 func (graph *Compiled) callNodeWithRetry(
 	ctx context.Context,
 	node Node,
-	values state.Values,
+	values dastate.Values,
 	runtime Runtime,
 ) (Command, error) {
 	var last error
@@ -415,7 +415,7 @@ func (graph *Compiled) callNodeWithRetry(
 	return Command{}, last
 }
 
-func callNode(ctx context.Context, node Node, values state.Values, runtime Runtime) (
+func callNode(ctx context.Context, node Node, values dastate.Values, runtime Runtime) (
 	command Command,
 	err error,
 ) {

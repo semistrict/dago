@@ -10,43 +10,43 @@ import (
 	"testing"
 	"time"
 
-	dmodel "github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/loop"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/loop"
 )
 
 // gatingTestLLM errors until released, then blocks each Do on a gate channel so
 // the test can hold the retried turn open (no new bottom message appended)
 // while it issues a second retry.
 type gatingTestLLM struct {
-	inner dmodel.Chat
+	inner damodel.Chat
 	mu    sync.Mutex
 	err   error
 	gate  chan struct{} // when non-nil, Do blocks on it after err clears
 }
 
-func (g *gatingTestLLM) Profile() dmodel.Profile { return g.inner.Profile() }
-func (g *gatingTestLLM) Invoke(ctx context.Context, req dmodel.Request) (dmodel.Response, error) {
+func (g *gatingTestLLM) Profile() damodel.Profile { return g.inner.Profile() }
+func (g *gatingTestLLM) Invoke(ctx context.Context, req damodel.Request) (damodel.Response, error) {
 	g.mu.Lock()
 	err := g.err
 	gate := g.gate
 	g.mu.Unlock()
 	if err != nil {
-		return dmodel.Response{}, err
+		return damodel.Response{}, err
 	}
 	if gate != nil {
 		select {
 		case <-gate:
 		case <-ctx.Done():
-			return dmodel.Response{}, ctx.Err()
+			return damodel.Response{}, ctx.Err()
 		}
 	}
 	return g.inner.Invoke(ctx, req)
 }
-func (*gatingTestLLM) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+func (*gatingTestLLM) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
 	return nil, fmt.Errorf("gating test model does not stream")
 }
 

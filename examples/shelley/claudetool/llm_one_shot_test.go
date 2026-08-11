@@ -13,30 +13,30 @@ import (
 	"strings"
 	"testing"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
 )
 
 // oneShotMockService returns a canned response.
 type oneShotMockService struct {
 	response string
-	onDo     func(dmodel.Request)
-	profile  dmodel.Profile
+	onDo     func(damodel.Request)
+	profile  damodel.Profile
 }
 
-func (m *oneShotMockService) Invoke(_ context.Context, req dmodel.Request) (dmodel.Response, error) {
+func (m *oneShotMockService) Invoke(_ context.Context, req damodel.Request) (damodel.Response, error) {
 	if m.onDo != nil {
 		m.onDo(req)
 	}
 	message := dmessage.Assistant(m.response)
 	message.Usage = &dmessage.Usage{InputTokens: 10, OutputTokens: 5}
-	return dmodel.Response{Message: message}, nil
+	return damodel.Response{Message: message}, nil
 }
-func (m *oneShotMockService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
-	return dmodel.EmptyStream{}, nil
+func (m *oneShotMockService) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
+	return damodel.EmptyStream{}, nil
 }
-func (m *oneShotMockService) Profile() dmodel.Profile {
+func (m *oneShotMockService) Profile() damodel.Profile {
 	profile := m.profile
 	if profile.ContextWindow == 0 {
 		profile.ContextWindow = 100000
@@ -47,10 +47,10 @@ func (m *oneShotMockService) Profile() dmodel.Profile {
 
 // oneShotMockProvider implements LLMServiceProvider with configurable services.
 type oneShotMockProvider struct {
-	services map[string]dmodel.Chat
+	services map[string]damodel.Chat
 }
 
-func (p *oneShotMockProvider) GetChat(modelID string) (dmodel.Chat, error) {
+func (p *oneShotMockProvider) GetChat(modelID string) (damodel.Chat, error) {
 	svc, ok := p.services[modelID]
 	if !ok {
 		return nil, fmt.Errorf("unknown model: %s", modelID)
@@ -65,7 +65,7 @@ type oneShotResult struct {
 }
 
 func runOneShot(tool *LLMOneShotTool, input []byte) oneShotResult {
-	result, err := tool.NativeTool().Execute(context.Background(), input, dtool.Runtime{})
+	result, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
 	var display any
 	if len(result.Artifact) > 0 {
 		_ = json.Unmarshal(result.Artifact, &display)
@@ -86,7 +86,7 @@ func TestLLMOneShotShortResult(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("What is 2+2?"), 0o644)
 
 	provider := &oneShotMockProvider{
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"test-model": &oneShotMockService{response: "4"},
 		},
 	}
@@ -120,7 +120,7 @@ func TestLLMOneShotLongResult(t *testing.T) {
 	longResponse := strings.Repeat("word ", 1000) // ~5000 chars
 
 	provider := &oneShotMockProvider{
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"test-model": &oneShotMockService{response: longResponse},
 		},
 	}
@@ -158,7 +158,7 @@ func TestLLMOneShotExplicitOutputFile(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("Hello"), 0o644)
 
 	provider := &oneShotMockProvider{
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"test-model": &oneShotMockService{response: "Hi"},
 		},
 	}
@@ -197,7 +197,7 @@ func TestLLMOneShotAlternateModel(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("Hello"), 0o644)
 
 	provider := &oneShotMockProvider{
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"default-model": &oneShotMockService{response: "from default"},
 			"other-model":   &oneShotMockService{response: "from other"},
 		},
@@ -233,7 +233,7 @@ func TestLLMOneShotUnknownModel(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("Hello"), 0o644)
 
 	provider := &oneShotMockProvider{
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"test-model": &oneShotMockService{response: "ok"},
 		},
 	}
@@ -260,7 +260,7 @@ func TestLLMOneShotMissingFile(t *testing.T) {
 	dir := t.TempDir()
 
 	provider := &oneShotMockProvider{
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"test-model": &oneShotMockService{response: "ok"},
 		},
 	}
@@ -288,7 +288,7 @@ func TestLLMOneShotEmptyPrompt(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("  \n  "), 0o644)
 
 	provider := &oneShotMockProvider{
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"test-model": &oneShotMockService{response: "ok"},
 		},
 	}
@@ -373,16 +373,16 @@ func TestLLMOneShotSystemPrompt(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("Hello"), 0o644)
 
-	var capturedReq *dmodel.Request
+	var capturedReq *damodel.Request
 	svc := &oneShotMockService{
 		response: "response",
-		onDo: func(req dmodel.Request) {
+		onDo: func(req damodel.Request) {
 			capturedReq = &req
 		},
 	}
 
 	provider := &oneShotMockProvider{
-		services: map[string]dmodel.Chat{"test-model": svc},
+		services: map[string]damodel.Chat{"test-model": svc},
 	}
 
 	tool := &LLMOneShotTool{
@@ -408,7 +408,7 @@ func TestLLMOneShotSystemPrompt(t *testing.T) {
 
 type noImageOneShotService struct{ oneShotMockService }
 
-func (m *noImageOneShotService) Profile() dmodel.Profile {
+func (m *noImageOneShotService) Profile() damodel.Profile {
 	profile := m.oneShotMockService.Profile()
 	profile.SupportsImages = false
 	return profile
@@ -429,10 +429,10 @@ func TestLLMOneShotStringPromptFiles(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("What is 2+2?"), 0o644)
 
-	var captured *dmodel.Request
+	var captured *damodel.Request
 	tool := &LLMOneShotTool{
-		LLMProvider: &oneShotMockProvider{services: map[string]dmodel.Chat{
-			"test-model": &oneShotMockService{response: "4", onDo: func(req dmodel.Request) { captured = &req }},
+		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
+			"test-model": &oneShotMockService{response: "4", onDo: func(req damodel.Request) { captured = &req }},
 		}},
 		ModelID:    "test-model",
 		WorkingDir: NewMutableWorkingDir(dir),
@@ -454,10 +454,10 @@ func TestLLMOneShotConcatenatesTextFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("first part"), 0o644)
 	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("second part"), 0o644)
 
-	var captured *dmodel.Request
+	var captured *damodel.Request
 	tool := &LLMOneShotTool{
-		LLMProvider: &oneShotMockProvider{services: map[string]dmodel.Chat{
-			"test-model": &oneShotMockService{response: "ok", onDo: func(req dmodel.Request) { captured = &req }},
+		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
+			"test-model": &oneShotMockService{response: "ok", onDo: func(req damodel.Request) { captured = &req }},
 		}},
 		ModelID:    "test-model",
 		WorkingDir: NewMutableWorkingDir(dir),
@@ -484,10 +484,10 @@ func TestLLMOneShotImagePromptFiles(t *testing.T) {
 	writeOneShotPNG(t, relative, 3)
 	writeOneShotPNG(t, absolute, 4)
 
-	var captured *dmodel.Request
+	var captured *damodel.Request
 	tool := &LLMOneShotTool{
-		LLMProvider: &oneShotMockProvider{services: map[string]dmodel.Chat{
-			"vision": &oneShotMockService{response: "done", onDo: func(req dmodel.Request) { captured = &req }},
+		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
+			"vision": &oneShotMockService{response: "done", onDo: func(req damodel.Request) { captured = &req }},
 		}},
 		ModelID:    "vision",
 		WorkingDir: NewMutableWorkingDir(dir),
@@ -546,10 +546,10 @@ func TestLLMOneShotImageOnlyPrompt(t *testing.T) {
 	dir := t.TempDir()
 	writeOneShotPNG(t, filepath.Join(dir, "pic.png"), 5)
 
-	var captured *dmodel.Request
+	var captured *damodel.Request
 	tool := &LLMOneShotTool{
-		LLMProvider: &oneShotMockProvider{services: map[string]dmodel.Chat{
-			"vision": &oneShotMockService{response: "a picture", onDo: func(req dmodel.Request) { captured = &req }},
+		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
+			"vision": &oneShotMockService{response: "a picture", onDo: func(req damodel.Request) { captured = &req }},
 		}},
 		ModelID:    "vision",
 		WorkingDir: NewMutableWorkingDir(dir),
@@ -568,7 +568,7 @@ func TestLLMOneShotRejectsImageForNonVisionModel(t *testing.T) {
 	dir := t.TempDir()
 	writeOneShotPNG(t, filepath.Join(dir, "pic.png"), 2)
 	tool := &LLMOneShotTool{
-		LLMProvider: &oneShotMockProvider{services: map[string]dmodel.Chat{
+		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
 			"text": &noImageOneShotService{},
 		}},
 		ModelID:    "text",
@@ -600,7 +600,7 @@ func TestLLMOneShotPromptFileErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tool := &LLMOneShotTool{
-				LLMProvider: &oneShotMockProvider{services: map[string]dmodel.Chat{
+				LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
 					"vision": &oneShotMockService{response: "unused"},
 				}},
 				ModelID:    "vision",

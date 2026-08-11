@@ -13,17 +13,17 @@ import (
 	"time"
 
 	dago "github.com/semistrict/dago"
-	dagent "github.com/semistrict/dago/agent"
-	dbackend "github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/checkpoint"
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/state"
-	dtool "github.com/semistrict/dago/tool"
+	dbackend "github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dacheckpoint"
+	dagent "github.com/semistrict/dago/dagent"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/gitstate"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
+	"github.com/semistrict/dago/examples/shelley/gitstate"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/llm/llmhttp"
 )
 
 // maxTurnDuration is an absolute backstop on a single LLM request (including
@@ -50,10 +50,10 @@ type GitStateChangeFunc func(ctx context.Context, state *gitstate.GitState)
 
 // Config contains all configuration needed to create a Loop.
 type Config struct {
-	Model            dmodel.Chat
+	Model            damodel.Chat
 	ModelID          string
 	History          []llm.Message
-	Tools            []dtool.Tool
+	Tools            []datool.Tool
 	RecordMessage    MessageRecordFunc
 	RecordWarning    WarningRecordFunc
 	Logger           *slog.Logger
@@ -85,18 +85,18 @@ type Config struct {
 	// returning them, so the DB sequence order matches the in-memory splice
 	// point.
 	InjectMessages func(ctx context.Context) []llm.Message
-	// Saver is the durable Dago checkpoint store for this conversation. When
+	// Saver is the durable dago checkpoint store for this conversation. When
 	// nil, the loop uses an isolated in-memory saver.
-	Saver checkpoint.Saver
-	// ThreadID is the stable Dago checkpoint thread id. The server uses the
+	Saver dacheckpoint.Saver
+	// ThreadID is the stable dago checkpoint thread id. The server uses the
 	// conversation id; direct callers receive an isolated per-loop id.
 	ThreadID string
 	// Namespace isolates independent conversation generations under one thread.
 	Namespace string
-	// FilesystemTools is the canonical Dago filesystem surface selected for
+	// FilesystemTools is the canonical dago filesystem surface selected for
 	// this conversation.
 	FilesystemTools []string
-	// SkillCatalog is an application-resolved catalog consumed by Dago's
+	// SkillCatalog is an application-resolved catalog consumed by dago's
 	// progressive-disclosure middleware.
 	SkillCatalog    []dago.Skill
 	SkillActivation func(dago.Skill) string
@@ -108,9 +108,9 @@ type Config struct {
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
 // Notably, when the turn ends, the "Loop" is over. TODO: maybe rename to Turn?
 type Loop struct {
-	model            dmodel.Chat
+	model            damodel.Chat
 	modelID          string
-	tools            []dtool.Tool
+	tools            []datool.Tool
 	recordMessage    MessageRecordFunc
 	recordWarning    WarningRecordFunc
 	history          []llm.Message
@@ -130,7 +130,7 @@ type Loop struct {
 	thinkingLevel    llm.ThinkingLevel
 	notify           chan struct{} // signaled when a message is queued or retry requested
 	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
-	saver            checkpoint.Saver
+	saver            dacheckpoint.Saver
 	threadID         string
 	namespace        string
 	filesystemTools  []string
@@ -161,13 +161,13 @@ func NewLoop(config Config) *Loop {
 
 	saver := config.Saver
 	if saver == nil {
-		saver = checkpoint.NewMemorySaver()
+		saver = dacheckpoint.NewMemorySaver()
 	}
 	loop := &Loop{
 		model:            config.Model,
 		modelID:          config.ModelID,
 		history:          config.History,
-		tools:            append([]dtool.Tool(nil), config.Tools...),
+		tools:            append([]datool.Tool(nil), config.Tools...),
 		recordMessage:    config.RecordMessage,
 		recordWarning:    config.RecordWarning,
 		messageQueue:     make([]llm.Message, 0),
@@ -350,10 +350,10 @@ func (l *Loop) ProcessOneTurn(ctx context.Context) error {
 	return l.processLLMRequest(ctx)
 }
 
-// processLLMRequest runs one complete turn through Dago's compiled agent graph.
+// processLLMRequest runs one complete turn through dago's compiled agent graph.
 // Shelley remains a UI/database projection layer; model routing, tool scheduling,
 // cancellation propagation, state reduction, and checkpoint persistence all occur
-// inside Dago.
+// inside dago.
 func (l *Loop) processLLMRequest(ctx context.Context) error {
 	l.executionMu.Lock()
 	defer l.executionMu.Unlock()
@@ -362,14 +362,14 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		return err
 	}
 
-	dagoMessages, err := messagesToDago(inputMessages)
+	dagoMessages, err := messagesToNative(inputMessages)
 	if err != nil {
 		return err
 	}
 
 	if l.runtime == nil {
 		l.mu.Lock()
-		tools := append([]dtool.Tool(nil), l.tools...)
+		tools := append([]datool.Tool(nil), l.tools...)
 		model := l.model
 		system := append([]llm.SystemContent(nil), l.system...)
 		l.mu.Unlock()
@@ -379,7 +379,7 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			return validateErr
 		}
 		harnessBackend, backendErr := dbackend.NewLocalShell(dbackend.LocalShellOptions{
-			Filesystem: dbackend.FilesystemOptions{Root: l.currentWorkingDir(), AllowHostPaths: true},
+			Filesystem: dbackend.FilesystemOptions{Root: l.currentWorkingDir(), GetRoot: l.currentWorkingDir, AllowHostPaths: true},
 		})
 		if backendErr != nil {
 			return fmt.Errorf("create Shelley harness backend: %w", backendErr)
@@ -402,8 +402,8 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		}
 		if l.filesystemTools == nil {
 			// A nil selection is the embedding form used by direct callers that
-			// provide their complete tool surface. It still runs through Dago, but
-			// does not opt into Dago's default harness tools or prompts.
+			// provide their complete tool surface. It still runs through dago, but
+			// does not opt into dago's default harness tools or prompts.
 			options.FilesystemTools = []string{}
 			options.DisableTodo = true
 			options.DisableSubagents = true
@@ -415,34 +415,41 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			options.Memory = append([]string(nil), l.memory...)
 			options.MemoryContents = cloneStringMap(l.memoryContents)
 			options.MemorySystemPrompt = cloneStringPointer(l.memoryPrompt)
-			// Shelley uses Dago's conversation-subagent tool so child runs retain
+			// Shelley uses dago's conversation-subagent tool so child runs retain
 			// their application-level UI and persistence contracts.
 			options.DisableSubagents = true
 		}
 		runtime, runtimeErr := dago.New(options)
 		if runtimeErr != nil {
-			return fmt.Errorf("create Dago Shelley agent: %w", runtimeErr)
+			return fmt.Errorf("create dago Shelley agent: %w", runtimeErr)
 		}
 		l.runtime = runtime
 	}
 	runtime := l.runtime
 
-	stream := runtime.Stream(ctx, dagent.Input{
+	requestCtx, trace := llmhttp.WithRequestTrace(ctx)
+	stream := runtime.Stream(requestCtx, dagent.Input{
 		Config: l.checkpointConfig(), Messages: dagoMessages,
-		State: state.Values{"shelley.run": true}, SkipValueEvents: true, DiscardResultState: true,
+		State: dastate.Values{"shelley.run": true}, SkipValueEvents: true, DiscardResultState: true,
 	}, 64)
 	defer stream.Close()
 	for {
-		event, nextErr := stream.Next(ctx)
+		event, nextErr := stream.Next(requestCtx)
 		if nextErr == io.EOF {
 			break
 		}
 		if nextErr != nil {
 			l.flushStream()
-			return l.recordRuntimeError(ctx, nextErr)
+			return l.recordRuntimeError(ctx, nextErr, trace)
 		}
 		if event.Mode == dagent.EventToken && event.Chunk != nil {
 			l.emitToken(*event.Chunk)
+			continue
+		}
+		if event.Mode == dagent.EventToolProgress && event.ToolProgress != nil {
+			if l.onToolProgress != nil {
+				l.onToolProgress(llm.ToolProgress{ToolUseID: event.ToolProgress.CallID, ToolName: event.ToolProgress.Name, Output: event.ToolProgress.Output})
+			}
 			continue
 		}
 		if event.Mode != dagent.EventUpdate {
@@ -452,22 +459,22 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			return err
 		}
 	}
-	result, err := stream.Result(ctx)
+	result, err := stream.Result(requestCtx)
 	if err != nil {
 		l.flushStream()
-		return l.recordRuntimeError(ctx, err)
+		return l.recordRuntimeError(ctx, err, trace)
 	}
 	l.mu.Lock()
 	l.runtimeSeeded = true
 	l.mu.Unlock()
 	if len(result.Interrupts) > 0 {
-		return fmt.Errorf("Dago Shelley agent paused with %d unresolved interrupt(s)", len(result.Interrupts))
+		return fmt.Errorf("dago Shelley agent paused with %d unresolved interrupt(s)", len(result.Interrupts))
 	}
 	l.checkGitStateChange(ctx)
 	return nil
 }
 
-func hasToolNamed(tools []dtool.Tool, name string) bool {
+func hasToolNamed(tools []datool.Tool, name string) bool {
 	for _, item := range tools {
 		if item.Definition().Name == name {
 			return true
@@ -522,12 +529,12 @@ func cloneStringPointer(value *string) *string {
 	return &copy
 }
 
-func isPredictableModel(chat dmodel.Chat) bool {
+func isPredictableModel(chat damodel.Chat) bool {
 	profile := chat.Profile()
 	return profile.Provider == "builtin" && profile.Model == "predictable-v1"
 }
 
-func predictableFilesystemAliases(files dbackend.Backend, selected []string) ([]dtool.Tool, error) {
+func predictableFilesystemAliases(files dbackend.Backend, selected []string) ([]datool.Tool, error) {
 	selectedNames := make(map[string]bool, len(selected))
 	for _, name := range selected {
 		selectedNames[name] = true
@@ -546,20 +553,30 @@ func predictableFilesystemAliases(files dbackend.Backend, selected []string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("create predictable filesystem alias: %w", err)
 	}
-	byName := make(map[string]dtool.Tool, len(middleware.Tools))
+	byName := make(map[string]datool.Tool, len(middleware.Tools))
 	for _, item := range middleware.Tools {
 		byName[item.Definition().Name] = item
 	}
-	result := make([]dtool.Tool, 0, 2)
+	result := make([]datool.Tool, 0, 2)
 	if execute := byName["execute"]; execute != nil {
-		alias, aliasErr := dtool.Alias(execute, "bash")
+		alias, aliasErr := datool.Alias(execute, "bash")
 		if aliasErr != nil {
 			return nil, fmt.Errorf("create predictable filesystem alias: %w", aliasErr)
 		}
 		// The deterministic fixture predates execute's explicit exit-status footer.
 		// Keep its historical exact-output assertions while still executing through
-		// the canonical Dago backend and schema.
-		result = append(result, dtool.Func{Spec: alias.Definition(), Run: func(ctx context.Context, raw json.RawMessage, runtime dtool.Runtime) (dtool.Result, error) {
+		// the canonical dago backend and schema.
+		type input struct {
+			Command string `json:"command"`
+			Timeout *int   `json:"timeout,omitempty"`
+		}
+		definition := alias.Definition()
+		result = append(result, datool.MustNew(definition.Name, definition.Description, func(ctx context.Context, input input) (datool.Result, error) {
+			runtime, _ := datool.RuntimeFromContext(ctx)
+			raw, err := json.Marshal(input)
+			if err != nil {
+				return datool.Result{}, err
+			}
 			output, executeErr := alias.Execute(ctx, raw, runtime)
 			if executeErr != nil {
 				return output, executeErr
@@ -571,7 +588,9 @@ func predictableFilesystemAliases(files dbackend.Backend, selected []string) ([]
 				}
 			}
 			return output, nil
-		}})
+		}, datool.WithTransformSchema(func(json.RawMessage) (json.RawMessage, error) {
+			return definition.InputSchema, nil
+		})))
 	}
 	if write := byName["write_file"]; write != nil {
 		result = append(result, predictablePatchAlias(files, write, byName["edit_file"]))
@@ -580,31 +599,29 @@ func predictableFilesystemAliases(files dbackend.Backend, selected []string) ([]
 }
 
 // predictablePatchAlias translates Shelley's historical deterministic fixture
-// into Dago's canonical write_file/edit_file calls. It is not part of the
+// into dago's canonical write_file/edit_file calls. It is not part of the
 // production model tool surface: real models receive only the canonical tools.
-func predictablePatchAlias(files dbackend.Backend, write, edit dtool.Tool) dtool.Tool {
-	return dtool.Func{Spec: dtool.Definition{
-		Name: "patch", Description: "Compatibility adapter for deterministic Shelley fixtures.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"patches":{"type":"array","items":{"type":"object","properties":{"operation":{"type":"string"},"oldText":{"type":"string"},"newText":{"type":"string"}},"required":["operation"]}}},"required":["path","patches"]}`),
-	}, Run: func(ctx context.Context, raw json.RawMessage, runtime dtool.Runtime) (dtool.Result, error) {
-		var input struct {
-			Path    string `json:"path"`
-			Patches []struct {
-				Operation string `json:"operation"`
-				OldText   string `json:"oldText"`
-				NewText   string `json:"newText"`
-			} `json:"patches"`
-		}
-		if err := json.Unmarshal(raw, &input); err != nil {
-			return dtool.Result{}, fmt.Errorf("decode patch arguments: %w", err)
-		}
+type predictablePatchInput struct {
+	Path    string                      `json:"path"`
+	Patches []predictablePatchOperation `json:"patches"`
+}
+
+type predictablePatchOperation struct {
+	Operation string `json:"operation"`
+	OldText   string `json:"oldText,omitempty"`
+	NewText   string `json:"newText,omitempty"`
+}
+
+func predictablePatchAlias(files dbackend.Backend, write, edit datool.Tool) datool.Tool {
+	return datool.MustNew("patch", "Compatibility adapter for deterministic Shelley fixtures.", func(ctx context.Context, input predictablePatchInput) (datool.Result, error) {
+		runtime, _ := datool.RuntimeFromContext(ctx)
 		if input.Path == "" || len(input.Patches) == 0 {
-			return dtool.Result{}, fmt.Errorf("patch requires path and at least one operation")
+			return datool.Result{}, fmt.Errorf("patch requires path and at least one operation")
 		}
 		before := predictableFileContents(ctx, files, input.Path)
 		var content []dmessage.ContentBlock
 		for _, patch := range input.Patches {
-			var executable dtool.Tool
+			var executable datool.Tool
 			var arguments []byte
 			switch patch.Operation {
 			case "overwrite":
@@ -612,29 +629,29 @@ func predictablePatchAlias(files dbackend.Backend, write, edit dtool.Tool) dtool
 				arguments, _ = json.Marshal(map[string]any{"file_path": input.Path, "content": patch.NewText})
 			case "replace":
 				if edit == nil {
-					return dtool.Result{}, fmt.Errorf("patch replace requires edit_file")
+					return datool.Result{}, fmt.Errorf("patch replace requires edit_file")
 				}
 				executable = edit
 				arguments, _ = json.Marshal(map[string]any{"file_path": input.Path, "old_string": patch.OldText, "new_string": patch.NewText, "replace_all": false})
 			default:
-				return dtool.Result{}, fmt.Errorf("unsupported patch operation %q", patch.Operation)
+				return datool.Result{}, fmt.Errorf("unsupported patch operation %q", patch.Operation)
 			}
 			output, err := executable.Execute(ctx, arguments, runtime)
 			if err != nil {
-				return dtool.Result{}, err
+				return datool.Result{}, err
 			}
 			content = append(content, output.Content...)
 		}
 		after, err := readPredictableFileContents(ctx, files, input.Path)
 		if err != nil {
-			return dtool.Result{}, err
+			return datool.Result{}, err
 		}
 		artifact, err := json.Marshal(map[string]any{"path": input.Path, "oldContent": before, "newContent": after})
 		if err != nil {
-			return dtool.Result{}, err
+			return datool.Result{}, err
 		}
-		return dtool.Result{Content: content, Artifact: artifact}, nil
-	}}
+		return datool.Result{Content: content, Artifact: artifact}, nil
+	})
 }
 
 func predictableFileContents(ctx context.Context, files dbackend.Backend, path string) string {
@@ -657,21 +674,21 @@ func readPredictableFileContents(ctx context.Context, files dbackend.Backend, pa
 }
 
 // ResolveCancellation durably appends cancellation messages and clears any
-// pending model/tool tasks in the Dago graph before a later turn resumes.
+// pending model/tool tasks in the dago graph before a later turn resumes.
 func (l *Loop) ResolveCancellation(ctx context.Context, messages ...llm.Message) error {
 	l.executionMu.Lock()
 	defer l.executionMu.Unlock()
 	if l.runtime == nil {
 		return nil
 	}
-	converted, err := messagesToDago(messages)
+	converted, err := messagesToNative(messages)
 	if err != nil {
 		return err
 	}
 	if _, err := l.runtime.Cancel(ctx, dagent.Input{
 		Config: l.checkpointConfig(), Messages: converted,
 	}); err != nil {
-		return fmt.Errorf("resolve Dago Shelley cancellation: %w", err)
+		return fmt.Errorf("resolve dago Shelley cancellation: %w", err)
 	}
 	l.mu.Lock()
 	l.history = append(l.history, messages...)
@@ -693,7 +710,7 @@ func (l *Loop) runtimeInput(ctx context.Context) ([]llm.Message, error) {
 	if !seeded {
 		tuple, err := l.saver.GetTuple(ctx, l.checkpointConfig())
 		if err != nil {
-			return nil, fmt.Errorf("load Dago Shelley checkpoint: %w", err)
+			return nil, fmt.Errorf("load dago Shelley checkpoint: %w", err)
 		}
 		if tuple != nil {
 			l.mu.Lock()
@@ -701,20 +718,20 @@ func (l *Loop) runtimeInput(ctx context.Context) ([]llm.Message, error) {
 			l.mu.Unlock()
 			return pending, nil
 		}
-		// Dago's PatchToolCallsMiddleware owns canonical dangling-call repair.
+		// dago's PatchToolCallsMiddleware owns canonical dangling-call repair.
 		return history, nil
 	}
 	return pending, nil
 }
 
-func (l *Loop) checkpointConfig() checkpoint.Config {
-	return checkpoint.Config{ThreadID: l.threadID, Namespace: l.namespace}
+func (l *Loop) checkpointConfig() dacheckpoint.Config {
+	return dacheckpoint.Config{ThreadID: l.threadID, Namespace: l.namespace}
 }
 
 func (l *Loop) runtimeMiddleware(files dbackend.Backend) dagent.Middleware {
 	return dagent.Middleware{
 		Name: "shelley_runtime",
-		BeforeModel: func(ctx context.Context, _ state.Values, _ dagent.Runtime) (state.Values, error) {
+		BeforeModel: func(ctx context.Context, _ dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
 			var additions []llm.Message
 			if l.injectMessages != nil {
 				additions = append(additions, l.injectMessages(ctx)...)
@@ -723,23 +740,23 @@ func (l *Loop) runtimeMiddleware(files dbackend.Backend) dagent.Middleware {
 			if len(l.messageQueue) > 0 {
 				additions = append(additions, l.messageQueue...)
 				l.messageQueue = nil
-				l.logger.Info("processing user interruption during Dago tool execution")
+				l.logger.Info("processing user interruption during dago tool execution")
 			}
 			l.history = append(l.history, additions...)
 			l.mu.Unlock()
 			if len(additions) == 0 {
 				return nil, nil
 			}
-			converted, err := messagesToDago(additions)
+			converted, err := messagesToNative(additions)
 			if err != nil {
 				return nil, err
 			}
-			return state.Values{dagent.MessagesKey: converted}, nil
+			return dastate.Values{dagent.MessagesKey: converted}, nil
 		},
 		WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 			level := l.getThinkingLevel()
 			if request.Model.Profile().SupportsReasoning && level != llm.ThinkingLevelDefault {
-				request.Reasoning = &dmodel.Reasoning{}
+				request.Reasoning = &damodel.Reasoning{}
 				if level != llm.ThinkingLevelOff {
 					request.Reasoning.Effort = level.ThinkingEffort()
 					request.Reasoning.Summary = "auto"
@@ -747,61 +764,36 @@ func (l *Loop) runtimeMiddleware(files dbackend.Backend) dagent.Middleware {
 			}
 			requestCtx, cancel := context.WithTimeout(ctx, maxTurnDuration)
 			defer cancel()
-			const attempts = 2
-			var response dagent.ModelResponse
-			var err error
-			for attempt := 1; attempt <= attempts; attempt++ {
-				response, err = next(requestCtx, request)
-				if err == nil || !isRetryableError(err) || attempt == attempts {
-					return response, err
-				}
-				delay := time.Duration(attempt) * time.Second
-				var retry dmodel.RetryReporter
-				if errors.As(err, &retry) && l.recordWarning != nil {
-					event := retry.RetryEvent(attempt, delay)
+			if l.recordWarning != nil {
+				requestCtx = damodel.WithRetryObserver(requestCtx, func(observerCtx context.Context, event damodel.RetryEvent) {
 					warning := llm.RetryEvent{
 						Attempt: event.Attempt, Sleep: event.Delay, Err: event.Err, Status: event.Status,
 						Provider: event.Provider, Model: event.Model,
 					}
-					if warningErr := l.recordWarning(ctx, llm.FormatRetryEvent(warning)); warningErr != nil {
+					if warningErr := l.recordWarning(observerCtx, llm.FormatRetryEvent(warning)); warningErr != nil {
 						l.logger.Error("failed to record retry warning", "error", warningErr)
 					}
-				}
-				timer := time.NewTimer(delay)
-				select {
-				case <-timer.C:
-				case <-requestCtx.Done():
-					if !timer.Stop() {
-						select {
-						case <-timer.C:
-						default:
-						}
-					}
-					return dagent.ModelResponse{}, requestCtx.Err()
-				}
+				})
 			}
-			return response, err
+			return next(requestCtx, request)
 		},
-		AfterModel: func(_ context.Context, values state.Values, _ dagent.Runtime) (state.Values, error) {
+		AfterModel: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
 			messages, _ := values[dagent.MessagesKey].([]dmessage.Message)
 			if len(messages) == 0 {
 				return nil, nil
 			}
 			last := messages[len(messages)-1]
-			response, ok, err := responseFromDago(last)
+			response, ok, err := responseFromNative(last)
 			if err != nil || !ok {
 				return nil, err
 			}
 			if response.StopReason == llm.StopReasonMaxTokens || response.StopReason == llm.StopReasonRefusal {
-				return state.Values{dagent.MessagesKey: []dmessage.Message{dmessage.Remove(last.ID)}}, nil
+				return dastate.Values{dagent.MessagesKey: []dmessage.Message{dmessage.Remove(last.ID)}}, nil
 			}
 			return nil, nil
 		},
 		WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
-			toolCtx := llm.WithToolUseID(ctx, request.Call.ID)
-			if l.onToolProgress != nil {
-				toolCtx = llm.WithToolProgress(toolCtx, l.onToolProgress)
-			}
+			toolCtx := ctx
 			toolCtx = llm.WithModelProfile(toolCtx, l.model.Profile())
 			var usage llmhttp.UsageAccumulator
 			toolCtx = llmhttp.WithUsageCollector(toolCtx, usage.Collect)
@@ -835,12 +827,12 @@ func (l *Loop) runtimeMiddleware(files dbackend.Backend) dagent.Middleware {
 			}
 			exact := llm.Content{
 				Type: llm.ContentTypeToolResult, ToolUseID: request.Call.ID,
-				ToolResult:       contentFromDago(response.Result.Content),
+				ToolResult:       contentFromNative(response.Result.Content),
 				ToolUseStartTime: &started, ToolUseEndTime: &finished, Display: display,
 			}
 			artifact, encodeErr := json.Marshal(toolArtifactEnvelope{
 				Version: 1, Kind: shelleyToolArtifact, Content: exact,
-				OtherUsage: append(purposedUsageFromDago(response.Result.OtherUsage), usage.Take()...),
+				OtherUsage: append(purposedUsageFromNative(response.Result.OtherUsage), usage.Take()...),
 			})
 			if encodeErr != nil {
 				return dagent.ToolCallResponse{}, encodeErr
@@ -864,7 +856,7 @@ func dagoFileChangePath(call dmessage.ToolCall) string {
 	return input.FilePath
 }
 
-func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update state.Values) error {
+func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update dastate.Values) error {
 	if node != "model" && node != "tools" {
 		return nil
 	}
@@ -874,12 +866,12 @@ func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update sta
 	}
 	messages, ok := value.([]dmessage.Message)
 	if !ok {
-		return fmt.Errorf("Dago Shelley message update has type %T", value)
+		return fmt.Errorf("dago Shelley message update has type %T", value)
 	}
 	if node == "model" {
 		l.flushStream()
 		for _, item := range messages {
-			response, found, err := responseFromDago(item)
+			response, found, err := responseFromNative(item)
 			if err != nil {
 				return err
 			}
@@ -915,7 +907,7 @@ func (l *Loop) projectRuntimeUpdate(ctx context.Context, node string, update sta
 		if item.Role != dmessage.RoleTool {
 			continue
 		}
-		content, usage, err := toolResultFromDago(item)
+		content, usage, err := toolResultFromNative(item)
 		if err != nil {
 			return err
 		}
@@ -955,20 +947,11 @@ func joinSystem(items []llm.SystemContent) string {
 	return strings.Join(parts, "\n\n")
 }
 
-var projectedGuidanceBlocks = []*regexp.Regexp{
-	regexp.MustCompile(`(?s)\n?<customization>.*?</customization>\n?`),
-	regexp.MustCompile(`(?s)\n?<guidance>.*?</guidance>\n?`),
-}
-
 func runtimeSystemPrompt(items []llm.SystemContent) string {
-	prompt := joinSystem(items)
-	for _, block := range projectedGuidanceBlocks {
-		prompt = block.ReplaceAllString(prompt, "\n")
-	}
-	return strings.TrimSpace(prompt)
+	return strings.TrimSpace(joinSystem(items))
 }
 
-func (l *Loop) emitToken(chunk dmodel.Chunk) {
+func (l *Loop) emitToken(chunk damodel.Chunk) {
 	if l.onStreamDelta == nil {
 		return
 	}
@@ -996,17 +979,17 @@ func (l *Loop) flushStream() {
 	}
 }
 
-func (l *Loop) recordRuntimeError(ctx context.Context, err error) error {
+func (l *Loop) recordRuntimeError(ctx context.Context, err error, trace *llmhttp.RequestTrace) error {
 	displayErr := err
 	if text := strings.TrimPrefix(err.Error(), `execute node "model": `); text != err.Error() {
 		displayErr = errors.New(text)
 	}
 	message := llm.Message{
-		Role: llm.MessageRoleAssistant, Content: llm.TextContent(userFacingLLMError(displayErr, nil)),
+		Role: llm.MessageRoleAssistant, Content: llm.TextContent(userFacingLLMError(displayErr, trace)),
 		EndOfTurn: true, ErrorType: llm.ErrorTypeLLMRequest, ErrorRetryable: IsRetryableLLMError(err),
 	}
 	if recordErr := l.recordMessage(ctx, message, llm.Usage{}, nil); recordErr != nil {
-		l.logger.Error("failed to record Dago runtime error", "error", recordErr)
+		l.logger.Error("failed to record dago runtime error", "error", recordErr)
 	}
 	return fmt.Errorf("LLM request failed: %w", err)
 }
@@ -1196,46 +1179,6 @@ func userFacingLLMError(err error, trace *llmhttp.RequestTrace) string {
 	return msg
 }
 
-// isRetryableError checks if an LLM request error should be retried by the
-// loop's tight inner-retry loop (max 2 attempts, ~1s sleep). Keep this set
-// narrow: this is for transport-level hiccups that have a good chance of
-// succeeding immediately. Provider-level 5xx, rate limits, and scale-up
-// hints are handled by the user-facing Retry button (IsRetryableLLMError),
-// which has no short retry budget and won't hammer providers.
-func isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var reporter dmodel.RetryReporter
-	if errors.As(err, &reporter) {
-		return reporter.RetryEvent(0, 0).Retryable
-	}
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		return true
-	}
-	// A stalled stream (no bytes within the idle window) is a transport-level
-	// hiccup: a fresh attempt often succeeds immediately.
-	if errors.Is(err, llmhttp.ErrIdleTimeout) {
-		return true
-	}
-	lower := strings.ToLower(err.Error())
-	for _, p := range []string{
-		"eof",
-		"connection reset",
-		"connection refused",
-		"no such host",
-		"network is unreachable",
-		"i/o timeout",
-		"reset by peer",
-		"broken pipe",
-	} {
-		if strings.Contains(lower, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // IsRetryableLLMError reports whether an LLM request failure is transient and
 // safe to retry by re-sending the same conversation state.
 //
@@ -1252,7 +1195,7 @@ func IsRetryableLLMError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var reporter dmodel.RetryReporter
+	var reporter damodel.RetryReporter
 	if errors.As(err, &reporter) {
 		return reporter.RetryEvent(0, 0).Retryable
 	}

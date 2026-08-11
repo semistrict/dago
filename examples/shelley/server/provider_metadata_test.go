@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 func TestLlmDataForAPIStripsOpenAIResponsesReasoningMetadata(t *testing.T) {

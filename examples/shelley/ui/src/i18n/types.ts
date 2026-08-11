@@ -199,8 +199,6 @@ export interface TranslationKeys {
   notifications: string;
   browserNotifications: string;
   faviconBadge: string;
-  exeDevPushNotifications: string;
-  exeDevPushNotificationsDescription: string;
   editChannel: string;
   addChannel: string;
   customChannels: string;
@@ -245,9 +243,7 @@ export interface TranslationKeys {
   welcomeMessage: string;
   sendMessageToStart: string;
   noModelsTitle: string;
-  noModelsExeNote: string;
   noModelsLocalNote: string;
-  noModelsExeRefresh: string;
   noModelSelectedPlaceholder: string;
 
   // Status Bar

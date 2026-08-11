@@ -8,12 +8,12 @@ import (
 	"os"
 	"testing"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 func TestSanitize(t *testing.T) {
@@ -86,21 +86,21 @@ type MockLLMService struct {
 	Model           string
 }
 
-func (m *MockLLMService) Invoke(context.Context, dmodel.Request) (dmodel.Response, error) {
+func (m *MockLLMService) Invoke(context.Context, damodel.Request) (damodel.Response, error) {
 	content := m.ResponseContent
 	if content == nil {
 		content = []dmessage.ContentBlock{
 			{Type: dmessage.BlockText, Text: m.ResponseText},
 		}
 	}
-	return dmodel.Response{Message: dmessage.Message{Role: dmessage.RoleAssistant, Content: content, Usage: m.ResponseUsage}}, nil
+	return damodel.Response{Message: dmessage.Message{Role: dmessage.RoleAssistant, Content: content, Usage: m.ResponseUsage}}, nil
 }
 
-func (m *MockLLMService) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
-	return dmodel.EmptyStream{}, nil
+func (m *MockLLMService) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
+	return damodel.EmptyStream{}, nil
 }
-func (m *MockLLMService) Profile() dmodel.Profile {
-	return dmodel.Profile{Provider: "test", Model: m.Model, ContextWindow: 8192}
+func (m *MockLLMService) Profile() damodel.Profile {
+	return damodel.Profile{Provider: "test", Model: m.Model, ContextWindow: 8192}
 }
 
 // MockLLMProvider provides a mock LLM provider for testing
@@ -108,7 +108,7 @@ type MockLLMProvider struct {
 	Chat *MockLLMService
 }
 
-func (m *MockLLMProvider) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *MockLLMProvider) GetChat(modelID string) (damodel.Chat, error) {
 	return m.Chat, nil
 }
 
@@ -256,18 +256,18 @@ func TestGenerateSlug_PreservesExisting(t *testing.T) {
 // MockLLMServiceWithError provides a native chat model that returns an error.
 type MockLLMServiceWithError struct{}
 
-func (m *MockLLMServiceWithError) Invoke(context.Context, dmodel.Request) (dmodel.Response, error) {
-	return dmodel.Response{}, fmt.Errorf("LLM service error")
+func (m *MockLLMServiceWithError) Invoke(context.Context, damodel.Request) (damodel.Response, error) {
+	return damodel.Response{}, fmt.Errorf("LLM service error")
 }
-func (*MockLLMServiceWithError) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
+func (*MockLLMServiceWithError) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
 	return nil, fmt.Errorf("LLM service error")
 }
-func (*MockLLMServiceWithError) Profile() dmodel.Profile { return dmodel.Profile{Model: "error"} }
+func (*MockLLMServiceWithError) Profile() damodel.Profile { return damodel.Profile{Model: "error"} }
 
 // MockLLMProviderWithError provides a mock LLM provider that returns errors for all models
 type MockLLMProviderWithError struct{}
 
-func (m *MockLLMProviderWithError) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *MockLLMProviderWithError) GetChat(modelID string) (damodel.Chat, error) {
 	return nil, fmt.Errorf("model not available")
 }
 
@@ -282,7 +282,7 @@ func (m *MockLLMProviderWithError) GetModelInfo(modelID string) *models.ModelInf
 // MockLLMProviderWithServiceError provides a mock LLM provider that returns a service with error
 type MockLLMProviderWithServiceError struct{}
 
-func (m *MockLLMProviderWithServiceError) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *MockLLMProviderWithServiceError) GetChat(modelID string) (damodel.Chat, error) {
 	return &MockLLMServiceWithError{}, nil
 }
 
@@ -351,7 +351,7 @@ func TestGenerateSlug_EmptyResponse(t *testing.T) {
 // MockLLMProviderWithEmptyResponse provides a mock LLM provider that returns empty response
 type MockLLMProviderWithEmptyResponse struct{}
 
-func (m *MockLLMProviderWithEmptyResponse) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *MockLLMProviderWithEmptyResponse) GetChat(modelID string) (damodel.Chat, error) {
 	return &MockLLMServiceEmptyResponse{}, nil
 }
 
@@ -366,13 +366,13 @@ func (m *MockLLMProviderWithEmptyResponse) GetModelInfo(modelID string) *models.
 // MockLLMServiceEmptyResponse provides a mock LLM service that returns empty response
 type MockLLMServiceEmptyResponse struct{}
 
-func (m *MockLLMServiceEmptyResponse) Invoke(context.Context, dmodel.Request) (dmodel.Response, error) {
-	return dmodel.Response{Message: dmessage.Message{Role: dmessage.RoleAssistant}}, nil
+func (m *MockLLMServiceEmptyResponse) Invoke(context.Context, damodel.Request) (damodel.Response, error) {
+	return damodel.Response{Message: dmessage.Message{Role: dmessage.RoleAssistant}}, nil
 }
-func (*MockLLMServiceEmptyResponse) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
-	return dmodel.EmptyStream{}, nil
+func (*MockLLMServiceEmptyResponse) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
+	return damodel.EmptyStream{}, nil
 }
-func (*MockLLMServiceEmptyResponse) Profile() dmodel.Profile { return dmodel.Profile{Model: "empty"} }
+func (*MockLLMServiceEmptyResponse) Profile() damodel.Profile { return damodel.Profile{Model: "empty"} }
 
 // TestGenerateSlug_SanitizationError tests error handling when slug is empty after sanitization
 func TestGenerateSlug_SanitizationError(t *testing.T) {
@@ -500,7 +500,7 @@ type MockLLMProviderPredictableFallback struct {
 	fallbackService *MockLLMService
 }
 
-func (m *MockLLMProviderPredictableFallback) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *MockLLMProviderPredictableFallback) GetChat(modelID string) (damodel.Chat, error) {
 	if modelID == "predictable" {
 		return nil, fmt.Errorf("predictable model not available")
 	}
@@ -519,7 +519,7 @@ func (m *MockLLMProviderPredictableFallback) GetModelInfo(modelID string) *model
 // generation falls back to a "slug-backup"-tagged model.
 func TestGenerateSlug_FallbackToSlugBackup(t *testing.T) {
 	mockLLM := &mockFallbackProvider{
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"fireworks-model": &MockLLMServiceWithError{},
 			"haiku-model":     &MockLLMService{ResponseText: "backup-slug"},
 		},
@@ -568,12 +568,12 @@ func TestHasTag(t *testing.T) {
 
 // mockFallbackProvider supports per-model native chats and catalog metadata.
 type mockFallbackProvider struct {
-	services  map[string]dmodel.Chat
+	services  map[string]damodel.Chat
 	models    []string
 	modelInfo map[string]*models.ModelInfo
 }
 
-func (m *mockFallbackProvider) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *mockFallbackProvider) GetChat(modelID string) (damodel.Chat, error) {
 	svc, ok := m.services[modelID]
 	if !ok {
 		return nil, fmt.Errorf("model not available: %s", modelID)
@@ -639,11 +639,11 @@ type recordingProvider struct {
 	modelIDs   []string
 	tags       map[string]string // optional per-model tags
 	requested  []string
-	services   map[string]dmodel.Chat // optional per-model service override
-	fallbackTo dmodel.Chat
+	services   map[string]damodel.Chat // optional per-model service override
+	fallbackTo damodel.Chat
 }
 
-func (p *recordingProvider) GetChat(modelID string) (dmodel.Chat, error) {
+func (p *recordingProvider) GetChat(modelID string) (damodel.Chat, error) {
 	p.requested = append(p.requested, modelID)
 	if svc, ok := p.services[modelID]; ok {
 		return svc, nil
@@ -692,7 +692,7 @@ func TestGenerateSlugText_PreferenceFallbackChain(t *testing.T) {
 
 	provider := &recordingProvider{
 		modelIDs: []string{"gpt-5.5", "gpt-5.4-mini", "gpt-5.6-luna"},
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"gpt-5.6-luna": &MockLLMServiceWithError{},
 		},
 		fallbackTo: &MockLLMService{ResponseText: "haiku-slug"},
@@ -718,7 +718,7 @@ func TestGenerateSlugText_ConversationModelLastResort(t *testing.T) {
 
 	provider := &recordingProvider{
 		modelIDs: []string{"gpt-5.5", "gpt-5.4-mini", "gpt-5.6-luna"},
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"gpt-5.6-luna": &MockLLMServiceWithError{},
 			"gpt-5.4-mini": &MockLLMServiceWithError{},
 		},
@@ -767,7 +767,7 @@ func TestGenerateSlugText_TaggedModelWins(t *testing.T) {
 	provider2 := &recordingProvider{
 		modelIDs: []string{"gpt-5.6-luna", "gpt-5.4-mini"},
 		tags:     map[string]string{"gpt-5.6-luna": "slug"},
-		services: map[string]dmodel.Chat{
+		services: map[string]damodel.Chat{
 			"gpt-5.6-luna": &MockLLMServiceWithError{},
 		},
 		fallbackTo: &MockLLMService{ResponseText: "backup-slug"},

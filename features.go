@@ -16,26 +16,26 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/checkpoint"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	skillpkg "github.com/semistrict/dago/skill"
-	"github.com/semistrict/dago/state"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	skillpkg "github.com/semistrict/dago/daskill"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 )
 
 // Runnable is the small invocation contract accepted by compiled subagents.
 type Runnable interface {
-	Invoke(context.Context, agent.Input) (agent.Result, error)
+	Invoke(context.Context, dagent.Input) (dagent.Result, error)
 }
 
 // StreamingRunnable lets a compiled subagent project its nested lifecycle onto
 // the parent stream. Runnable remains sufficient for invoke-only integrations.
 type StreamingRunnable interface {
 	Runnable
-	Stream(context.Context, agent.Input, int) *agent.Stream
+	Stream(context.Context, dagent.Input, int) *dagent.Stream
 }
 
 type Subagent struct {
@@ -43,13 +43,13 @@ type Subagent struct {
 	Description      string
 	Runnable         Runnable
 	SystemPrompt     string
-	Model            model.Chat
-	Tools            []tool.Tool
-	Middleware       []agent.Middleware
-	InterruptOn      []agent.ApprovalRule
+	Model            damodel.Chat
+	Tools            []datool.Tool
+	Middleware       []dagent.Middleware
+	InterruptOn      []dagent.ApprovalRule
 	Skills           []string
 	Permissions      []FilesystemPermission
-	StructuredOutput *agent.StructuredOutput
+	StructuredOutput *dagent.StructuredOutput
 	InheritedState   []string
 	inheritAllState  bool
 }
@@ -57,11 +57,11 @@ type Subagent struct {
 // PatchToolCallsMiddleware repairs assistant tool calls that have no matching
 // result before a resumed agent run. Interrupted turns can otherwise leave model
 // history that providers reject because a requested tool was never answered.
-func PatchToolCallsMiddleware() agent.Middleware {
-	return agent.Middleware{
+func PatchToolCallsMiddleware() dagent.Middleware {
+	return dagent.Middleware{
 		Name: "patch_tool_calls", SerializedName: "PatchToolCallsMiddleware",
-		BeforeAgent: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
-			messages, err := featureMessageView(values[agent.MessagesKey])
+		BeforeAgent: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
+			messages, err := featureMessageView(values[dagent.MessagesKey])
 			if err != nil {
 				return nil, err
 			}
@@ -69,7 +69,7 @@ func PatchToolCallsMiddleware() agent.Middleware {
 			if !changed {
 				return nil, nil
 			}
-			return state.Values{agent.MessagesKey: state.Overwrite{Value: patched}}, nil
+			return dastate.Values{dagent.MessagesKey: dastate.Overwrite{Value: patched}}, nil
 		},
 	}
 }
@@ -82,11 +82,11 @@ type pendingToolCall struct {
 // repairToolCallHistory produces the provider-valid structural form required
 // by chat APIs: each assistant tool-call batch is followed only by its matching
 // tool results, with a synthetic error result for every unanswered call.
-func repairToolCallHistory(messages []message.Message) ([]message.Message, bool) {
+func repairToolCallHistory(messages []damessage.Message) ([]damessage.Message, bool) {
 	if !toolCallHistoryNeedsRepair(messages) {
 		return messages, false
 	}
-	patched := make([]message.Message, 0, len(messages))
+	patched := make([]damessage.Message, 0, len(messages))
 	pending := map[string]pendingToolCall{}
 	order := []string{}
 	changed := false
@@ -105,9 +105,9 @@ func repairToolCallHistory(messages []message.Message) ([]message.Message, bool)
 			if call.invalid {
 				content = fmt.Sprintf("Tool call %s with id %s could not be executed - arguments were malformed or truncated.", name, id)
 			}
-			result := message.Tool(id, content)
+			result := damessage.Tool(id, content)
 			result.Name = name
-			result.ToolStatus = message.ToolStatusError
+			result.ToolStatus = damessage.ToolStatusError
 			patched = append(patched, result)
 			changed = true
 		}
@@ -116,7 +116,7 @@ func repairToolCallHistory(messages []message.Message) ([]message.Message, bool)
 	}
 
 	for _, item := range messages {
-		if item.Role == message.RoleTool {
+		if item.Role == damessage.RoleTool {
 			if _, exists := pending[item.ToolCallID]; !exists || item.ToolCallID == "" {
 				changed = true
 				continue
@@ -128,7 +128,7 @@ func repairToolCallHistory(messages []message.Message) ([]message.Message, bool)
 
 		flushMissing()
 		patched = append(patched, item)
-		if item.Role != message.RoleAssistant {
+		if item.Role != damessage.RoleAssistant {
 			continue
 		}
 		for _, call := range item.ToolCalls {
@@ -157,10 +157,10 @@ func repairToolCallHistory(messages []message.Message) ([]message.Message, bool)
 	return patched, changed
 }
 
-func toolCallHistoryNeedsRepair(messages []message.Message) bool {
+func toolCallHistoryNeedsRepair(messages []damessage.Message) bool {
 	pending := map[string]struct{}{}
 	for _, item := range messages {
-		if item.Role == message.RoleTool {
+		if item.Role == damessage.RoleTool {
 			if item.ToolCallID == "" {
 				return true
 			}
@@ -173,7 +173,7 @@ func toolCallHistoryNeedsRepair(messages []message.Message) bool {
 		if len(pending) > 0 {
 			return true
 		}
-		if item.Role != message.RoleAssistant {
+		if item.Role != damessage.RoleAssistant {
 			continue
 		}
 		for _, call := range item.ToolCalls {
@@ -192,7 +192,7 @@ func toolCallHistoryNeedsRepair(messages []message.Message) bool {
 
 // SubagentMiddleware adds the task tool. Each invocation receives only its task
 // message and a distinct thread identity, preventing parent and sibling state leaks.
-func SubagentMiddleware(subagents []Subagent) (agent.Middleware, error) {
+func SubagentMiddleware(subagents []Subagent) (dagent.Middleware, error) {
 	return SubagentMiddlewareWithOptions(SubagentMiddlewareOptions{Subagents: subagents})
 }
 
@@ -201,21 +201,21 @@ type SubagentMiddlewareOptions struct {
 	PrivateState []string
 }
 
-func SubagentMiddlewareWithOptions(options SubagentMiddlewareOptions) (agent.Middleware, error) {
+func SubagentMiddlewareWithOptions(options SubagentMiddlewareOptions) (dagent.Middleware, error) {
 	return subagentMiddleware(options.Subagents, stringSet(options.PrivateState))
 }
 
-func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (agent.Middleware, error) {
+func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dagent.Middleware, error) {
 	if len(subagents) == 0 {
-		return agent.Middleware{}, fmt.Errorf("at least one subagent is required")
+		return dagent.Middleware{}, fmt.Errorf("at least one subagent is required")
 	}
 	byName := map[string]Subagent{}
 	for _, item := range subagents {
 		if item.Name == "" || item.Description == "" || item.Runnable == nil {
-			return agent.Middleware{}, fmt.Errorf("subagent name, description, and runnable are required")
+			return dagent.Middleware{}, fmt.Errorf("subagent name, description, and runnable are required")
 		}
 		if _, duplicate := byName[item.Name]; duplicate {
-			return agent.Middleware{}, fmt.Errorf("duplicate subagent %q", item.Name)
+			return dagent.Middleware{}, fmt.Errorf("duplicate subagent %q", item.Name)
 		}
 		byName[item.Name] = item
 	}
@@ -228,29 +228,22 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 	for i, name := range names {
 		descriptionParts[i] = name + ": " + byName[name].Description
 	}
-	properties := map[string]any{
-		"description":   map[string]any{"type": "string", "description": "A detailed task for the selected subagent to complete autonomously."},
-		"subagent_type": map[string]any{"type": "string", "enum": names},
+	type taskInput struct {
+		Description string `json:"description" description:"A detailed task for the selected subagent to complete autonomously."`
+		Type        string `json:"subagent_type"`
 	}
-	schemaBytes, _ := json.Marshal(map[string]any{"type": "object", "properties": properties, "required": []string{"description", "subagent_type"}, "additionalProperties": false})
-	taskTool := tool.Func{Spec: tool.Definition{Name: "task", Description: "Launch an isolated subagent for a complex task. Available agents:\n" + strings.Join(descriptionParts, "\n"), InputSchema: schemaBytes}, Run: func(ctx context.Context, raw json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
-		var input struct {
-			Description string `json:"description"`
-			Type        string `json:"subagent_type"`
-		}
-		if err := decodeArguments(raw, &input); err != nil {
-			return tool.Result{}, err
-		}
+	taskTool := datool.MustNew("task", "Launch an isolated subagent for a complex task. Available agents:\n"+strings.Join(descriptionParts, "\n"), func(ctx context.Context, input taskInput) (any, error) {
+		runtime, _ := datool.RuntimeFromContext(ctx)
 		selected, ok := byName[input.Type]
 		if !ok {
-			return tool.TextResult("Unknown subagent type " + input.Type), nil
+			return "Unknown subagent type " + input.Type, nil
 		}
-		inherited := state.Values{}
+		inherited := dastate.Values{}
 		inheritedKeys := append([]string(nil), selected.InheritedState...)
 		if selected.inheritAllState {
-			if values, ok := runtime.State.(state.Values); ok {
+			if values, ok := runtime.State.(dastate.Values); ok {
 				for key := range values {
-					if key != agent.MessagesKey && key != agent.StructuredResponseKey && !privateState[key] {
+					if key != dagent.MessagesKey && key != dagent.StructuredResponseKey && !privateState[key] {
 						inheritedKeys = append(inheritedKeys, key)
 					}
 				}
@@ -265,7 +258,7 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 			}
 		}
 		for _, key := range inheritedKeys {
-			if key == agent.MessagesKey || key == agent.StructuredResponseKey || strings.HasPrefix(key, "__") || privateState[key] {
+			if key == dagent.MessagesKey || key == dagent.StructuredResponseKey || strings.HasPrefix(key, "__") || privateState[key] {
 				continue
 			}
 			if value, exists := runtime.State.Get(key); exists {
@@ -277,29 +270,29 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 			namespace += "/"
 		}
 		namespace += "subagent:" + runtime.TaskID + ":" + runtime.CallID
-		invocation := agent.Input{Config: checkpoint.Config{ThreadID: runtime.ThreadID, Namespace: namespace}}
+		invocation := dagent.Input{Config: dacheckpoint.Config{ThreadID: runtime.ThreadID, Namespace: namespace}}
 		if runtime.Resume != nil {
 			invocation.Resume = runtime.Resume
 		} else {
 			invocation.State = inherited
-			invocation.Messages = []message.Message{message.Human(input.Description)}
+			invocation.Messages = []damessage.Message{damessage.Human(input.Description)}
 		}
 		result, err := invokeSubagent(ctx, selected, invocation, runtime)
 		if err != nil {
-			return tool.Result{}, err
+			return datool.Result{}, err
 		}
 		if len(result.Interrupts) > 0 {
 			if len(result.Interrupts) != 1 {
-				return tool.Result{}, fmt.Errorf("subagent %q produced multiple interrupts", selected.Name)
+				return datool.Result{}, fmt.Errorf("subagent %q produced multiple interrupts", selected.Name)
 			}
-			return tool.Result{Interrupt: &tool.Interrupt{ID: result.Interrupts[0].ID, Value: result.Interrupts[0].Value}}, nil
+			return datool.Result{Interrupt: &datool.Interrupt{ID: result.Interrupts[0].ID, Value: result.Interrupts[0].Value}}, nil
 		}
 		text := ""
 		if len(result.Structured) > 0 {
 			text = string(result.Structured)
 		} else {
 			for i := len(result.Messages) - 1; i >= 0; i-- {
-				if result.Messages[i].Role == message.RoleAssistant {
+				if result.Messages[i].Role == damessage.RoleAssistant {
 					text = strings.TrimSpace(result.Messages[i].TextContent())
 					if text != "" {
 						break
@@ -310,9 +303,9 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 		if text == "" {
 			text = "Subagent completed without a text response."
 		}
-		toolResult := tool.TextResult(text)
+		toolResult := datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: text}}}
 		for _, key := range inheritedKeys {
-			if key == agent.MessagesKey || key == agent.StructuredResponseKey || strings.HasPrefix(key, "__") || privateState[key] {
+			if key == dagent.MessagesKey || key == dagent.StructuredResponseKey || strings.HasPrefix(key, "__") || privateState[key] {
 				continue
 			}
 			before, beforeExists := inherited[key]
@@ -321,34 +314,34 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (age
 				if toolResult.Update == nil {
 					toolResult.Update = map[string]any{}
 				}
-				toolResult.Update[key] = state.Overwrite{Value: after}
+				toolResult.Update[key] = dastate.Overwrite{Value: after}
 			}
 		}
 		return toolResult, nil
-	}}
-	return agent.Middleware{Name: "subagents", SerializedName: "SubAgentMiddleware", Tools: []tool.Tool{taskTool}}, nil
+	}, datool.WithPropertyEnum("subagent_type", names...))
+	return dagent.Middleware{Name: "subagents", SerializedName: "SubAgentMiddleware", Tools: []datool.Tool{taskTool}}, nil
 }
 
-func invokeSubagent(ctx context.Context, selected Subagent, invocation agent.Input, runtime tool.Runtime) (agent.Result, error) {
+func invokeSubagent(ctx context.Context, selected Subagent, invocation dagent.Input, runtime datool.Runtime) (dagent.Result, error) {
 	streaming, supportsStreaming := selected.Runnable.(StreamingRunnable)
 	if !supportsStreaming || runtime.Stream == nil {
 		return selected.Runnable.Invoke(ctx, invocation)
 	}
-	emit := func(event agent.ChildEvent) error {
-		encoded, err := agent.EncodeChildEvent(event)
+	emit := func(event dagent.ChildEvent) error {
+		encoded, err := dagent.EncodeChildEvent(event)
 		if err != nil {
 			return err
 		}
 		return runtime.Stream.Write(ctx, encoded)
 	}
-	base := agent.ChildEvent{
+	base := dagent.ChildEvent{
 		Name: selected.Name, ToolCallID: runtime.CallID,
 		Namespace: invocation.Config.Namespace,
 	}
 	started := base
-	started.Phase = agent.ChildStarted
+	started.Phase = dagent.ChildStarted
 	if err := emit(started); err != nil {
-		return agent.Result{}, err
+		return dagent.Result{}, err
 	}
 	stream := streaming.Stream(ctx, invocation, 16)
 	defer stream.Close()
@@ -359,43 +352,43 @@ func invokeSubagent(ctx context.Context, selected Subagent, invocation agent.Inp
 		}
 		if err != nil {
 			failed := base
-			failed.Phase = agent.ChildFailed
+			failed.Phase = dagent.ChildFailed
 			failed.Error = err.Error()
 			_ = emit(failed)
-			return agent.Result{}, err
+			return dagent.Result{}, err
 		}
 		forwarded := base
-		forwarded.Phase = agent.ChildEventUpdate
+		forwarded.Phase = dagent.ChildEventUpdate
 		forwarded.Event = &event
 		if err := emit(forwarded); err != nil {
-			return agent.Result{}, err
+			return dagent.Result{}, err
 		}
 	}
 	result, err := stream.Result(ctx)
 	terminal := base
 	if err != nil {
-		terminal.Phase = agent.ChildFailed
+		terminal.Phase = dagent.ChildFailed
 		terminal.Error = err.Error()
 		_ = emit(terminal)
-		return agent.Result{}, err
+		return dagent.Result{}, err
 	}
-	terminal.Phase = agent.ChildCompleted
+	terminal.Phase = dagent.ChildCompleted
 	if len(result.Interrupts) > 0 {
-		terminal.Phase = agent.ChildInterrupted
+		terminal.Phase = dagent.ChildInterrupted
 	}
 	terminal.Messages = result.Messages
 	terminal.Structured = result.Structured
 	terminal.State = result.State
 	terminal.Interrupts = result.Interrupts
 	if err := emit(terminal); err != nil {
-		return agent.Result{}, err
+		return dagent.Result{}, err
 	}
 	return result, nil
 }
 
 type SummarizationOptions struct {
-	Model   model.Chat
-	Backend backend.Backend
+	Model   damodel.Chat
+	Backend dabackend.Backend
 	// TriggerClauses are ORed together; every non-zero threshold within one
 	// clause must match. This represents Deep Agents' list-of-trigger-clauses
 	// contract without Python tuple/dict unions.
@@ -438,19 +431,19 @@ const summarizationEventKey = "_summarization_event"
 // SummarizationMiddleware performs deterministic thresholding while preserving
 // the raw message log. A private event records the summary and absolute cutoff;
 // model calls reconstruct the compacted view from that event.
-func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, error) {
+func SummarizationMiddleware(options SummarizationOptions) (dagent.Middleware, error) {
 	options, err := normalizeSummarizationOptions(options)
 	if err != nil {
-		return agent.Middleware{}, err
+		return dagent.Middleware{}, err
 	}
-	middleware := agent.Middleware{
+	middleware := dagent.Middleware{
 		Name: "summarization", SerializedName: "SummarizationMiddleware",
-		Fields: map[string]agent.StateField{summarizationEventKey: {
-			Kind: agent.FieldLast, Contract: "dago.summarization.event.v1", Private: true,
+		Fields: map[string]dagent.StateField{summarizationEventKey: {
+			Kind: dagent.FieldLast, Contract: "dago.summarization.event.v1", Private: true,
 			Clone: cloneSummarizationEvent,
 		}},
 	}
-	middleware.WrapModelCall = func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+	middleware.WrapModelCall = func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		effective := applySummarizationEvent(request.Messages, request.State[summarizationEventKey])
 		truncated, _ := truncatedToolArguments(effective, options.ArgumentTruncation)
 		prepared := request
@@ -463,7 +456,7 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 		overflow := false
 		if !shouldSummarize {
 			response, callErr := next(ctx, prepared)
-			if !errors.Is(callErr, model.ErrContextOverflow) {
+			if !errors.Is(callErr, damodel.ErrContextOverflow) {
 				return response, callErr
 			}
 			overflow = true
@@ -471,11 +464,11 @@ func SummarizationMiddleware(options SummarizationOptions) (agent.Middleware, er
 
 		compacted, compactErr := summarizeForModel(ctx, truncated, request.State[summarizationEventKey], request.Runtime, request.State, options, overflow)
 		if compactErr != nil {
-			return agent.ModelResponse{}, compactErr
+			return dagent.ModelResponse{}, compactErr
 		}
 		if !compacted.Compacted {
 			if overflow {
-				return agent.ModelResponse{}, model.ErrContextOverflow
+				return dagent.ModelResponse{}, damodel.ErrContextOverflow
 			}
 			return next(ctx, prepared)
 		}
@@ -531,16 +524,16 @@ func normalizeSummarizationOptions(options SummarizationOptions) (SummarizationO
 		options.KeepTokens = max(int(float64(profileWindow)*options.KeepFraction), 1)
 	}
 	if options.HistoryRoot == "" {
-		options.HistoryRoot = backend.ArtifactPath(options.Backend, "conversation_history")
+		options.HistoryRoot = dabackend.ArtifactPath(options.Backend, "conversation_history")
 	}
 	if options.MediaRoot == "" {
-		options.MediaRoot = backend.ArtifactPath(options.Backend, "conversation_history/media")
+		options.MediaRoot = dabackend.ArtifactPath(options.Backend, "conversation_history/media")
 	}
 	if options.OverflowClipTokens <= 0 {
 		options.OverflowClipTokens = 5_000
 	}
 	if options.LargeToolResultsRoot == "" {
-		options.LargeToolResultsRoot = backend.ArtifactPath(options.Backend, "large_tool_results")
+		options.LargeToolResultsRoot = dabackend.ArtifactPath(options.Backend, "large_tool_results")
 	}
 	if options.SummaryPrompt == "" {
 		options.SummaryPrompt = "Summarize the earlier conversation faithfully. Preserve decisions, constraints, unresolved tasks, file paths, errors, and important tool results."
@@ -628,13 +621,13 @@ func summarizationTriggered(clauses []SummarizationTriggerClause, messages, toke
 }
 
 type summarizedModelView struct {
-	Messages  []message.Message
-	Update    state.Values
+	Messages  []damessage.Message
+	Update    dastate.Values
 	Compacted bool
 }
 
-func cloneMessageSlice(values []message.Message) []message.Message {
-	result := make([]message.Message, len(values))
+func cloneMessageSlice(values []damessage.Message) []damessage.Message {
+	result := make([]damessage.Message, len(values))
 	for index := range values {
 		result[index] = values[index].Clone()
 	}
@@ -649,20 +642,20 @@ func cloneSummarizationEvent(value any) any {
 	return map[string]any{"cutoff_index": cutoff, "summary_message": summary.Clone(), "file_path": filePath}
 }
 
-func decodeSummarizationEvent(value any) (int, message.Message, string, bool) {
+func decodeSummarizationEvent(value any) (int, damessage.Message, string, bool) {
 	record, ok := value.(map[string]any)
 	if !ok {
-		return 0, message.Message{}, "", false
+		return 0, damessage.Message{}, "", false
 	}
 	cutoff, ok := integerValue(record["cutoff_index"])
 	if !ok || cutoff < 0 {
-		return 0, message.Message{}, "", false
+		return 0, damessage.Message{}, "", false
 	}
-	summary, ok := record["summary_message"].(message.Message)
+	summary, ok := record["summary_message"].(damessage.Message)
 	if !ok {
 		encoded, err := json.Marshal(record["summary_message"])
 		if err != nil || json.Unmarshal(encoded, &summary) != nil {
-			return 0, message.Message{}, "", false
+			return 0, damessage.Message{}, "", false
 		}
 	}
 	filePath, _ := record["file_path"].(string)
@@ -684,13 +677,13 @@ func integerValue(value any) (int, bool) {
 	}
 }
 
-func applySummarizationEvent(messages []message.Message, value any) []message.Message {
+func applySummarizationEvent(messages []damessage.Message, value any) []damessage.Message {
 	cutoff, summary, _, ok := decodeSummarizationEvent(value)
 	if !ok {
 		return messages
 	}
 	cutoff = min(cutoff, len(messages))
-	result := []message.Message{summary.Clone()}
+	result := []damessage.Message{summary.Clone()}
 	return append(result, cloneMessageSlice(messages[cutoff:])...)
 }
 
@@ -702,9 +695,9 @@ func summarizationStateCutoff(previous any, effectiveCutoff int) int {
 	return max(cutoff+effectiveCutoff-1, 0)
 }
 
-func truncatedToolArguments(messages []message.Message, settings *ArgumentTruncationOptions) ([]message.Message, bool) {
+func truncatedToolArguments(messages []damessage.Message, settings *ArgumentTruncationOptions) ([]damessage.Message, bool) {
 	update := truncateOldToolArguments(messages, settings)
-	overwrite, ok := update[agent.MessagesKey].(state.Overwrite)
+	overwrite, ok := update[dagent.MessagesKey].(dastate.Overwrite)
 	if !ok {
 		return messages, false
 	}
@@ -715,7 +708,7 @@ func truncatedToolArguments(messages []message.Message, settings *ArgumentTrunca
 	return result, true
 }
 
-func offloadSummaryMedia(ctx context.Context, messages []message.Message, options SummarizationOptions) []message.Message {
+func offloadSummaryMedia(ctx context.Context, messages []damessage.Message, options SummarizationOptions) []damessage.Message {
 	result := cloneMessageSlice(messages)
 	paths := map[string]string{}
 	for messageIndex := range result {
@@ -736,9 +729,9 @@ func offloadSummaryMedia(ctx context.Context, messages []message.Message, option
 					}
 				}
 				mediaPath = fmt.Sprintf("%s/%s%s", strings.TrimSuffix(options.MediaRoot, "/"), key, extension)
-				uploads := options.Backend.Upload(ctx, []backend.Upload{{Path: mediaPath, Content: block.Data}})
+				uploads := options.Backend.Upload(ctx, []dabackend.Upload{{Path: mediaPath, Content: block.Data}})
 				if len(uploads) != 1 || uploads[0].Error != "" {
-					*block = message.ContentBlock{Type: message.BlockText, Text: "<media error=\"failed_to_offload\" />"}
+					*block = damessage.ContentBlock{Type: damessage.BlockText, Text: "<media error=\"failed_to_offload\" />"}
 					continue
 				}
 				paths[key] = mediaPath
@@ -747,30 +740,30 @@ func offloadSummaryMedia(ctx context.Context, messages []message.Message, option
 			if kind == "" {
 				kind = "media"
 			}
-			*block = message.ContentBlock{Type: message.BlockText, Text: fmt.Sprintf("<%s url=\"%s\" />", kind, mediaPath)}
+			*block = damessage.ContentBlock{Type: damessage.BlockText, Text: fmt.Sprintf("<%s url=\"%s\" />", kind, mediaPath)}
 		}
 	}
 	return result
 }
 
-func updateClippedMessages(update state.Values, before, after []message.Message) {
-	changed := []message.Message{}
+func updateClippedMessages(update dastate.Values, before, after []damessage.Message) {
+	changed := []damessage.Message{}
 	for index := range before {
 		if index < len(after) && !reflect.DeepEqual(before[index], after[index]) {
 			changed = append(changed, after[index].Clone())
 		}
 	}
 	if len(changed) > 0 {
-		update[agent.MessagesKey] = changed
+		update[dagent.MessagesKey] = changed
 	}
 }
 
-func buildSummaryMessage(summaryText string, offload historyOffloadResult) message.Message {
+func buildSummaryMessage(summaryText string, offload historyOffloadResult) damessage.Message {
 	text := "Here is a summary of the conversation to date:\n\n" + summaryText
 	if offload.Path != "" {
 		text = "You are in the middle of a conversation that has been summarized.\n\nThe full conversation history has been saved to " + offload.Path + " should you need to refer back to it for details.\n\nA condensed summary follows:\n\n<summary>\n" + summaryText + "\n</summary>"
 	}
-	summary := message.Human(text)
+	summary := damessage.Human(text)
 	summary.Metadata = map[string]json.RawMessage{"dago_summary": json.RawMessage(`true`), "lc_source": json.RawMessage(`"summarization"`)}
 	if offload.Err != nil {
 		encoded, _ := json.Marshal(offload.Err.Error())
@@ -779,18 +772,18 @@ func buildSummaryMessage(summaryText string, offload historyOffloadResult) messa
 	return summary
 }
 
-func summarizeForModel(ctx context.Context, messages []message.Message, previousEvent any, runtime agent.Runtime, reader backend.StateReader, options SummarizationOptions, overflow bool) (summarizedModelView, error) {
+func summarizeForModel(ctx context.Context, messages []damessage.Message, previousEvent any, runtime dagent.Runtime, reader dabackend.StateReader, options SummarizationOptions, overflow bool) (summarizedModelView, error) {
 	cutoff := summaryCutoff(messages, options)
 	if cutoff <= 0 {
 		return summarizedModelView{}, nil
 	}
 	older := cloneMessageSlice(messages[:cutoff])
 	recent := cloneMessageSlice(messages[cutoff:])
-	update := state.Values{}
+	update := dastate.Values{}
 	boundCtx := ctx
 	var bindErr error
 	if options.Backend != nil {
-		boundCtx, bindErr = backend.BindRuntime(ctx, options.Backend, reader, backendRuntime(runtime))
+		boundCtx, bindErr = dabackend.BindRuntime(ctx, options.Backend, reader, backendRuntime(runtime))
 		if bindErr == nil {
 			older = offloadSummaryMedia(boundCtx, older, options)
 			if overflow {
@@ -808,7 +801,7 @@ func summarizeForModel(ctx context.Context, messages []message.Message, previous
 	} else {
 		go func() { offloadChannel <- offloadConversationHistoryBound(boundCtx, options, runtime, older) }()
 	}
-	response, err := options.Model.Invoke(ctx, model.Request{Messages: []message.Message{message.System(options.SummaryPrompt), message.Human(renderHistory(older))}})
+	response, err := options.Model.Invoke(ctx, damodel.Request{Messages: []damessage.Message{damessage.System(options.SummaryPrompt), damessage.Human(renderHistory(older))}})
 	offload := <-offloadChannel
 	if err != nil {
 		return summarizedModelView{}, err
@@ -817,14 +810,14 @@ func summarizeForModel(ctx context.Context, messages []message.Message, previous
 		update[key] = value
 	}
 	if options.Backend != nil && bindErr == nil {
-		for key, value := range backend.RuntimeUpdates(boundCtx, options.Backend) {
+		for key, value := range dabackend.RuntimeUpdates(boundCtx, options.Backend) {
 			update[key] = value
 		}
 	}
 	summary := buildSummaryMessage(response.Message.TextContent(), offload)
 	stateCutoff := summarizationStateCutoff(previousEvent, cutoff)
 	update[summarizationEventKey] = map[string]any{"cutoff_index": stateCutoff, "summary_message": summary, "file_path": offload.Path}
-	return summarizedModelView{Messages: append([]message.Message{summary}, recent...), Update: update, Compacted: true}, nil
+	return summarizedModelView{Messages: append([]damessage.Message{summary}, recent...), Update: update, Compacted: true}, nil
 }
 
 type SummarizationToolOptions struct {
@@ -837,57 +830,56 @@ type SummarizationToolOptions struct {
 // SummarizationToolMiddleware exposes opt-in manual conversation compaction.
 // It shares the private event format used by SummarizationMiddleware but never
 // compacts in the background.
-func SummarizationToolMiddleware(toolOptions SummarizationToolOptions) (agent.Middleware, error) {
+func SummarizationToolMiddleware(toolOptions SummarizationToolOptions) (dagent.Middleware, error) {
 	options, err := normalizeSummarizationOptions(toolOptions.Summarization)
 	if err != nil {
-		return agent.Middleware{}, err
+		return dagent.Middleware{}, err
 	}
-	schema := json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
-	compact := tool.Func{Spec: tool.Definition{
-		Name:        "compact_conversation",
-		Description: "Compact the conversation by summarizing older messages into a concise summary. Use this proactively when the conversation is getting long to free up context window space. Use it when moving on to a completely new, unrelated task, or after finishing synthesis or extraction when the previous working context is no longer needed. This tool takes no arguments.",
-		InputSchema: schema,
-	}, Run: func(ctx context.Context, _ json.RawMessage, runtime tool.Runtime) (tool.Result, error) {
-		if runtime.State == nil {
-			return tool.TextResult("Nothing to compact yet — conversation is within the token budget."), nil
-		}
-		rawMessages, _ := runtime.State.Get(agent.MessagesKey)
-		messages, messageErr := featureMessages(rawMessages)
-		if messageErr != nil {
-			return tool.TextResult(fmt.Sprintf("Compaction failed: an error occurred while reading conversation state (%T: %v). The conversation has not been compacted — no messages were summarized or removed.", messageErr, messageErr)), nil
-		}
-		previousEvent, _ := runtime.State.Get(summarizationEventKey)
-		effective := applySummarizationEvent(messages, previousEvent)
-		eligible := summarizationTriggered(options.triggerClauses, len(effective), approximateTokens(effective), 2)
-		if !eligible {
-			return tool.TextResult("Nothing to compact yet — conversation is within the token budget."), nil
-		}
-		view, compactErr := summarizeForModel(ctx, effective, previousEvent, agent.Runtime{
-			Context: runtime.Context, TaskID: runtime.CallID,
-			Config: checkpoint.Config{ThreadID: runtime.ThreadID, Namespace: runtime.Namespace, CheckpointID: runtime.CheckpointID},
-		}, runtime.State, options, false)
-		if compactErr != nil {
-			return tool.TextResult(fmt.Sprintf("Compaction failed: an error occurred while generating the summary (%T: %v). The conversation has not been compacted — no messages were summarized or removed.", compactErr, compactErr)), nil
-		}
-		if !view.Compacted {
-			return tool.TextResult("Nothing to compact yet — conversation is within the token budget."), nil
-		}
-		count := summaryCutoff(effective, options)
-		return tool.Result{
-			Content: []message.ContentBlock{{Type: message.BlockText, Text: fmt.Sprintf("Conversation compacted. Summarized %d messages into a concise summary.", count)}},
-			Update:  view.Update,
-		}, nil
-	}}
-	middleware := agent.Middleware{
+	compact := datool.MustNew(
+		"compact_conversation",
+		"Compact the conversation by summarizing older messages into a concise summary. Use this proactively when the conversation is getting long to free up context window space. Use it when moving on to a completely new, unrelated task, or after finishing synthesis or extraction when the previous working context is no longer needed. This tool takes no arguments.",
+		func(ctx context.Context, _ struct{}) (any, error) {
+			runtime, _ := datool.RuntimeFromContext(ctx)
+			if runtime.State == nil {
+				return "Nothing to compact yet — conversation is within the token budget.", nil
+			}
+			rawMessages, _ := runtime.State.Get(dagent.MessagesKey)
+			messages, messageErr := featureMessages(rawMessages)
+			if messageErr != nil {
+				return fmt.Sprintf("Compaction failed: an error occurred while reading conversation state (%T: %v). The conversation has not been compacted — no messages were summarized or removed.", messageErr, messageErr), nil
+			}
+			previousEvent, _ := runtime.State.Get(summarizationEventKey)
+			effective := applySummarizationEvent(messages, previousEvent)
+			eligible := summarizationTriggered(options.triggerClauses, len(effective), approximateTokens(effective), 2)
+			if !eligible {
+				return "Nothing to compact yet — conversation is within the token budget.", nil
+			}
+			view, compactErr := summarizeForModel(ctx, effective, previousEvent, dagent.Runtime{
+				Context: runtime.Context, TaskID: runtime.CallID,
+				Config: dacheckpoint.Config{ThreadID: runtime.ThreadID, Namespace: runtime.Namespace, CheckpointID: runtime.CheckpointID},
+			}, runtime.State, options, false)
+			if compactErr != nil {
+				return fmt.Sprintf("Compaction failed: an error occurred while generating the summary (%T: %v). The conversation has not been compacted — no messages were summarized or removed.", compactErr, compactErr), nil
+			}
+			if !view.Compacted {
+				return "Nothing to compact yet — conversation is within the token budget.", nil
+			}
+			count := summaryCutoff(effective, options)
+			return datool.Result{
+				Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: fmt.Sprintf("Conversation compacted. Summarized %d messages into a concise summary.", count)}},
+				Update:  view.Update,
+			}, nil
+		})
+	middleware := dagent.Middleware{
 		Name: "summarization_tool", SerializedName: "SummarizationToolMiddleware",
-		Fields: map[string]agent.StateField{summarizationEventKey: {
-			Kind: agent.FieldLast, Contract: "dago.summarization.event.v1", Private: true,
+		Fields: map[string]dagent.StateField{summarizationEventKey: {
+			Kind: dagent.FieldLast, Contract: "dago.summarization.event.v1", Private: true,
 			Clone: cloneSummarizationEvent,
 		}},
-		Tools: []tool.Tool{compact},
+		Tools: []datool.Tool{compact},
 	}
 	if toolOptions.SystemPrompt != nil {
-		middleware.WrapModelCall = func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+		middleware.WrapModelCall = func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 			appendSystem(&request, *toolOptions.SystemPrompt)
 			return next(ctx, request)
 		}
@@ -897,18 +889,18 @@ func SummarizationToolMiddleware(toolOptions SummarizationToolOptions) (agent.Mi
 
 type historyOffloadResult struct {
 	Path    string
-	Updates state.Values
+	Updates dastate.Values
 	Err     error
 }
 
 func offloadConversationHistory(
 	ctx context.Context,
 	options SummarizationOptions,
-	runtime agent.Runtime,
-	reader backend.StateReader,
-	messages []message.Message,
+	runtime dagent.Runtime,
+	reader dabackend.StateReader,
+	messages []damessage.Message,
 ) historyOffloadResult {
-	boundCtx, err := backend.BindRuntime(ctx, options.Backend, reader, backendRuntime(runtime))
+	boundCtx, err := dabackend.BindRuntime(ctx, options.Backend, reader, backendRuntime(runtime))
 	if err != nil {
 		return historyOffloadResult{Err: fmt.Errorf("bind conversation history backend: %w", err)}
 	}
@@ -918,10 +910,10 @@ func offloadConversationHistory(
 func offloadConversationHistoryBound(
 	boundCtx context.Context,
 	options SummarizationOptions,
-	runtime agent.Runtime,
-	messages []message.Message,
+	runtime dagent.Runtime,
+	messages []damessage.Message,
 ) historyOffloadResult {
-	filtered := make([]message.Message, 0, len(messages))
+	filtered := make([]damessage.Message, 0, len(messages))
 	for _, item := range messages {
 		if !isSummaryMessage(item) {
 			filtered = append(filtered, item)
@@ -953,14 +945,14 @@ func offloadConversationHistoryBound(
 	} else if _, err := options.Backend.Write(boundCtx, historyPath, section); err != nil {
 		return historyOffloadResult{Err: fmt.Errorf("write conversation history: %w", err)}
 	}
-	updates := state.Values{}
-	for key, value := range backend.RuntimeUpdates(boundCtx, options.Backend) {
+	updates := dastate.Values{}
+	for key, value := range dabackend.RuntimeUpdates(boundCtx, options.Backend) {
 		updates[key] = value
 	}
 	return historyOffloadResult{Path: historyPath, Updates: updates}
 }
 
-func isSummaryMessage(item message.Message) bool {
+func isSummaryMessage(item damessage.Message) bool {
 	if raw := item.Metadata["dago_summary"]; string(raw) == "true" {
 		return true
 	}
@@ -968,15 +960,15 @@ func isSummaryMessage(item message.Message) bool {
 	return json.Unmarshal(item.Metadata["lc_source"], &source) == nil && source == "summarization"
 }
 
-func requestTokenCount(ctx context.Context, request agent.ModelRequest) int {
+func requestTokenCount(ctx context.Context, request dagent.ModelRequest) int {
 	tokens := approximateTokens(request.Messages)
 	if request.SystemMessage != nil {
-		tokens += approximateTokens([]message.Message{*request.SystemMessage})
+		tokens += approximateTokens([]damessage.Message{*request.SystemMessage})
 	}
-	if counter, ok := request.Model.(model.TokenCounter); ok {
-		messages := append([]message.Message(nil), request.Messages...)
+	if counter, ok := request.Model.(damodel.TokenCounter); ok {
+		messages := append([]damessage.Message(nil), request.Messages...)
 		if request.SystemMessage != nil {
-			messages = append([]message.Message{request.SystemMessage.Clone()}, messages...)
+			messages = append([]damessage.Message{request.SystemMessage.Clone()}, messages...)
 		}
 		if counted, err := counter.CountTokens(ctx, messages); err == nil {
 			tokens = counted
@@ -992,7 +984,7 @@ func requestTokenCount(ctx context.Context, request agent.ModelRequest) int {
 }
 
 type MemoryOptions struct {
-	Backend backend.Backend
+	Backend dabackend.Backend
 	Sources []string
 	// Contents supplies already-loaded source text. Entries whose paths appear
 	// in Sources are used without downloading them from Backend.
@@ -1015,9 +1007,9 @@ Persist durable user preferences, corrections, useful identifiers, and recurring
 
 // MemoryMiddleware loads configured Markdown files once per checkpointed session
 // and appends their comment-stripped contents at model-call time.
-func MemoryMiddleware(options MemoryOptions) (agent.Middleware, error) {
+func MemoryMiddleware(options MemoryOptions) (dagent.Middleware, error) {
 	if options.Backend == nil {
-		return agent.Middleware{}, fmt.Errorf("memory backend is required")
+		return dagent.Middleware{}, fmt.Errorf("memory backend is required")
 	}
 	template := defaultMemorySystemPrompt
 	legacyPercentTemplate := false
@@ -1028,14 +1020,14 @@ func MemoryMiddleware(options MemoryOptions) (agent.Middleware, error) {
 		legacyPercentTemplate = strings.Contains(template, "%s") && !strings.Contains(template, "{agent_memory}")
 	}
 	if template != "" && !strings.Contains(template, "{agent_memory}") && !legacyPercentTemplate {
-		return agent.Middleware{}, fmt.Errorf("memory system prompt must contain the {agent_memory} slot")
+		return dagent.Middleware{}, fmt.Errorf("memory system prompt must contain the {agent_memory} slot")
 	}
 	commentRE := regexp.MustCompile(`(?s)<!--.*?-->`)
-	return agent.Middleware{Name: "memory", SerializedName: "MemoryMiddleware", Fields: map[string]agent.StateField{"memory_contents": {Kind: agent.FieldLast, Contract: "dago.memory.v1", Private: true, Clone: cloneStringMap}}, BeforeAgent: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
+	return dagent.Middleware{Name: "memory", SerializedName: "MemoryMiddleware", Fields: map[string]dagent.StateField{"memory_contents": {Kind: dagent.FieldLast, Contract: "dago.memory.v1", Private: true, Clone: cloneStringMap}}, BeforeAgent: func(ctx context.Context, values dastate.Values, runtime dagent.Runtime) (dastate.Values, error) {
 		if _, loaded := values["memory_contents"]; loaded {
 			return nil, nil
 		}
-		boundCtx, err := backend.BindRuntime(ctx, options.Backend, values, backendRuntime(runtime))
+		boundCtx, err := dabackend.BindRuntime(ctx, options.Backend, values, backendRuntime(runtime))
 		if err != nil {
 			return nil, err
 		}
@@ -1064,8 +1056,8 @@ func MemoryMiddleware(options MemoryOptions) (agent.Middleware, error) {
 			}
 			contents[source] = string(download.Content)
 		}
-		return state.Values{"memory_contents": contents}, nil
-	}, WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+		return dastate.Values{"memory_contents": contents}, nil
+	}, WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		if template != "" {
 			contents := stringValuesFromState(request.State["memory_contents"])
 			var sections []string
@@ -1105,7 +1097,7 @@ type SkillSource struct {
 }
 
 type SkillsOptions struct {
-	Backend        backend.Backend
+	Backend        dabackend.Backend
 	Sources        []string
 	LabeledSources []SkillSource
 	// Catalog supplies skills that were discovered by an application. Filesystem
@@ -1140,16 +1132,16 @@ Use skills through progressive disclosure: recognize when a skill applies, follo
 
 // SkillsMiddleware discovers SKILL.md metadata and advertises stable on-demand
 // locations without loading the full instructions into every request.
-func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
+func SkillsMiddleware(options SkillsOptions) (dagent.Middleware, error) {
 	if options.Backend == nil {
-		return agent.Middleware{}, fmt.Errorf("skills backend is required")
+		return dagent.Middleware{}, fmt.Errorf("skills backend is required")
 	}
 	for index, item := range options.Catalog {
 		if item.Name == "" || item.Description == "" {
-			return agent.Middleware{}, fmt.Errorf("catalog skill %d requires a name and description", index)
+			return dagent.Middleware{}, fmt.Errorf("catalog skill %d requires a name and description", index)
 		}
 		if item.Path == "" && options.Activate == nil {
-			return agent.Middleware{}, fmt.Errorf("catalog skill %q requires a path or activation function", item.Name)
+			return dagent.Middleware{}, fmt.Errorf("catalog skill %q requires a path or activation function", item.Name)
 		}
 	}
 	if options.MaxFileBytes <= 0 {
@@ -1162,7 +1154,7 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 	if template != "" {
 		for _, slot := range []string{"{skills_locations}", "{skills_load_warnings}", "{skills_list}"} {
 			if !strings.Contains(template, slot) {
-				return agent.Middleware{}, fmt.Errorf("skills system prompt is missing required slot %s", slot)
+				return dagent.Middleware{}, fmt.Errorf("skills system prompt is missing required slot %s", slot)
 			}
 		}
 	}
@@ -1173,7 +1165,7 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 	sources = append(sources, options.LabeledSources...)
 	for index, source := range sources {
 		if source.Path == "" && source.Label != "" {
-			return agent.Middleware{}, fmt.Errorf("skill source %d has a label but no path", index)
+			return dagent.Middleware{}, fmt.Errorf("skill source %d has a label but no path", index)
 		}
 	}
 	discover := func(ctx context.Context) ([]Skill, []string, error) {
@@ -1245,21 +1237,21 @@ func SkillsMiddleware(options SkillsOptions) (agent.Middleware, error) {
 		sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 		return result, warnings, nil
 	}
-	return agent.Middleware{Name: "skills", SerializedName: "SkillsMiddleware", Fields: map[string]agent.StateField{
-		"skills":             {Kind: agent.FieldLast, Contract: "dago.skills.v1", Private: true, Clone: cloneSkillState},
-		"skills_load_errors": {Kind: agent.FieldLast, Contract: "dago.skills.errors.v1", Private: true, Clone: cloneStrings},
-	}, BeforeAgent: func(ctx context.Context, values state.Values, runtime agent.Runtime) (state.Values, error) {
+	return dagent.Middleware{Name: "skills", SerializedName: "SkillsMiddleware", Fields: map[string]dagent.StateField{
+		"skills":             {Kind: dagent.FieldLast, Contract: "dago.skills.v1", Private: true, Clone: cloneSkillState},
+		"skills_load_errors": {Kind: dagent.FieldLast, Contract: "dago.skills.errors.v1", Private: true, Clone: cloneStrings},
+	}, BeforeAgent: func(ctx context.Context, values dastate.Values, runtime dagent.Runtime) (dastate.Values, error) {
 		if _, loaded := values["skills"]; loaded {
 			return nil, nil
 		}
-		boundCtx, bindErr := backend.BindRuntime(ctx, options.Backend, values, backendRuntime(runtime))
+		boundCtx, bindErr := dabackend.BindRuntime(ctx, options.Backend, values, backendRuntime(runtime))
 		if bindErr != nil {
 			return nil, bindErr
 		}
 		ctx = boundCtx
 		skills, warnings, err := discover(ctx)
-		return state.Values{"skills": skillsToState(skills), "skills_load_errors": warnings}, err
-	}, WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+		return dastate.Values{"skills": skillsToState(skills), "skills_load_errors": warnings}, err
+	}, WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		if template == "" {
 			return next(ctx, request)
 		}
@@ -1395,7 +1387,6 @@ func skillsToState(skills []Skill) []map[string]any {
 			"name": item.Name, "description": item.Description, "path": item.Path,
 			"license": item.License, "compatibility": item.Compatibility,
 			"metadata": metadata, "allowed_tools": append([]string(nil), item.AllowedTools...),
-			"when": item.When,
 		}
 	}
 	return result
@@ -1418,8 +1409,8 @@ func skillsFromState(value any) []Skill {
 		item := Skill{
 			Name: stringStateValue(record["name"]), Description: stringStateValue(record["description"]),
 			Path: stringStateValue(record["path"]), License: stringStateValue(record["license"]),
-			Compatibility: stringStateValue(record["compatibility"]), When: stringStateValue(record["when"]),
-			Metadata: map[string]string{},
+			Compatibility: stringStateValue(record["compatibility"]),
+			Metadata:      map[string]string{},
 		}
 		if metadata, ok := record["metadata"].(map[string]any); ok {
 			for key, raw := range metadata {
@@ -1483,20 +1474,20 @@ func truncateSkillWarning(value string) string {
 	return string([]rune(value)[:maxSkillWarningLength-len([]rune("... [truncated]"))]) + "... [truncated]"
 }
 
-func featureMessages(value any) ([]message.Message, error) {
+func featureMessages(value any) ([]damessage.Message, error) {
 	switch typed := value.(type) {
 	case nil:
 		return nil, nil
-	case []message.Message:
-		result := make([]message.Message, len(typed))
+	case []damessage.Message:
+		result := make([]damessage.Message, len(typed))
 		for i := range typed {
 			result[i] = typed[i].Clone()
 		}
 		return result, nil
 	case []any:
-		result := make([]message.Message, len(typed))
+		result := make([]damessage.Message, len(typed))
 		for i, item := range typed {
-			msg, ok := item.(message.Message)
+			msg, ok := item.(damessage.Message)
 			if !ok {
 				return nil, fmt.Errorf("message %d has type %T", i, item)
 			}
@@ -1510,27 +1501,29 @@ func featureMessages(value any) ([]message.Message, error) {
 
 // featureMessageView returns a read-only typed view for middleware that only
 // inspects messages. Callers must clone before returning or mutating elements.
-func featureMessageView(value any) ([]message.Message, error) {
+func featureMessageView(value any) ([]damessage.Message, error) {
 	switch typed := value.(type) {
 	case nil:
 		return nil, nil
-	case []message.Message:
+	case []damessage.Message:
 		return typed, nil
 	default:
 		return featureMessages(value)
 	}
 }
-func approximateTokens(messages []message.Message) int { return message.ApproximateTokens(messages) }
-func validCutoff(messages []message.Message, desired int) int {
+func approximateTokens(messages []damessage.Message) int {
+	return damessage.ApproximateTokens(messages)
+}
+func validCutoff(messages []damessage.Message, desired int) int {
 	if desired <= 0 {
 		return 0
 	}
 	for desired < len(messages) {
-		if desired > 0 && messages[desired].Role == message.RoleTool {
+		if desired > 0 && messages[desired].Role == damessage.RoleTool {
 			desired++
 			continue
 		}
-		if desired > 0 && messages[desired-1].Role == message.RoleAssistant && len(messages[desired-1].ToolCalls) > 0 {
+		if desired > 0 && messages[desired-1].Role == damessage.RoleAssistant && len(messages[desired-1].ToolCalls) > 0 {
 			desired++
 			continue
 		}
@@ -1539,7 +1532,7 @@ func validCutoff(messages []message.Message, desired int) int {
 	return min(desired, len(messages))
 }
 
-func summaryCutoff(messages []message.Message, options SummarizationOptions) int {
+func summaryCutoff(messages []damessage.Message, options SummarizationOptions) int {
 	desired := len(messages) - options.KeepMessages
 	if options.KeepTokens > 0 {
 		keptTokens := 0
@@ -1556,7 +1549,7 @@ func summaryCutoff(messages []message.Message, options SummarizationOptions) int
 	return validCutoff(messages, desired)
 }
 
-func renderHistory(messages []message.Message) string {
+func renderHistory(messages []damessage.Message) string {
 	var output strings.Builder
 	for _, item := range messages {
 		fmt.Fprintf(&output, "## %s\n%s\n", item.Role, item.TextContent())
@@ -1568,7 +1561,7 @@ func renderHistory(messages []message.Message) string {
 	}
 	return output.String()
 }
-func truncateOldToolArguments(messages []message.Message, settings *ArgumentTruncationOptions) state.Values {
+func truncateOldToolArguments(messages []damessage.Message, settings *ArgumentTruncationOptions) dastate.Values {
 	if settings == nil {
 		return nil
 	}
@@ -1595,7 +1588,7 @@ func truncateOldToolArguments(messages []message.Message, settings *ArgumentTrun
 		return nil
 	}
 	changed := false
-	result := make([]message.Message, len(messages))
+	result := make([]damessage.Message, len(messages))
 	for i, item := range messages {
 		result[i] = item.Clone()
 		if i >= cutoff {
@@ -1636,10 +1629,10 @@ func truncateOldToolArguments(messages []message.Message, settings *ArgumentTrun
 	if !changed {
 		return nil
 	}
-	return state.Values{agent.MessagesKey: state.Overwrite{Value: result}}
+	return dastate.Values{dagent.MessagesKey: dastate.Overwrite{Value: result}}
 }
 
-func mergeFeatureUpdates(left, right state.Values) state.Values {
+func mergeFeatureUpdates(left, right dastate.Values) dastate.Values {
 	if len(left) == 0 {
 		return right
 	}
@@ -1663,24 +1656,24 @@ func mergeFeatureUpdates(left, right state.Values) state.Values {
 	return result
 }
 
-func clipOverflowToolTail(ctx context.Context, all, recent []message.Message, options SummarizationOptions) []message.Message {
-	if len(recent) == 0 || recent[len(recent)-1].Role != message.RoleTool {
+func clipOverflowToolTail(ctx context.Context, all, recent []damessage.Message, options SummarizationOptions) []damessage.Message {
+	if len(recent) == 0 || recent[len(recent)-1].Role != damessage.RoleTool {
 		return recent
 	}
 	start := len(recent) - 1
-	for start > 0 && recent[start-1].Role == message.RoleTool {
+	for start > 0 && recent[start-1].Role == damessage.RoleTool {
 		start--
 	}
 	if approximateTokens(recent[start:]) < options.OverflowClipTokens {
 		return recent
 	}
-	calls := map[string]message.ToolCall{}
+	calls := map[string]damessage.ToolCall{}
 	for _, item := range all {
 		for _, call := range item.ToolCalls {
 			calls[call.ID] = call
 		}
 	}
-	result := make([]message.Message, len(recent))
+	result := make([]damessage.Message, len(recent))
 	for index := range recent {
 		result[index] = recent[index].Clone()
 	}
@@ -1712,11 +1705,11 @@ func clipOverflowToolTail(ctx context.Context, all, recent []message.Message, op
 	return result
 }
 
-func replaceMessageText(item *message.Message, replacement string) {
-	blocks := make([]message.ContentBlock, 0, len(item.Content)+1)
-	blocks = append(blocks, message.ContentBlock{Type: message.BlockText, Text: replacement})
+func replaceMessageText(item *damessage.Message, replacement string) {
+	blocks := make([]damessage.ContentBlock, 0, len(item.Content)+1)
+	blocks = append(blocks, damessage.ContentBlock{Type: damessage.BlockText, Text: replacement})
 	for _, block := range item.Content {
-		if block.Type != message.BlockText {
+		if block.Type != damessage.BlockText {
 			blocks = append(blocks, block)
 		}
 	}
@@ -1795,16 +1788,16 @@ func cloneStringValues(source map[string]string) map[string]string {
 	}
 	return result
 }
-func appendSystem(request *agent.ModelRequest, fragment string) {
+func appendSystem(request *dagent.ModelRequest, fragment string) {
 	if fragment == "" {
 		return
 	}
 	if request.SystemMessage == nil {
-		value := message.System(fragment)
+		value := damessage.System(fragment)
 		request.SystemMessage = &value
 		return
 	}
 	copy := request.SystemMessage.Clone()
-	copy.Content = append(copy.Content, message.ContentBlock{Type: message.BlockText, Text: "\n\n" + fragment})
+	copy.Content = append(copy.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: "\n\n" + fragment})
 	request.SystemMessage = &copy
 }

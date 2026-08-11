@@ -10,6 +10,12 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
+func resetSketchWipWarning() {
+	sketchWipWarningMu.Lock()
+	sketchWipWarningShown = false
+	sketchWipWarningMu.Unlock()
+}
+
 func TestCheck(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -130,98 +136,6 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-func TestWillRunGitCommit(t *testing.T) {
-	tests := []struct {
-		name       string
-		script     string
-		wantCommit bool
-	}{
-		{
-			name:       "simple git commit",
-			script:     "git commit -m 'Add feature'",
-			wantCommit: true,
-		},
-		{
-			name:       "git command without commit",
-			script:     "git status",
-			wantCommit: false,
-		},
-		{
-			name:       "multiline script with git commit",
-			script:     "echo 'Making changes' && git add . && git commit -m 'Update files'",
-			wantCommit: true,
-		},
-		{
-			name:       "multiline script without git commit",
-			script:     "echo 'Checking status' && git status",
-			wantCommit: false,
-		},
-		{
-			name:       "script with commented git commit",
-			script:     "# git commit -m 'This is commented out'",
-			wantCommit: false,
-		},
-		{
-			name:       "git commit with variables",
-			script:     "MSG='Fix bug' && git commit -m 'Using variable'",
-			wantCommit: true,
-		},
-		{
-			name:       "only git command",
-			script:     "git",
-			wantCommit: false,
-		},
-		{
-			name:       "script with invalid syntax",
-			script:     "git commit -m 'unterminated string",
-			wantCommit: false,
-		},
-		{
-			name:       "commit used in different context",
-			script:     "echo 'commit message'",
-			wantCommit: false,
-		},
-		{
-			name:       "git with flags before commit",
-			script:     "git -C /path/to/repo commit -m 'Update'",
-			wantCommit: true,
-		},
-		{
-			name:       "git with multiple flags",
-			script:     "git --git-dir=.git -C repo commit -a -m 'Update'",
-			wantCommit: true,
-		},
-		{
-			name:       "git with env vars",
-			script:     "GIT_AUTHOR_NAME=\"Josh Bleecher Snyder\" GIT_AUTHOR_EMAIL=\"josharian@gmail.com\" git commit -am \"Updated code\"",
-			wantCommit: true,
-		},
-		{
-			name:       "git with redirections",
-			script:     "git commit -m 'Fix issue' > output.log 2>&1",
-			wantCommit: true,
-		},
-		{
-			name:       "git with piped commands",
-			script:     "echo 'Committing' | git commit -F -",
-			wantCommit: true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			gotCommit, err := WillRunGitCommit(tc.script)
-			if err != nil {
-				t.Errorf("WillRunGitCommit() error = %v", err)
-				return
-			}
-			if gotCommit != tc.wantCommit {
-				t.Errorf("WillRunGitCommit() = %v, want %v", gotCommit, tc.wantCommit)
-			}
-		})
-	}
-}
-
 func TestSketchWipBranchProtection(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -298,7 +212,7 @@ func TestSketchWipBranchProtection(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.resetBefore {
-				ResetSketchWipWarning()
+				resetSketchWipWarning()
 			}
 			err := Check(tc.script)
 			if (err != nil) != tc.wantErr {
@@ -638,7 +552,7 @@ func TestEdgeCases(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.resetBefore {
-				ResetSketchWipWarning()
+				resetSketchWipWarning()
 			}
 			err := Check(tc.script)
 			if (err != nil) != tc.wantErr {
@@ -783,40 +697,8 @@ func TestHasSketchWipBranchChangesEdgeCases(t *testing.T) {
 	}
 }
 
-func TestChainsCdWithCommand(t *testing.T) {
-	tests := []struct {
-		name   string
-		script string
-		want   bool
-	}{
-		{"cd and command", "cd /tmp && ls", true},
-		{"cd semicolon command", "cd /tmp; ls", true},
-		{"cd and multiple commands", "cd foo/bar && make && ./run", true},
-		{"cd with relative path", "cd ../sibling && go test ./...", true},
-		{"cd inside explicit block", "{ cd /tmp; ls; }", true},
-		{"bare cd", "cd", false},
-		{"cd no chain", "cd /tmp", false},
-		{"no cd", "ls -la", false},
-		{"pushd not flagged", "pushd /tmp && ls", false},
-		{"cd or fallback", "cd /tmp || exit 1", false},
-		// Subshells scope the cd; treat as intentional and do not flag.
-		{"cd in subshell and", "(cd /tmp && ls)", false},
-		{"cd in subshell semi", "(cd /tmp; ls)", false},
-		{"subshell then top-level cmd", "(cd /tmp && ls) && echo done", false},
-		{"unparseable", "cd /tmp &&", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := ChainsCdWithCommand(tc.script)
-			if got != tc.want {
-				t.Errorf("ChainsCdWithCommand(%q) = %v, want %v", tc.script, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestAddCoauthorTrailer(t *testing.T) {
-	const trailer = "Co-authored-by: Shelley <shelley@exe.dev>"
+	const trailer = "Co-authored-by: Shelley <shelley@example.invalid>"
 	tests := []struct {
 		name     string
 		in       string
@@ -833,7 +715,7 @@ func TestAddCoauthorTrailer(t *testing.T) {
 			in:   `git commit -m "hi"`,
 			wantSubs: []string{
 				`-c "trailer.ifexists=addIfDifferent"`,
-				`--trailer "Co-authored-by: Shelley <shelley@exe.dev>"`,
+				`--trailer "Co-authored-by: Shelley <shelley@example.invalid>"`,
 			},
 		},
 		{
@@ -841,7 +723,7 @@ func TestAddCoauthorTrailer(t *testing.T) {
 			in:   `git commit --amend -F msg.txt`,
 			wantSubs: []string{
 				`-c "trailer.ifexists=addIfDifferent"`,
-				`--trailer "Co-authored-by: Shelley <shelley@exe.dev>"`,
+				`--trailer "Co-authored-by: Shelley <shelley@example.invalid>"`,
 			},
 		},
 	}
@@ -878,7 +760,7 @@ func TestAddCoauthorTrailer_NoDuplicates(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	const trailer = "Co-authored-by: Shelley <shelley@exe.dev>"
+	const trailer = "Co-authored-by: Shelley <shelley@example.invalid>"
 
 	dir := t.TempDir()
 	// Isolate from any host git config (e.g. a global core.hooksPath

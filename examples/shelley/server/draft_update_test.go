@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
 )
 
 // draftPut sends a PUT /draft with the given partial-update fields (nil =

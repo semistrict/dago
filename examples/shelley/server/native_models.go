@@ -1,13 +1,13 @@
 package server
 
-import dmodel "github.com/semistrict/dago/model"
+import "github.com/semistrict/dago/damodel"
 
-func nativeChatFor(provider LLMProvider, modelID string) (dmodel.Chat, error) {
+func nativeChatFor(provider LLMProvider, modelID string) (damodel.Chat, error) {
 	return provider.GetChat(modelID)
 }
 
 type nativeModelProvider struct{ LLMProvider }
 
-func (provider nativeModelProvider) GetChat(modelID string) (dmodel.Chat, error) {
+func (provider nativeModelProvider) GetChat(modelID string) (damodel.Chat, error) {
 	return nativeChatFor(provider.LLMProvider, modelID)
 }

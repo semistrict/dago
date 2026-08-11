@@ -9,8 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
 )
 
 func TestHandleVersion(t *testing.T) {

@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
 	"mvdan.cc/sh/v3/syntax"
 
-	"shelley.exe.dev/claudetool/bashkit"
-	"shelley.exe.dev/llm/llmhttp"
+	"github.com/semistrict/dago/examples/shelley/claudetool/bashkit"
+	"github.com/semistrict/dago/examples/shelley/llm/llmhttp"
 )
 
 // PermissionCallback applies Shelley's application policy to its yielding shell.
@@ -105,7 +105,7 @@ func (installer commandInstaller) installTool(ctx context.Context, command strin
 	if err != nil {
 		return fmt.Errorf("failed to get chat model for tool validation: %w", err)
 	}
-	response, err := chat.Invoke(llmhttp.WithPurpose(ctx, "tool_install"), dmodel.Request{Messages: []dmessage.Message{
+	response, err := chat.Invoke(llmhttp.WithPurpose(ctx, "tool_install"), damodel.Request{Messages: []dmessage.Message{
 		dmessage.System("You are an expert in software developer tools."),
 		dmessage.Human(toolInstallQuery(manager, command)),
 	}})
@@ -115,7 +115,7 @@ func (installer commandInstaller) installTool(ctx context.Context, command strin
 	return installer.finishToolInstall(ctx, command, manager, response.Message.TextContent())
 }
 
-func (installer commandInstaller) selectBestChat() (dmodel.Chat, error) {
+func (installer commandInstaller) selectBestChat() (damodel.Chat, error) {
 	if installer.LLMProvider == nil {
 		return nil, fmt.Errorf("no LLM provider available")
 	}

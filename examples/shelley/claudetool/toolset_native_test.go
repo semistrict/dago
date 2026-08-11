@@ -19,7 +19,7 @@ func TestToolSetPublishesOnlyEnabledNativeTools(t *testing.T) {
 	}
 }
 
-func TestDagoHarnessRemovesOverlappingShelleyExecutables(t *testing.T) {
+func TestNativeHarnessRemovesOverlappingShelleyExecutables(t *testing.T) {
 	set := NewToolSet(context.Background(), ToolSetConfig{
 		WorkingDir: t.TempDir(),
 	})
@@ -44,7 +44,7 @@ func TestDagoHarnessRemovesOverlappingShelleyExecutables(t *testing.T) {
 	}
 }
 
-func TestDagoFilesystemSelectionMapsShelleySettings(t *testing.T) {
+func TestNativeFilesystemSelectionMapsShelleySettings(t *testing.T) {
 	set := NewToolSet(context.Background(), ToolSetConfig{
 		WorkingDir:    t.TempDir(),
 		ToolOverrides: map[string]string{"bash": "off", "patch": "off", "keyword_search": "off"},

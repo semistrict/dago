@@ -62,7 +62,7 @@ export interface LLMContent {
 export interface Model {
   id: string;
   display_name?: string;
-  source?: string; // Human-readable source (e.g., "exe.dev gateway", "$ANTHROPIC_API_KEY")
+  source?: string; // Human-readable source (e.g., "$OPENAI_API_KEY")
   base_url?: string;
   api_type?: string;
   ready: boolean;
@@ -146,14 +146,10 @@ export interface InitData {
   links?: Link[];
   user_agents_md_path?: string;
   notification_channel_types?: import("./services/api").ChannelTypeInfo[];
-  exe_notify_available?: boolean; // VM has an exe.dev "notify" integration (push notifications)
   // model_setup_hint explains WHY models is empty, so the UI can give
   // actionable setup advice instead of guessing a model id. Absent when
   // models are available. See server/model_setup_hint.go for the tokens.
   model_setup_hint?: string;
-  // is_exe_dev picks exe.dev-specific setup advice when model_setup_hint is
-  // absent because the catalog emptied after page load.
-  is_exe_dev?: boolean;
   banner?: string; // If set, shown as a top-of-page banner (e.g. to mark demo instances)
 }
 

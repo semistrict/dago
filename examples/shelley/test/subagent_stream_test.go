@@ -13,15 +13,15 @@ import (
 	"testing"
 	"time"
 
-	dmodel "github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/models"
-	"shelley.exe.dev/server"
-	"shelley.exe.dev/server/notifications"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/models"
+	"github.com/semistrict/dago/examples/shelley/server"
+	"github.com/semistrict/dago/examples/shelley/server/notifications"
 )
 
 // StreamResponse matches server.StreamResponse for testing
@@ -49,7 +49,7 @@ type fakeLLMManager struct {
 	service *loop.PredictableService
 }
 
-func (m *fakeLLMManager) GetChat(string) (dmodel.Chat, error) { return m.service, nil }
+func (m *fakeLLMManager) GetChat(string) (damodel.Chat, error) { return m.service, nil }
 
 func (m *fakeLLMManager) GetAvailableModels() []string {
 	return []string{"predictable"}

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	dskill "github.com/semistrict/dago/skill"
+	dskill "github.com/semistrict/dago/daskill"
 )
 
 const (
@@ -19,23 +19,14 @@ const (
 	MaxCompatibilityLength = dskill.MaxCompatibilityLength
 )
 
-// Skill represents a parsed skill from a SKILL.md file.
-type Skill struct {
-	Name          string            `json:"name"`
-	Description   string            `json:"description"`
-	License       string            `json:"license,omitempty"`
-	Compatibility string            `json:"compatibility,omitempty"`
-	When          string            `json:"when,omitempty"`
-	AllowedTools  string            `json:"allowed_tools,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-	Path          string            `json:"path"`           // Path to SKILL.md file (empty for built-in skills)
-	Body          string            `json:"body,omitempty"` // Full markdown body (set for built-in skills)
-}
+// Skill preserves Shelley's package-level name without defining a second skill
+// model. All skill values use dago's Agent Skills contract directly.
+type Skill = dskill.Skill
 
 // Discover finds all skills in the given directories.
 // It scans each directory for subdirectories containing SKILL.md files.
 func Discover(dirs []string) []Skill {
-	return fromDagoSkills(dskill.DiscoverDirectories(dirs))
+	return dskill.DiscoverDirectories(dirs)
 }
 
 // CreateTemplate creates a new skill directory with a template SKILL.md
@@ -60,11 +51,7 @@ func findSkillMD(dir string) string {
 
 // Parse reads and parses a SKILL.md file.
 func Parse(path string) (Skill, error) {
-	parsed, err := dskill.ParseFile(path)
-	if err != nil {
-		return Skill{}, err
-	}
-	return fromDagoSkill(parsed), nil
+	return dskill.ParseFile(path)
 }
 
 type ValidationError = dskill.ValidationError
@@ -74,48 +61,10 @@ func validateName(name string) error {
 	return dskill.ValidateName(name)
 }
 
-func fromDagoSkill(value dskill.Skill) Skill {
-	return Skill{
-		Name: value.Name, Description: value.Description, License: value.License,
-		Compatibility: value.Compatibility, When: value.When,
-		AllowedTools: strings.Join(value.AllowedTools, " "), Metadata: value.Metadata,
-		Path: value.Path, Body: value.Body,
-	}
-}
-
-func fromDagoSkills(values []dskill.Skill) []Skill {
-	result := make([]Skill, len(values))
-	for index, value := range values {
-		result[index] = fromDagoSkill(value)
-	}
-	return result
-}
-
-// DagoCatalog converts Shelley's resolved skill set into the metadata consumed
-// by Dago's progressive-disclosure middleware. Shelley keeps ownership of its
-// built-in catalog and environment conditions; Dago owns agent prompting and
-// activation.
-func DagoCatalog(skills []Skill) []dskill.Skill {
-	result := make([]dskill.Skill, len(skills))
-	for index, item := range skills {
-		result[index] = dskill.Skill{
-			Name: item.Name, Description: item.Description, Path: item.Path,
-			License: item.License, Compatibility: item.Compatibility,
-			Metadata: item.Metadata, AllowedTools: strings.Fields(item.AllowedTools),
-			When: item.When,
-		}
-	}
-	return result
-}
-
 // RenderPromptXML is retained for the standalone prompt compatibility API.
-// Production conversations use Dago's SkillsMiddleware directly.
+// Production conversations use dago's SkillsMiddleware directly.
 func RenderPromptXML(skills []Skill) string {
-	values := make([]dskill.Skill, len(skills))
-	for index, item := range skills {
-		values[index] = dskill.Skill{Name: item.Name, Description: item.Description}
-	}
-	return dskill.RenderXML(values, func(item dskill.Skill) string { return "shelley skill cat " + item.Name })
+	return dskill.RenderXML(skills, func(item dskill.Skill) string { return "shelley skill cat " + item.Name })
 }
 
 // DefaultDirs returns the default skill directories to search.
@@ -171,8 +120,7 @@ func DiscoverInTree(workingDir, gitRoot string) ([]Skill, map[string]bool) {
 	if searchRoot == "" {
 		searchRoot = workingDir
 	}
-	values, names := dskill.DiscoverTree(ctx, searchRoot)
-	return fromDagoSkills(values), names
+	return dskill.DiscoverTree(ctx, searchRoot)
 }
 
 // ListAll returns all available skills (built-in + filesystem), deduplicated by name.
@@ -227,36 +175,6 @@ func ListAll(workingDir, gitRoot string) []Skill {
 	}
 
 	return all
-}
-
-// Env describes the runtime environment used to gate skills with a `when:`
-// condition. Currently only ExeDev is checked; extend as new conditions are
-// added. The zero value satisfies no conditions, so skills with a `when:`
-// clause are filtered out by default.
-type Env struct {
-	ExeDev bool
-}
-
-// Filter returns the subset of skills whose `when:` condition is satisfied by
-// env. Skills without a `when:` clause are always included. Unknown condition
-// values cause the skill to be filtered out (fail-closed).
-func Filter(in []Skill, env Env) []Skill {
-	out := make([]Skill, 0, len(in))
-	for _, s := range in {
-		if s.When == "" || matchWhen(s.When, env) {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func matchWhen(when string, env Env) bool {
-	switch strings.TrimSpace(when) {
-	case "exe.dev":
-		return env.ExeDev
-	default:
-		return false
-	}
 }
 
 // FindByName looks up a skill by name and returns its raw SKILL.md content.

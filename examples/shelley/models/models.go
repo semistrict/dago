@@ -11,17 +11,17 @@ import (
 	"sync"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
-	dopenai "github.com/semistrict/dago/providers/openai"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	dopenai "github.com/semistrict/dago/daproviders/openai"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/models/modelsdev"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/llm/llmhttp"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/models/modelsdev"
 )
 
 // Provider identifies an LLM upstream API family.
@@ -79,13 +79,13 @@ type Model struct {
 	// see exactly which endpoint each model will be reached at.
 	DefaultBaseURL string
 
-	// Build constructs a native Dago chat model given a BARE base
-	// URL (origin + any non-API prefix, e.g. "https://llm.int.exe.xyz"
+	// Build constructs a native dago chat model given a BARE base
+	// URL (origin + any non-API prefix, e.g. "https://api.example.test"
 	// or "" for the provider package default), an API key, and an HTTP
 	// client. The function is responsible for appending its own
 	// API-protocol path ("/v1", "/v1/messages", "/v1beta", ...) — the
 	// caller never encodes those.
-	Build func(baseURL, apiKey string, httpc *http.Client) (dmodel.Chat, error)
+	Build func(baseURL, apiKey string, httpc *http.Client) (damodel.Chat, error)
 }
 
 // Built is a ready-to-use model, shaped to mirror a row in the custom
@@ -95,9 +95,9 @@ type Built struct {
 	ID          string
 	DisplayName string
 	Provider    Provider
-	Source      string // human-readable origin ("exe.dev gateway", "$OPENAI_API_KEY", "custom", ...)
+	Source      string // human-readable origin ("$OPENAI_API_KEY", "custom", ...)
 	Tags        string
-	Chat        dmodel.Chat
+	Chat        damodel.Chat
 
 	// APIType is the wire protocol used to talk to this model.
 	APIType APIType
@@ -140,15 +140,15 @@ type OpenAIResponsesOptions struct {
 	ReasoningEffort       string
 }
 
-// NewOpenAIResponses constructs a native Dago Responses model.
-func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client, options OpenAIResponsesOptions) (dmodel.Chat, error) {
+// NewOpenAIResponses constructs a native dago Responses model.
+func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client, options OpenAIResponsesOptions) (damodel.Chat, error) {
 	effort := options.ReasoningEffort
 	if effort == "" {
 		effort = options.DefaultReasoningLevel
 	}
-	var defaultReasoning *dmodel.Reasoning
+	var defaultReasoning *damodel.Reasoning
 	if options.SupportsReasoning && effort != "" && effort != "off" {
-		defaultReasoning = &dmodel.Reasoning{Effort: effort, Summary: "auto"}
+		defaultReasoning = &damodel.Reasoning{Effort: effort, Summary: "auto"}
 	}
 	chat, err := dopenai.NewAPIKey(apiKey, dopenai.Options{
 		Model: modelID, BaseURL: openAIResponsesBaseURL(baseURL), HTTPClient: httpClient,
@@ -158,7 +158,7 @@ func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client
 	if err != nil {
 		return nil, err
 	}
-	return WithProfile(chat, func(profile *dmodel.Profile) {
+	return damodel.WithProfile(chat, func(profile *damodel.Profile) {
 		profile.SupportsImages = options.SupportsImages
 		profile.SupportsReasoning = options.SupportsReasoning
 		profile.SupportsWebSearch = options.SupportsWebSearch
@@ -181,7 +181,7 @@ func openAIResponsesModel(id, description string, contextWindow int, supportsRea
 		ID: id, Provider: ProviderOpenAI, Description: description,
 		APIModelName: id, APIType: APITypeOpenAIResponses,
 		DefaultBaseURL: DefaultOpenAIBaseURL,
-		Build: func(baseURL, apiKey string, httpc *http.Client) (dmodel.Chat, error) {
+		Build: func(baseURL, apiKey string, httpc *http.Client) (damodel.Chat, error) {
 			return NewOpenAIResponses(apiKey, id, baseURL, httpc, OpenAIResponsesOptions{
 				ContextWindow: contextWindow, MaxOutputTokens: defaultOpenAIMaxOutputTokens,
 				SupportsImages: true, SupportsReasoning: supportsReasoning,
@@ -206,36 +206,6 @@ func openAIResponsesBaseURL(value string) string {
 
 func standardReasoningLevels() []string {
 	return []string{"off", "minimal", "low", "medium", "high", "xhigh"}
-}
-
-type profiledChat struct {
-	dmodel.Chat
-	profile dmodel.Profile
-}
-
-// WithProfile returns a native chat model with explicit catalog capabilities.
-func WithProfile(chat dmodel.Chat, configure func(*dmodel.Profile)) dmodel.Chat {
-	profile := chat.Profile()
-	configure(&profile)
-	return &profiledChat{Chat: chat, profile: profile}
-}
-
-func (chat *profiledChat) Profile() dmodel.Profile {
-	profile := chat.profile
-	profile.ReasoningLevels = append([]string(nil), profile.ReasoningLevels...)
-	return profile
-}
-
-func (chat *profiledChat) BindTools(definitions []dtool.Definition) (dmodel.Chat, error) {
-	binder, ok := chat.Chat.(dmodel.Binder)
-	if !ok {
-		return chat, nil
-	}
-	bound, err := binder.BindTools(definitions)
-	if err != nil {
-		return nil, err
-	}
-	return &profiledChat{Chat: bound, profile: chat.profile}, nil
 }
 
 // All returns all available models in Shelley.
@@ -278,7 +248,7 @@ func All() []Model {
 			Description:    "Deterministic test model (no API key)",
 			APIType:        APITypeBuiltIn,
 			DefaultBaseURL: "-",
-			Build: func(url, apiKey string, httpc *http.Client) (dmodel.Chat, error) {
+			Build: func(url, apiKey string, httpc *http.Client) (damodel.Chat, error) {
 				return loop.NewPredictableService(), nil
 			},
 		},
@@ -293,16 +263,6 @@ func ByID(id string) *Model {
 		}
 	}
 	return nil
-}
-
-// IDs returns all catalog model IDs.
-func IDs() []string {
-	models := All()
-	ids := make([]string, len(models))
-	for i, m := range models {
-		ids[i] = m.ID
-	}
-	return ids
 }
 
 // Default returns the default catalog model.
@@ -326,7 +286,7 @@ type Manager struct {
 }
 
 type modelEntry struct {
-	chat        dmodel.Chat
+	chat        damodel.Chat
 	provider    Provider
 	modelID     string
 	source      string
@@ -338,24 +298,20 @@ type modelEntry struct {
 
 // loggingChat wraps a native chat model with request and usage logging.
 type loggingChat struct {
-	chat     dmodel.Chat
+	chat     damodel.Chat
 	logger   *slog.Logger
 	modelID  string
 	provider Provider
 }
 
-func (l *loggingChat) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
+func (l *loggingChat) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
 	start := time.Now()
-	ctx = llmhttp.WithModelID(ctx, l.modelID)
-	ctx = llmhttp.WithProvider(ctx, string(l.provider))
 	response, err := l.chat.Invoke(ctx, request)
 	l.finish(ctx, start, response.Message.Usage, err)
 	return response, err
 }
 
-func (l *loggingChat) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
-	ctx = llmhttp.WithModelID(ctx, l.modelID)
-	ctx = llmhttp.WithProvider(ctx, string(l.provider))
+func (l *loggingChat) Stream(ctx context.Context, request damodel.Request) (damodel.Stream, error) {
 	start := time.Now()
 	stream, err := l.chat.Stream(ctx, request)
 	if err != nil {
@@ -365,10 +321,10 @@ func (l *loggingChat) Stream(ctx context.Context, request dmodel.Request) (dmode
 	return &loggingStream{Stream: stream, owner: l, ctx: ctx, started: start}, nil
 }
 
-func (l *loggingChat) Profile() dmodel.Profile { return l.chat.Profile() }
+func (l *loggingChat) Profile() damodel.Profile { return l.chat.Profile() }
 
-func (l *loggingChat) BindTools(definitions []dtool.Definition) (dmodel.Chat, error) {
-	binder, ok := l.chat.(dmodel.Binder)
+func (l *loggingChat) BindTools(definitions []datool.Definition) (damodel.Chat, error) {
+	binder, ok := l.chat.(damodel.Binder)
 	if !ok {
 		return l, nil
 	}
@@ -401,7 +357,7 @@ func (l *loggingChat) finish(ctx context.Context, started time.Time, native *dme
 }
 
 type loggingStream struct {
-	dmodel.Stream
+	damodel.Stream
 	owner   *loggingChat
 	ctx     context.Context
 	started time.Time
@@ -409,7 +365,7 @@ type loggingStream struct {
 	done    bool
 }
 
-func (stream *loggingStream) Next(ctx context.Context) (dmodel.Chunk, error) {
+func (stream *loggingStream) Next(ctx context.Context) (damodel.Chunk, error) {
 	chunk, err := stream.Stream.Next(ctx)
 	if chunk.MessageDelta.Usage != nil {
 		usage := *chunk.MessageDelta.Usage
@@ -567,7 +523,7 @@ func (m *Manager) RefreshBuiltModels(built []Built) error {
 }
 
 // GetChat returns the native model contract for modelID.
-func (m *Manager) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *Manager) GetChat(modelID string) (damodel.Chat, error) {
 	m.mu.RLock()
 	entry, ok := m.models[modelID]
 	m.mu.RUnlock()
@@ -605,7 +561,7 @@ type ModelInfo struct {
 	Source      string
 	BaseURL     string
 	APIType     string
-	Profile     dmodel.Profile
+	Profile     damodel.Profile
 }
 
 func (m *Manager) GetModelInfo(modelID string) *ModelInfo {
@@ -624,14 +580,14 @@ type reasoningMapping struct {
 }
 
 type reasoningChat struct {
-	dmodel.Chat
+	damodel.Chat
 	supported     bool
 	levels        []llm.ThinkingLevel
 	mapping       map[llm.ThinkingLevel]reasoningMapping
 	defaultSource llm.ThinkingLevel
 }
 
-func (chat *reasoningChat) Profile() dmodel.Profile {
+func (chat *reasoningChat) Profile() damodel.Profile {
 	profile := chat.Chat.Profile()
 	profile.SupportsReasoning = chat.supported
 	profile.ReasoningLevels = nil
@@ -652,8 +608,8 @@ func (chat *reasoningChat) Profile() dmodel.Profile {
 	return profile
 }
 
-func (chat *reasoningChat) BindTools(definitions []dtool.Definition) (dmodel.Chat, error) {
-	binder, ok := chat.Chat.(dmodel.Binder)
+func (chat *reasoningChat) BindTools(definitions []datool.Definition) (damodel.Chat, error) {
+	binder, ok := chat.Chat.(damodel.Binder)
 	if !ok {
 		return chat, nil
 	}
@@ -666,15 +622,15 @@ func (chat *reasoningChat) BindTools(definitions []dtool.Definition) (dmodel.Cha
 	return &copy, nil
 }
 
-func (chat *reasoningChat) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
+func (chat *reasoningChat) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
 	configured, err := chat.configure(request)
 	if err != nil {
-		return dmodel.Response{}, err
+		return damodel.Response{}, err
 	}
 	return chat.Chat.Invoke(ctx, configured)
 }
 
-func (chat *reasoningChat) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
+func (chat *reasoningChat) Stream(ctx context.Context, request damodel.Request) (damodel.Stream, error) {
 	configured, err := chat.configure(request)
 	if err != nil {
 		return nil, err
@@ -682,7 +638,7 @@ func (chat *reasoningChat) Stream(ctx context.Context, request dmodel.Request) (
 	return chat.Chat.Stream(ctx, configured)
 }
 
-func (chat *reasoningChat) configure(request dmodel.Request) (dmodel.Request, error) {
+func (chat *reasoningChat) configure(request damodel.Request) (damodel.Request, error) {
 	copyRequest := request
 	if !chat.supported {
 		copyRequest.Reasoning = nil
@@ -690,7 +646,7 @@ func (chat *reasoningChat) configure(request dmodel.Request) (dmodel.Request, er
 	}
 	if request.Reasoning == nil {
 		if mapped, ok := chat.mapping[chat.defaultSource]; ok {
-			copyRequest.Reasoning = &dmodel.Reasoning{Effort: nativeReasoningEffort(mapped)}
+			copyRequest.Reasoning = &damodel.Reasoning{Effort: nativeReasoningEffort(mapped)}
 		}
 		return copyRequest, nil
 	}
@@ -700,7 +656,7 @@ func (chat *reasoningChat) configure(request dmodel.Request) (dmodel.Request, er
 	level := llm.ParseThinkingLevel(request.Reasoning.Effort)
 	mapped, ok := chat.mapping[level]
 	if !ok {
-		return dmodel.Request{}, fmt.Errorf("reasoning level %q is not supported by this model", request.Reasoning.Effort)
+		return damodel.Request{}, fmt.Errorf("reasoning level %q is not supported by this model", request.Reasoning.Effort)
 	}
 	reasoning := *request.Reasoning
 	reasoning.Effort = nativeReasoningEffort(mapped)
@@ -716,7 +672,7 @@ func nativeReasoningEffort(mapped reasoningMapping) string {
 }
 
 // WrapReasoningConfig applies custom-model capability and level mapping.
-func WrapReasoningConfig(chat dmodel.Chat, endpoint, modelName, support, rawMap string) dmodel.Chat {
+func WrapReasoningConfig(chat damodel.Chat, endpoint, modelName, support, rawMap string) damodel.Chat {
 	supported := ResolveSupportsReasoning(endpoint, modelName, support)
 	mapping, levels := parseReasoningMap(rawMap)
 	defaultSource := llm.ParseThinkingLevel(chat.Profile().DefaultReasoningLevel)
@@ -755,7 +711,7 @@ func parseReasoningMap(raw string) (map[llm.ThinkingLevel]reasoningMapping, []ll
 }
 
 // createChatFromModel creates a native chat model from database configuration.
-func (m *Manager) createChatFromModel(model *generated.Model) (dmodel.Chat, error) {
+func (m *Manager) createChatFromModel(model *generated.Model) (damodel.Chat, error) {
 	supportsImages := ResolveSupportsImages(model.Endpoint, model.ModelName, model.ImageSupport)
 	if model.ProviderType != "openai-responses" {
 		return nil, fmt.Errorf("unknown provider type %q", model.ProviderType)

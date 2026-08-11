@@ -24,8 +24,8 @@ const bash = (command: string, maxLen?: number) => toolHeadline("bash", { comman
 
 run("strips leading 'cd <dir> &&' prefix", () => {
   assert(
-    bash("cd /home/exedev/exe && git status") === "git status",
-    bash("cd /home/exedev/exe && git status"),
+    bash("cd /home/user/exe && git status") === "git status",
+    bash("cd /home/user/exe && git status"),
   );
   assert(
     bash("cd shelley/ui; pnpm run build") === "pnpm run build",

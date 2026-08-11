@@ -203,8 +203,6 @@ export const zhTW: TranslationKeys = {
   notifications: "通知",
   browserNotifications: "瀏覽器通知",
   faviconBadge: "圖示徽章",
-  exeDevPushNotifications: "推播通知",
-  exeDevPushNotificationsDescription: "代理完成時透過 exe.dev 應用程式推播到您的裝置",
   editChannel: "編輯頻道",
   addChannel: "新增頻道",
   customChannels: "自訂頻道",
@@ -246,13 +244,10 @@ export const zhTW: TranslationKeys = {
   // Welcome / Empty State
   welcomeTitle: "Shelley Agent",
   welcomeSubtitle: "",
-  welcomeMessage:
-    "Shelley 是一個運行在 {hostname} 上的代理。你可以讓 Shelley 幫你完成各種任務。若你使用 Shelley 建立了網站，可以透過 exe.dev 的代理功能（參見 {docsLink}）在 {proxyLink} 上存取。",
+  welcomeMessage: "Shelley is running on {hostname}.",
   sendMessageToStart: "傳送訊息以開始對話。",
   noModelsTitle: "沒有可用的 AI 模型",
-  noModelsExeNote: "Shelley 從 exe.dev 的 llm 整合取得模型。執行下列任一命令即可修復：",
   noModelsLocalNote: "按 Ctrl+K 或 ⌘+K 新增模型。",
-  noModelsExeRefresh: "然後在模型選擇器中按 Refresh。",
   noModelSelectedPlaceholder: "無可用模型",
 
   // Status Bar

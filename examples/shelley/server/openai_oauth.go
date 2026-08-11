@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	dmodel "github.com/semistrict/dago/model"
-	dopenai "github.com/semistrict/dago/providers/openai"
+	"github.com/semistrict/dago/damodel"
+	dopenai "github.com/semistrict/dago/daproviders/openai"
 
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 const (
@@ -101,7 +101,7 @@ func (controller *OpenAIOAuth) Status() OpenAIOAuthStatus {
 }
 
 // BuiltModels materializes the authenticated subscription model through
-// Dago's native OpenAI provider. It intentionally returns no model while
+// dago's native OpenAI provider. It intentionally returns no model while
 // signed out or while a new login is pending.
 func (controller *OpenAIOAuth) BuiltModels() ([]models.Built, error) {
 	if controller == nil {
@@ -116,13 +116,13 @@ func (controller *OpenAIOAuth) BuiltModels() ([]models.Built, error) {
 	chat, err := dopenai.NewSubscription(session, dopenai.Options{
 		Model: OpenAISubscriptionModelID, ContextWindow: 272000,
 		MaxOutputTokens:  32768,
-		DefaultReasoning: &dmodel.Reasoning{Effort: "medium", Summary: "auto"},
+		DefaultReasoning: &damodel.Reasoning{Effort: "medium", Summary: "auto"},
 		WebSearch:        true,
 	})
 	if err != nil {
 		return nil, err
 	}
-	profiledChat := models.WithProfile(chat, func(profile *dmodel.Profile) {
+	profiledChat := damodel.WithProfile(chat, func(profile *damodel.Profile) {
 		profile.SupportsImages = true
 		profile.SupportsReasoning = true
 		profile.SupportsWebSearch = true

@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
-	"github.com/semistrict/dago/state"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 )
 
 func TestProfileRegistrationMergeToolOverrideAndExclusion(t *testing.T) {
@@ -27,15 +27,15 @@ func TestProfileRegistrationMergeToolOverrideAndExclusion(t *testing.T) {
 	if err := RegisterProfile(Profile{Name: name, Kind: ProfileHarness, SystemPromptSuffix: stringPointer("later suffix")}); err != nil {
 		t.Fatal(err)
 	}
-	kept := tool.Func{Spec: tool.Definition{Name: "kept", Description: "old", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
-		return tool.TextResult("ok"), nil
+	kept := datool.Func{Spec: datool.Definition{Name: "kept", Description: "old", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+		return datool.TextResult("ok"), nil
 	}}
-	removed := tool.Func{Spec: tool.Definition{Name: "removed", Description: "old", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
-		return tool.TextResult("ok"), nil
+	removed := datool.Func{Spec: datool.Definition{Name: "removed", Description: "old", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+		return datool.TextResult("ok"), nil
 	}}
-	script := modeltest.New(model.Profile{}, modeltest.Step{
-		Check: func(request model.Request) error {
-			if request.Messages[0].Role != message.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "profile prompt") || !strings.Contains(request.Messages[0].TextContent(), "later suffix") {
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{
+		Check: func(request damodel.Request) error {
+			if request.Messages[0].Role != damessage.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "profile prompt") || !strings.Contains(request.Messages[0].TextContent(), "later suffix") {
 				return errors.New("profile prompt missing")
 			}
 			if len(request.Tools) != 8 {
@@ -51,13 +51,13 @@ func TestProfileRegistrationMergeToolOverrideAndExclusion(t *testing.T) {
 			}
 			return nil
 		},
-		Response: model.Response{Message: message.Assistant("done")},
+		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled, err := New(Options{Model: script, ProfileNames: []string{name}, Tools: []tool.Tool{kept, removed}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
+	compiled, err := New(Options{Model: script, ProfileNames: []string{name}, Tools: []datool.Tool{kept, removed}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := LookupProfile(name); !ok || len(RegisteredProfiles()) == 0 {
@@ -71,34 +71,34 @@ func TestProfileToolExclusionOnlyFiltersTheModelBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	executions := 0
-	hidden := tool.Func{Spec: tool.Definition{Name: "hidden", Description: "hidden", InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+	hidden := datool.Func{Spec: datool.Definition{Name: "hidden", Description: "hidden", InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
 		executions++
-		return tool.TextResult("executed"), nil
+		return datool.TextResult("executed"), nil
 	}}
-	script := modeltest.New(model.Profile{},
-		modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			for _, definition := range request.Tools {
 				if definition.Name == "hidden" {
 					return errors.New("excluded tool reached the model")
 				}
 			}
 			return nil
-		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "historical-call", Name: "hidden", Arguments: json.RawMessage(`{}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
-			if len(request.Messages) == 0 || request.Messages[len(request.Messages)-1].Role != message.RoleTool || request.Messages[len(request.Messages)-1].TextContent() != "executed" {
+		}, Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "historical-call", Name: "hidden", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
+			if len(request.Messages) == 0 || request.Messages[len(request.Messages)-1].Role != damessage.RoleTool || request.Messages[len(request.Messages)-1].TextContent() != "executed" {
 				return errors.New("registered excluded tool did not execute")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("done")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled, err := New(Options{
-		Model: script, Tools: []tool.Tool{hidden}, ProfileNames: []string{name},
+		Model: script, Tools: []datool.Tool{hidden}, ProfileNames: []string{name},
 		DisableSubagents: true, DisableSummary: true, DisableTodo: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 	if executions != 1 {
@@ -107,7 +107,7 @@ func TestProfileToolExclusionOnlyFiltersTheModelBoundary(t *testing.T) {
 }
 
 func TestProfileCannotExcludeRequiredFilesystem(t *testing.T) {
-	_, err := New(Options{Model: modeltest.New(model.Profile{}), Profiles: []Profile{{Name: "bad", Kind: ProfileHarness, ExcludeMiddleware: []string{"filesystem"}}}})
+	_, err := New(Options{Model: modeltest.New(damodel.Profile{}), Profiles: []Profile{{Name: "bad", Kind: ProfileHarness, ExcludeMiddleware: []string{"filesystem"}}}})
 	if err == nil || !strings.Contains(err.Error(), "required middleware") {
 		t.Fatalf("error = %v", err)
 	}
@@ -115,22 +115,22 @@ func TestProfileCannotExcludeRequiredFilesystem(t *testing.T) {
 
 func TestProfileUsesCanonicalSerializedMiddlewareNames(t *testing.T) {
 	called := false
-	replacement := agent.Middleware{Name: "summarization", BeforeModel: func(context.Context, state.Values, agent.Runtime) (state.Values, error) {
+	replacement := dagent.Middleware{Name: "summarization", BeforeModel: func(context.Context, dastate.Values, dagent.Runtime) (dastate.Values, error) {
 		called = true
 		return nil, nil
 	}}
 	compiled, err := New(Options{
-		Model: modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}}),
+		Model: modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}}),
 		Profiles: []Profile{{
 			Name: "canonical-middleware-name", Kind: ProfileHarness,
 			ExcludeMiddleware: []string{"SummarizationMiddleware"},
 		}},
-		Middleware: []agent.Middleware{replacement}, DisableSubagents: true,
+		Middleware: []dagent.Middleware{replacement}, DisableSubagents: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 	if called {
@@ -140,7 +140,7 @@ func TestProfileUsesCanonicalSerializedMiddlewareNames(t *testing.T) {
 
 func TestProfileRejectsCanonicalRequiredMiddlewareNames(t *testing.T) {
 	for _, name := range []string{"FilesystemMiddleware", "SubAgentMiddleware"} {
-		_, err := New(Options{Model: modeltest.New(model.Profile{}), Profiles: []Profile{{
+		_, err := New(Options{Model: modeltest.New(damodel.Profile{}), Profiles: []Profile{{
 			Name: "required-" + name, Kind: ProfileHarness, ExcludeMiddleware: []string{name},
 		}}})
 		if err == nil || !strings.Contains(err.Error(), "required middleware") {
@@ -160,7 +160,7 @@ func TestProfileRegistrationRejectsMalformedKeys(t *testing.T) {
 func TestProfileCannotExcludeRequiredSubagentsOrUnknownMiddleware(t *testing.T) {
 	for _, excluded := range []string{"subagents", "TypoMiddleware"} {
 		_, err := New(Options{
-			Model:    modeltest.New(model.Profile{}),
+			Model:    modeltest.New(damodel.Profile{}),
 			Profiles: []Profile{{Name: "bad-" + excluded, Kind: ProfileHarness, ExcludeMiddleware: []string{excluded}}},
 		})
 		if err == nil {
@@ -190,7 +190,7 @@ func TestProfilesResolveFromModelAndMergeProviderWithExactModel(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	script := modeltest.New(model.Profile{Provider: provider, Model: modelID}, modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{Provider: provider, Model: modelID}, modeltest.Step{Check: func(request damodel.Request) error {
 		prompt := request.Messages[0].TextContent()
 		userAt, baseAt, suffixAt := strings.Index(prompt, "user prompt"), strings.Index(prompt, "provider base"), strings.Index(prompt, "model suffix")
 		if userAt < 0 || baseAt <= userAt || suffixAt <= baseAt || strings.Contains(prompt, "provider suffix") {
@@ -202,12 +202,12 @@ func TestProfilesResolveFromModelAndMergeProviderWithExactModel(t *testing.T) {
 			}
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled, err := New(Options{Model: script, SystemPrompt: "user prompt", DisableSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 }

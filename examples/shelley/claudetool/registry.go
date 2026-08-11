@@ -1,6 +1,6 @@
 package claudetool
 
-import dtool "github.com/semistrict/dago/tool"
+import "github.com/semistrict/dago/datool"
 
 // ToolInfo describes a tool available to conversations.
 type ToolInfo struct {
@@ -50,8 +50,8 @@ func IsToolEnabled(name string, overrides map[string]string, disableAll bool) bo
 }
 
 // FilterTools returns only the tools that are enabled under the given overrides.
-func FilterTools(tools []dtool.Tool, overrides map[string]string, disableAll bool) []dtool.Tool {
-	out := make([]dtool.Tool, 0, len(tools))
+func FilterTools(tools []datool.Tool, overrides map[string]string, disableAll bool) []datool.Tool {
+	out := make([]datool.Tool, 0, len(tools))
 	for _, executable := range tools {
 		if IsToolEnabled(executable.Definition().Name, overrides, disableAll) {
 			out = append(out, executable)

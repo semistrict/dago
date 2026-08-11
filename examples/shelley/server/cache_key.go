@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 var errNoCacheSession = db.ErrNoCacheSession

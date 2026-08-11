@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -433,7 +433,7 @@ func TestExecTerminal_ShelleyEnvVars(t *testing.T) {
 	h.server.listenPort = 12345
 
 	header := http.Header{}
-	header.Set("X-ExeDev-Email", "alice@example.com")
+	header.Set("X-User-Email", "alice@example.com")
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("dial: %v", err)

@@ -12,16 +12,32 @@ import (
 	"testing"
 	"time"
 
-	dtool "github.com/semistrict/dago/tool"
-
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/datool"
 )
+
+type progressCapture struct {
+	mu      sync.Mutex
+	updates []datool.Progress
+}
+
+func (capture *progressCapture) Write(_ context.Context, value json.RawMessage) error {
+	var envelope struct {
+		Progress datool.Progress `json:"tool_progress"`
+	}
+	if err := json.Unmarshal(value, &envelope); err != nil {
+		return err
+	}
+	capture.mu.Lock()
+	capture.updates = append(capture.updates, envelope.Progress)
+	capture.mu.Unlock()
+	return nil
+}
 
 func runShell(t *testing.T, tool *ShellTool, input string, timeout time.Duration) (string, *ShellDisplayData, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := tool.NativeTool().Execute(ctx, json.RawMessage(input), dtool.Runtime{})
+	out, err := tool.NativeTool().Execute(ctx, json.RawMessage(input), datool.Runtime{})
 	var disp *ShellDisplayData
 	if len(out.Artifact) > 0 {
 		var decoded ShellDisplayData
@@ -196,7 +212,7 @@ func TestShellContextCancelKills(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		cancel()
 	}()
-	_, err := s.NativeTool().Execute(ctx, json.RawMessage(`{"command":"sleep 30"}`), dtool.Runtime{})
+	_, err := s.NativeTool().Execute(ctx, json.RawMessage(`{"command":"sleep 30"}`), datool.Runtime{})
 	if err == nil {
 		t.Fatalf("expected error after cancel")
 	}
@@ -232,47 +248,35 @@ func TestShellProgressLoop(t *testing.T) {
 	s := newTestShell(t)
 	s.DefaultYield = 5 * time.Second
 
-	var mu sync.Mutex
-	var updates []string
-	progress := func(p llm.ToolProgress) {
-		mu.Lock()
-		defer mu.Unlock()
-		updates = append(updates, p.Output)
-		if p.ToolName != "shell" {
-			t.Errorf("unexpected tool name: %s", p.ToolName)
-		}
-		if p.ToolUseID != "tool-use-123" {
-			t.Errorf("unexpected tool use id: %s", p.ToolUseID)
-		}
-	}
+	capture := &progressCapture{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = WithToolProgress(ctx, progress)
-	ctx = WithToolUseID(ctx, "tool-use-123")
-
 	_, err := s.NativeTool().Execute(ctx, json.RawMessage(
 		`{"command":"echo first; sleep 1; echo second"}`,
-	), dtool.Runtime{})
+	), datool.Runtime{CallID: "tool-use-123", Stream: capture})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	if len(updates) == 0 {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if len(capture.updates) == 0 {
 		t.Fatalf("expected progress updates, got none")
 	}
 	// At least one update should contain partial output ("first") before final.
 	sawFirstAlone := false
-	for _, u := range updates {
-		if strings.Contains(u, "first") && !strings.Contains(u, "second") {
+	for _, update := range capture.updates {
+		if update.Name != "shell" || update.CallID != "tool-use-123" {
+			t.Fatalf("unexpected progress metadata: %#v", update)
+		}
+		if strings.Contains(update.Output, "first") && !strings.Contains(update.Output, "second") {
 			sawFirstAlone = true
 			break
 		}
 	}
 	if !sawFirstAlone {
-		t.Errorf("expected at least one progress update with 'first' before 'second'; got %v", updates)
+		t.Errorf("expected at least one progress update with 'first' before 'second'; got %v", capture.updates)
 	}
 }
 

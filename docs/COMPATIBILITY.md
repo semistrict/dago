@@ -4,8 +4,8 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 
 | Surface | Status | Evidence or boundary |
 |---|---|---|
-| Explicit model and custom tool construction | verified | `agent/agent_test.go`, `dago_test.go` |
-| Middleware order and wrapper nesting | verified | `agent/agent_test.go` |
+| Explicit model and custom tool construction | verified | `dagent/agent_test.go`, `dago_test.go` |
+| Middleware order and wrapper nesting | verified | `dagent/agent_test.go` |
 | Parallel tool calls and deterministic reduction | verified | agent and graph tests |
 | Provider and synthetic-tool structured output | verified | schema validation and retry tests |
 | Mandatory delta state and message channels | verified | channel, graph, memory saver, SQLite, remove-all reset, and pre-checkpoint stable-message-ID tests |
@@ -45,10 +45,10 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 - Python's in-process ASGI transport for remote subagents is not applicable in Go;
   async subagents require an HTTP URL or a caller-supplied runner.
 - Python package-version inspection is not applied to Go provider adapters. Canonical
-  Dago messages already preserve tool-call and tool-result identity, so the Nemotron
+  dago messages already preserve tool-call and tool-result identity, so the Nemotron
   pre-serialization compatibility layer is an explicit no-op at the core boundary.
 - A tool command targeting its parent is returned as a typed terminal handoff for the
-  enclosing Go orchestrator to route. Dago does not expose a general-purpose public
+  enclosing Go orchestrator to route. dago does not expose a general-purpose public
   graph builder merely to reproduce Python's graph-composition syntax.
 - Video decoding is an opt-in extractor capability. The supplied FFmpeg adapter is
   subprocess-isolated by context and output limits; opaque media behavior remains

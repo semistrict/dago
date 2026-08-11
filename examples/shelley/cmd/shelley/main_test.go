@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -16,22 +15,26 @@ import (
 	"testing"
 	"time"
 
-	dmodel "github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/exeenv"
-	"shelley.exe.dev/models"
-	"shelley.exe.dev/modelsources"
-	"shelley.exe.dev/slug"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/models"
+	"github.com/semistrict/dago/examples/shelley/server"
+	"github.com/semistrict/dago/examples/shelley/slug"
 )
+
+func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (*server.LLMConfig, error) {
+	return buildLLMConfigWithOAuth(global, logger, database, nil)
+}
 
 type tieredModelProvider struct {
 	ids   []string
 	infos map[string]*models.ModelInfo
 }
 
-func (p *tieredModelProvider) GetChat(string) (dmodel.Chat, error) { return nil, nil }
-func (p *tieredModelProvider) GetAvailableModels() []string        { return p.ids }
-func (p *tieredModelProvider) HasModel(string) bool                { return true }
+func (p *tieredModelProvider) GetChat(string) (damodel.Chat, error) { return nil, nil }
+func (p *tieredModelProvider) GetAvailableModels() []string         { return p.ids }
+func (p *tieredModelProvider) HasModel(string) bool                 { return true }
 func (p *tieredModelProvider) GetModelInfo(id string) *models.ModelInfo {
 	return p.infos[id]
 }
@@ -59,89 +62,6 @@ func TestSanitizeSlug(t *testing.T) {
 		if result != test.expected {
 			t.Errorf("slug.Sanitize(%q) = %q, expected %q", test.input, result, test.expected)
 		}
-	}
-}
-
-func TestBuildLLMConfigSkipsGatewayWhenReflectionFoundLLMIntegration(t *testing.T) {
-	oldDiscover := discoverLLMIntegrations
-	discoverLLMIntegrations = func(context.Context, *http.Client, *slog.Logger) modelsources.LLMIntegrationDiscoveryResult {
-		return modelsources.LLMIntegrationDiscoveryResult{Found: true}
-	}
-	t.Cleanup(func() { discoverLLMIntegrations = oldDiscover })
-
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("GEMINI_API_KEY", "")
-	t.Setenv("FIREWORKS_API_KEY", "")
-
-	configPath := filepath.Join(t.TempDir(), "shelley.json")
-	if err := os.WriteFile(configPath, []byte(`{"llm_gateway":"https://gateway.example.com"}`), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg, err := buildLLMConfig(GlobalConfig{ConfigPath: configPath}, logger, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, model := range cfg.Models {
-		if model.Source == "exe.dev gateway" {
-			t.Fatalf("gateway model %q was built despite discovered LLM integration", model.ID)
-		}
-	}
-	if findBuiltModelSource(cfg.Models, "predictable") != "builtin" {
-		t.Fatalf("predictable model missing from config")
-	}
-}
-
-func TestBuildLLMConfigAppliesExeEnvironmentBeforeDiscovery(t *testing.T) {
-	oldEnv, err := exeenv.Current()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { exeenv.Configure(oldEnv) })
-
-	oldDiscover := discoverLLMIntegrations
-	discoverLLMIntegrations = func(context.Context, *http.Client, *slog.Logger) modelsources.LLMIntegrationDiscoveryResult {
-		env, err := exeenv.Current()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := env.ReflectionURL(); got != "https://reflection.int.example.test" {
-			t.Fatalf("discovery environment = %q", got)
-		}
-		return modelsources.LLMIntegrationDiscoveryResult{}
-	}
-	t.Cleanup(func() { discoverLLMIntegrations = oldDiscover })
-
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("GEMINI_API_KEY", "")
-	t.Setenv("FIREWORKS_API_KEY", "")
-
-	configPath := filepath.Join(t.TempDir(), "shelley.json")
-	config := `{
-		"llm_gateway": "https://gateway.example.com/",
-		"default_model": "configured-default",
-		"exe_environment": {"scheme": "https", "box_host": "example.test"}
-	}`
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := buildLLMConfig(GlobalConfig{ConfigPath: configPath}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DefaultModel != "configured-default" {
-		t.Fatalf("DefaultModel = %q", cfg.DefaultModel)
-	}
-	gatewayFound := false
-	for _, model := range cfg.Models {
-		gatewayFound = gatewayFound || model.Source == "exe.dev gateway"
-	}
-	if !gatewayFound {
-		t.Fatal("parsed llm_gateway was not reused")
 	}
 }
 
@@ -182,12 +102,6 @@ func TestGlobalFlagsDefaultModelEmptyByDefault(t *testing.T) {
 // TestGlobalFlagsDefaultModelEmptyByDefault) so on VMs, where the flag is
 // unset, the shelley.json value is what takes effect.
 func TestBuildLLMConfigDefaultModelPrecedence(t *testing.T) {
-	oldDiscover := discoverLLMIntegrations
-	discoverLLMIntegrations = func(context.Context, *http.Client, *slog.Logger) modelsources.LLMIntegrationDiscoveryResult {
-		return modelsources.LLMIntegrationDiscoveryResult{}
-	}
-	t.Cleanup(func() { discoverLLMIntegrations = oldDiscover })
-
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -259,35 +173,12 @@ func TestModelsCommandDefaultIDMatchesServerVisibility(t *testing.T) {
 	}
 }
 
-func TestBuildLLMConfigRejectsInvalidExeEnvironmentBeforeDiscovery(t *testing.T) {
-	oldDiscover := discoverLLMIntegrations
-	discoveryCalls := 0
-	discoverLLMIntegrations = func(context.Context, *http.Client, *slog.Logger) modelsources.LLMIntegrationDiscoveryResult {
-		discoveryCalls++
-		return modelsources.LLMIntegrationDiscoveryResult{}
-	}
-	t.Cleanup(func() { discoverLLMIntegrations = oldDiscover })
-
-	configPath := filepath.Join(t.TempDir(), "shelley.json")
-	if err := os.WriteFile(configPath, []byte(`{"exe_environment":{"scheme":"ftp","box_host":"example.test"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := buildLLMConfig(GlobalConfig{ConfigPath: configPath}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
-	if err == nil || !strings.Contains(err.Error(), "exe_environment") {
-		t.Fatalf("buildLLMConfig() error = %v", err)
-	}
-	if discoveryCalls != 0 {
-		t.Fatalf("discovery called %d times before config validation", discoveryCalls)
-	}
-}
-
 func TestToolModelsHideUnknownIntegrationModelsButKeepCustomModels(t *testing.T) {
 	provider := &tieredModelProvider{
 		ids: []string{"gpt-5.6-sol", "upstream-only", "my-custom-model"},
 		infos: map[string]*models.ModelInfo{
-			"gpt-5.6-sol":     {Source: "llm.int.exe.xyz"},
-			"upstream-only":   {Source: "llm.int.exe.xyz"},
+			"gpt-5.6-sol":     {Source: "remote catalog"},
+			"upstream-only":   {Source: "remote catalog"},
 			"my-custom-model": {Source: models.SourceCustomLabel},
 		},
 	}
@@ -296,15 +187,6 @@ func TestToolModelsHideUnknownIntegrationModelsButKeepCustomModels(t *testing.T)
 	if len(got) != 2 || got[0].ID != "gpt-5.6-sol" || got[1].ID != "my-custom-model" {
 		t.Fatalf("available tool models = %+v, want known and custom models", got)
 	}
-}
-
-func findBuiltModelSource(built []models.Built, id string) string {
-	for _, model := range built {
-		if model.ID == id {
-			return model.Source
-		}
-	}
-	return ""
 }
 
 func TestCLICommands(t *testing.T) {

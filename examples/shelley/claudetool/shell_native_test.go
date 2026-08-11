@@ -5,16 +5,16 @@ import (
 	"encoding/json"
 	"testing"
 
-	dtool "github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 )
 
-func TestShellNativeToolUsesDagoContract(t *testing.T) {
+func TestShellNativeToolUsesNativeContract(t *testing.T) {
 	root := t.TempDir()
 	executable := (&ShellTool{
 		WorkingDir: NewMutableWorkingDir(root),
 		TempDir:    t.TempDir(),
 	}).NativeTool()
-	result, err := executable.Execute(context.Background(), json.RawMessage(`{"command":"printf native-shell"}`), dtool.Runtime{CallID: "call-1"})
+	result, err := executable.Execute(context.Background(), json.RawMessage(`{"command":"printf native-shell"}`), datool.Runtime{CallID: "call-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

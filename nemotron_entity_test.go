@@ -7,39 +7,39 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
-	"github.com/semistrict/dago/state"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/dastate"
 )
 
 func TestNemotronEntityGuardKeepsCurrentBranchBound(t *testing.T) {
-	history := []message.Message{message.Human("What service is affected by the current incident?")}
-	current := message.ToolCall{ID: "current", Name: "get_current_incident_id", Arguments: json.RawMessage(`{}`)}
-	currentRequest := message.Assistant("")
-	currentRequest.ToolCalls = []message.ToolCall{current}
-	history = append(history, currentRequest, message.Tool(current.ID, "41017"))
-	relation := message.ToolCall{ID: "relation", Name: "get_incident_service", Arguments: json.RawMessage(`{"incident_id":41017}`)}
-	relationRequest := message.Assistant("")
-	relationRequest.ToolCalls = []message.ToolCall{relation}
-	history = append(history, relationRequest, message.Tool(relation.ID, "8514"))
+	history := []damessage.Message{damessage.Human("What service is affected by the current incident?")}
+	current := damessage.ToolCall{ID: "current", Name: "get_current_incident_id", Arguments: json.RawMessage(`{}`)}
+	currentRequest := damessage.Assistant("")
+	currentRequest.ToolCalls = []damessage.ToolCall{current}
+	history = append(history, currentRequest, damessage.Tool(current.ID, "41017"))
+	relation := damessage.ToolCall{ID: "relation", Name: "get_incident_service", Arguments: json.RawMessage(`{"incident_id":41017}`)}
+	relationRequest := damessage.Assistant("")
+	relationRequest.ToolCalls = []damessage.ToolCall{relation}
+	history = append(history, relationRequest, damessage.Tool(relation.ID, "8514"))
 
-	script := modeltest.New(model.Profile{},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("The current incident affects service 8514.")}},
-		modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("The current incident affects service 8514.")}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			last := request.Messages[len(request.Messages)-1]
 			if last.Name != nemotronEntitySource || !strings.Contains(last.TextContent(), "service_id 8514") || !strings.Contains(last.TextContent(), "get_service_title") {
 				return errors.New("entity resolution nudge missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("The current incident affects checkout-web.")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("The current incident affects checkout-web.")}},
 	)
-	compiled, err := agent.New(agent.Options{Model: script, Middleware: []agent.Middleware{nemotronEntityResolutionGuard()}})
+	compiled, err := dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{nemotronEntityResolutionGuard()}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: history})
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: history})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,37 +52,37 @@ func TestNemotronEntityGuardKeepsCurrentBranchBound(t *testing.T) {
 }
 
 func TestNemotronEntityGuardPreNudgesAfterToolResult(t *testing.T) {
-	current := message.ToolCall{ID: "current", Name: "get_current_incident_id", Arguments: json.RawMessage(`{}`)}
-	relation := message.ToolCall{ID: "relation", Name: "get_incident_service", Arguments: json.RawMessage(`{"incident_id":41017}`)}
-	first := message.Assistant("")
-	first.ToolCalls = []message.ToolCall{current}
-	second := message.Assistant("")
-	second.ToolCalls = []message.ToolCall{relation}
-	messages := []message.Message{
-		message.Human("What service is affected by the current incident?"),
-		first, message.Tool(current.ID, "41017"), second, message.Tool(relation.ID, "8514"),
+	current := damessage.ToolCall{ID: "current", Name: "get_current_incident_id", Arguments: json.RawMessage(`{}`)}
+	relation := damessage.ToolCall{ID: "relation", Name: "get_incident_service", Arguments: json.RawMessage(`{"incident_id":41017}`)}
+	first := damessage.Assistant("")
+	first.ToolCalls = []damessage.ToolCall{current}
+	second := damessage.Assistant("")
+	second.ToolCalls = []damessage.ToolCall{relation}
+	messages := []damessage.Message{
+		damessage.Human("What service is affected by the current incident?"),
+		first, damessage.Tool(current.ID, "41017"), second, damessage.Tool(relation.ID, "8514"),
 	}
-	update, err := nemotronEntityResolutionGuard().BeforeModel(context.Background(), mapState(messages), agent.Runtime{})
+	update, err := nemotronEntityResolutionGuard().BeforeModel(context.Background(), mapState(messages), dagent.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	nudges, err := policyMessages(update[agent.MessagesKey])
+	nudges, err := policyMessages(update[dagent.MessagesKey])
 	if err != nil || len(nudges) != 1 || !strings.Contains(nudges[0].TextContent(), "service_id 8514") {
 		t.Fatalf("update = %#v, error = %v", update, err)
 	}
 }
 
 func TestNemotronEntityGuardAcceptsResolvedDisplay(t *testing.T) {
-	lookup := message.ToolCall{ID: "lookup", Name: "get_service_name", Arguments: json.RawMessage(`{"service_id":8514}`)}
-	assistant := message.Assistant("")
-	assistant.ToolCalls = []message.ToolCall{lookup}
-	messages := []message.Message{message.Human("What service is selected?"), assistant, message.Tool(lookup.ID, "checkout-web"), message.Assistant("checkout-web")}
-	update, err := nemotronEntityResolutionGuard().AfterAgent(context.Background(), mapState(messages), agent.Runtime{})
+	lookup := damessage.ToolCall{ID: "lookup", Name: "get_service_name", Arguments: json.RawMessage(`{"service_id":8514}`)}
+	assistant := damessage.Assistant("")
+	assistant.ToolCalls = []damessage.ToolCall{lookup}
+	messages := []damessage.Message{damessage.Human("What service is selected?"), assistant, damessage.Tool(lookup.ID, "checkout-web"), damessage.Assistant("checkout-web")}
+	update, err := nemotronEntityResolutionGuard().AfterAgent(context.Background(), mapState(messages), dagent.Runtime{})
 	if err != nil || len(update) != 0 {
 		t.Fatalf("update = %#v, error = %v", update, err)
 	}
 }
 
-func mapState(messages []message.Message) state.Values {
-	return state.Values{agent.MessagesKey: messages}
+func mapState(messages []damessage.Message) dastate.Values {
+	return dastate.Values{dagent.MessagesKey: messages}
 }

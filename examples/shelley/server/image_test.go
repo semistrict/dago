@@ -11,9 +11,28 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
+
+func stripImageDataFromLLMData(llmData *string, messageID string) *string {
+	if llmData == nil {
+		return nil
+	}
+	var msg llm.Message
+	if err := json.Unmarshal([]byte(*llmData), &msg); err != nil {
+		return llmData
+	}
+	if !stripImageDataFromContents(msg.Content, messageID) {
+		return llmData
+	}
+	stripped, err := json.Marshal(msg)
+	if err != nil {
+		return llmData
+	}
+	s := string(stripped)
+	return &s
+}
 
 func TestStripImageDataFromLLMData(t *testing.T) {
 	t.Parallel()

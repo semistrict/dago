@@ -18,8 +18,7 @@ import (
 	"text/template"
 	"time"
 
-	"shelley.exe.dev/exeenv"
-	"shelley.exe.dev/skills"
+	"github.com/semistrict/dago/examples/shelley/skills"
 )
 
 //go:embed system_prompt.txt
@@ -33,12 +32,8 @@ type SystemPromptData struct {
 	WorkingDirectory string
 	GitInfo          *GitInfo
 	Codebase         *CodebaseInfo
-	IsExeDev         bool
 	IsSudoAvailable  bool
-	Hostname         string // For exe.dev, the public hostname (e.g., "vmname.exe.xyz")
-	DefaultPort      int    // For exe.dev, the auto-routed HTTP port, 0 if unknown
 	SkillsXML        string // Compatibility-only standalone prompt projection
-	UserEmail        string // The exe.dev auth email of the user, if known
 	skipSkills       bool
 }
 
@@ -80,14 +75,7 @@ func (c *CodebaseInfo) SubdirGuidanceSummary() string {
 // SystemPromptOption configures optional fields on the system prompt.
 type SystemPromptOption func(*SystemPromptData)
 
-// WithUserEmail sets the user's email in the system prompt.
-func WithUserEmail(email string) SystemPromptOption {
-	return func(d *SystemPromptData) {
-		d.UserEmail = email
-	}
-}
-
-// withoutPromptSkills leaves skill discovery and prompting to Dago.
+// withoutPromptSkills leaves skill discovery and prompting to dago.
 func withoutPromptSkills() SystemPromptOption {
 	return func(d *SystemPromptData) { d.skipSkills = true }
 }
@@ -228,16 +216,6 @@ type NewConversationHookResult struct {
 	Slug   string
 }
 
-// RunNewConversationHook runs the new-conversation hook from the
-// default user hooks directory ($HOME/.config/shelley/hooks). Tests
-// that want to invoke a hook script from a temp directory should
-// call RunNewConversationHookIn directly, which avoids the
-// process-wide $HOME env var (concurrent tests that share a Server
-// would otherwise race on it).
-func RunNewConversationHook(input NewConversationHookInput) (NewConversationHookResult, error) {
-	return RunNewConversationHookIn(defaultHooksDir(), input)
-}
-
 // RunNewConversationHookIn is the dir-explicit variant of
 // RunNewConversationHook. A non-nil error means the hook failed
 // (non-zero exit, invalid JSON, etc.) and the caller should abort
@@ -338,13 +316,6 @@ type EndOfTurnHookInput struct {
 	FinalResponse   string `json:"final_response,omitempty"`
 }
 
-// RunEndOfTurnHook fires the end-of-turn hook from the default user
-// hooks directory ($HOME/.config/shelley/hooks). See RunEndOfTurnHookIn
-// for the dir-explicit variant used by tests.
-func RunEndOfTurnHook(input EndOfTurnHookInput) error {
-	return RunEndOfTurnHookIn(defaultHooksDir(), input)
-}
-
 // RunEndOfTurnHookIn runs the end-of-turn hook from an explicit hooks
 // directory. It runs the hook with the event JSON on stdin and ignores
 // stdout. A non-nil error means the hook failed (non-zero exit, etc.);
@@ -399,12 +370,6 @@ type ChatMessageReadonly struct {
 	ReasoningLevel string      `json:"reasoning_level"`
 	Queued         bool        `json:"queued"`
 	Headers        [][2]string `json:"headers,omitempty"`
-}
-
-// RunChatMessageHook runs the chat-message hook from the default user hooks
-// directory. See RunChatMessageHookIn for the dir-explicit variant.
-func RunChatMessageHook(input ChatMessageHookInput) (string, error) {
-	return RunChatMessageHookIn(defaultHooksDir(), input)
 }
 
 // RunChatMessageHookIn runs the chat-message hook from an explicit hooks dir.
@@ -667,11 +632,8 @@ func collectSystemData(workingDir string, skipSkills bool) (*SystemPromptData, e
 		gitRoot = gitInfo.Root
 	}
 
-	// Check if running on exe.dev (cheap stat).
-	data.IsExeDev = isExeDev()
-
 	// Keep the independent project walks concurrent. Production skips the
-	// compatibility skill walk because Dago's middleware owns skill prompting.
+	// compatibility skill walk because dago's middleware owns skill prompting.
 	var (
 		codebaseInfo *CodebaseInfo
 		codebaseErr  error
@@ -687,22 +649,12 @@ func collectSystemData(workingDir string, skipSkills bool) (*SystemPromptData, e
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			skillsXML = collectSkills(wd, gitRoot, skills.Env{ExeDev: data.IsExeDev})
+			skillsXML = collectSkills(wd, gitRoot)
 		}()
 	}
 
 	// Run the remaining cheap synchronous probes while the walks are in flight.
 	data.IsSudoAvailable = isSudoAvailable()
-	if data.IsExeDev {
-		if hostname, err := os.Hostname(); err == nil {
-			// If hostname doesn't contain dots, add .exe.xyz suffix
-			if !strings.Contains(hostname, ".") {
-				hostname = hostname + ".exe.xyz"
-			}
-			data.Hostname = hostname
-		}
-		data.DefaultPort = exeDevDefaultPort()
-	}
 
 	wg.Wait()
 	if codebaseErr == nil {
@@ -714,9 +666,9 @@ func collectSystemData(workingDir string, skipSkills bool) (*SystemPromptData, e
 }
 
 // collectSkills is retained for the standalone prompt compatibility contract.
-// Production conversations install Dago's SkillsMiddleware instead.
-func collectSkills(workingDir, gitRoot string, env skills.Env) string {
-	values := skills.Filter(skills.ListAll(workingDir, gitRoot), env)
+// Production conversations install dago's SkillsMiddleware instead.
+func collectSkills(workingDir, gitRoot string) string {
+	values := skills.ListAll(workingDir, gitRoot)
 	return skills.RenderPromptXML(values)
 }
 
@@ -896,48 +848,6 @@ func findSubdirGuidanceFiles(root string) []string {
 	return found
 }
 
-func isExeDev() bool {
-	_, err := os.Stat("/exe.dev")
-	return err == nil
-}
-
-// exeDevDefaultPort returns the live HTTP proxy port for this VM, fetched
-// via the default "reflection" integration. Returns 0 if unavailable
-// (integration disabled/detached, network error, etc.).
-var exeDevDefaultPortHTTPClient = http.DefaultClient
-
-func exeDevDefaultPort() int {
-	env, err := exeenv.Current()
-	if err != nil {
-		return 0
-	}
-	return exeDevDefaultPortIn(env)
-}
-
-func exeDevDefaultPortIn(env exeenv.Environment) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", env.ReflectionURL()+"/default_port", nil)
-	if err != nil {
-		return 0
-	}
-	resp, err := exeDevDefaultPortHTTPClient.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0
-	}
-	var body struct {
-		DefaultPort int `json:"default_port"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return 0
-	}
-	return body.DefaultPort
-}
-
 // resolveAndNormalize returns a canonical lowercase path for dedup.
 // It resolves symlinks and normalizes to lowercase for case-insensitive FS.
 func resolveAndNormalize(path string) string {
@@ -999,7 +909,7 @@ func GenerateSubagentSystemPrompt(workingDir, parentConversationID string, opts 
 		if gitInfo != nil {
 			gitRoot = gitInfo.Root
 		}
-		data.SkillsXML = collectSkills(wd, gitRoot, skills.Env{ExeDev: isExeDev()})
+		data.SkillsXML = collectSkills(wd, gitRoot)
 	}
 
 	tmpl, err := template.New("subagent_system_prompt").Parse(subagentSystemPromptTemplate)

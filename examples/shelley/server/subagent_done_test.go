@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/loop"
 )
 
-import dmessage "github.com/semistrict/dago/message"
+import dmessage "github.com/semistrict/dago/damessage"
 
 // subagentDoneFixture sets up a parent conversation with an active manager and
 // a child subagent conversation whose manager has the onDone callback wired up

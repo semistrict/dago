@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // handleMessageFile serves a local image file referenced inline in a message's

@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 )
 
 const (
@@ -42,8 +42,8 @@ var nemotronFilesystemTools = map[string]bool{
 
 // NemotronToolCallShim repairs common file-path arguments, expands its default
 // read window, and gives otherwise empty ordinary tool results visible content.
-func NemotronToolCallShim() agent.Middleware {
-	return agent.Middleware{Name: "NemotronToolCallShim", WrapToolCall: func(ctx context.Context, request agent.ToolCallRequest, next agent.ToolHandler) (agent.ToolCallResponse, error) {
+func NemotronToolCallShim() dagent.Middleware {
+	return dagent.Middleware{Name: "NemotronToolCallShim", WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
 		if nemotronFilePathTools[request.Call.Name] {
 			var arguments map[string]any
 			if json.Unmarshal(request.Call.Arguments, &arguments) == nil {
@@ -64,7 +64,7 @@ func NemotronToolCallShim() agent.Middleware {
 				if changed {
 					encoded, err := json.Marshal(arguments)
 					if err != nil {
-						return agent.ToolCallResponse{}, err
+						return dagent.ToolCallResponse{}, err
 					}
 					request.Call.Arguments = encoded
 				}
@@ -75,18 +75,18 @@ func NemotronToolCallShim() agent.Middleware {
 			return response, err
 		}
 		if response.Result.Interrupt == nil && len(response.Result.Update) == 0 && toolResultContentEmpty(response.Result.Content) {
-			response.Result.Content = []message.ContentBlock{{Type: message.BlockText, Text: nemotronEmptyToolResult}}
+			response.Result.Content = []damessage.ContentBlock{{Type: damessage.BlockText, Text: nemotronEmptyToolResult}}
 		}
 		return response, nil
 	}}
 }
 
-func toolResultContentEmpty(content []message.ContentBlock) bool {
+func toolResultContentEmpty(content []damessage.ContentBlock) bool {
 	if len(content) == 0 {
 		return true
 	}
 	for _, block := range content {
-		if block.Type != message.BlockText || block.Text != "" {
+		if block.Type != damessage.BlockText || block.Text != "" {
 			return false
 		}
 	}
@@ -95,8 +95,8 @@ func toolResultContentEmpty(content []message.ContentBlock) bool {
 
 // NemotronReadContinuationNotice marks exactly-full read windows so the model
 // does not mistake pagination for end-of-file.
-func NemotronReadContinuationNotice() agent.Middleware {
-	return agent.Middleware{Name: "ReadFileContinuationNoticeMiddleware", WrapToolCall: func(ctx context.Context, request agent.ToolCallRequest, next agent.ToolHandler) (agent.ToolCallResponse, error) {
+func NemotronReadContinuationNotice() dagent.Middleware {
+	return dagent.Middleware{Name: "ReadFileContinuationNoticeMiddleware", WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
 		response, err := next(ctx, request)
 		if err != nil || request.Call.Name != "read_file" {
 			return response, err
@@ -124,15 +124,15 @@ func NemotronReadContinuationNotice() agent.Middleware {
 			return response, nil
 		}
 		notice := fmt.Sprintf("\n\n[read_file returned %d lines starting at offset %d, the per-read limit. The file likely continues past this window. To read further, call read_file again with offset=%d. Do not assume you have seen the end of the file.]", limit, offset, offset+limit)
-		response.Result.Content = append(response.Result.Content, message.ContentBlock{Type: message.BlockText, Text: notice})
+		response.Result.Content = append(response.Result.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: notice})
 		return response, nil
 	}}
 }
 
-func resultText(content []message.ContentBlock) string {
+func resultText(content []damessage.ContentBlock) string {
 	var result strings.Builder
 	for _, block := range content {
-		if block.Type == message.BlockText {
+		if block.Type == damessage.BlockText {
 			result.WriteString(block.Text)
 		}
 	}
@@ -169,12 +169,12 @@ func isNumberedReadRow(row string) bool {
 
 // NemotronModelRateLimitRetry retries transient model throttling while honoring
 // cancellation. Delays correspond to retries after the initial attempt.
-func NemotronModelRateLimitRetry(delays ...time.Duration) agent.Middleware {
+func NemotronModelRateLimitRetry(delays ...time.Duration) dagent.Middleware {
 	if delays == nil {
 		delays = []time.Duration{4 * time.Second, 12 * time.Second}
 	}
 	delays = append([]time.Duration(nil), delays...)
-	return agent.Middleware{Name: "ModelRateLimitRetryMiddleware", WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+	return dagent.Middleware{Name: "ModelRateLimitRetryMiddleware", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		for attempt := 0; ; attempt++ {
 			response, err := next(ctx, request)
 			if err == nil || attempt >= len(delays) || !nemotronRateLimitError(err) {
@@ -193,7 +193,7 @@ func NemotronModelRateLimitRetry(delays ...time.Duration) agent.Middleware {
 					default:
 					}
 				}
-				return agent.ModelResponse{}, ctx.Err()
+				return dagent.ModelResponse{}, ctx.Err()
 			}
 		}
 	}}
@@ -203,7 +203,7 @@ func nemotronRateLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if reporter, ok := err.(model.RetryReporter); ok {
+	if reporter, ok := err.(damodel.RetryReporter); ok {
 		if event := reporter.RetryEvent(1, 0); event.Status == 429 {
 			return true
 		}
@@ -214,8 +214,8 @@ func nemotronRateLimitError(err error) bool {
 
 // NemotronReasoningTagCleanup moves textual think blocks into provider-neutral
 // reasoning content and keeps only visible text in the assistant answer.
-func NemotronReasoningTagCleanup() agent.Middleware {
-	return agent.Middleware{Name: "NemotronReasoningTagCleanupMiddleware", WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+func NemotronReasoningTagCleanup() dagent.Middleware {
+	return dagent.Middleware{Name: "NemotronReasoningTagCleanupMiddleware", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		response, err := next(ctx, request)
 		if err != nil {
 			return response, err
@@ -227,8 +227,8 @@ func NemotronReasoningTagCleanup() agent.Middleware {
 	}}
 }
 
-func stripNemotronReasoning(value message.Message) message.Message {
-	if value.Role != message.RoleAssistant {
+func stripNemotronReasoning(value damessage.Message) damessage.Message {
+	if value.Role != damessage.RoleAssistant {
 		return value
 	}
 	text := value.TextContent()
@@ -240,7 +240,7 @@ func stripNemotronReasoning(value message.Message) message.Message {
 	if clean == text {
 		return value
 	}
-	blocks := make([]message.ContentBlock, 0, len(value.Content)+1)
+	blocks := make([]damessage.ContentBlock, 0, len(value.Content)+1)
 	var reasoning []string
 	for _, match := range matches {
 		if part := strings.TrimSpace(match[1]); part != "" {
@@ -248,13 +248,13 @@ func stripNemotronReasoning(value message.Message) message.Message {
 		}
 	}
 	if len(reasoning) > 0 && !hasReasoningBlock(value.Content) {
-		blocks = append(blocks, message.ContentBlock{Type: message.BlockReasoning, Reasoning: strings.Join(reasoning, "\n\n")})
+		blocks = append(blocks, damessage.ContentBlock{Type: damessage.BlockReasoning, Reasoning: strings.Join(reasoning, "\n\n")})
 	}
 	if clean != "" {
-		blocks = append(blocks, message.ContentBlock{Type: message.BlockText, Text: clean})
+		blocks = append(blocks, damessage.ContentBlock{Type: damessage.BlockText, Text: clean})
 	}
 	for _, block := range value.Content {
-		if block.Type != message.BlockText {
+		if block.Type != damessage.BlockText {
 			blocks = append(blocks, block)
 		}
 	}
@@ -262,9 +262,9 @@ func stripNemotronReasoning(value message.Message) message.Message {
 	return value
 }
 
-func hasReasoningBlock(content []message.ContentBlock) bool {
+func hasReasoningBlock(content []damessage.ContentBlock) bool {
 	for _, block := range content {
-		if block.Type == message.BlockReasoning {
+		if block.Type == damessage.BlockReasoning {
 			return true
 		}
 	}
@@ -273,8 +273,8 @@ func hasReasoningBlock(content []message.ContentBlock) bool {
 
 // NemotronTextToolCallParser turns supported text and JSON call formats into
 // canonical tool calls, but only for tools visible on the current request.
-func NemotronTextToolCallParser() agent.Middleware {
-	return agent.Middleware{Name: "NemotronTextToolCallParser", WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+func NemotronTextToolCallParser() dagent.Middleware {
+	return dagent.Middleware{Name: "NemotronTextToolCallParser", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		response, err := next(ctx, request)
 		if err != nil {
 			return response, err
@@ -290,8 +290,8 @@ func NemotronTextToolCallParser() agent.Middleware {
 	}}
 }
 
-func repairNemotronTextToolCalls(value message.Message, available map[string]bool) message.Message {
-	if value.Role != message.RoleAssistant || len(value.ToolCalls) > 0 {
+func repairNemotronTextToolCalls(value damessage.Message, available map[string]bool) damessage.Message {
+	if value.Role != damessage.RoleAssistant || len(value.ToolCalls) > 0 {
 		return value
 	}
 	value = stripNemotronReasoning(value)
@@ -309,12 +309,12 @@ func repairNemotronTextToolCalls(value message.Message, available map[string]boo
 	value.ToolCalls = calls
 	value.Content = nil
 	if leftover != "" {
-		value.Content = []message.ContentBlock{{Type: message.BlockText, Text: leftover}}
+		value.Content = []damessage.ContentBlock{{Type: damessage.BlockText, Text: leftover}}
 	}
 	return value
 }
 
-func parseNemotronFunctionCalls(content string, available map[string]bool) ([]message.ToolCall, string) {
+func parseNemotronFunctionCalls(content string, available map[string]bool) ([]damessage.ToolCall, string) {
 	calls := parseNemotronBlocks(content, available, nemotronFunctionBlock, func(body string) (string, map[string]any) {
 		return "", parseNemotronNamedParameters(body)
 	})
@@ -330,8 +330,8 @@ func parseNemotronFunctionCalls(content string, available map[string]bool) ([]me
 	return calls, strings.TrimSpace(strings.ReplaceAll(nemotronAltFunctionBlock.ReplaceAllString(content, ""), "</tool_call>", ""))
 }
 
-func parseNemotronBlocks(content string, available map[string]bool, expression *regexp.Regexp, parse func(string) (string, map[string]any)) []message.ToolCall {
-	var calls []message.ToolCall
+func parseNemotronBlocks(content string, available map[string]bool, expression *regexp.Regexp, parse func(string) (string, map[string]any)) []damessage.ToolCall {
+	var calls []damessage.ToolCall
 	for _, match := range expression.FindAllStringSubmatch(content, -1) {
 		name := ""
 		body := ""
@@ -351,7 +351,7 @@ func parseNemotronBlocks(content string, available map[string]bool, expression *
 		if err != nil {
 			continue
 		}
-		calls = append(calls, message.ToolCall{ID: nextNemotronToolID(), Name: name, Arguments: encoded})
+		calls = append(calls, damessage.ToolCall{ID: nextNemotronToolID(), Name: name, Arguments: encoded})
 	}
 	return calls
 }
@@ -391,7 +391,7 @@ func alternateNemotronArguments(body string) map[string]any {
 	return arguments
 }
 
-func parseNemotronJSONCall(content string, available map[string]bool) []message.ToolCall {
+func parseNemotronJSONCall(content string, available map[string]bool) []damessage.ToolCall {
 	start, end := strings.Index(content, "{"), strings.LastIndex(content, "}")
 	if start < 0 || end <= start {
 		return nil
@@ -425,7 +425,7 @@ func parseNemotronJSONCall(content string, available map[string]bool) []message.
 	if err != nil {
 		return nil
 	}
-	return []message.ToolCall{{ID: nextNemotronToolID(), Name: name, Arguments: encoded}}
+	return []damessage.ToolCall{{ID: nextNemotronToolID(), Name: name, Arguments: encoded}}
 }
 
 func trimNemotronToken(value string) string {
@@ -436,9 +436,9 @@ func nextNemotronToolID() string {
 	return fmt.Sprintf("nemotron-tool-%d", nemotronToolID.Add(1))
 }
 
-func nemotronFilesystemRetry() agent.Middleware {
-	retry := agent.ToolRetry("ToolRetryMiddleware", 2, 0, nil)
-	return agent.Middleware{Name: "ToolRetryMiddleware", WrapToolCall: func(ctx context.Context, request agent.ToolCallRequest, next agent.ToolHandler) (agent.ToolCallResponse, error) {
+func nemotronFilesystemRetry() dagent.Middleware {
+	retry := dagent.ToolRetry("ToolRetryMiddleware", 2, 0, nil)
+	return dagent.Middleware{Name: "ToolRetryMiddleware", WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
 		if !nemotronFilesystemTools[request.Call.Name] {
 			return next(ctx, request)
 		}

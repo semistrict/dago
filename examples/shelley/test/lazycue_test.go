@@ -13,9 +13,9 @@ import (
 
 	lazycue "github.com/boldsoftware/shelley/lazycue"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/server"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/server"
 )
 
 // LazyCue self-healing browser tests for the Shelley /new UI.

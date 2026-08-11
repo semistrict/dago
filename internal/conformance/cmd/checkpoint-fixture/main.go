@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/semistrict/dago/checkpoint"
-	checkpointpostgres "github.com/semistrict/dago/checkpoint/postgres"
-	"github.com/semistrict/dago/checkpoint/sqlite"
-	"github.com/semistrict/dago/message"
+	"github.com/semistrict/dago/dacheckpoint"
+	checkpointpostgres "github.com/semistrict/dago/dacheckpoint/postgres"
+	"github.com/semistrict/dago/dacheckpoint/sqlite"
+	"github.com/semistrict/dago/damessage"
 )
 
 func main() {
@@ -18,7 +18,7 @@ func main() {
 		os.Exit(2)
 	}
 	var saver interface {
-		checkpoint.Saver
+		dacheckpoint.Saver
 		Close() error
 	}
 	threadID := "go-safe"
@@ -41,12 +41,12 @@ func main() {
 		"scalar": "go",
 		"bytes":  []byte{0, 1, 's', 'a', 'f', 'e'},
 		"nested": map[string]any{"items": []any{1, true, nil, 3.25}},
-		"messages": []any{message.Message{
-			ID: "human-1", Role: message.RoleHuman,
-			Content:  []message.ContentBlock{{Type: message.BlockText, Text: "hello from Go"}},
+		"messages": []any{damessage.Message{
+			ID: "human-1", Role: damessage.RoleHuman,
+			Content:  []damessage.ContentBlock{{Type: damessage.BlockText, Text: "hello from Go"}},
 			Metadata: map[string]json.RawMessage{"fixture": json.RawMessage(`true`)},
 		}},
-		"delta": checkpoint.DeltaSnapshot{Value: []any{"seed", map[string]any{"count": 1}}},
+		"delta": dacheckpoint.DeltaSnapshot{Value: []any{"seed", map[string]any{"count": 1}}},
 	}
 	versions := make(map[string]string, len(values))
 	seen := make(map[string]string, len(values))
@@ -56,7 +56,7 @@ func main() {
 		seen[key] = versions[key]
 		updated = append(updated, key)
 	}
-	value := checkpoint.Checkpoint{
+	value := dacheckpoint.Checkpoint{
 		Version: 4, ID: "1f000001-0000-6000-8000-000000000001",
 		Timestamp: "2026-08-08T12:01:00+00:00", ChannelValues: values,
 		ChannelVersions: versions, VersionsSeen: map[string]map[string]string{"writer": seen},
@@ -66,13 +66,13 @@ func main() {
 	if err := saver.DeleteThread(ctx, threadID); err != nil {
 		fail(err)
 	}
-	config, err := saver.Put(ctx, checkpoint.Config{ThreadID: threadID}, value, checkpoint.Metadata{
+	config, err := saver.Put(ctx, dacheckpoint.Config{ThreadID: threadID}, value, dacheckpoint.Metadata{
 		Source: "input", Step: 1, Extra: map[string]any{"fixture_owner": "go"},
 	}, value.ChannelVersions)
 	if err != nil {
 		fail(err)
 	}
-	if err := saver.PutWrites(ctx, config, "go-task", "ignored-by-sqlite", []checkpoint.ChannelWrite{
+	if err := saver.PutWrites(ctx, config, "go-task", "ignored-by-sqlite", []dacheckpoint.ChannelWrite{
 		{Channel: "delta", Value: []any{"write-one"}},
 		{Channel: "plain", Value: map[string]any{"source": "go", "ok": true}},
 		{Channel: "binary", Value: []byte("pending-bytes")},

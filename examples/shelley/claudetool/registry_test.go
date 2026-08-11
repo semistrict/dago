@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	dtool "github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 )
 
 func TestIsToolEnabled(t *testing.T) {
@@ -34,10 +34,10 @@ func TestIsToolEnabled(t *testing.T) {
 }
 
 func TestFilterTools(t *testing.T) {
-	tools := []dtool.Tool{
-		dtool.Func{Spec: dtool.Definition{Name: "bash"}},
-		dtool.Func{Spec: dtool.Definition{Name: "patch"}},
-		dtool.Func{Spec: dtool.Definition{Name: "browser"}},
+	tools := []datool.Tool{
+		datool.Func{Spec: datool.Definition{Name: "bash"}},
+		datool.Func{Spec: datool.Definition{Name: "patch"}},
+		datool.Func{Spec: datool.Definition{Name: "browser"}},
 	}
 	filtered := FilterTools(tools, map[string]string{"patch": "off"}, false)
 	names := make([]string, 0, len(filtered))

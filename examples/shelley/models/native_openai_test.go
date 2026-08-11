@@ -8,11 +8,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 )
 
-func TestBuiltInLunaExposesNativeDagoChat(t *testing.T) {
+func TestBuiltInLunaExposesNativeNativeChat(t *testing.T) {
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/responses" {
@@ -33,7 +33,7 @@ func TestBuiltInLunaExposesNativeDagoChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := chat.Invoke(context.Background(), dmodel.Request{
+	response, err := chat.Invoke(context.Background(), damodel.Request{
 		Messages: []dmessage.Message{dmessage.Human("hello")},
 	})
 	if err != nil {

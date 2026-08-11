@@ -33,8 +33,6 @@ from urllib.error import URLError
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SHELLEY_DIR = SCRIPT_DIR
-CONFIG = "/exe.dev/shelley.json"
-HOSTNAME = os.environ.get("EXE_HOSTNAME", f"{os.uname().nodename}.exe.xyz")
 
 
 def port_for_dir() -> int:
@@ -127,7 +125,7 @@ def cmd_start(port: int, custom_db: Path | None = None, banner: str | None = Non
     # --socket none disables the local CLI-client Unix socket. With many
     # demo instances around we'd otherwise exhaust the 10 fallback slots
     # under ~/.config/shelley/ and the server would refuse to start.
-    cmd = f"{binary} --config {CONFIG} --db {db} serve --port {port} --socket none"
+    cmd = f"{binary} --db {db} serve --port {port} --socket none"
     if banner is None:
         banner = default_banner()
         if banner:
@@ -147,7 +145,7 @@ def cmd_start(port: int, custom_db: Path | None = None, banner: str | None = Non
         print(f"Demo server running on port {port}")
     else:
         print(f"Warning: port {port} not responding yet.")
-    print(f"URL: https://{HOSTNAME}:{port}/")
+    print(f"URL: http://localhost:{port}/")
     print(f"Logs: tmux capture-pane -t {sess} -p | tail -50")
 
 
@@ -164,7 +162,7 @@ def cmd_status(port: int):
     sess = session_name(port)
     if tmux_has_session(sess):
         print(f"Running (tmux session '{sess}') on port {port}")
-        print(f"URL: https://{HOSTNAME}:{port}/")
+        print(f"URL: http://localhost:{port}/")
         print(f"Logs: tmux capture-pane -t {sess} -p | tail -50")
     else:
         print(f"Not running (port {port})")

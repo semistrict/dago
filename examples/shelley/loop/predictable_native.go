@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 )
 
-func (s *PredictableService) invokeNative(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
+func (s *PredictableService) invokeNative(ctx context.Context, request damodel.Request) (damodel.Response, error) {
 	s.mu.Lock()
 	delay := s.responseDelay
 	s.recentRequests = append(s.recentRequests, request)
@@ -25,7 +25,7 @@ func (s *PredictableService) invokeNative(ctx context.Context, request dmodel.Re
 		select {
 		case <-timer.C:
 		case <-ctx.Done():
-			return dmodel.Response{}, ctx.Err()
+			return damodel.Response{}, ctx.Err()
 		}
 	}
 
@@ -68,9 +68,9 @@ func (s *PredictableService) invokeNative(ctx context.Context, request dmodel.Re
 	case "patch bad json":
 		return nativeMalformedPatch(inputTokens), nil
 	case "maxTokens":
-		return nativeTerminal("This is a truncated response that was cut off mid-sentence because the output token limit was", dmodel.FinishReasonMaxTokens, inputTokens), nil
+		return nativeTerminal("This is a truncated response that was cut off mid-sentence because the output token limit was", damodel.FinishReasonMaxTokens, inputTokens), nil
 	case "refusal":
-		return nativeTerminal("", dmodel.FinishReasonRefusal, inputTokens), nil
+		return nativeTerminal("", damodel.FinishReasonRefusal, inputTokens), nil
 	}
 
 	if text, ok := strings.CutPrefix(inputText, "echo: "); ok {
@@ -87,10 +87,10 @@ func (s *PredictableService) invokeNative(ctx context.Context, request dmodel.Re
 	}
 	if text, ok := strings.CutPrefix(inputText, "fail "); ok {
 		message := strings.TrimSpace(text)
-		return dmodel.Response{}, predictableRetryError{message: message}
+		return damodel.Response{}, predictableRetryError{message: message}
 	}
 	if text, ok := strings.CutPrefix(inputText, "error: "); ok {
-		return dmodel.Response{}, fmt.Errorf("predictable error: %s", text)
+		return damodel.Response{}, fmt.Errorf("predictable error: %s", text)
 	}
 	if selector, ok := strings.CutPrefix(inputText, "screenshot: "); ok {
 		input := map[string]any{"action": "screenshot"}
@@ -132,7 +132,7 @@ func (s *PredictableService) invokeNative(ctx context.Context, request dmodel.Re
 			select {
 			case <-timer.C:
 			case <-ctx.Done():
-				return dmodel.Response{}, ctx.Err()
+				return damodel.Response{}, ctx.Err()
 			}
 		}
 		return nativeText("Delayed for "+seconds+" seconds", inputTokens), nil
@@ -146,14 +146,14 @@ func (s *PredictableService) invokeNative(ctx context.Context, request dmodel.Re
 type predictableRetryError struct{ message string }
 
 func (err predictableRetryError) Error() string { return "predictable failure: " + err.message }
-func (err predictableRetryError) RetryEvent(attempt int, delay time.Duration) dmodel.RetryEvent {
-	return dmodel.RetryEvent{
+func (err predictableRetryError) RetryEvent(attempt int, delay time.Duration) damodel.RetryEvent {
+	return damodel.RetryEvent{
 		Attempt: attempt, Delay: delay, Retryable: true, Err: err.message,
 		Provider: "predictable", Model: "predictable-v1",
 	}
 }
 
-func nativeInput(request dmodel.Request) (string, bool) {
+func nativeInput(request damodel.Request) (string, bool) {
 	if len(request.Messages) == 0 {
 		return "", false
 	}
@@ -167,7 +167,7 @@ func nativeInput(request dmodel.Request) (string, bool) {
 	return strings.TrimSpace(last.TextContent()), false
 }
 
-func nativeRequestMentions(request dmodel.Request, needle string) bool {
+func nativeRequestMentions(request damodel.Request, needle string) bool {
 	for _, item := range request.Messages {
 		if strings.Contains(item.TextContent(), needle) {
 			return true
@@ -176,7 +176,7 @@ func nativeRequestMentions(request dmodel.Request, needle string) bool {
 	return false
 }
 
-func countNativeRequestTokens(request dmodel.Request) int {
+func countNativeRequestTokens(request damodel.Request) int {
 	total := 0
 	for _, item := range request.Messages {
 		for _, block := range item.Content {
@@ -192,22 +192,22 @@ func countNativeRequestTokens(request dmodel.Request) int {
 	return total / 4
 }
 
-func nativeText(text string, inputTokens int) dmodel.Response {
+func nativeText(text string, inputTokens int) damodel.Response {
 	message := dmessage.Assistant(text)
 	message.ID = fmt.Sprintf("pred-%d", time.Now().UnixNano())
 	message.Usage = nativeUsage(inputTokens, max(1, len(text)/4), 0.001)
-	return dmodel.Response{Message: message}
+	return damodel.Response{Message: message}
 }
 
-func nativeThinking(thoughts string, inputTokens int) dmodel.Response {
+func nativeThinking(thoughts string, inputTokens int) damodel.Response {
 	message := dmessage.Assistant("I've considered my approach.")
 	message.ID = fmt.Sprintf("pred-thinking-%d", time.Now().UnixNano())
 	message.Content = append([]dmessage.ContentBlock{{Type: dmessage.BlockReasoning, Reasoning: thoughts}}, message.Content...)
 	message.Usage = nativeUsage(inputTokens, max(1, (len(thoughts)+len(message.TextContent()))/4), 0.002)
-	return dmodel.Response{Message: message}
+	return damodel.Response{Message: message}
 }
 
-func nativeTool(text, name string, input any, inputTokens int) dmodel.Response {
+func nativeTool(text, name string, input any, inputTokens int) damodel.Response {
 	arguments, err := json.Marshal(input)
 	if err != nil {
 		panic(err)
@@ -216,10 +216,10 @@ func nativeTool(text, name string, input any, inputTokens int) dmodel.Response {
 	message.ID = fmt.Sprintf("pred-%s-%d", name, time.Now().UnixNano())
 	message.ToolCalls = []dmessage.ToolCall{{ID: fmt.Sprintf("tool_%d", time.Now().UnixNano()%100000), Name: name, Arguments: arguments}}
 	message.Usage = nativeUsage(inputTokens, max(1, (len(text)+len(arguments))/4), 0.002)
-	return dmodel.Response{Message: message}
+	return damodel.Response{Message: message}
 }
 
-func nativePatch(path string, overwrite bool, inputTokens int) dmodel.Response {
+func nativePatch(path string, overwrite bool, inputTokens int) damodel.Response {
 	patch := map[string]string{"operation": "replace", "oldText": "example", "newText": "updated example"}
 	text := "I'll patch the file: " + path
 	if overwrite {
@@ -229,7 +229,7 @@ func nativePatch(path string, overwrite bool, inputTokens int) dmodel.Response {
 	return nativeTool(text, "patch", map[string]any{"path": path, "patches": []map[string]string{patch}}, inputTokens)
 }
 
-func nativeBigPatch(inputTokens int) dmodel.Response {
+func nativeBigPatch(inputTokens int) damodel.Response {
 	var body strings.Builder
 	body.WriteString("package big\n\n")
 	for index := range 200 {
@@ -241,7 +241,7 @@ func nativeBigPatch(inputTokens int) dmodel.Response {
 	}, inputTokens)
 }
 
-func nativeMalformedPatch(inputTokens int) dmodel.Response {
+func nativeMalformedPatch(inputTokens int) damodel.Response {
 	message := dmessage.Assistant("I'll patch the file with the changes.")
 	message.ID = fmt.Sprintf("pred-patch-malformed-%d", time.Now().UnixNano())
 	message.ToolCalls = []dmessage.ToolCall{{
@@ -249,22 +249,22 @@ func nativeMalformedPatch(inputTokens int) dmodel.Response {
 		Arguments: json.RawMessage(`{"path":"/home/agent/example.css","patch":"<parameter name=\"operation\">replace","oldText":".example {\n  color: red;\n}","newText":".example {\n  color: blue;\n}"}`),
 	}}
 	message.Usage = nativeUsage(inputTokens, 50, 0.003)
-	return dmodel.Response{Message: message}
+	return damodel.Response{Message: message}
 }
 
-func nativeTerminal(text string, reason dmodel.FinishReason, inputTokens int) dmodel.Response {
+func nativeTerminal(text string, reason damodel.FinishReason, inputTokens int) damodel.Response {
 	outputTokens := max(1, len(text)/4)
 	message := dmessage.Assistant(text)
 	message.ID = fmt.Sprintf("pred-%d", time.Now().UnixNano())
-	var refusal *dmodel.Refusal
-	if reason == dmodel.FinishReasonRefusal {
+	var refusal *damodel.Refusal
+	if reason == damodel.FinishReasonRefusal {
 		message.Content = []dmessage.ContentBlock{{Type: dmessage.BlockReasoning}}
 		outputTokens = 42
-		refusal = &dmodel.Refusal{Category: "cyber", Explanation: "The model declined to continue with this request."}
+		refusal = &damodel.Refusal{Category: "cyber", Explanation: "The model declined to continue with this request."}
 	}
-	dmodel.SetOutcome(&message, reason, refusal)
+	damodel.SetOutcome(&message, reason, refusal)
 	message.Usage = nativeUsage(inputTokens, outputTokens, 0.001)
-	return dmodel.Response{Message: message}
+	return damodel.Response{Message: message}
 }
 
 func nativeUsage(input, output int, cost float64) *dmessage.Usage {
@@ -274,7 +274,7 @@ func nativeUsage(input, output int, cost float64) *dmessage.Usage {
 	}
 }
 
-func nativeWebSearch(inputTokens int) dmodel.Response {
+func nativeWebSearch(inputTokens int) damodel.Response {
 	message := dmessage.Assistant("")
 	message.ID = fmt.Sprintf("pred-websearch-%d", time.Now().UnixNano())
 	message.Content = []dmessage.ContentBlock{
@@ -293,10 +293,10 @@ func nativeWebSearch(inputTokens int) dmodel.Response {
 		{Type: dmessage.BlockText, Text: ", so model switching pairs well with rewinding to retry a step with a different model."},
 	}
 	message.Usage = nativeUsage(inputTokens, 80, 0.003)
-	return dmodel.Response{Message: message}
+	return damodel.Response{Message: message}
 }
 
-func nativeToolSmorgasbord(inputTokens int) dmodel.Response {
+func nativeToolSmorgasbord(inputTokens int) damodel.Response {
 	message := dmessage.Assistant("Here's a sample of all the tools:")
 	message.ID = fmt.Sprintf("pred-smorgasbord-%d", time.Now().UnixNano())
 	message.Content = append(message.Content, dmessage.ContentBlock{Type: dmessage.BlockReasoning, Reasoning: "I'm thinking about the best approach for this task."})
@@ -332,5 +332,5 @@ func nativeToolSmorgasbord(inputTokens int) dmodel.Response {
 		message.ToolCalls = append(message.ToolCalls, dmessage.ToolCall{ID: fmt.Sprintf("tool_%d_%d", index, time.Now().UnixNano()%100000), Name: call.name, Arguments: arguments})
 	}
 	message.Usage = nativeUsage(inputTokens, 200, 0.01)
-	return dmodel.Response{Message: message}
+	return damodel.Response{Message: message}
 }

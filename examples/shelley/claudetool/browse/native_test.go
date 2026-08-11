@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	dtool "github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 )
 
-func TestNativeReadImageToolUsesDagoMultimodalContract(t *testing.T) {
+func TestNativeReadImageToolUsesNativeMultimodalContract(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "image.png")
 	var encoded bytes.Buffer
@@ -26,7 +26,7 @@ func TestNativeReadImageToolUsesDagoMultimodalContract(t *testing.T) {
 	browser := NewBrowseTools(context.Background(), 0)
 	defer browser.Close()
 	arguments, _ := json.Marshal(readImageInput{Path: path})
-	result, err := browser.NativeReadImageTool().Execute(context.Background(), arguments, dtool.Runtime{CallID: "call-1"})
+	result, err := browser.NativeReadImageTool().Execute(context.Background(), arguments, datool.Runtime{CallID: "call-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestNativeCombinedBrowserToolDispatchesWithoutLegacyToolRun(t *testing.T) {
 	browser := NewBrowseTools(context.Background(), 0)
 	defer browser.Close()
 	result, err := browser.NativeCombinedTool().Execute(
-		context.Background(), json.RawMessage(`{"action":"emulate_help"}`), dtool.Runtime{CallID: "call-1"},
+		context.Background(), json.RawMessage(`{"action":"emulate_help"}`), datool.Runtime{CallID: "call-1"},
 	)
 	if err != nil {
 		t.Fatal(err)

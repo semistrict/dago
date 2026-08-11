@@ -92,39 +92,12 @@
               <p class="text-base chat-welcome-text">
                 <template v-for="(part, i) in welcomeParts" :key="i">
                   <strong v-if="part === '{hostname}'">{{ hostname }}</strong>
-                  <a
-                    v-else-if="part === '{docsLink}'"
-                    href="https://exe.dev/docs/proxy"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="chat-welcome-link"
-                    >docs</a
-                  >
-                  <a
-                    v-else-if="part === '{proxyLink}'"
-                    :href="proxyURL"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="chat-welcome-link"
-                    >{{ proxyURL }}</a
-                  >
                   <template v-else>{{ part }}</template>
                 </template>
               </p>
               <PvMessage v-if="models.length === 0" severity="warn" class="no-models-message">
                 <p class="no-models-title">{{ t(modelSetupHint.title) }}</p>
                 <p v-if="modelSetupHint.note">{{ t(modelSetupHint.note) }}</p>
-                <!-- Render each remedy as the literal command it runs, so the
-                     user can see what a click does (and copy it to a terminal
-                     instead if they prefer). -->
-                <ul v-if="modelSetupHint.actions.length" class="no-models-commands">
-                  <li v-for="action in modelSetupHint.actions" :key="action.command">
-                    <a :href="suggestURL(action.command)" target="_blank" rel="noopener noreferrer"
-                      ><code>{{ sshCommandLine(action.command) }}</code></a
-                    >
-                  </li>
-                </ul>
-                <p v-if="modelSetupHint.footer">{{ t(modelSetupHint.footer) }}</p>
               </PvMessage>
               <p v-else class="text-sm chat-secondary-text">{{ t("sendMessageToStart") }}</p>
             </div>
@@ -396,8 +369,6 @@ import {
   modelSetupHintKeys,
   canSendWithModel,
   needsModel,
-  sshCommandLine,
-  suggestURL,
 } from "../../utils/modelSetupHint";
 import { useMarkdownMode } from "../composables/markdownMode";
 import { useI18n } from "../composables/i18n";
@@ -541,7 +512,7 @@ const lastMessageId = computed(() => {
 });
 provide("lastMessageId", lastMessageId);
 
-// When more than one distinct human user (by exe.dev email) has participated in
+// When more than one distinct human user (by user email) has participated in
 // a conversation, descendant Message components show each user message's author
 // email. Empty-string emails are ignored (unauthenticated/direct access), so a
 // mix of empty and a single real email still counts as one participant and
@@ -578,15 +549,7 @@ const models = ref<
 // Ready model ids, surfaced to MessageInput for /model argument autocomplete.
 const readyModelIds = computed(() => models.value.filter((m) => m.ready).map((m) => m.id));
 
-// Copy for the empty-model-list state. The server tells us WHY the list is
-// empty (missing exe.dev reflection/llm integration, or not on exe.dev at
-// all) so the advice names the right fix.
-const modelSetupHint = computed(() =>
-  modelSetupHintKeys(
-    window.__SHELLEY_INIT__?.model_setup_hint,
-    window.__SHELLEY_INIT__?.is_exe_dev,
-  ),
-);
+const modelSetupHint = computed(() => modelSetupHintKeys(window.__SHELLEY_INIT__?.model_setup_hint));
 
 // noModelErrorMessage is the terse inline error when a send is blocked for
 // want of a model. The remedies live in the warning panel (and its suggest
@@ -819,6 +782,7 @@ let pendingScroll: number | null | undefined = undefined;
 let loadingProgressDelay: number | null = null;
 let currentConversationId: string | null = props.conversationId;
 let conversationLoadEpoch = 0;
+let storeSyncBlockedEpoch = 0;
 let catchingUp = false;
 // Layout-free "is the viewport at/near the bottom" signal, maintained by the
 // bottom sentinel's IntersectionObserver. Persisted (instead of a raw scrollTop)
@@ -1191,9 +1155,8 @@ const displayTitle = computed(() => {
 });
 
 const hasCwd = computed(() => !!(props.currentConversation?.cwd || selectedCwd.value));
-const proxyURL = computed(() => `https://${hostname}/`);
 const welcomeParts = computed(() =>
-  t("welcomeMessage").split(/(\{hostname\}|\{docsLink\}|\{proxyLink\})/),
+  t("welcomeMessage").split(/(\{hostname\})/),
 );
 
 const coalescedItems = computed(
@@ -1584,6 +1547,7 @@ function scrollToBottom() {
 }
 
 function syncFromStore(focusedId: string) {
+  if (storeSyncBlockedEpoch !== 0 && storeSyncBlockedEpoch === conversationLoadEpoch) return;
   const rec = messageStore.peek(focusedId);
   if (focusedId !== currentConversationId) return;
   if (!rec) return;
@@ -1763,6 +1727,10 @@ async function finishConversationLoad(
 
 async function loadMessages(focusedId: string) {
   const loadEpoch = ++conversationLoadEpoch;
+  storeSyncBlockedEpoch = loadEpoch;
+  const unblockStoreSync = () => {
+    if (storeSyncBlockedEpoch === loadEpoch) storeSyncBlockedEpoch = 0;
+  };
   const isCurrent = () =>
     focusedId === currentConversationId && loadEpoch === conversationLoadEpoch;
   const timing: ConversationLoadTiming = {
@@ -1782,6 +1750,7 @@ async function loadMessages(focusedId: string) {
     props.currentConversation?.is_draft &&
     props.currentConversation.conversation_id === focusedId
   ) {
+    unblockStoreSync();
     clearConversationLoading();
     return;
   }
@@ -1794,27 +1763,22 @@ async function loadMessages(focusedId: string) {
   if (wasHydrated && loading.value) {
     await nextTick();
     await waitForConversationPaint();
-    if (!isCurrent()) return;
+    if (!isCurrent()) {
+      unblockStoreSync();
+      return;
+    }
   }
   if (!wasHydrated) {
     const hydrateStarted = performance.now();
     await messageStore.hydrate(focusedId);
     timing.hydrateMs = performance.now() - hydrateStarted;
   }
-  if (!isCurrent()) return;
+  if (!isCurrent()) {
+    unblockStoreSync();
+    return;
+  }
 
   let cached = messageStore.peek(focusedId);
-  if (cached) {
-    messages.value = cached.messages;
-    if (cached.messages.length > 0 || cached.hasFullHistory) {
-      lastKnownMessageCount.value = cached.messages.length;
-      saveMsgCount(cached.messages.length);
-    }
-    contextWindowSize.value = cached.contextWindowSize;
-    if (props.onConversationUpdate && cached.conversation) {
-      props.onConversationUpdate(cached.conversation);
-    }
-  }
 
   const cacheIsComplete =
     !!cached &&
@@ -1822,6 +1786,7 @@ async function loadMessages(focusedId: string) {
     (cached.maxSequenceIdKnown <= 0 || cached.maxSequenceId >= cached.maxSequenceIdKnown);
 
   if (cacheIsComplete && !cached!.needsRefresh) {
+    unblockStoreSync();
     cacheDiag("hit", "load.served_from_cache", {
       conversation_id: focusedId,
       messages: cached!.messages.length,
@@ -1836,6 +1801,27 @@ async function loadMessages(focusedId: string) {
     );
     return;
   }
+
+  // Start the incremental request before revealing the cached record. Live
+  // stream messages can arrive while IndexedDB hydration is in flight and are
+  // merged into the hot record. If that merged record is rendered first, the
+  // newly-arrived text can appear before the cache reconciliation request has
+  // even started, making the initial view's source nondeterministic. Starting
+  // the request first preserves instant cached rendering while establishing a
+  // clear handoff from persisted history to the server-confirmed tail.
+  const incrementalFromSeq =
+    cached && cached.hasFullHistory && cached.messages.length > 0
+      ? cached.maxSequenceId
+      : null;
+  const incrementalFetchStarted =
+    incrementalFromSeq === null ? 0 : performance.now();
+  const incrementalRequest =
+    incrementalFromSeq === null
+      ? null
+      : api.getConversationSince(focusedId, incrementalFromSeq);
+  unblockStoreSync();
+
+  if (cached) applyConversationRecord(cached);
 
   if (cached && cached.messages.length > 0) {
     await revealCachedConversation(
@@ -1852,16 +1838,14 @@ async function loadMessages(focusedId: string) {
   // don't know whether the server has grown past it (stream reconnect, or the
   // list's known-max is ahead of us). Ask only for the tail — a few hundred
   // bytes instead of re-downloading the whole conversation.
-  if (cached && cached.hasFullHistory && cached.messages.length > 0) {
-    const fromSeq = cached.maxSequenceId;
-    const fetchStarted = performance.now();
+  if (incrementalRequest && incrementalFromSeq !== null) {
     let fetchComplete = false;
     try {
-      const tail = await api.getConversationSince(focusedId, fromSeq);
-      timing.fetchMs += performance.now() - fetchStarted;
+      const tail = await incrementalRequest;
+      timing.fetchMs += performance.now() - incrementalFetchStarted;
       fetchComplete = true;
       if (!isCurrent()) return;
-      messageStore.applyIncrementalTail(focusedId, tail, fromSeq);
+      messageStore.applyIncrementalTail(focusedId, tail, incrementalFromSeq);
       cached = messageStore.peek(focusedId);
       if (!cached) throw new Error("conversation cache vanished after incremental refresh");
       if (props.onConversationUpdate && tail.conversation) {
@@ -1870,7 +1854,7 @@ async function loadMessages(focusedId: string) {
       await finishConversationLoad(focusedId, loadEpoch, "incremental", timing, cached, 0);
       return;
     } catch (err) {
-      if (!fetchComplete) timing.fetchMs += performance.now() - fetchStarted;
+      if (!fetchComplete) timing.fetchMs += performance.now() - incrementalFetchStarted;
       cacheDiag(
         "fail",
         "refresh.incremental_failed",

@@ -203,9 +203,6 @@ export const vi: TranslationKeys = {
   notifications: "Thông báo",
   browserNotifications: "Thông báo trình duyệt",
   faviconBadge: "Status trên favicon",
-  exeDevPushNotifications: "Thông báo đẩy",
-  exeDevPushNotificationsDescription:
-    "Gửi đến thiết bị của bạn qua ứng dụng exe.dev khi agent hoàn tất",
   editChannel: "Chỉnh kênh",
   addChannel: "Thêm kênh",
   customChannels: "Kênh tùy chỉnh",
@@ -247,14 +244,10 @@ export const vi: TranslationKeys = {
   // Welcome / Empty State
   welcomeTitle: "Shelley Agent",
   welcomeSubtitle: "",
-  welcomeMessage:
-    "Shelley là một agent lập trình chạy trên {hostname}. Bạn có thể yêu cầu Shelley xây dựng dự án. Nếu bạn build website bằng Shelley, bạn có thể dùng HTTP proxy của exe.dev ({docsLink}) để xem tại {proxyLink}.",
+  welcomeMessage: "Shelley is running on {hostname}.",
   sendMessageToStart: "Gửi tin nhắn để bắt đầu trò chuyện.",
   noModelsTitle: "Không có model AI khả dụng",
-  noModelsExeNote:
-    "Shelley lấy các mô hình từ tích hợp llm của exe.dev. Chạy một trong các lệnh này để sửa:",
   noModelsLocalNote: "Thêm model bằng Ctrl+K hoặc ⌘+K.",
-  noModelsExeRefresh: "Sau đó nhấn Refresh trong bộ chọn model.",
   noModelSelectedPlaceholder: "Không có model khả dụng",
 
   // Status Bar

@@ -13,43 +13,30 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/client"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/exeenv"
-	"shelley.exe.dev/llm/llmhttp"
-	"shelley.exe.dev/models"
-	"shelley.exe.dev/modelsources"
-	"shelley.exe.dev/server"
-	_ "shelley.exe.dev/server/notifications/channels" // register channel types
-	"shelley.exe.dev/skills"
-	"shelley.exe.dev/templates"
-	"shelley.exe.dev/version"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/client"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm/llmhttp"
+	"github.com/semistrict/dago/examples/shelley/models"
+	"github.com/semistrict/dago/examples/shelley/modelsources"
+	"github.com/semistrict/dago/examples/shelley/server"
+	_ "github.com/semistrict/dago/examples/shelley/server/notifications/channels" // register channel types
+	"github.com/semistrict/dago/examples/shelley/skills"
+	"github.com/semistrict/dago/examples/shelley/version"
 )
 
 type GlobalConfig struct {
-	DBPath                string
-	Debug                 bool
-	PredictableOnly       bool
-	ConfigPath            string
-	DefaultModel          string
-	DisableLLMIntegration bool
-	DisableGateway        bool
-	OpenAIOAuthStore      string
+	DBPath           string
+	Debug            bool
+	PredictableOnly  bool
+	ConfigPath       string
+	DefaultModel     string
+	OpenAIOAuthStore string
 }
 
 type shelleyConfig struct {
-	LLMGateway     string                `json:"llm_gateway"`
-	DefaultModel   string                `json:"default_model"`
-	ExeEnvironment *exeEnvironmentConfig `json:"exe_environment"`
+	DefaultModel string `json:"default_model"`
 }
-
-type exeEnvironmentConfig struct {
-	Scheme  string `json:"scheme"`
-	BoxHost string `json:"box_host"`
-}
-
-var discoverLLMIntegrations = modelsources.DiscoverLLMIntegrations
 
 // registerGlobalFlags binds the process-wide global flags onto fs, writing into
 // global. Extracted from main so tests can parse flags through a fresh FlagSet
@@ -61,8 +48,6 @@ func registerGlobalFlags(fs *flag.FlagSet, global *GlobalConfig) {
 	fs.BoolVar(&global.PredictableOnly, "predictable-only", false, "Use only the predictable service, ignoring all other models")
 	fs.StringVar(&global.ConfigPath, "config", "", "Path to shelley.json configuration file (optional)")
 	fs.StringVar(&global.DefaultModel, "default-model", "", "Default model for web UI (overrides shelley.json default_model; falls back to the first ready model when unset)")
-	fs.BoolVar(&global.DisableLLMIntegration, "disable-llm-integration", false, "Ignore any discovered exe.dev llm integration")
-	fs.BoolVar(&global.DisableGateway, "disable-gateway", false, "Ignore llm_gateway from shelley.json")
 	fs.StringVar(&global.OpenAIOAuthStore, "openai-oauth-store", "", "OpenAI subscription OAuth token file (defaults to the user config directory; set to 'none' to disable)")
 }
 
@@ -82,7 +67,6 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  client [flags] <subcommand>   CLI client (chat, read, list, archive) (experimental)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  skill <cat|ls|new> [name]     Read, list, or create skills\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dtach <new|attach> ...        Persistent PTY sessions over a Unix socket\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  unpack-template <name> <dir>  Unpack a project template to a directory\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  version                       Print version information as JSON\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "\nUse '%s <command> -h' for command-specific help\n", os.Args[0])
 	}
@@ -108,8 +92,6 @@ func main() {
 		runSkill(args[1:])
 	case "dtach":
 		runDtach(args[1:])
-	case "unpack-template":
-		runUnpackTemplate(args[1:])
 	case "version":
 		runVersion()
 	default:
@@ -147,11 +129,7 @@ func runSkill(args []string) {
 	case "ls":
 		all := skills.ListAll(wd, "")
 		for _, s := range all {
-			desc := s.Description
-			if s.When != "" {
-				desc = "[when: " + s.When + "] " + desc
-			}
-			fmt.Printf("%s\t%s\n", s.Name, desc)
+			fmt.Printf("%s\t%s\n", s.Name, s.Description)
 		}
 
 	case "new":
@@ -177,7 +155,7 @@ func runServe(global GlobalConfig, args []string) {
 	port := fs.String("port", "9000", "Port to listen on")
 	portFile := fs.String("port-file", "", "Write the actual listening port to this file (useful with --port 0)")
 	systemdActivation := fs.Bool("systemd-activation", false, "Use systemd socket activation (listen on fd from systemd)")
-	requireHeader := fs.String("require-header", "", "Require this header on all API requests (e.g., X-Exedev-Userid)")
+	requireHeader := fs.String("require-header", "", "Require this header on all API requests (e.g., X-User-ID)")
 	socketPath := fs.String("socket", client.DefaultSocketPath(), "Path to Unix socket for local CLI client access (set to 'none' to disable)")
 	banner := fs.String("banner", "", "If set, shows this text in a banner at the top of the UI (useful for marking demo instances)")
 	fs.Parse(args)
@@ -301,68 +279,6 @@ func setupDatabase(dbPath string, logger *slog.Logger) *db.DB {
 	return database
 }
 
-// runUnpackTemplate unpacks a project template to a directory
-func runUnpackTemplate(args []string) {
-	fs := flag.NewFlagSet("unpack-template", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: shelley unpack-template <template-name> <directory>\n\n")
-		fmt.Fprintf(fs.Output(), "Unpacks a project template to the specified directory.\n\n")
-		fmt.Fprintf(fs.Output(), "Available templates:\n")
-		names, err := templates.List()
-		if err != nil {
-			fmt.Fprintf(fs.Output(), "  (error listing templates: %v)\n", err)
-		} else if len(names) == 0 {
-			fmt.Fprintf(fs.Output(), "  (no templates available)\n")
-		} else {
-			for _, name := range names {
-				fmt.Fprintf(fs.Output(), "  %s\n", name)
-			}
-		}
-	}
-	fs.Parse(args)
-
-	if fs.NArg() < 2 {
-		fs.Usage()
-		os.Exit(1)
-	}
-
-	templateName := fs.Arg(0)
-	destDir := fs.Arg(1)
-
-	// Verify template exists
-	names, err := templates.List()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error listing templates: %v\n", err)
-		os.Exit(1)
-	}
-	found := false
-	for _, name := range names {
-		if name == templateName {
-			found = true
-			break
-		}
-	}
-	if !found {
-		fmt.Fprintf(os.Stderr, "Error: template %q not found\n", templateName)
-		fmt.Fprintf(os.Stderr, "Available templates: %s\n", strings.Join(names, ", "))
-		os.Exit(1)
-	}
-
-	// Create destination directory if it doesn't exist
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating directory %q: %v\n", destDir, err)
-		os.Exit(1)
-	}
-
-	// Unpack the template
-	if err := templates.Unpack(templateName, destDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Error unpacking template: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Template %q unpacked to %s\n", templateName, destDir)
-}
-
 // runVersion prints version information as JSON
 func runVersion() {
 	info := version.GetInfo()
@@ -415,39 +331,14 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 	}
 }
 
-// buildLLMConfig composes the set of built-in models the server should
-// expose. Sources are evaluated in order; the first to claim a model ID
-// wins:
-//
-//  1. Each discovered exe.dev "llm" integration (sorted by name; when
-//     2+, subsequent integrations get an "@<name>" suffix on their
-//     model IDs so the union of all served models is visible).
-//  2. The exe.dev gateway from shelley.json's llm_gateway, if set and no
-//     exe.dev LLM integration was discovered via reflection. Any non-empty
-//     provider env var overrides the gateway's implicit credential for
-//     that provider (legacy behavior).
-//  3. OPENAI_API_KEY when no gateway is set.
-//  4. Predictable (always available).
-//
-// Custom DB-backed models load on top of the returned set.
-func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (*server.LLMConfig, error) {
-	return buildLLMConfigWithOAuth(global, logger, database, nil)
-}
-
+// buildLLMConfig composes models from local provider credentials, OpenAI
+// account authentication, and the deterministic test model.
 func buildLLMConfigWithOAuth(global GlobalConfig, logger *slog.Logger, database *db.DB, openAIOAuth *server.OpenAIOAuth) (*server.LLMConfig, error) {
 	config, err := loadConfig(global.ConfigPath)
 	if err != nil {
 		return nil, err
 	}
-	if config.ExeEnvironment != nil {
-		env, err := exeenv.New(config.ExeEnvironment.Scheme, config.ExeEnvironment.BoxHost)
-		if err != nil {
-			return nil, fmt.Errorf("exe_environment: %w", err)
-		}
-		exeenv.Configure(env)
-	}
-
-	defaultModel, sources := buildLLMModelSources(context.Background(), global, config, logger)
+	defaultModel, sources := buildLLMModelSources(global, config, logger)
 
 	httpc := llmhttp.NewClient(nil)
 	builtModels, err := buildModels(modelsources.Build(models.All(), sources, httpc, logger), openAIOAuth)
@@ -462,8 +353,8 @@ func buildLLMConfigWithOAuth(global GlobalConfig, logger *slog.Logger, database 
 		DefaultModel: defaultModel,
 		DB:           database,
 		HTTPC:        httpc,
-		RefreshBuiltModels: func(ctx context.Context) ([]models.Built, error) {
-			_, sources := buildLLMModelSources(ctx, global, config, logger)
+		RefreshBuiltModels: func(_ context.Context) ([]models.Built, error) {
+			_, sources := buildLLMModelSources(global, config, logger)
 			return buildModels(modelsources.Build(models.All(), sources, httpc, logger), openAIOAuth)
 		},
 		Logger: logger,
@@ -520,51 +411,17 @@ func loadConfig(path string) (shelleyConfig, error) {
 	return config, nil
 }
 
-func buildLLMModelSources(ctx context.Context, global GlobalConfig, config shelleyConfig, logger *slog.Logger) (string, []modelsources.Source) {
+func buildLLMModelSources(global GlobalConfig, config shelleyConfig, logger *slog.Logger) (string, []modelsources.Source) {
 	defaultModel := global.DefaultModel
 	openAIKey := os.Getenv("OPENAI_API_KEY")
-
 	var sources []modelsources.Source
-
-	// 1. exe.dev LLM integrations.
-	var integs []*modelsources.LLMIntegrationConfig
-	llmIntegrationFound := false
-	if !global.DisableLLMIntegration {
-		discovered := discoverLLMIntegrations(ctx, nil, logger)
-		llmIntegrationFound = discovered.Found
-		integs = discovered.Integrations
-	}
-	for i, integ := range integs {
-		suffix := ""
-		if len(integs) > 1 && i > 0 {
-			suffix = "@" + integ.Name
-		}
-		sources = append(sources, modelsources.LLMIntegration(integ, suffix))
-	}
-
-	gateway := strings.TrimSuffix(config.LLMGateway, "/")
 	if config.DefaultModel != "" && defaultModel == "" {
 		defaultModel = config.DefaultModel
 		logger.Info("Using default model from config", "model", config.DefaultModel)
 	}
-
-	if global.DisableGateway {
-		gateway = ""
-	}
-
-	// 2. Gateway OpenAI Responses endpoint. OPENAI_API_KEY overrides the
-	// gateway's implicit credential when present.
-	if gateway != "" && llmIntegrationFound {
-		logger.Info("Skipping LLM gateway because an exe.dev LLM integration was discovered")
-	} else if gateway != "" {
-		logger.Info("Using LLM gateway", "gateway", gateway)
-		sources = append(sources, modelsources.Gateway(gateway, openAIKey))
-	} else if openAIKey != "" {
-		// 3. Direct API key.
+	if openAIKey != "" {
 		sources = append(sources, modelsources.Env(openAIKey))
 	}
-
-	// 4. Predictable always available.
 	sources = append(sources, modelsources.Predictable())
 	return defaultModel, sources
 }

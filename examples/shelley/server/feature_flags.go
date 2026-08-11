@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"shelley.exe.dev/featureflags"
+	"github.com/semistrict/dago/examples/shelley/featureflags"
 )
 
 // FeatureFlagDTO is the API shape: the static registry entry plus an optional

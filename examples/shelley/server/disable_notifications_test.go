@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/server/notifications"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/server/notifications"
 )
 
 // recordingChannel is a notifications.Channel that records every event it

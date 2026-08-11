@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 // TestMessageSentOnlyOnce verifies that each message is sent to SSE subscribers

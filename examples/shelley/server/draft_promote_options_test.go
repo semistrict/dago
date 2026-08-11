@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 // A draft carries conversation_options (e.g. thinking_level) chosen before the

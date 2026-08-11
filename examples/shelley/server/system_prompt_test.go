@@ -2,15 +2,12 @@ package server
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"shelley.exe.dev/exeenv"
 )
 
 // TestSystemPromptIncludesCwdGuidanceFiles verifies that AGENTS.md from the working directory
@@ -159,29 +156,6 @@ func TestSystemPromptIncludesSkillsFromAnyWorkingDir(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "A test skill for issue 83.") {
 		t.Error("system prompt should contain the skill description")
-	}
-}
-
-func TestSystemPromptIncludesUserEmail(t *testing.T) {
-	t.Parallel()
-	tmpDir := t.TempDir()
-
-	// Without email, no email line in prompt
-	prompt, err := GenerateSystemPrompt(tmpDir)
-	if err != nil {
-		t.Fatalf("GenerateSystemPrompt failed: %v", err)
-	}
-	if strings.Contains(prompt, "exe.dev email") {
-		t.Error("system prompt should not mention email when none is provided")
-	}
-
-	// With email, it should appear
-	prompt, err = GenerateSystemPrompt(tmpDir, WithUserEmail("alice@example.com"))
-	if err != nil {
-		t.Fatalf("GenerateSystemPrompt with email failed: %v", err)
-	}
-	if !strings.Contains(prompt, "alice@example.com") {
-		t.Error("system prompt should contain the user email when provided")
 	}
 }
 
@@ -842,7 +816,7 @@ func TestRunEndOfTurnHookReceivesJSON(t *testing.T) {
 		Hostname:        "phil-dev",
 		Model:           "claude-sonnet",
 		Slug:            "my-slug",
-		ConversationURL: "https://phil-dev.exe.xyz/c/my-slug",
+		ConversationURL: "https://example.test/c/my-slug",
 		VMName:          "phil-dev",
 		FinalResponse:   "all done",
 	})
@@ -858,7 +832,7 @@ func TestRunEndOfTurnHookReceivesJSON(t *testing.T) {
 		`"hostname":"phil-dev"`,
 		`"model":"claude-sonnet"`,
 		`"slug":"my-slug"`,
-		`"conversation_url":"https://phil-dev.exe.xyz/c/my-slug"`,
+		`"conversation_url":"https://example.test/c/my-slug"`,
 		`"vm_name":"phil-dev"`,
 		`"final_response":"all done"`,
 	} {
@@ -879,50 +853,6 @@ func TestRunEndOfTurnHookFailureReturnsError(t *testing.T) {
 	}
 }
 
-func TestExeDevDefaultPortUsesEnvironmentReflectionURL(t *testing.T) {
-	tests := []struct {
-		name    string
-		scheme  string
-		boxHost string
-		wantURL string
-	}{
-		{"production", "https", "exe.xyz", "https://reflection.int.exe.xyz/default_port"},
-		{"development", "http", "exe.cloud", "http://reflection.int.exe.cloud/default_port"},
-		{"configured HTTPS", "https", "example.test", "https://reflection.int.example.test/default_port"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			oldClient := exeDevDefaultPortHTTPClient
-			t.Cleanup(func() { exeDevDefaultPortHTTPClient = oldClient })
-
-			exeDevDefaultPortHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				if req.URL.String() != tt.wantURL {
-					t.Fatalf("unexpected URL %s", req.URL)
-				}
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(strings.NewReader(`{"default_port":8123}`)),
-					Header:     make(http.Header),
-				}, nil
-			})}
-
-			env, err := exeenv.New(tt.scheme, tt.boxHost)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := exeDevDefaultPortIn(env); got != 8123 {
-				t.Fatalf("exeDevDefaultPortIn() = %d, want 8123", got)
-			}
-		})
-	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
 func TestRunNewConversationHookReceivesHeaders(t *testing.T) {
 	hooksDir := t.TempDir()
 	dumpFile := filepath.Join(t.TempDir(), "new-conv.json")
@@ -939,7 +869,7 @@ func TestRunNewConversationHookReceivesHeaders(t *testing.T) {
 			Headers: [][2]string{
 				{"X-Custom", "a"},
 				{"X-Custom", "b"},
-				{"X-ExeDev-Email", "user@example.com"},
+				{"X-User-Email", "user@example.com"},
 			},
 		},
 	})
@@ -953,7 +883,7 @@ func TestRunNewConversationHookReceivesHeaders(t *testing.T) {
 		`"headers":`,
 		`["X-Custom","a"]`,
 		`["X-Custom","b"]`,
-		`["X-ExeDev-Email","user@example.com"]`,
+		`["X-User-Email","user@example.com"]`,
 	} {
 		if !strings.Contains(input, expected) {
 			t.Errorf("hook input missing %q\ngot: %s", expected, input)
@@ -1057,7 +987,7 @@ func TestRunChatMessageHookFailureReturnsError(t *testing.T) {
 
 func TestHookHeadersStripsAuthSecrets(t *testing.T) {
 	in := http.Header{}
-	in.Set("X-ExeDev-Email", "user@example.com")
+	in.Set("X-User-Email", "user@example.com")
 	in.Add("Cookie", "session=secret")
 	in.Add("Set-Cookie", "k=v")
 	in.Set("Authorization", "Bearer x")
@@ -1074,8 +1004,8 @@ func TestHookHeadersStripsAuthSecrets(t *testing.T) {
 			t.Errorf("%s should be stripped: %v", k, out)
 		}
 	}
-	if got := seen["X-Exedev-Email"]; len(got) != 1 || got[0] != "user@example.com" {
-		t.Errorf("X-ExeDev-Email missing or wrong: %v", out)
+	if got := seen["X-User-Email"]; len(got) != 1 || got[0] != "user@example.com" {
+		t.Errorf("X-User-Email missing or wrong: %v", out)
 	}
 	if got := seen["User-Agent"]; len(got) != 1 || got[0] != "curl/8" {
 		t.Errorf("User-Agent missing or wrong: %v", out)

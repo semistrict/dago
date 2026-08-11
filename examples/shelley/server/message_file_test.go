@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/claudetool/browse"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/claudetool/browse"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 func TestMessageReferencesPath(t *testing.T) {

@@ -7,46 +7,46 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/checkpoint"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
-	"github.com/semistrict/dago/state"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 )
 
-type failingHistoryBackend struct{ backend.Backend }
+type failingHistoryBackend struct{ dabackend.Backend }
 
-func (failingHistoryBackend) Write(context.Context, string, string) (backend.WriteResult, error) {
-	return backend.WriteResult{}, errors.New("history unavailable")
+func (failingHistoryBackend) Write(context.Context, string, string) (dabackend.WriteResult, error) {
+	return dabackend.WriteResult{}, errors.New("history unavailable")
 }
 
-type failingMediaBackend struct{ backend.Backend }
+type failingMediaBackend struct{ dabackend.Backend }
 
-func (failingMediaBackend) Upload(_ context.Context, values []backend.Upload) []backend.UploadResult {
-	result := make([]backend.UploadResult, len(values))
+func (failingMediaBackend) Upload(_ context.Context, values []dabackend.Upload) []dabackend.UploadResult {
+	result := make([]dabackend.UploadResult, len(values))
 	for index, value := range values {
-		result[index] = backend.UploadResult{Path: value.Path, Error: "upload unavailable"}
+		result[index] = dabackend.UploadResult{Path: value.Path, Error: "upload unavailable"}
 	}
 	return result
 }
 
 func TestHistoryOffloadAppendsPerThreadAndFiltersSyntheticSummaries(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
+	memory, _ := dabackend.NewMemory(nil)
 	options := SummarizationOptions{Backend: memory, HistoryRoot: "/conversation_history"}
-	previous := message.Human("old synthetic summary")
+	previous := damessage.Human("old synthetic summary")
 	previous.Metadata = map[string]json.RawMessage{"lc_source": json.RawMessage(`"summarization"`)}
-	first := offloadConversationHistory(context.Background(), options, agent.Runtime{
-		Config: checkpoint.Config{ThreadID: "thread", CheckpointID: "first"},
-	}, state.Values{}, []message.Message{previous, message.Human("new facts")})
+	first := offloadConversationHistory(context.Background(), options, dagent.Runtime{
+		Config: dacheckpoint.Config{ThreadID: "thread", CheckpointID: "first"},
+	}, dastate.Values{}, []damessage.Message{previous, damessage.Human("new facts")})
 	if first.Err != nil || first.Path != "/conversation_history/thread.md" {
 		t.Fatalf("first offload = %#v", first)
 	}
-	second := offloadConversationHistory(context.Background(), options, agent.Runtime{
-		Config: checkpoint.Config{ThreadID: "thread", CheckpointID: "second"},
-	}, state.Values{}, []message.Message{message.Human("later facts")})
+	second := offloadConversationHistory(context.Background(), options, dagent.Runtime{
+		Config: dacheckpoint.Config{ThreadID: "thread", CheckpointID: "second"},
+	}, dastate.Values{}, []damessage.Message{damessage.Human("later facts")})
 	if second.Err != nil || second.Path != first.Path {
 		t.Fatalf("second offload = %#v", second)
 	}
@@ -61,24 +61,24 @@ func TestHistoryOffloadAppendsPerThreadAndFiltersSyntheticSummaries(t *testing.T
 }
 
 func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("durable facts")}})
-	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("durable facts")}})
+	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[0].TextContent(), "durable facts") || strings.Contains(request.Messages[0].TextContent(), "has been saved") {
 			return errors.New("invalid degraded summary")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	middleware, err := SummarizationMiddleware(SummarizationOptions{
 		Model: summaryModel, Backend: failingHistoryBackend{Backend: memory}, TriggerTokens: 1, KeepMessages: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := middleware.WrapModelCall(context.Background(), agent.ModelRequest{
-		Model: mainModel, Messages: []message.Message{message.Human("old"), message.Assistant("recent")}, State: state.Values{},
-	}, func(context.Context, agent.ModelRequest) (agent.ModelResponse, error) {
-		return agent.ModelResponse{Messages: []message.Message{message.Assistant("done")}}, nil
+	response, err := middleware.WrapModelCall(context.Background(), dagent.ModelRequest{
+		Model: mainModel, Messages: []damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}, State: dastate.Values{},
+	}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
+		return dagent.ModelResponse{Messages: []damessage.Message{damessage.Assistant("done")}}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -93,41 +93,41 @@ func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
 }
 
 func TestMediaOffloadFailureUsesBoundedPlaceholder(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "failed_to_offload") {
 			return errors.New("media placeholder missing")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("summary")}})
-	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("summary")}})
+	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}})
 	middleware, err := SummarizationMiddleware(SummarizationOptions{
 		Model: summaryModel, Backend: failingMediaBackend{Backend: memory}, TriggerTokens: 1, KeepMessages: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := agent.New(agent.Options{Model: mainModel, Middleware: []agent.Middleware{middleware}})
+	compiled, err := dagent.New(dagent.Options{Model: mainModel, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := message.Message{Role: message.RoleHuman, Content: []message.ContentBlock{{Type: message.BlockImage, MIMEType: "image/png", Data: []byte("secret-inline-data")}}}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{old, message.Human("recent")}}); err != nil {
+	old := damessage.Message{Role: damessage.RoleHuman, Content: []damessage.ContentBlock{{Type: damessage.BlockImage, MIMEType: "image/png", Data: []byte("secret-inline-data")}}}
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{old, damessage.Human("recent")}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestArgumentTruncationPreservesSchemasAndUnrelatedTools(t *testing.T) {
-	write := message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+	write := damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{
 		{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/x","content":"unchanged payload"}`)},
 		{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/x","content":"abcdefghijklmnop"}`)},
 		{ID: "edit", Name: "edit_file", Arguments: json.RawMessage(`{"file_path":"/x","old_string":"abcdefghijklmnop","new_string":"qrstuvwxyzabcdef"}`)},
 	}}
-	messages := []message.Message{write, message.Human("middle"), message.Assistant("recent")}
+	messages := []damessage.Message{write, damessage.Human("middle"), damessage.Assistant("recent")}
 	update := truncateOldToolArguments(messages, &ArgumentTruncationOptions{
 		TriggerMessages: 3, KeepMessages: 1, MaxLength: 10, PreviewLength: 3, TruncationText: "[cut]",
 	})
-	overwrite, ok := update[agent.MessagesKey].(state.Overwrite)
+	overwrite, ok := update[dagent.MessagesKey].(dastate.Overwrite)
 	if !ok {
 		t.Fatalf("truncation update = %#v", update)
 	}
@@ -159,39 +159,39 @@ func TestArgumentTruncationPreservesSchemasAndUnrelatedTools(t *testing.T) {
 }
 
 func TestSummarizationSupportsMessageTriggersAndTokenKeepWindows(t *testing.T) {
-	messages := []message.Message{
-		message.Human(strings.Repeat("a", 80)), message.Assistant(strings.Repeat("b", 80)),
-		message.Human(strings.Repeat("c", 80)), message.Assistant(strings.Repeat("d", 80)),
+	messages := []damessage.Message{
+		damessage.Human(strings.Repeat("a", 80)), damessage.Assistant(strings.Repeat("b", 80)),
+		damessage.Human(strings.Repeat("c", 80)), damessage.Assistant(strings.Repeat("d", 80)),
 	}
 	cutoff := summaryCutoff(messages, SummarizationOptions{KeepTokens: 25})
 	if cutoff != 3 {
 		t.Fatalf("token keep cutoff = %d", cutoff)
 	}
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("summary")}})
-	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("summary")}})
+	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[0].TextContent(), "summary") {
 			return errors.New("message trigger did not summarize")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	middleware, err := SummarizationMiddleware(SummarizationOptions{
 		Model: summaryModel, Backend: memory, TriggerMessages: 3, KeepMessages: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := agent.New(agent.Options{Model: mainModel, Middleware: []agent.Middleware{middleware}})
+	compiled, err := dagent.New(dagent.Options{Model: mainModel, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: messages[:3]}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: messages[:3]}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestSummarizationTriggerClausesUseAndWithinOrAcross(t *testing.T) {
-	chat := modeltest.New(model.Profile{ContextWindow: 1_000})
+	chat := modeltest.New(damodel.Profile{ContextWindow: 1_000})
 	options, err := normalizeSummarizationOptions(SummarizationOptions{
 		Model: chat,
 		TriggerClauses: []SummarizationTriggerClause{
@@ -222,7 +222,7 @@ func TestSummarizationTriggerClausesUseAndWithinOrAcross(t *testing.T) {
 }
 
 func TestSummarizationFractionsRequireKnownContextWindow(t *testing.T) {
-	chat := modeltest.New(model.Profile{})
+	chat := modeltest.New(damodel.Profile{})
 	_, err := normalizeSummarizationOptions(SummarizationOptions{
 		Model: chat, TriggerClauses: []SummarizationTriggerClause{{Fraction: 0.8}}, KeepMessages: 1,
 	})
@@ -232,35 +232,35 @@ func TestSummarizationFractionsRequireKnownContextWindow(t *testing.T) {
 }
 
 func TestSummarizationTriggerCountsSystemPrompt(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("system-aware summary")}})
-	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("system-aware summary")}})
+	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[1].TextContent(), "system-aware summary") {
 			return errors.New("system prompt tokens did not trigger summarization")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	middleware, err := SummarizationMiddleware(SummarizationOptions{
 		Model: summaryModel, Backend: memory, TriggerTokens: 40, KeepMessages: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := agent.New(agent.Options{
-		Model: mainModel, SystemPrompt: strings.Repeat("system context ", 40), Middleware: []agent.Middleware{middleware},
+	compiled, err := dagent.New(dagent.Options{
+		Model: mainModel, SystemPrompt: strings.Repeat("system context ", 40), Middleware: []dagent.Middleware{middleware},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("old"), message.Assistant("recent")}})
+	_, err = compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}})
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestManualSummarizationToolIsOptInAndSharesEventState(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("manual summary")}})
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("manual summary")}})
 	automatic, err := SummarizationMiddleware(SummarizationOptions{Model: summaryModel, Backend: memory, TriggerMessages: 4, KeepMessages: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -277,9 +277,9 @@ func TestManualSummarizationToolIsOptInAndSharesEventState(t *testing.T) {
 	if len(manual.Tools) != 1 || manual.Tools[0].Definition().Name != "compact_conversation" {
 		t.Fatalf("manual tools = %#v", manual.Tools)
 	}
-	messages := []message.Message{message.Human("old"), message.Assistant("old answer"), message.Human("recent"), message.Assistant("recent answer")}
-	result, err := manual.Tools[0].Execute(context.Background(), json.RawMessage(`{}`), tool.Runtime{
-		CallID: "compact", ThreadID: "thread", State: state.Values{agent.MessagesKey: messages},
+	messages := []damessage.Message{damessage.Human("old"), damessage.Assistant("old answer"), damessage.Human("recent"), damessage.Assistant("recent answer")}
+	result, err := manual.Tools[0].Execute(context.Background(), json.RawMessage(`{}`), datool.Runtime{
+		CallID: "compact", ThreadID: "thread", State: dastate.Values{dagent.MessagesKey: messages},
 	})
 	if err != nil {
 		t.Fatal(err)

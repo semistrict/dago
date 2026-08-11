@@ -5,36 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
-
-// MustSchema validates that schema is a valid JSON schema and returns it as a json.RawMessage.
-// It panics if the schema is invalid.
-// The schema must have at least type="object" and a properties key.
-func MustSchema(schema string) json.RawMessage {
-	schema = strings.TrimSpace(schema)
-	bytes := []byte(schema)
-	var obj map[string]any
-	if err := json.Unmarshal(bytes, &obj); err != nil {
-		panic("failed to parse JSON schema: " + schema + ": " + err.Error())
-	}
-	if typ, ok := obj["type"]; !ok || typ != "object" {
-		panic("JSON schema must have type='object': " + schema)
-	}
-	if _, ok := obj["properties"]; !ok {
-		panic("JSON schema must have 'properties' key: " + schema)
-	}
-	return json.RawMessage(bytes)
-}
-
-func EmptySchema() json.RawMessage {
-	return MustSchema(`{"type": "object", "properties": {}}`)
-}
 
 // ErrorType identifies system-generated error messages (not LLM content).
 type ErrorType string
@@ -230,36 +203,6 @@ type Content struct {
 	EncryptedIndex   string
 }
 
-func StringContent(s string) Content {
-	return Content{Type: ContentTypeText, Text: s}
-}
-
-// ContentsAttr returns contents as a slog.Attr.
-// It is meant for logging.
-func ContentsAttr(contents []Content) slog.Attr {
-	var contentAttrs []any // slog.Attr
-	for _, content := range contents {
-		var attrs []any // slog.Attr
-		switch content.Type {
-		case ContentTypeText:
-			attrs = append(attrs, slog.String("text", content.Text))
-		case ContentTypeToolUse:
-			attrs = append(attrs, slog.String("tool_name", content.ToolName))
-			attrs = append(attrs, slog.String("tool_input", string(content.ToolInput)))
-		case ContentTypeToolResult:
-			attrs = append(attrs, slog.Any("tool_result", content.ToolResult))
-			attrs = append(attrs, slog.Bool("tool_error", content.ToolError))
-		case ContentTypeThinking:
-			attrs = append(attrs, slog.String("thinking", content.Thinking))
-		default:
-			attrs = append(attrs, slog.String("unknown_content_type", content.Type.String()))
-			attrs = append(attrs, slog.Any("text", content)) // just log it all raw, better to have too much than not enough
-		}
-		contentAttrs = append(contentAttrs, slog.Group(content.ID, attrs...))
-	}
-	return slog.Group("contents", contentAttrs...)
-}
-
 type (
 	MessageRole   int
 	ContentType   int
@@ -292,18 +235,6 @@ const (
 	StopReasonPause // server-side tool use paused mid-turn (Anthropic pause_turn)
 )
 
-// IsServerSideContentType reports whether a content type represents server-side
-// tool activity (e.g., Anthropic web search). These content blocks are
-// provider-specific and should be filtered out when sending to other providers.
-func IsServerSideContentType(ct ContentType) bool {
-	switch ct {
-	case ContentTypeServerToolUse, ContentTypeWebSearchToolResult, ContentTypeWebSearchResult:
-		return true
-	default:
-		return false
-	}
-}
-
 // ThinkingLevel controls how much thinking/reasoning the model does.
 // ThinkingLevelDefault is the zero value: providers fall back to their
 // per-service default (usually medium). To explicitly turn thinking off, use
@@ -317,15 +248,6 @@ const (
 	ThinkingLevelHigh                         // High thinking (~16384 tokens / "high")
 	ThinkingLevelXHigh                        // Maximum thinking (~32768 tokens / "xhigh")
 )
-
-// EffectiveThinkingLevel resolves the level to use for a request: a non-default
-// request-level override wins; otherwise the service-level default applies.
-func EffectiveThinkingLevel(serviceDefault, requestOverride ThinkingLevel) ThinkingLevel {
-	if requestOverride != ThinkingLevelDefault {
-		return requestOverride
-	}
-	return serviceDefault
-}
 
 // ParseThinkingLevel parses one of the user-facing level names
 // ("default", "off", "minimal", "low", "medium", "high", "xhigh") into a
@@ -458,19 +380,6 @@ func (m *Response) UsageWithMeta() Usage {
 	return u
 }
 
-func CostUSDFromResponse(headers http.Header) float64 {
-	h := headers.Get("Exedev-Gateway-Cost")
-	if h == "" {
-		return 0
-	}
-	cost, err := strconv.ParseFloat(h, 64)
-	if err != nil {
-		slog.Warn("failed to parse Exedev-Gateway-Cost header", "header", h)
-		return 0
-	}
-	return cost
-}
-
 // Usage is Shelley's persisted billing projection. Native model and agent code
 // uses message.Usage and converts only at the database/UI boundary.
 type Usage struct {
@@ -539,14 +448,6 @@ func (u *Usage) Attr() slog.Attr {
 	)
 }
 
-// UserStringMessage creates a user message with a single text content item.
-func UserStringMessage(text string) Message {
-	return Message{
-		Role:    MessageRoleUser,
-		Content: []Content{StringContent(text)},
-	}
-}
-
 // TextContent creates a simple text content for tool results.
 // This is a helper function to create the most common type of tool result content.
 func TextContent(text string) []Content {
@@ -554,31 +455,4 @@ func TextContent(text string) []Content {
 		Type: ContentTypeText,
 		Text: text,
 	}}
-}
-
-// DumpToFile writes LLM communication content to a timestamped file in ~/.cache/sketch/.
-// For requests, it includes the URL followed by the content. For responses, it only includes the content.
-// The typ parameter is used as a prefix in the filename ("request", "response").
-func DumpToFile(typ, url string, content []byte) error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	cacheDir := filepath.Join(homeDir, ".cache", "sketch")
-	err = os.MkdirAll(cacheDir, 0o700)
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-	filename := fmt.Sprintf("%s_%d.txt", typ, now.UnixMilli())
-	filePath := filepath.Join(cacheDir, filename)
-
-	// For requests, start with the URL; for responses, just write the content
-	data := []byte(url)
-	if url != "" {
-		data = append(data, "\n\n"...)
-	}
-	data = append(data, content...)
-
-	return os.WriteFile(filePath, data, 0o600)
 }

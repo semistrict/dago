@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/state"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/dastate"
 )
 
 const (
@@ -96,7 +96,7 @@ var nemotronBuiltinTools = map[string]bool{
 }
 
 type nemotronToolResult struct {
-	Call  message.ToolCall
+	Call  damessage.ToolCall
 	Value any
 }
 
@@ -109,7 +109,7 @@ type NemotronProgressBudgetOptions struct {
 
 // NemotronProgressBudget stops runaway loops before another model call and
 // returns a compact answer grounded in results already gathered this turn.
-func NemotronProgressBudget(options NemotronProgressBudgetOptions) agent.Middleware {
+func NemotronProgressBudget(options NemotronProgressBudgetOptions) dagent.Middleware {
 	if options.MaxModelCalls <= 0 {
 		options.MaxModelCalls = 16
 	}
@@ -119,12 +119,12 @@ func NemotronProgressBudget(options NemotronProgressBudgetOptions) agent.Middlew
 	if options.MaxRepeatedToolCalls <= 0 {
 		options.MaxRepeatedToolCalls = 3
 	}
-	return agent.Middleware{Name: "NemotronProgressBudgetMiddleware", WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+	return dagent.Middleware{Name: "NemotronProgressBudgetMiddleware", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		messages := nemotronMessagesSinceLastUser(nemotronRequestMessages(request))
 		reason := ""
-		if count := countRole(messages, message.RoleAssistant); count >= options.MaxModelCalls {
+		if count := countRole(messages, damessage.RoleAssistant); count >= options.MaxModelCalls {
 			reason = fmt.Sprintf("%d model turns", count)
-		} else if count := countRole(messages, message.RoleTool); count >= options.MaxToolResults {
+		} else if count := countRole(messages, damessage.RoleTool); count >= options.MaxToolResults {
 			reason = fmt.Sprintf("%d tool results", count)
 		} else if count := maxRepeatedNemotronCalls(messages); count >= options.MaxRepeatedToolCalls {
 			reason = fmt.Sprintf("%d repeated identical tool calls", count)
@@ -132,51 +132,51 @@ func NemotronProgressBudget(options NemotronProgressBudgetOptions) agent.Middlew
 		if reason == "" {
 			return next(ctx, request)
 		}
-		fallback := message.Assistant(nemotronBudgetFallback(messages, reason))
+		fallback := damessage.Assistant(nemotronBudgetFallback(messages, reason))
 		fallback.Name = nemotronBudgetSource
 		fallback.ResponseMetadata = map[string]json.RawMessage{"nemotron_progress_budget_reason": mustRawJSON(reason)}
-		return agent.ModelResponse{Messages: []message.Message{fallback}}, nil
+		return dagent.ModelResponse{Messages: []damessage.Message{fallback}}, nil
 	}}
 }
 
-func nemotronRequestMessages(request agent.ModelRequest) []message.Message {
-	if values, err := policyMessages(request.State[agent.MessagesKey]); err == nil && values != nil {
+func nemotronRequestMessages(request dagent.ModelRequest) []damessage.Message {
+	if values, err := policyMessages(request.State[dagent.MessagesKey]); err == nil && values != nil {
 		return values
 	}
 	return clonePolicyMessages(request.Messages)
 }
 
-func policyMessages(value any) ([]message.Message, error) {
+func policyMessages(value any) ([]damessage.Message, error) {
 	switch typed := value.(type) {
 	case nil:
 		return nil, nil
-	case []message.Message:
+	case []damessage.Message:
 		return clonePolicyMessages(typed), nil
-	case state.Overwrite:
+	case dastate.Overwrite:
 		return policyMessages(typed.Value)
 	default:
 		return nil, fmt.Errorf("messages have type %T", value)
 	}
 }
 
-func clonePolicyMessages(values []message.Message) []message.Message {
-	result := make([]message.Message, len(values))
+func clonePolicyMessages(values []damessage.Message) []damessage.Message {
+	result := make([]damessage.Message, len(values))
 	for index := range values {
 		result[index] = values[index].Clone()
 	}
 	return result
 }
 
-func nemotronMessagesSinceLastUser(messages []message.Message) []message.Message {
+func nemotronMessagesSinceLastUser(messages []damessage.Message) []damessage.Message {
 	for index := len(messages) - 1; index >= 0; index-- {
-		if messages[index].Role == message.RoleHuman && !nemotronInternalMessageNames[messages[index].Name] {
+		if messages[index].Role == damessage.RoleHuman && !nemotronInternalMessageNames[messages[index].Name] {
 			return messages[index:]
 		}
 	}
 	return messages
 }
 
-func countRole(messages []message.Message, role message.Role) int {
+func countRole(messages []damessage.Message, role damessage.Role) int {
 	count := 0
 	for _, value := range messages {
 		if value.Role == role {
@@ -186,7 +186,7 @@ func countRole(messages []message.Message, role message.Role) int {
 	return count
 }
 
-func maxRepeatedNemotronCalls(messages []message.Message) int {
+func maxRepeatedNemotronCalls(messages []damessage.Message) int {
 	maximum, current, previous := 0, 0, ""
 	for _, call := range nemotronToolCalls(messages) {
 		signature := call.Name + ":" + canonicalNemotronArguments(call.Arguments)
@@ -214,18 +214,18 @@ func canonicalNemotronArguments(raw json.RawMessage) string {
 	return string(encoded)
 }
 
-func nemotronToolCalls(messages []message.Message) []message.ToolCall {
-	var result []message.ToolCall
+func nemotronToolCalls(messages []damessage.Message) []damessage.ToolCall {
+	var result []damessage.ToolCall
 	for _, value := range messages {
-		if value.Role == message.RoleAssistant {
+		if value.Role == damessage.RoleAssistant {
 			result = append(result, value.ToolCalls...)
 		}
 	}
 	return result
 }
 
-func nemotronToolResults(messages []message.Message) []nemotronToolResult {
-	calls := map[string]message.ToolCall{}
+func nemotronToolResults(messages []damessage.Message) []nemotronToolResult {
+	calls := map[string]damessage.ToolCall{}
 	for _, call := range nemotronToolCalls(messages) {
 		if call.ID != "" {
 			calls[call.ID] = call
@@ -233,7 +233,7 @@ func nemotronToolResults(messages []message.Message) []nemotronToolResult {
 	}
 	var results []nemotronToolResult
 	for _, value := range messages {
-		if value.Role != message.RoleTool {
+		if value.Role != damessage.RoleTool {
 			continue
 		}
 		call, exists := calls[value.ToolCallID]
@@ -277,7 +277,7 @@ func formatNemotronBudgetValue(value any) string {
 	return text
 }
 
-func nemotronBudgetFallback(messages []message.Message, reason string) string {
+func nemotronBudgetFallback(messages []damessage.Message, reason string) string {
 	results := nemotronToolResults(messages)
 	if len(results) == 0 {
 		return fmt.Sprintf("I could not complete this reliably within the harness step budget (%s).", reason)
@@ -349,31 +349,31 @@ func mustRawJSON(value any) json.RawMessage {
 	return raw
 }
 
-func nemotronRepairLoopRisk(messages []message.Message) bool {
-	return countRole(messages, message.RoleAssistant) >= nemotronMaxRepairModelCalls || countRole(messages, message.RoleTool) >= nemotronMaxRepairToolResults
+func nemotronRepairLoopRisk(messages []damessage.Message) bool {
+	return countRole(messages, damessage.RoleAssistant) >= nemotronMaxRepairModelCalls || countRole(messages, damessage.RoleTool) >= nemotronMaxRepairToolResults
 }
 
-func nemotronExternalHumanText(messages []message.Message) string {
+func nemotronExternalHumanText(messages []damessage.Message) string {
 	for index := len(messages) - 1; index >= 0; index-- {
-		if messages[index].Role == message.RoleHuman && !nemotronInternalMessageNames[messages[index].Name] {
+		if messages[index].Role == damessage.RoleHuman && !nemotronInternalMessageNames[messages[index].Name] {
 			return messages[index].TextContent()
 		}
 	}
 	return ""
 }
 
-func nemotronNudge(text, source string, updates state.Values) state.Values {
+func nemotronNudge(text, source string, updates dastate.Values) dastate.Values {
 	result := updates.Clone()
 	if result == nil {
-		result = state.Values{}
+		result = dastate.Values{}
 	}
-	nudge := message.Human(text)
+	nudge := damessage.Human(text)
 	nudge.Name = source
-	result[agent.MessagesKey] = []message.Message{nudge}
+	result[dagent.MessagesKey] = []damessage.Message{nudge}
 	return result
 }
 
-func sortedNemotronToolNames(request agent.ModelRequest) []string {
+func sortedNemotronToolNames(request dagent.ModelRequest) []string {
 	result := make([]string, 0, len(request.Tools))
 	for _, executable := range request.Tools {
 		result = append(result, executable.Definition().Name)
@@ -402,7 +402,7 @@ func nemotronToolIsMutation(name string) bool {
 	return false
 }
 
-func nemotronToolCallForMessage(messages []message.Message, result message.Message) *message.ToolCall {
+func nemotronToolCallForMessage(messages []damessage.Message, result damessage.Message) *damessage.ToolCall {
 	calls := nemotronToolCalls(messages)
 	for index := len(calls) - 1; index >= 0; index-- {
 		if calls[index].ID == result.ToolCallID {
@@ -413,18 +413,18 @@ func nemotronToolCallForMessage(messages []message.Message, result message.Messa
 	return nil
 }
 
-func nemotronPolicyNudgeMiddleware() agent.Middleware {
-	return agent.Middleware{
+func nemotronPolicyNudgeMiddleware() dagent.Middleware {
+	return dagent.Middleware{
 		Name: "NemotronPolicyNudgeMiddleware",
-		Fields: map[string]agent.StateField{
-			"nemotron_transition_nudged":  {Kind: agent.FieldLast, Contract: "dago.nemotron.transition.v1", Private: true, Clone: nemotronIdentityClone},
-			"nemotron_action_nudged":      {Kind: agent.FieldLast, Contract: "dago.nemotron.action.v1", Private: true, Clone: cloneStringSliceValue},
-			"nemotron_tool_chain_nudged":  {Kind: agent.FieldLast, Contract: "dago.nemotron.chain.v1", Private: true, Clone: nemotronIdentityClone},
-			"nemotron_domain_tool_nudged": {Kind: agent.FieldLast, Contract: "dago.nemotron.domain.v1", Private: true, Clone: nemotronIdentityClone},
+		Fields: map[string]dagent.StateField{
+			"nemotron_transition_nudged":  {Kind: dagent.FieldLast, Contract: "dago.nemotron.transition.v1", Private: true, Clone: nemotronIdentityClone},
+			"nemotron_action_nudged":      {Kind: dagent.FieldLast, Contract: "dago.nemotron.action.v1", Private: true, Clone: cloneStringSliceValue},
+			"nemotron_tool_chain_nudged":  {Kind: dagent.FieldLast, Contract: "dago.nemotron.chain.v1", Private: true, Clone: nemotronIdentityClone},
+			"nemotron_domain_tool_nudged": {Kind: dagent.FieldLast, Contract: "dago.nemotron.domain.v1", Private: true, Clone: nemotronIdentityClone},
 		},
-		WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+		WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 			window := nemotronMessagesSinceLastUser(nemotronRequestMessages(request))
-			if len(window) == 1 && window[0].Role == message.RoleHuman {
+			if len(window) == 1 && window[0].Role == damessage.RoleHuman {
 				userText := window[0].TextContent()
 				names := sortedNemotronToolNames(request)
 				hasFilesystem, hasDomain := false, false
@@ -442,27 +442,27 @@ func nemotronPolicyNudgeMiddleware() agent.Middleware {
 					if len(domain) > 12 {
 						domain = domain[:12]
 					}
-					nudge := message.Human("This is not a file or repository-content request. Start with the task-specific non-filesystem tools instead of ls, glob, grep, or read_file. For ranking, counting, 'which', or 'most' questions, enumerate or search for candidate entities with the available domain tools, fetch the relevant details or counts, compare those observed results, and then answer. Relevant task tools include: " + strings.Join(domain, ", ") + ".")
+					nudge := damessage.Human("This is not a file or repository-content request. Start with the task-specific non-filesystem tools instead of ls, glob, grep, or read_file. For ranking, counting, 'which', or 'most' questions, enumerate or search for candidate entities with the available domain tools, fetch the relevant details or counts, compare those observed results, and then answer. Relevant task tools include: " + strings.Join(domain, ", ") + ".")
 					nudge.Name = nemotronDomainPreferSource
 					request.Messages = append(request.Messages, nudge)
 				}
 				if hasFilesystem && nemotronFilesystemRequest.MatchString(userText) {
-					nudge := message.Human("The user is asking for file or path content, and filesystem tools are available. Do not answer that you lack access before trying the tools. If the user named a file or path, first call read_file with that path and the requested pagination/limit. If that fails or the location is ambiguous, use ls or glob to locate the file, then continue reading until the request is satisfied.")
+					nudge := damessage.Human("The user is asking for file or path content, and filesystem tools are available. Do not answer that you lack access before trying the tools. If the user named a file or path, first call read_file with that path and the requested pagination/limit. If that fails or the location is ambiguous, use ls or glob to locate the file, then continue reading until the request is satisfied.")
 					nudge.Name = nemotronFilesystemSource
 					request.Messages = append(request.Messages, nudge)
 				}
 			}
 			return next(ctx, request)
 		},
-		BeforeModel: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
-			messages, err := policyMessages(values[agent.MessagesKey])
+		BeforeModel: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
+			messages, err := policyMessages(values[dagent.MessagesKey])
 			if err != nil {
 				return nil, err
 			}
-			var nudges []message.Message
-			update := state.Values{}
+			var nudges []damessage.Message
+			update := dastate.Values{}
 			appendNudge := func(text, source string) {
-				nudge := message.Human(text)
+				nudge := damessage.Human(text)
 				nudge.Name = source
 				nudges = append(nudges, nudge)
 			}
@@ -483,19 +483,19 @@ func nemotronPolicyNudgeMiddleware() agent.Middleware {
 				update["nemotron_domain_tool_nudged"] = true
 			}
 			if len(nudges) > 0 {
-				update[agent.MessagesKey] = nudges
+				update[dagent.MessagesKey] = nudges
 			}
 			return update, nil
 		},
 	}
 }
 
-func stateBool(values state.Values, key string) bool {
+func stateBool(values dastate.Values, key string) bool {
 	value, _ := values[key].(bool)
 	return value
 }
 
-func stringSliceState(values state.Values, key string) []string {
+func stringSliceState(values dastate.Values, key string) []string {
 	return append([]string(nil), stringsFromState(values[key])...)
 }
 
@@ -505,7 +505,7 @@ func cloneStringSliceValue(value any) any {
 
 func nemotronIdentityClone(value any) any { return value }
 
-func shouldNemotronCompactTransition(messages []message.Message) bool {
+func shouldNemotronCompactTransition(messages []damessage.Message) bool {
 	if len(messages) < 6 {
 		return false
 	}
@@ -523,8 +523,8 @@ func shouldNemotronCompactTransition(messages []message.Message) bool {
 	return nemotronNewTask.MatchString(userText) || (hasPriorFileWork && (nemotronFollowOnFile.MatchString(userText) || nemotronLargeRead.MatchString(userText) || nemotronFileReference.MatchString(userText)))
 }
 
-func nemotronActionNudge(messages []message.Message, nudged []string) (string, string, bool) {
-	if len(messages) == 0 || messages[len(messages)-1].Role != message.RoleHuman || nemotronInternalMessageNames[messages[len(messages)-1].Name] {
+func nemotronActionNudge(messages []damessage.Message, nudged []string) (string, string, bool) {
+	if len(messages) == 0 || messages[len(messages)-1].Role != damessage.RoleHuman || nemotronInternalMessageNames[messages[len(messages)-1].Name] {
 		return "", "", false
 	}
 	text := messages[len(messages)-1].TextContent()
@@ -547,8 +547,8 @@ func truncateNemotronText(value string, limit int) string {
 	return value[:limit]
 }
 
-func shouldNemotronNudgeToolChain(messages []message.Message) bool {
-	if len(messages) == 0 || messages[len(messages)-1].Role != message.RoleTool {
+func shouldNemotronNudgeToolChain(messages []damessage.Message) bool {
+	if len(messages) == 0 || messages[len(messages)-1].Role != damessage.RoleTool {
 		return false
 	}
 	window := nemotronMessagesSinceLastUser(messages)
@@ -567,8 +567,8 @@ func shouldNemotronNudgeToolChain(messages []message.Message) bool {
 	return true
 }
 
-func shouldNemotronNudgeDomainCompletion(messages []message.Message) bool {
-	if len(messages) == 0 || messages[len(messages)-1].Role != message.RoleTool {
+func shouldNemotronNudgeDomainCompletion(messages []damessage.Message) bool {
+	if len(messages) == 0 || messages[len(messages)-1].Role != damessage.RoleTool {
 		return false
 	}
 	last := messages[len(messages)-1]
@@ -588,13 +588,13 @@ func shouldNemotronNudgeDomainCompletion(messages []message.Message) bool {
 	return false
 }
 
-func nemotronFollowupDiscipline() agent.Middleware {
+func nemotronFollowupDiscipline() dagent.Middleware {
 	const firedKey = "nemotron_followup_guard_fired"
-	return agent.Middleware{
+	return dagent.Middleware{
 		Name:   "FollowupDisciplineMiddleware",
-		Fields: map[string]agent.StateField{firedKey: {Kind: agent.FieldLast, Contract: "dago.nemotron.followup.v1", Private: true, Clone: nemotronIdentityClone}},
-		AfterAgent: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
-			messages, err := policyMessages(values[agent.MessagesKey])
+		Fields: map[string]dagent.StateField{firedKey: {Kind: dagent.FieldLast, Contract: "dago.nemotron.followup.v1", Private: true, Clone: nemotronIdentityClone}},
+		AfterAgent: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
+			messages, err := policyMessages(values[dagent.MessagesKey])
 			if err != nil || stateBool(values, firedKey) || nemotronRepairLoopRisk(messages) || !nemotronHasFinalAnswer(messages) {
 				return nil, err
 			}
@@ -603,19 +603,19 @@ func nemotronFollowupDiscipline() agent.Middleware {
 			if nemotronSatisfiesExactRequest(userText, finalText) || !nemotronFollowupNeedsRewrite(userText, finalText) {
 				return nil, nil
 			}
-			update := nemotronNudge("Rewrite your follow-up so it asks for the smallest useful missing information. Do not re-ask about schedule, cadence, source, or scope when those are already supplied. For vague analysis requests, ask for both the data source and the analysis goal. For support or customer-response improvement requests, ask about the product/domain and the current support surface. For recurring briefs, reports, or monitoring requests with a stated cadence, ask for the missing delivery channel or content/source detail, not the day/time again.", nemotronFollowupSource, agent.JumpUpdate("model"))
+			update := nemotronNudge("Rewrite your follow-up so it asks for the smallest useful missing information. Do not re-ask about schedule, cadence, source, or scope when those are already supplied. For vague analysis requests, ask for both the data source and the analysis goal. For support or customer-response improvement requests, ask about the product/domain and the current support surface. For recurring briefs, reports, or monitoring requests with a stated cadence, ask for the missing delivery channel or content/source detail, not the day/time again.", nemotronFollowupSource, dagent.JumpUpdate("model"))
 			update[firedKey] = true
 			return update, nil
 		},
 	}
 }
 
-func nemotronHasFinalAnswer(messages []message.Message) bool {
+func nemotronHasFinalAnswer(messages []damessage.Message) bool {
 	if len(messages) == 0 {
 		return false
 	}
 	last := messages[len(messages)-1]
-	return last.Role == message.RoleAssistant && last.Name != nemotronBudgetSource && len(last.ToolCalls) == 0 && strings.TrimSpace(last.TextContent()) != ""
+	return last.Role == damessage.RoleAssistant && last.Name != nemotronBudgetSource && len(last.ToolCalls) == 0 && strings.TrimSpace(last.TextContent()) != ""
 }
 
 func nemotronFollowupNeedsRewrite(userText, finalText string) bool {
@@ -659,13 +659,13 @@ func normalizeNemotronExact(value string) string {
 	return strings.TrimSpace(strings.Trim(nemotronSpace.ReplaceAllString(strings.TrimSpace(value), " "), "\"'` .!?"))
 }
 
-func nemotronFinalAnswerGuard() agent.Middleware {
+func nemotronFinalAnswerGuard() dagent.Middleware {
 	const firedKey = "nemotron_final_guard_fired"
-	return agent.Middleware{
+	return dagent.Middleware{
 		Name:   "FinalAnswerGuardMiddleware",
-		Fields: map[string]agent.StateField{firedKey: {Kind: agent.FieldLast, Contract: "dago.nemotron.final.v1", Private: true, Clone: nemotronIdentityClone}},
-		AfterAgent: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
-			messages, err := policyMessages(values[agent.MessagesKey])
+		Fields: map[string]dagent.StateField{firedKey: {Kind: dagent.FieldLast, Contract: "dago.nemotron.final.v1", Private: true, Clone: nemotronIdentityClone}},
+		AfterAgent: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
+			messages, err := policyMessages(values[dagent.MessagesKey])
 			if err != nil || stateBool(values, firedKey) || nemotronRepairLoopRisk(messages) || !nemotronHasFinalAnswer(messages) {
 				return nil, err
 			}
@@ -684,14 +684,14 @@ func nemotronFinalAnswerGuard() agent.Middleware {
 			if text == "" {
 				return nil, nil
 			}
-			update := nemotronNudge(text, nemotronFinalGuardSource, agent.JumpUpdate("model"))
+			update := nemotronNudge(text, nemotronFinalGuardSource, dagent.JumpUpdate("model"))
 			update[firedKey] = true
 			return update, nil
 		},
 	}
 }
 
-func nemotronMissingMutationLiterals(calls []message.ToolCall, finalLower string) []string {
+func nemotronMissingMutationLiterals(calls []damessage.ToolCall, finalLower string) []string {
 	seen := map[string]bool{}
 	var result []string
 	for _, call := range calls {
@@ -723,7 +723,7 @@ func nemotronMissingMutationLiterals(calls []message.ToolCall, finalLower string
 	return result
 }
 
-func lastNemotronMutationResult(messages []message.Message) (nemotronToolResult, bool) {
+func lastNemotronMutationResult(messages []damessage.Message) (nemotronToolResult, bool) {
 	results := nemotronToolResults(messages)
 	for index := len(results) - 1; index >= 0; index-- {
 		if nemotronToolIsMutation(results[index].Call.Name) {

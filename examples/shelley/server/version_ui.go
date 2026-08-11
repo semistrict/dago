@@ -1,8 +1,8 @@
 package server
 
 import (
-	"shelley.exe.dev/ui"
-	"shelley.exe.dev/version"
+	"github.com/semistrict/dago/examples/shelley/ui"
+	"github.com/semistrict/dago/examples/shelley/version"
 )
 
 func init() {

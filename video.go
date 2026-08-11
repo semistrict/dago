@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/semistrict/dago/message"
+	"github.com/semistrict/dago/damessage"
 )
 
 const (
@@ -33,13 +33,13 @@ type VideoWindow struct {
 // VideoExtractor converts video bytes to interleaved timestamp and JPEG image
 // blocks. Implementations must never return the original video payload.
 type VideoExtractor interface {
-	Extract(context.Context, []byte, VideoWindow) ([]message.ContentBlock, error)
+	Extract(context.Context, []byte, VideoWindow) ([]damessage.ContentBlock, error)
 }
 
 // VideoExtractorFunc adapts a function to VideoExtractor.
-type VideoExtractorFunc func(context.Context, []byte, VideoWindow) ([]message.ContentBlock, error)
+type VideoExtractorFunc func(context.Context, []byte, VideoWindow) ([]damessage.ContentBlock, error)
 
-func (function VideoExtractorFunc) Extract(ctx context.Context, content []byte, window VideoWindow) ([]message.ContentBlock, error) {
+func (function VideoExtractorFunc) Extract(ctx context.Context, content []byte, window VideoWindow) ([]damessage.ContentBlock, error) {
 	return function(ctx, content, window)
 }
 
@@ -80,7 +80,7 @@ func NewFFmpegVideoExtractor(options FFmpegVideoOptions) *FFmpegVideoExtractor {
 	}
 }
 
-func (extractor *FFmpegVideoExtractor) Extract(ctx context.Context, content []byte, window VideoWindow) ([]message.ContentBlock, error) {
+func (extractor *FFmpegVideoExtractor) Extract(ctx context.Context, content []byte, window VideoWindow) ([]damessage.ContentBlock, error) {
 	if err := validateVideoWindow(window); err != nil {
 		return nil, err
 	}
@@ -127,7 +127,7 @@ func (extractor *FFmpegVideoExtractor) Extract(ctx context.Context, content []by
 		}
 		return nil, fmt.Errorf("no frames decoded for window [%.3fs, %.3fs)", window.OffsetSeconds, window.OffsetSeconds+window.DurationSeconds)
 	}
-	blocks := make([]message.ContentBlock, 0, len(frames)*2+1)
+	blocks := make([]damessage.ContentBlock, 0, len(frames)*2+1)
 	emittedBytes := 0
 	lastSeconds := window.OffsetSeconds
 	for index, jpeg := range frames {
@@ -142,14 +142,14 @@ func (extractor *FFmpegVideoExtractor) Extract(ctx context.Context, content []by
 			break
 		}
 		blocks = append(blocks,
-			message.ContentBlock{Type: message.BlockText, Text: text},
-			message.ContentBlock{Type: message.BlockImage, Data: append([]byte(nil), jpeg...), MIMEType: "image/jpeg"},
+			damessage.ContentBlock{Type: damessage.BlockText, Text: text},
+			damessage.ContentBlock{Type: damessage.BlockImage, Data: append([]byte(nil), jpeg...), MIMEType: "image/jpeg"},
 		)
 		emittedBytes += len(text) + encodedSize
 		lastSeconds = seconds
 	}
 	if truncated {
-		blocks = append(blocks, message.ContentBlock{Type: message.BlockText, Text: fmt.Sprintf(
+		blocks = append(blocks, damessage.ContentBlock{Type: damessage.BlockText, Text: fmt.Sprintf(
 			"Coverage truncated at t=%s: the output or frame cap was reached before the full window was decoded. Continue from offset=%.3f to see the remaining frames.",
 			formatVideoTimestamp(lastSeconds), lastSeconds,
 		)})

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // makeForkTestMessage builds a minimal user message with the given text.

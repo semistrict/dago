@@ -6,10 +6,41 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
-	dmodel "github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
 )
+
+type mockLLMProvider struct{}
+
+func (*mockLLMProvider) GetChat(string) (damodel.Chat, error) {
+	return modeltest.NewPredictable(modeltest.PredictableOptions{DefaultResponse: "ok"}), nil
+}
+
+func (*mockLLMProvider) GetAvailableModels() []string { return nil }
+
+type mockSubagentDB struct{ conversations map[string]string }
+
+func newMockSubagentDB() *mockSubagentDB {
+	return &mockSubagentDB{conversations: map[string]string{}}
+}
+
+func (store *mockSubagentDB) GetOrCreateSubagentConversation(_ context.Context, slug, parentID, _ string) (string, string, error) {
+	key := parentID + ":" + slug
+	if id, ok := store.conversations[key]; ok {
+		return id, slug, nil
+	}
+	id := "subagent-" + slug
+	store.conversations[key] = id
+	return id, slug, nil
+}
+
+type mockSubagentRunner struct{ response string }
+
+func (runner *mockSubagentRunner) RunSubagent(context.Context, string, string, bool, time.Duration, string, string) (string, error) {
+	return runner.response, nil
+}
 
 func TestIsStrongModel(t *testing.T) {
 	tests := []struct {
@@ -445,12 +476,12 @@ type mockLLMProviderWithProviders struct {
 	providers map[string]string
 }
 
-func (m *mockLLMProviderWithProviders) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *mockLLMProviderWithProviders) GetChat(modelID string) (damodel.Chat, error) {
 	provider := m.providers[modelID]
 	if provider == "" {
 		return nil, fmt.Errorf("unknown model: %s", modelID)
 	}
-	profile := dmodel.Profile{Provider: provider, Model: modelID, SupportsImages: true, SupportsWebSearch: provider == "openai"}
+	profile := damodel.Profile{Provider: provider, Model: modelID, SupportsImages: true, SupportsWebSearch: provider == "openai"}
 	return modeltest.NewPredictable(modeltest.PredictableOptions{Profile: &profile}), nil
 }
 
@@ -461,8 +492,8 @@ func (m *mockLLMProviderWithProviders) GetAvailableModels() []string {
 // plainOpenAIProvider reports OpenAI without hosted web-search capability.
 type plainOpenAIProvider struct{}
 
-func (p *plainOpenAIProvider) GetChat(modelID string) (dmodel.Chat, error) {
-	profile := dmodel.Profile{Provider: "openai", Model: modelID, SupportsImages: true}
+func (p *plainOpenAIProvider) GetChat(modelID string) (damodel.Chat, error) {
+	profile := damodel.Profile{Provider: "openai", Model: modelID, SupportsImages: true}
 	return modeltest.NewPredictable(modeltest.PredictableOptions{Profile: &profile}), nil
 }
 func (p *plainOpenAIProvider) GetAvailableModels() []string { return nil }

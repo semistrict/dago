@@ -11,22 +11,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/checkpoint"
-	checkpointsqlite "github.com/semistrict/dago/checkpoint/sqlite"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
-	"github.com/semistrict/dago/state"
-	"github.com/semistrict/dago/store"
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dacheckpoint"
+	checkpointsqlite "github.com/semistrict/dago/dacheckpoint/sqlite"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/dastore"
+	"github.com/semistrict/dago/datool"
 )
 
 func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
-	script := modeltest.New(model.Profile{ToolCalling: true, ContextWindow: 10000},
-		modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	script := modeltest.New(damodel.Profile{ToolCalling: true, ContextWindow: 10000},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			names := map[string]bool{}
 			for _, definition := range request.Tools {
 				names[definition.Name] = true
@@ -43,20 +43,20 @@ func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
 				return errors.New("execute exposed without sandbox")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/note.txt","content":"hello"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/note.txt"}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+		}, Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/note.txt","content":"hello"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/note.txt"}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "1  hello") {
 				return errors.New("read result missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("done")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled, err := New(Options{Model: script, Backend: memory})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("make a note")}})
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("make a note")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,31 +66,31 @@ func TestDeepAgentDefaultVerticalSlice(t *testing.T) {
 }
 
 func TestDeepAgentAddsConstructionMetadataAndTags(t *testing.T) {
-	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if len(request.Metadata) != 0 || len(request.Tags) != 0 {
 			return fmt.Errorf("construction metadata leaked into provider request: metadata=%#v tags=%#v", request.Metadata, request.Tags)
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	inspected := false
-	metadataMiddleware := agent.Middleware{Name: "inspect_invocation_metadata", WrapModelCall: func(ctx context.Context, request agent.ModelRequest, next agent.ModelHandler) (agent.ModelResponse, error) {
+	metadataMiddleware := dagent.Middleware{Name: "inspect_invocation_metadata", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		if string(request.InvocationMetadata["ls_integration"]) != `"deepagents"` || string(request.InvocationMetadata["lc_agent_name"]) != `"researcher"` || string(request.InvocationMetadata["tenant"]) != `"alpha"` {
-			return agent.ModelResponse{}, fmt.Errorf("invocation metadata = %#v", request.InvocationMetadata)
+			return dagent.ModelResponse{}, fmt.Errorf("invocation metadata = %#v", request.InvocationMetadata)
 		}
 		if len(request.InvocationTags) != 1 || request.InvocationTags[0] != "integration" {
-			return agent.ModelResponse{}, fmt.Errorf("invocation tags = %#v", request.InvocationTags)
+			return dagent.ModelResponse{}, fmt.Errorf("invocation tags = %#v", request.InvocationTags)
 		}
 		inspected = true
 		return next(ctx, request)
 	}}
 	compiled, err := New(Options{
 		Name: "researcher", Model: script, DisableSubagents: true, DisableSummary: true,
-		Metadata: map[string]json.RawMessage{"tenant": json.RawMessage(`"alpha"`)}, Tags: []string{"integration"}, Middleware: []agent.Middleware{metadataMiddleware},
+		Metadata: map[string]json.RawMessage{"tenant": json.RawMessage(`"alpha"`)}, Tags: []string{"integration"}, Middleware: []dagent.Middleware{metadataMiddleware},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 	if !inspected {
@@ -99,61 +99,61 @@ func TestDeepAgentAddsConstructionMetadataAndTags(t *testing.T) {
 }
 
 func TestDeepAgentBindsRuntimeScopedStoreBackend(t *testing.T) {
-	values := store.NewMemory()
-	files, err := backend.NewStoreWithOptions(backend.StoreOptions{Namespace: func(runtime *backend.Runtime) (store.Namespace, error) {
+	values := dastore.NewMemory()
+	files, err := dabackend.NewStoreWithOptions(dabackend.StoreOptions{Namespace: func(runtime *dabackend.Runtime) (dastore.Namespace, error) {
 		user, _ := runtime.Context.(string)
-		return store.Namespace{"files", user}, nil
+		return dastore.Namespace{"files", user}, nil
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/note.txt","content":"private"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	script := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/note.txt","content":"private"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled, err := New(Options{Model: script, Backend: files, Store: values, Context: "alice", DisableSubagents: true, DisableSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("write")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("write")}}); err != nil {
 		t.Fatal(err)
 	}
-	item, err := values.Get(context.Background(), store.Namespace{"files", "alice"}, "/note.txt")
+	item, err := values.Get(context.Background(), dastore.Namespace{"files", "alice"}, "/note.txt")
 	if err != nil || item == nil || item.Value["content"] != "private" {
 		t.Fatalf("runtime-scoped store item = %#v, %v", item, err)
 	}
 }
 
 func TestDeepAgentStreamProjectsNestedSubagentLifecycle(t *testing.T) {
-	echo := tool.Func{Spec: tool.Definition{
+	echo := datool.Func{Spec: datool.Definition{
 		Name: "echo", Description: "Echo text", InputSchema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}`),
-	}, Run: func(_ context.Context, raw json.RawMessage, _ tool.Runtime) (tool.Result, error) {
+	}, Run: func(_ context.Context, raw json.RawMessage, _ datool.Runtime) (datool.Result, error) {
 		var input struct {
 			Value string `json:"value"`
 		}
 		if err := json.Unmarshal(raw, &input); err != nil {
-			return tool.Result{}, err
+			return datool.Result{}, err
 		}
-		return tool.TextResult(input.Value), nil
+		return datool.TextResult(input.Value), nil
 	}}
-	child := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "child-echo", Name: "echo", Arguments: json.RawMessage(`{"value":"nested"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("child done")}},
+	child := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "child-echo", Name: "echo", Arguments: json.RawMessage(`{"value":"nested"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child done")}},
 	)
-	parent := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "parent-task", Name: "task", Arguments: json.RawMessage(`{"description":"do work","subagent_type":"worker"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("parent done")}},
+	parent := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "parent-task", Name: "task", Arguments: json.RawMessage(`{"description":"do work","subagent_type":"worker"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent done")}},
 	)
 	compiled, err := New(Options{
 		Model: parent, DisableSummary: true,
-		Subagents: []Subagent{{Name: "worker", Description: "Worker", SystemPrompt: "Work.", Model: child, Tools: []tool.Tool{echo}}},
+		Subagents: []Subagent{{Name: "worker", Description: "Worker", SystemPrompt: "Work.", Model: child, Tools: []datool.Tool{echo}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream := compiled.Stream(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}, 32)
+	stream := compiled.Stream(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}, 32)
 	defer stream.Close()
-	var childEvents []agent.ChildEvent
+	var childEvents []dagent.ChildEvent
 	for {
 		event, err := stream.Next(context.Background())
 		if err == io.EOF {
@@ -162,14 +162,14 @@ func TestDeepAgentStreamProjectsNestedSubagentLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if event.Mode == agent.EventChild && event.Child != nil {
+		if event.Mode == dagent.EventChild && event.Child != nil {
 			childEvents = append(childEvents, *event.Child)
 		}
 	}
 	if _, err := stream.Result(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(childEvents) < 3 || childEvents[0].Phase != agent.ChildStarted || childEvents[len(childEvents)-1].Phase != agent.ChildCompleted {
+	if len(childEvents) < 3 || childEvents[0].Phase != dagent.ChildStarted || childEvents[len(childEvents)-1].Phase != dagent.ChildCompleted {
 		t.Fatalf("child lifecycle = %#v", childEvents)
 	}
 	terminal := childEvents[len(childEvents)-1]
@@ -188,27 +188,27 @@ func TestDeepAgentStreamProjectsNestedSubagentLifecycle(t *testing.T) {
 }
 
 func TestDeepAgentRepairsDanglingToolCallsBeforeModel(t *testing.T) {
-	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if len(request.Messages) != 4 {
 			return fmt.Errorf("messages = %#v", request.Messages)
 		}
 		result := request.Messages[2]
-		if result.Role != message.RoleTool || result.ToolCallID != "call-1" || result.Name != "lookup" || result.ToolStatus != message.ToolStatusError {
+		if result.Role != damessage.RoleTool || result.ToolCallID != "call-1" || result.Name != "lookup" || result.ToolStatus != damessage.ToolStatusError {
 			return fmt.Errorf("patched tool result = %#v", result)
 		}
 		if !strings.Contains(result.TextContent(), "was cancelled") {
 			return fmt.Errorf("patched tool result text = %q", result.TextContent())
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("continued")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("continued")}})
 	compiled, err := New(Options{Model: script, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{
-		message.Human("start"),
-		{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "call-1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}},
-		message.Human("continue without running it"),
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{
+		damessage.Human("start"),
+		{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "call-1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}},
+		damessage.Human("continue without running it"),
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +219,7 @@ func TestDeepAgentRepairsDanglingToolCallsBeforeModel(t *testing.T) {
 }
 
 func TestDeepAgentPlanningIsOptInAndPromptCachingIsAutomatic(t *testing.T) {
-	script := modeltest.New(model.Profile{SupportsPromptCaching: true}, modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{SupportsPromptCaching: true}, modeltest.Step{Check: func(request damodel.Request) error {
 		if request.PromptCache == nil || request.PromptCache.Key != "cache-thread" || request.PromptCache.Retention != "24h" {
 			return fmt.Errorf("prompt cache = %#v", request.PromptCache)
 		}
@@ -231,7 +231,7 @@ func TestDeepAgentPlanningIsOptInAndPromptCachingIsAutomatic(t *testing.T) {
 			return errors.New("opt-in planning tool missing")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled, err := New(Options{
 		Model: script, EnableTodo: true, PromptCacheRetention: "24h",
 		DisableSubagents: true, DisableSummary: true,
@@ -239,15 +239,15 @@ func TestDeepAgentPlanningIsOptInAndPromptCachingIsAutomatic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{
-		Config: checkpoint.Config{ThreadID: "cache-thread"}, Messages: []message.Message{message.Human("go")},
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{
+		Config: dacheckpoint.Config{ThreadID: "cache-thread"}, Messages: []damessage.Message{damessage.Human("go")},
 	}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestMainPlanningOptInDoesNotLeakIntoGeneralSubagent(t *testing.T) {
-	hasTodo := func(request model.Request) bool {
+	hasTodo := func(request damodel.Request) bool {
 		for _, definition := range request.Tools {
 			if definition.Name == "write_todos" {
 				return true
@@ -255,58 +255,58 @@ func TestMainPlanningOptInDoesNotLeakIntoGeneralSubagent(t *testing.T) {
 		}
 		return false
 	}
-	script := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if !hasTodo(request) {
 				return errors.New("main planning tool missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{
+		}, Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
 			ID: "delegate", Name: "task", Arguments: json.RawMessage(`{"description":"work","subagent_type":"general-purpose"}`),
 		}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if hasTodo(request) {
 				return errors.New("main planning opt-in leaked into general subagent")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("child done")}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("parent done")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("child done")}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent done")}},
 	)
 	compiled, err := New(Options{Model: script, EnableTodo: true, DisableSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestDeepAgentInterruptOnWiresHumanApproval(t *testing.T) {
-	danger := tool.Func{Spec: tool.Definition{Name: "danger", Description: "dangerous action", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
-		return tool.TextResult("ran"), nil
+	danger := datool.Func{Spec: datool.Definition{Name: "danger", Description: "dangerous action", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+		return datool.TextResult("ran"), nil
 	}}
-	script := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "danger-1", Name: "danger", Arguments: json.RawMessage(`{}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	script := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "danger-1", Name: "danger", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled, err := New(Options{
-		Model: script, Tools: []tool.Tool{danger}, Saver: checkpoint.NewMemorySaver(),
+		Model: script, Tools: []datool.Tool{danger}, Saver: dacheckpoint.NewMemorySaver(),
 		DisableSubagents: true, DisableSummary: true,
-		InterruptOn: []agent.ApprovalRule{{Pattern: "danger", Description: "Allow danger?"}},
+		InterruptOn: []dagent.ApprovalRule{{Pattern: "danger", Description: "Allow danger?"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := checkpoint.Config{ThreadID: "generic-approval"}
-	paused, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("go")}})
+	config := dacheckpoint.Config{ThreadID: "generic-approval"}
+	paused, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(paused.Interrupts) != 1 || paused.Interrupts[0].ID != "human_approval" {
 		t.Fatalf("interrupts = %#v", paused.Interrupts)
 	}
-	resumed, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Resume: agent.ApprovalResponse{Decisions: map[string]agent.ApprovalChoice{
-		"danger-1": {Decision: agent.ApprovalApprove},
+	resumed, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Resume: dagent.ApprovalResponse{Decisions: map[string]dagent.ApprovalChoice{
+		"danger-1": {Decision: dagent.ApprovalApprove},
 	}}})
 	if err != nil {
 		t.Fatal(err)
@@ -317,41 +317,41 @@ func TestDeepAgentInterruptOnWiresHumanApproval(t *testing.T) {
 }
 
 func TestExplicitApprovalOverridesFilesystemPermissionApproval(t *testing.T) {
-	memory, err := backend.NewMemory(map[string]backend.FileData{
-		"/secret.txt": {Content: "backend secret", Encoding: backend.EncodingUTF8},
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/secret.txt": {Content: "backend secret", Encoding: dabackend.EncodingUTF8},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/secret.txt"}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/secret.txt"}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			last := request.Messages[len(request.Messages)-1]
-			if last.TextContent() != "reviewer supplied" || last.ToolStatus != message.ToolStatusSuccess {
+			if last.TextContent() != "reviewer supplied" || last.ToolStatus != damessage.ToolStatusSuccess {
 				return fmt.Errorf("tool response = %#v", last)
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("done")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled, err := New(Options{
-		Model: script, Backend: memory, Saver: checkpoint.NewMemorySaver(),
+		Model: script, Backend: memory, Saver: dacheckpoint.NewMemorySaver(),
 		DisableSubagents: true, DisableSummary: true,
 		Permissions: []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/secret.txt"}, Mode: PermissionInterrupt}},
-		InterruptOn: []agent.ApprovalRule{{Pattern: "read_file", AllowedDecisions: []agent.ApprovalDecision{agent.ApprovalRespond}}},
+		InterruptOn: []dagent.ApprovalRule{{Pattern: "read_file", AllowedDecisions: []dagent.ApprovalDecision{dagent.ApprovalRespond}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := checkpoint.Config{ThreadID: "approval-precedence"}
-	paused, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("go")}})
+	config := dacheckpoint.Config{ThreadID: "approval-precedence"}
+	paused, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(paused.Interrupts) != 1 || paused.Interrupts[0].ID != "human_approval" {
 		t.Fatalf("interrupts = %#v", paused.Interrupts)
 	}
-	resumed, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Resume: agent.ApprovalResponse{Decisions: map[string]agent.ApprovalChoice{
-		"read": {Decision: agent.ApprovalRespond, Message: "reviewer supplied"},
+	resumed, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Resume: dagent.ApprovalResponse{Decisions: map[string]dagent.ApprovalChoice{
+		"read": {Decision: dagent.ApprovalRespond, Message: "reviewer supplied"},
 	}}})
 	if err != nil {
 		t.Fatal(err)
@@ -362,28 +362,28 @@ func TestExplicitApprovalOverridesFilesystemPermissionApproval(t *testing.T) {
 }
 
 func TestDefaultStateBackendPersistsParallelWritesPerThread(t *testing.T) {
-	script := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+	script := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{
 			{ID: "a", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/a.txt","content":"alpha"}`)},
 			{ID: "b", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/b.txt","content":"beta"}`)},
 		}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("written")}},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("written")}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{
 			{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/a.txt"}`)},
 		}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "alpha") {
 				return errors.New("checkpointed state file missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("read")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("read")}},
 	)
-	compiled, err := New(Options{Model: script, DisableSubagents: true, DisableSummary: true, Saver: checkpoint.NewMemorySaver()})
+	compiled, err := New(Options{Model: script, DisableSubagents: true, DisableSummary: true, Saver: dacheckpoint.NewMemorySaver()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := checkpoint.Config{ThreadID: "state-files"}
-	first, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("write")}})
+	config := dacheckpoint.Config{ThreadID: "state-files"}
+	first, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("write")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestDefaultStateBackendPersistsParallelWritesPerThread(t *testing.T) {
 	if !ok || len(files) != 2 {
 		t.Fatalf("files = %#v", first.State["files"])
 	}
-	second, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("read")}})
+	second, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("read")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,37 +401,37 @@ func TestDefaultStateBackendPersistsParallelWritesPerThread(t *testing.T) {
 }
 
 func TestFilesystemPermissionDenyAndApproval(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
+	memory, _ := dabackend.NewMemory(nil)
 	_, _ = memory.Write(context.Background(), "/public.txt", "public")
 	_, _ = memory.Write(context.Background(), "/secret.txt", "secret")
-	script := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+	script := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{
 			{ID: "deny", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/secret.txt"}`)},
 			{ID: "ask", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/public.txt","content":"changed"}`)},
 		}}}},
-		modeltest.Step{Check: func(request model.Request) error {
-			if request.Messages[len(request.Messages)-2].ToolStatus != message.ToolStatusError {
+		modeltest.Step{Check: func(request damodel.Request) error {
+			if request.Messages[len(request.Messages)-2].ToolStatus != damessage.ToolStatusError {
 				return errors.New("deny result missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("done")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled, err := New(Options{Model: script, Backend: memory, DisableSubagents: true, DisableSummary: true, Permissions: []FilesystemPermission{
 		{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/secret.txt"}, Mode: PermissionDeny},
 		{Operations: []FilesystemOperation{FilesystemWrite}, Paths: []string{"/public.txt"}, Mode: PermissionAsk},
-	}, Saver: checkpoint.NewMemorySaver()})
+	}, Saver: dacheckpoint.NewMemorySaver()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := checkpoint.Config{ThreadID: "permissions"}
-	paused, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("go")}})
+	config := dacheckpoint.Config{ThreadID: "permissions"}
+	paused, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(paused.Interrupts) != 1 {
 		t.Fatalf("interrupts = %#v", paused.Interrupts)
 	}
-	resumed, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Resume: agent.ApprovalResponse{Decisions: map[string]agent.ApprovalChoice{"ask": {Decision: agent.ApprovalApprove}}}})
+	resumed, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Resume: dagent.ApprovalResponse{Decisions: map[string]dagent.ApprovalChoice{"ask": {Decision: dagent.ApprovalApprove}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,11 +441,11 @@ func TestFilesystemPermissionDenyAndApproval(t *testing.T) {
 }
 
 func TestMemoryAndSkillsPromptInjection(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
+	memory, _ := dabackend.NewMemory(nil)
 	_, _ = memory.Write(context.Background(), "/AGENTS.md", "<!-- hidden -->Remember blue.")
 	_, _ = memory.Write(context.Background(), "/skills/research/SKILL.md", "---\nname: research\ndescription: Research carefully\nallowed-tools: read_file, grep\n---\nInstructions")
-	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
-		if len(request.Messages) == 0 || request.Messages[0].Role != message.RoleSystem {
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
+		if len(request.Messages) == 0 || request.Messages[0].Role != damessage.RoleSystem {
 			return errors.New("system prompt missing")
 		}
 		prompt := request.Messages[0].TextContent()
@@ -453,19 +453,19 @@ func TestMemoryAndSkillsPromptInjection(t *testing.T) {
 			return errors.New("memory or skill prompt missing")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled, err := New(Options{Model: script, Backend: memory, Memory: []string{"/AGENTS.md"}, Skills: []string{"/skills"}, DisableSubagents: true, DisableSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("hi")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("hi")}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestExplicitEmptyMemoryAndSkillsStillInstallMiddleware(t *testing.T) {
-	script := modeltest.New(model.Profile{Provider: "anthropic", SupportsPromptCaching: true}, modeltest.Step{Check: func(request model.Request) error {
-		if len(request.Messages) == 0 || request.Messages[0].Role != message.RoleSystem {
+	script := modeltest.New(damodel.Profile{Provider: "anthropic", SupportsPromptCaching: true}, modeltest.Step{Check: func(request damodel.Request) error {
+		if len(request.Messages) == 0 || request.Messages[0].Role != damessage.RoleSystem {
 			return errors.New("system prompt missing")
 		}
 		prompt := request.Messages[0].TextContent()
@@ -481,25 +481,25 @@ func TestExplicitEmptyMemoryAndSkillsStillInstallMiddleware(t *testing.T) {
 			}
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled, err := New(Options{
 		Model: script, Skills: []string{}, Memory: []string{}, DisableSubagents: true, DisableSummary: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("hi")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("hi")}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestStructuredSystemMessagePreservesBlocksAndAppendsProfilePrompt(t *testing.T) {
-	system := message.Message{Role: message.RoleSystem, Content: []message.ContentBlock{
-		{Type: message.BlockText, Text: "first", Extra: map[string]json.RawMessage{"provider_field": json.RawMessage(`true`)}},
-		{Type: message.BlockText, Text: "second"},
+	system := damessage.Message{Role: damessage.RoleSystem, Content: []damessage.ContentBlock{
+		{Type: damessage.BlockText, Text: "first", Extra: map[string]json.RawMessage{"provider_field": json.RawMessage(`true`)}},
+		{Type: damessage.BlockText, Text: "second"},
 	}}
-	script := modeltest.New(model.Profile{Provider: "anthropic", SupportsPromptCaching: true}, modeltest.Step{Check: func(request model.Request) error {
-		if len(request.Messages) == 0 || request.Messages[0].Role != message.RoleSystem {
+	script := modeltest.New(damodel.Profile{Provider: "anthropic", SupportsPromptCaching: true}, modeltest.Step{Check: func(request damodel.Request) error {
+		if len(request.Messages) == 0 || request.Messages[0].Role != damessage.RoleSystem {
 			return errors.New("structured system message missing")
 		}
 		blocks := request.Messages[0].Content
@@ -516,7 +516,7 @@ func TestStructuredSystemMessagePreservesBlocksAndAppendsProfilePrompt(t *testin
 			return errors.New("final profile block lacks cache breakpoint")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled, err := New(Options{
 		Model: script, SystemMessage: &system, Profiles: []Profile{{SystemPrompt: "profile fragment"}},
 		DisableSubagents: true, DisableSummary: true,
@@ -524,7 +524,7 @@ func TestStructuredSystemMessagePreservesBlocksAndAppendsProfilePrompt(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("hi")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("hi")}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(system.Content) != 2 || system.Content[1].Extra != nil {
@@ -533,39 +533,39 @@ func TestStructuredSystemMessagePreservesBlocksAndAppendsProfilePrompt(t *testin
 }
 
 func TestStructuredSystemMessageValidation(t *testing.T) {
-	chat := modeltest.New(model.Profile{})
-	human := message.Human("not system")
+	chat := modeltest.New(damodel.Profile{})
+	human := damessage.Human("not system")
 	if _, err := New(Options{Model: chat, SystemMessage: &human}); err == nil {
 		t.Fatal("expected non-system message to fail")
 	}
-	system := message.System("system")
+	system := damessage.System("system")
 	if _, err := New(Options{Model: chat, SystemPrompt: "string", SystemMessage: &system}); err == nil {
 		t.Fatal("expected conflicting system inputs to fail")
 	}
 }
 
 func TestSubagentTaskUsesIsolatedInput(t *testing.T) {
-	childModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	childModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if len(request.Messages) != 1 || request.Messages[0].TextContent() != "child work" {
 			return errors.New("child input leaked")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("child result")}})
-	child, err := agent.New(agent.Options{Model: childModel})
+	}, Response: damodel.Response{Message: damessage.Assistant("child result")}})
+	child, err := dagent.New(dagent.Options{Model: childModel})
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentModel := modeltest.New(model.Profile{ToolCalling: true}, modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "task", Name: "task", Arguments: json.RawMessage(`{"description":"child work","subagent_type":"special"}`)}}}}}, modeltest.Step{Check: func(request model.Request) error {
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "task", Name: "task", Arguments: json.RawMessage(`{"description":"child work","subagent_type":"special"}`)}}}}}, modeltest.Step{Check: func(request damodel.Request) error {
 		if request.Messages[len(request.Messages)-1].TextContent() != "child result" {
 			return errors.New("child result missing")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("parent done")}})
-	compiled, err := New(Options{Model: parentModel, Subagents: []Subagent{{Name: "special", Description: "Specialized", Runnable: child, InheritedState: []string{agent.MessagesKey}}}, DisableSummary: true})
+	}, Response: damodel.Response{Message: damessage.Assistant("parent done")}})
+	compiled, err := New(Options{Model: parentModel, Subagents: []Subagent{{Name: "special", Description: "Specialized", Runnable: child, InheritedState: []string{dagent.MessagesKey}}}, DisableSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("parent context")}})
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("parent context")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,12 +575,12 @@ func TestSubagentTaskUsesIsolatedInput(t *testing.T) {
 }
 
 func TestDeclarativeSubagentInheritsToolsAndUsesOwnModelAndPrompt(t *testing.T) {
-	lookup := tool.Func{Spec: tool.Definition{Name: "lookup", Description: "look up a value", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
-		return tool.TextResult("lookup result"), nil
+	lookup := datool.Func{Spec: datool.Definition{Name: "lookup", Description: "look up a value", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+		return datool.TextResult("lookup result"), nil
 	}}
-	childModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Check: func(request model.Request) error {
-			if request.Messages[0].Role != message.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "specialist instructions") {
+	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Check: func(request damodel.Request) error {
+			if request.Messages[0].Role != damessage.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "specialist instructions") {
 				return errors.New("declarative system prompt missing")
 			}
 			if request.Messages[len(request.Messages)-1].TextContent() != "research this" {
@@ -594,25 +594,25 @@ func TestDeclarativeSubagentInheritsToolsAndUsesOwnModelAndPrompt(t *testing.T) 
 				return fmt.Errorf("declarative tools = %#v", names)
 			}
 			return nil
-		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "lookup-1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+		}, Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "lookup-1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if request.Messages[len(request.Messages)-1].TextContent() != "lookup result" {
 				return errors.New("inherited tool result missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("child complete")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("child complete")}},
 	)
-	parentModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "delegate-declarative", Name: "task", Arguments: json.RawMessage(`{"description":"research this","subagent_type":"specialist"}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "delegate-declarative", Name: "task", Arguments: json.RawMessage(`{"description":"research this","subagent_type":"specialist"}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if request.Messages[len(request.Messages)-1].TextContent() != "child complete" {
 				return errors.New("declarative result missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("parent complete")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("parent complete")}},
 	)
 	compiled, err := New(Options{
-		Model: parentModel, Tools: []tool.Tool{lookup}, DisableSummary: true,
+		Model: parentModel, Tools: []datool.Tool{lookup}, DisableSummary: true,
 		Subagents: []Subagent{{
 			Name: "specialist", Description: "Research specialist", SystemPrompt: "specialist instructions", Model: childModel,
 		}},
@@ -620,7 +620,7 @@ func TestDeclarativeSubagentInheritsToolsAndUsesOwnModelAndPrompt(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("parent context")}})
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("parent context")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,23 +630,23 @@ func TestDeclarativeSubagentInheritsToolsAndUsesOwnModelAndPrompt(t *testing.T) 
 }
 
 func TestDeclarativeSubagentPropagatesNonMessageState(t *testing.T) {
-	files, err := backend.NewState("", nil)
+	files, err := dabackend.NewState("", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	childModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "declarative-write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/declarative.txt","content":"from declarative child"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("created")}},
+	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "declarative-write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/declarative.txt","content":"from declarative child"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("created")}},
 	)
-	parentModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "delegate-writer", Name: "task", Arguments: json.RawMessage(`{"description":"create a file","subagent_type":"writer"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "read-written", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/declarative.txt"}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "delegate-writer", Name: "task", Arguments: json.RawMessage(`{"description":"create a file","subagent_type":"writer"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "read-written", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/declarative.txt"}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "from declarative child") {
 				return errors.New("declarative state update was not propagated")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("done")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	parent, err := New(Options{
 		Model: parentModel, Backend: files, DisableSummary: true,
@@ -657,7 +657,7 @@ func TestDeclarativeSubagentPropagatesNonMessageState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := parent.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("parent-only context")}})
+	result, err := parent.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("parent-only context")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,26 +667,26 @@ func TestDeclarativeSubagentPropagatesNonMessageState(t *testing.T) {
 }
 
 func TestPrivateParentStateDoesNotReachDeclarativeSubagent(t *testing.T) {
-	childModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("child done")}})
-	guard := agent.Middleware{Name: "private_guard", BeforeModel: func(_ context.Context, values state.Values, _ agent.Runtime) (state.Values, error) {
+	childModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child done")}})
+	guard := dagent.Middleware{Name: "private_guard", BeforeModel: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
 		if _, exists := values["parent_secret"]; exists {
 			return nil, errors.New("private parent state leaked to child")
 		}
 		return nil, nil
 	}}
-	parentModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "private-task", Name: "task", Arguments: json.RawMessage(`{"description":"work","subagent_type":"worker"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("done")}},
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "private-task", Name: "task", Arguments: json.RawMessage(`{"description":"work","subagent_type":"worker"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled, err := New(Options{
 		Model: parentModel, DisableSummary: true,
-		StateFields: map[string]agent.StateField{"parent_secret": {Kind: agent.FieldLast, Contract: "parent.secret.v1", Private: true, Clone: func(value any) any { return value }}},
-		Subagents:   []Subagent{{Name: "worker", Description: "Works", SystemPrompt: "Work.", Model: childModel, Middleware: []agent.Middleware{guard}}},
+		StateFields: map[string]dagent.StateField{"parent_secret": {Kind: dagent.FieldLast, Contract: "parent.secret.v1", Private: true, Clone: func(value any) any { return value }}},
+		Subagents:   []Subagent{{Name: "worker", Description: "Works", SystemPrompt: "Work.", Model: childModel, Middleware: []dagent.Middleware{guard}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}, State: state.Values{"parent_secret": "hidden"}})
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"parent_secret": "hidden"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,10 +696,10 @@ func TestPrivateParentStateDoesNotReachDeclarativeSubagent(t *testing.T) {
 }
 
 func TestDeclarativeSubagentStructuredResponseWinsAndEmptyToolsOverrideInheritance(t *testing.T) {
-	parentOnly := tool.Func{Spec: tool.Definition{Name: "parent_only", Description: "parent tool", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
-		return tool.TextResult("parent"), nil
+	parentOnly := datool.Func{Spec: datool.Definition{Name: "parent_only", Description: "parent tool", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+		return datool.TextResult("parent"), nil
 	}}
-	childModel := modeltest.New(model.Profile{StructuredOutput: true}, modeltest.Step{Check: func(request model.Request) error {
+	childModel := modeltest.New(damodel.Profile{StructuredOutput: true}, modeltest.Step{Check: func(request damodel.Request) error {
 		for _, definition := range request.Tools {
 			if definition.Name == "parent_only" {
 				return errors.New("explicit empty child tools did not override inheritance")
@@ -709,27 +709,27 @@ func TestDeclarativeSubagentStructuredResponseWinsAndEmptyToolsOverrideInheritan
 			return errors.New("child structured response format missing")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("fallback text"), Structured: json.RawMessage(`{"answer":"structured"}`)}})
-	parentModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "structured-task", Name: "task", Arguments: json.RawMessage(`{"description":"analyze","subagent_type":"analyst"}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+	}, Response: damodel.Response{Message: damessage.Assistant("fallback text"), Structured: json.RawMessage(`{"answer":"structured"}`)}})
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "structured-task", Name: "task", Arguments: json.RawMessage(`{"description":"analyze","subagent_type":"analyst"}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if request.Messages[len(request.Messages)-1].TextContent() != `{"answer":"structured"}` {
 				return errors.New("structured child response did not win")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("done")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled, err := New(Options{
-		Model: parentModel, Tools: []tool.Tool{parentOnly}, DisableSummary: true,
+		Model: parentModel, Tools: []datool.Tool{parentOnly}, DisableSummary: true,
 		Subagents: []Subagent{{
-			Name: "analyst", Description: "Analyzes", SystemPrompt: "Analyze.", Model: childModel, Tools: []tool.Tool{},
-			StructuredOutput: &agent.StructuredOutput{Name: "findings", Schema: json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`)},
+			Name: "analyst", Description: "Analyzes", SystemPrompt: "Analyze.", Model: childModel, Tools: []datool.Tool{},
+			StructuredOutput: &dagent.StructuredOutput{Name: "findings", Schema: json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`)},
 		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}})
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -740,7 +740,7 @@ func TestDeclarativeSubagentStructuredResponseWinsAndEmptyToolsOverrideInheritan
 
 func TestSubagentInvocationPropagatesCancellation(t *testing.T) {
 	childModel := &blockingChat{started: make(chan struct{})}
-	parentModel := modeltest.New(model.Profile{ToolCalling: true}, modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "cancel-task", Name: "task", Arguments: json.RawMessage(`{"description":"block","subagent_type":"worker"}`)}}}}})
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "cancel-task", Name: "task", Arguments: json.RawMessage(`{"description":"block","subagent_type":"worker"}`)}}}}})
 	compiled, err := New(Options{
 		Model: parentModel, DisableSummary: true,
 		Subagents: []Subagent{{Name: "worker", Description: "Blocks", SystemPrompt: "Wait.", Model: childModel}},
@@ -751,7 +751,7 @@ func TestSubagentInvocationPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	done := make(chan error, 1)
 	go func() {
-		_, err := compiled.Invoke(ctx, agent.Input{Messages: []message.Message{message.Human("go")}})
+		_, err := compiled.Invoke(ctx, dagent.Input{Messages: []damessage.Message{damessage.Human("go")}})
 		done <- err
 	}()
 	select {
@@ -767,41 +767,41 @@ func TestSubagentInvocationPropagatesCancellation(t *testing.T) {
 
 type blockingChat struct{ started chan struct{} }
 
-func (chat *blockingChat) Invoke(ctx context.Context, _ model.Request) (model.Response, error) {
+func (chat *blockingChat) Invoke(ctx context.Context, _ damodel.Request) (damodel.Response, error) {
 	close(chat.started)
 	<-ctx.Done()
-	return model.Response{}, ctx.Err()
+	return damodel.Response{}, ctx.Err()
 }
 
-func (*blockingChat) Stream(context.Context, model.Request) (model.Stream, error) {
-	return model.EmptyStream{}, nil
+func (*blockingChat) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
+	return damodel.EmptyStream{}, nil
 }
 
-func (*blockingChat) Profile() model.Profile { return model.Profile{} }
+func (*blockingChat) Profile() damodel.Profile { return damodel.Profile{} }
 
 func TestDeclarativeSubagentApprovalInterruptResumesChild(t *testing.T) {
 	dangerRuns := 0
-	danger := tool.Func{Spec: tool.Definition{Name: "danger", Description: "dangerous child action", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, tool.Runtime) (tool.Result, error) {
+	danger := datool.Func{Spec: datool.Definition{Name: "danger", Description: "dangerous child action", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
 		dangerRuns++
-		return tool.TextResult("ran"), nil
+		return datool.TextResult("ran"), nil
 	}}
-	childModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "child-danger", Name: "danger", Arguments: json.RawMessage(`{}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("child approved")}},
+	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "child-danger", Name: "danger", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child approved")}},
 	)
-	parentModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "delegate-approval", Name: "task", Arguments: json.RawMessage(`{"description":"perform action","subagent_type":"operator"}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "delegate-approval", Name: "task", Arguments: json.RawMessage(`{"description":"perform action","subagent_type":"operator"}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if request.Messages[len(request.Messages)-1].TextContent() != "child approved" {
 				return errors.New("resumed child result missing")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("parent done")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("parent done")}},
 	)
-	saver := checkpoint.NewMemorySaver()
+	saver := dacheckpoint.NewMemorySaver()
 	compiled, err := New(Options{
-		Model: parentModel, Tools: []tool.Tool{danger}, Saver: saver, DisableSummary: true,
-		InterruptOn: []agent.ApprovalRule{{Pattern: "danger", Description: "Allow danger?"}},
+		Model: parentModel, Tools: []datool.Tool{danger}, Saver: saver, DisableSummary: true,
+		InterruptOn: []dagent.ApprovalRule{{Pattern: "danger", Description: "Allow danger?"}},
 		Subagents: []Subagent{{
 			Name: "operator", Description: "Performs approved actions", SystemPrompt: "Perform the action.", Model: childModel,
 		}},
@@ -809,16 +809,16 @@ func TestDeclarativeSubagentApprovalInterruptResumesChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := checkpoint.Config{ThreadID: "nested-approval"}
-	paused, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("delegate")}})
+	config := dacheckpoint.Config{ThreadID: "nested-approval"}
+	paused, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("delegate")}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(paused.Interrupts) != 1 || dangerRuns != 0 {
 		t.Fatalf("paused = %#v, danger runs = %d", paused.Interrupts, dangerRuns)
 	}
-	resumed, err := compiled.Invoke(context.Background(), agent.Input{Config: config, Resume: agent.ApprovalResponse{Decisions: map[string]agent.ApprovalChoice{
-		"child-danger": {Decision: agent.ApprovalApprove},
+	resumed, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Resume: dagent.ApprovalResponse{Decisions: map[string]dagent.ApprovalChoice{
+		"child-danger": {Decision: dagent.ApprovalApprove},
 	}}})
 	if err != nil {
 		t.Fatal(err)
@@ -830,8 +830,8 @@ func TestDeclarativeSubagentApprovalInterruptResumesChild(t *testing.T) {
 
 func TestApprovalConfigurationRequiresCheckpointer(t *testing.T) {
 	_, err := New(Options{
-		Model: modeltest.New(model.Profile{}), DisableSubagents: true, DisableSummary: true,
-		InterruptOn: []agent.ApprovalRule{{Pattern: "danger"}},
+		Model: modeltest.New(damodel.Profile{}), DisableSubagents: true, DisableSummary: true,
+		InterruptOn: []dagent.ApprovalRule{{Pattern: "danger"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "checkpointer") {
 		t.Fatalf("error = %v", err)
@@ -839,32 +839,32 @@ func TestApprovalConfigurationRequiresCheckpointer(t *testing.T) {
 }
 
 func TestSubagentCanPropagateSelectedStateWithoutMessageLeak(t *testing.T) {
-	files, err := backend.NewState("", nil)
+	files, err := dabackend.NewState("", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	childModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Check: func(request model.Request) error {
+	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if len(request.Messages) != 1 || request.Messages[0].TextContent() != "create child file" {
 				return errors.New("parent messages leaked into child")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "child-write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/child.txt","content":"from child"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Assistant("created")}},
+		}, Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "child-write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/child.txt","content":"from child"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("created")}},
 	)
 	child, err := New(Options{Model: childModel, Backend: files, DisableSubagents: true, DisableSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentModel := modeltest.New(model.Profile{ToolCalling: true},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "delegate", Name: "task", Arguments: json.RawMessage(`{"description":"create child file","subagent_type":"writer"}`)}}}}},
-		modeltest.Step{Response: model.Response{Message: message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{ID: "parent-read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/child.txt"}`)}}}}},
-		modeltest.Step{Check: func(request model.Request) error {
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "delegate", Name: "task", Arguments: json.RawMessage(`{"description":"create child file","subagent_type":"writer"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "parent-read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/child.txt"}`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "from child") {
 				return errors.New("selected child state was not propagated")
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("done")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	parent, err := New(Options{
 		Model: parentModel, Backend: files, DisableSummary: true,
@@ -873,7 +873,7 @@ func TestSubagentCanPropagateSelectedStateWithoutMessageLeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := parent.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("parent-only context")}})
+	result, err := parent.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("parent-only context")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -883,24 +883,24 @@ func TestSubagentCanPropagateSelectedStateWithoutMessageLeak(t *testing.T) {
 }
 
 func TestSummarizationPreservesRawHistoryAndOffloads(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{ContextWindow: 100}, modeltest.Step{Response: model.Response{Message: message.Assistant("facts")}})
-	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{ContextWindow: 100}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("facts")}})
+	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "conversation that has been summarized") {
 			return errors.New("compacted history missing")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	middleware, err := SummarizationMiddleware(SummarizationOptions{Model: summaryModel, Backend: memory, TriggerTokens: 1, KeepMessages: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := agent.New(agent.Options{Model: mainModel, Middleware: []agent.Middleware{middleware}})
+	compiled, err := dagent.New(dagent.Options{Model: mainModel, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	messages := []message.Message{message.Human("old one"), message.Assistant("old two"), message.Human("recent one"), message.Assistant("recent two")}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: messages})
+	messages := []damessage.Message{damessage.Human("old one"), damessage.Assistant("old two"), damessage.Human("recent one"), damessage.Assistant("recent two")}
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: messages})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -919,44 +919,44 @@ func TestSummarizationEventSurvivesSQLiteReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer saver.Close()
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("durable summary")}})
-	firstModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("durable summary")}})
+	firstModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "durable summary") {
 			return fmt.Errorf("first effective messages = %#v", request.Messages)
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("first response")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("first response")}})
 	firstMiddleware, err := SummarizationMiddleware(SummarizationOptions{Model: summaryModel, Backend: memory, TriggerMessages: 4, KeepMessages: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := agent.New(agent.Options{Model: firstModel, Middleware: []agent.Middleware{firstMiddleware}, Saver: saver})
+	first, err := dagent.New(dagent.Options{Model: firstModel, Middleware: []dagent.Middleware{firstMiddleware}, Saver: saver})
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := checkpoint.Config{ThreadID: "summary-replay"}
-	initial := []message.Message{message.Human("old one"), message.Assistant("old two"), message.Human("recent one"), message.Assistant("recent two")}
-	if _, err := first.Invoke(context.Background(), agent.Input{Config: config, Messages: initial}); err != nil {
+	config := dacheckpoint.Config{ThreadID: "summary-replay"}
+	initial := []damessage.Message{damessage.Human("old one"), damessage.Assistant("old two"), damessage.Human("recent one"), damessage.Assistant("recent two")}
+	if _, err := first.Invoke(context.Background(), dagent.Input{Config: config, Messages: initial}); err != nil {
 		t.Fatal(err)
 	}
 
-	secondModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	secondModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if len(request.Messages) != 5 || !strings.Contains(request.Messages[0].TextContent(), "durable summary") || strings.Contains(request.Messages[0].TextContent(), "old one") {
 			return fmt.Errorf("replayed effective messages = %#v", request.Messages)
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("second response")}})
-	unusedSummaryModel := modeltest.New(model.Profile{})
+	}, Response: damodel.Response{Message: damessage.Assistant("second response")}})
+	unusedSummaryModel := modeltest.New(damodel.Profile{})
 	secondMiddleware, err := SummarizationMiddleware(SummarizationOptions{Model: unusedSummaryModel, Backend: memory, TriggerMessages: 100, KeepMessages: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := agent.New(agent.Options{Model: secondModel, Middleware: []agent.Middleware{secondMiddleware}, Saver: saver})
+	second, err := dagent.New(dagent.Options{Model: secondModel, Middleware: []dagent.Middleware{secondMiddleware}, Saver: saver})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := second.Invoke(context.Background(), agent.Input{Config: config, Messages: []message.Message{message.Human("continue")}})
+	result, err := second.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("continue")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -966,14 +966,14 @@ func TestSummarizationEventSurvivesSQLiteReplay(t *testing.T) {
 }
 
 func TestSummarizationOffloadsLargeOldMedia(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "/conversation_history/media/") {
 			return errors.New("large old media was not replaced with a reference")
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("media summary")}})
-	mainModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("done")}})
+	}, Response: damodel.Response{Message: damessage.Assistant("media summary")}})
+	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}})
 	middleware, err := SummarizationMiddleware(SummarizationOptions{
 		Model: summaryModel, Backend: memory, TriggerTokens: 1,
 		KeepMessages: 1,
@@ -981,12 +981,12 @@ func TestSummarizationOffloadsLargeOldMedia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := agent.New(agent.Options{Model: mainModel, Middleware: []agent.Middleware{middleware}})
+	compiled, err := dagent.New(dagent.Options{Model: mainModel, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := message.Message{Role: message.RoleHuman, Content: []message.ContentBlock{{Type: message.BlockImage, MIMEType: "image/png", Name: "sample.png", Data: []byte("large-image")}}}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{old, message.Human("recent")}}); err != nil {
+	old := damessage.Message{Role: damessage.RoleHuman, Content: []damessage.ContentBlock{{Type: damessage.BlockImage, MIMEType: "image/png", Name: "sample.png", Data: []byte("large-image")}}}
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{old, damessage.Human("recent")}}); err != nil {
 		t.Fatal(err)
 	}
 	files, err := memory.Glob(context.Background(), "**/*.png", "/conversation_history/media")
@@ -996,16 +996,16 @@ func TestSummarizationOffloadsLargeOldMedia(t *testing.T) {
 }
 
 func TestSummarizationRetriesContextOverflowWithCompactedHistory(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("fallback facts")}})
-	mainModel := modeltest.New(model.Profile{},
-		modeltest.Step{Error: model.ErrContextOverflow},
-		modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("fallback facts")}})
+	mainModel := modeltest.New(damodel.Profile{},
+		modeltest.Step{Error: damodel.ErrContextOverflow},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "fallback facts") {
 				return fmt.Errorf("retry messages = %#v", request.Messages)
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("recovered")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("recovered")}},
 	)
 	middleware, err := SummarizationMiddleware(SummarizationOptions{
 		Model: summaryModel, Backend: memory, TriggerTokens: 1_000_000, KeepMessages: 2,
@@ -1013,12 +1013,12 @@ func TestSummarizationRetriesContextOverflowWithCompactedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := agent.New(agent.Options{Model: mainModel, Middleware: []agent.Middleware{middleware}})
+	compiled, err := dagent.New(dagent.Options{Model: mainModel, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{
-		message.Human("old one"), message.Assistant("old two"), message.Human("recent one"), message.Assistant("recent two"),
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{
+		damessage.Human("old one"), damessage.Assistant("old two"), damessage.Human("recent one"), damessage.Assistant("recent two"),
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -1029,11 +1029,11 @@ func TestSummarizationRetriesContextOverflowWithCompactedHistory(t *testing.T) {
 }
 
 func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("summary")}})
-	mainModel := modeltest.New(model.Profile{},
-		modeltest.Step{Error: model.ErrContextOverflow},
-		modeltest.Step{Check: func(request model.Request) error {
+	memory, _ := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("summary")}})
+	mainModel := modeltest.New(damodel.Profile{},
+		modeltest.Step{Error: damodel.ErrContextOverflow},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			if len(request.Messages) != 4 {
 				return fmt.Errorf("retry messages = %#v", request.Messages)
 			}
@@ -1043,7 +1043,7 @@ func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
 				}
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("recovered")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("recovered")}},
 	)
 	middleware, err := SummarizationMiddleware(SummarizationOptions{
 		Model: summaryModel, Backend: memory, TriggerTokens: 1_000_000, KeepMessages: 3,
@@ -1051,20 +1051,20 @@ func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := agent.New(agent.Options{Model: mainModel, Middleware: []agent.Middleware{middleware}})
+	compiled, err := dagent.New(dagent.Options{Model: mainModel, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolCalls := message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{
+	toolCalls := damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{
 		{ID: "lookup/one", Name: "lookup", Arguments: json.RawMessage(`{}`)},
 		{ID: "lookup.two", Name: "lookup", Arguments: json.RawMessage(`{}`)},
 	}}
-	first := message.Tool("lookup/one", strings.Repeat("first line\n", 1_200))
+	first := damessage.Tool("lookup/one", strings.Repeat("first line\n", 1_200))
 	first.ID = "result-one"
-	second := message.Tool("lookup.two", strings.Repeat("second line\n", 1_200))
+	second := damessage.Tool("lookup.two", strings.Repeat("second line\n", 1_200))
 	second.ID = "result-two"
-	result, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{
-		message.Human("old"), message.Assistant("old answer"), message.Human("lookup"), toolCalls, first, second,
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{
+		damessage.Human("old"), damessage.Assistant("old answer"), damessage.Human("lookup"), toolCalls, first, second,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -1081,20 +1081,20 @@ func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
 }
 
 func TestSummarizationPersistsOverflowArtifactsInStateBackend(t *testing.T) {
-	files, err := backend.NewState("", nil)
+	files, err := dabackend.NewState("", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	summaryModel := modeltest.New(model.Profile{}, modeltest.Step{Response: model.Response{Message: message.Assistant("summary")}})
-	mainModel := modeltest.New(model.Profile{},
-		modeltest.Step{Error: model.ErrContextOverflow},
-		modeltest.Step{Check: func(request model.Request) error {
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("summary")}})
+	mainModel := modeltest.New(damodel.Profile{},
+		modeltest.Step{Error: damodel.ErrContextOverflow},
+		modeltest.Step{Check: func(request damodel.Request) error {
 			last := request.Messages[len(request.Messages)-1]
 			if !strings.Contains(last.TextContent(), "Tool result too large") || !strings.Contains(last.TextContent(), "/large_tool_results/lookup_state") {
 				return fmt.Errorf("tool result was not replaced with a durable reference: %#v", last)
 			}
 			return nil
-		}, Response: model.Response{Message: message.Assistant("recovered")}},
+		}, Response: damodel.Response{Message: damessage.Assistant("recovered")}},
 	)
 	compiled, err := New(Options{
 		Model: mainModel, Backend: files, DisableSubagents: true,
@@ -1105,20 +1105,20 @@ func TestSummarizationPersistsOverflowArtifactsInStateBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{
+	call := damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
 		ID: "lookup/state", Name: "lookup", Arguments: json.RawMessage(`{}`),
 	}}}
-	resultMessage := message.Tool("lookup/state", strings.Repeat("state-backed result\n", 1_200))
-	result, err := compiled.Invoke(context.Background(), agent.Input{
-		Config: checkpoint.Config{ThreadID: "overflow-state"},
-		Messages: []message.Message{
-			message.Human("old question"), message.Assistant("old answer"), message.Human("lookup"), call, resultMessage,
+	resultMessage := damessage.Tool("lookup/state", strings.Repeat("state-backed result\n", 1_200))
+	result, err := compiled.Invoke(context.Background(), dagent.Input{
+		Config: dacheckpoint.Config{ThreadID: "overflow-state"},
+		Messages: []damessage.Message{
+			damessage.Human("old question"), damessage.Assistant("old answer"), damessage.Human("lookup"), call, resultMessage,
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	boundCtx, err := backend.BindRuntime(context.Background(), files, result.State)
+	boundCtx, err := dabackend.BindRuntime(context.Background(), files, result.State)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1131,13 +1131,13 @@ func TestSummarizationPersistsOverflowArtifactsInStateBackend(t *testing.T) {
 }
 
 func TestOverflowClipKeepsReadFileAtOriginalPath(t *testing.T) {
-	memory, _ := backend.NewMemory(nil)
+	memory, _ := dabackend.NewMemory(nil)
 	content := strings.Repeat("content line\n", 2_000)
-	call := message.Message{Role: message.RoleAssistant, ToolCalls: []message.ToolCall{{
+	call := damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
 		ID: "read-one", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/source.txt"}`),
 	}}}
-	resultMessage := message.Tool("read-one", content)
-	clipped := clipOverflowToolTail(context.Background(), []message.Message{call, resultMessage}, []message.Message{call, resultMessage}, SummarizationOptions{
+	resultMessage := damessage.Tool("read-one", content)
+	clipped := clipOverflowToolTail(context.Background(), []damessage.Message{call, resultMessage}, []damessage.Message{call, resultMessage}, SummarizationOptions{
 		Backend: memory, OverflowClipTokens: 1, LargeToolResultsRoot: "/large_tool_results",
 	})
 	if len(clipped) != 2 || !strings.Contains(clipped[1].TextContent(), "The full content is at /source.txt") || len(clipped[1].TextContent()) >= len(content) {

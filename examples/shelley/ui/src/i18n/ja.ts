@@ -204,8 +204,6 @@ export const ja: TranslationKeys = {
   notifications: "通知",
   browserNotifications: "ブラウザ通知",
   faviconBadge: "ファビコンバッジ",
-  exeDevPushNotifications: "プッシュ通知",
-  exeDevPushNotificationsDescription: "エージェント完了時に exe.dev アプリでデバイスに通知",
   editChannel: "チャンネルを編集",
   addChannel: "チャンネルを追加",
   customChannels: "カスタムチャンネル",
@@ -247,14 +245,10 @@ export const ja: TranslationKeys = {
   // Welcome / Empty State
   welcomeTitle: "Shelley Agent",
   welcomeSubtitle: "",
-  welcomeMessage:
-    "Shelleyは{hostname}で動作するエージェントです。Shelleyに作業を依頼できます。Shelleyでウェブサイトを構築した場合、exe.devのプロキシ機能（{docsLink}を参照）を使用して{proxyLink}からアクセスできます。",
+  welcomeMessage: "Shelley is running on {hostname}.",
   sendMessageToStart: "メッセージを送信して会話を開始してください。",
   noModelsTitle: "利用可能なAIモデルがありません",
-  noModelsExeNote:
-    "Shelley は exe.dev の llm 統合からモデルを取得します。次のいずれかを実行して修正してください:",
   noModelsLocalNote: "Ctrl+K または ⌘+K でモデルを追加してください。",
-  noModelsExeRefresh: "その後モデルピッカーで Refresh を押してください。",
   noModelSelectedPlaceholder: "利用可能なモデルなし",
 
   // Status Bar

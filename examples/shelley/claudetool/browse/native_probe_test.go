@@ -6,19 +6,19 @@ import (
 	"encoding/json"
 	"math"
 
-	dmessage "github.com/semistrict/dago/message"
-	dtool "github.com/semistrict/dago/tool"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
 // nativeToolProbe keeps the original browser assertions readable while every
-// invocation crosses Dago's Tool.Execute boundary.
+// invocation crosses dago's Tool.Execute boundary.
 type nativeToolProbe struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
-	executable  dtool.Tool
+	executable  datool.Tool
 }
 
 type nativeProbeResult struct {
@@ -27,7 +27,7 @@ type nativeProbeResult struct {
 	Error      error
 }
 
-func probeNativeTool(executable dtool.Tool) *nativeToolProbe {
+func probeNativeTool(executable datool.Tool) *nativeToolProbe {
 	definition := executable.Definition()
 	return &nativeToolProbe{
 		Name: definition.Name, Description: definition.Description,
@@ -43,7 +43,7 @@ func probeBrowserTools(browser *BrowseTools) []*nativeToolProbe {
 }
 
 func (probe *nativeToolProbe) Run(ctx context.Context, arguments json.RawMessage) nativeProbeResult {
-	result, err := probe.executable.Execute(ctx, arguments, dtool.Runtime{})
+	result, err := probe.executable.Execute(ctx, arguments, datool.Runtime{})
 	if err != nil {
 		return nativeProbeResult{Error: err}
 	}

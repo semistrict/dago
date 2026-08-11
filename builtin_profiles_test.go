@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
 )
 
 func TestBuiltinAnthropicHarnessProfiles(t *testing.T) {
@@ -42,30 +42,30 @@ func TestBuiltinAnthropicHarnessProfiles(t *testing.T) {
 }
 
 func TestBuiltinHarnessProfileResolvesFromModel(t *testing.T) {
-	script := modeltest.New(model.Profile{Provider: "anthropic", Model: "claude-opus-4-7"}, modeltest.Step{
-		Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{Provider: "anthropic", Model: "claude-opus-4-7"}, modeltest.Step{
+		Check: func(request damodel.Request) error {
 			prompt := request.Messages[0].TextContent()
 			if !strings.Contains(prompt, "user instructions") || !strings.Contains(prompt, "<tool_usage>") {
 				return &profileTestError{value: prompt}
 			}
 			return nil
 		},
-		Response: model.Response{Message: message.Assistant("done")},
+		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
 	compiled, err := New(Options{Model: script, SystemPrompt: "user instructions", DisableSubagents: true, DisableSummary: true, DisableTodo: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestBuiltinEngineeringProfileAddsPlanningAndBehavior(t *testing.T) {
 	modelID := "gpt-5.2-" + "co" + "dex"
-	script := modeltest.New(model.Profile{Provider: "openai", Model: modelID}, modeltest.Step{
-		Check: func(request model.Request) error {
-			if request.Messages[0].Role != message.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "Engineering-Agent Behavior") {
+	script := modeltest.New(damodel.Profile{Provider: "openai", Model: modelID}, modeltest.Step{
+		Check: func(request damodel.Request) error {
+			if request.Messages[0].Role != damessage.RoleSystem || !strings.Contains(request.Messages[0].TextContent(), "Engineering-Agent Behavior") {
 				return &profileTestError{value: request.Messages[0].TextContent()}
 			}
 			for _, definition := range request.Tools {
@@ -75,13 +75,13 @@ func TestBuiltinEngineeringProfileAddsPlanningAndBehavior(t *testing.T) {
 			}
 			return &profileTestError{value: "write_todos missing"}
 		},
-		Response: model.Response{Message: message.Assistant("done")},
+		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
 	compiled, err := New(Options{Model: script, DisableSubagents: true, DisableSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 )
 
 type recordingConversationSubagentStore struct {
@@ -72,7 +72,7 @@ func TestConversationSubagentToolDispatchesPersistentConversation(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := subagentTool.Execute(context.Background(), raw, tool.Runtime{})
+	result, err := subagentTool.Execute(context.Background(), raw, datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestConversationSubagentToolDefaultsAndContract(t *testing.T) {
 		AvailableModels:      []ConversationSubagentModel{{ID: "default-model", DisplayName: "Default Model"}},
 	})
 
-	result, err := subagentTool.Execute(context.Background(), json.RawMessage(`{"slug":"worker","prompt":"continue"}`), tool.Runtime{})
+	result, err := subagentTool.Execute(context.Background(), json.RawMessage(`{"slug":"worker","prompt":"continue"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestConversationSubagentToolCapsLargeTimeoutWithoutOverflow(t *testing.T) {
 		Runner:           runner,
 		WorkingDirectory: func() string { return "/workspace" },
 	})
-	_, err := subagentTool.Execute(context.Background(), json.RawMessage(`{"slug":"worker","prompt":"work","timeout_seconds":9223372036}`), tool.Runtime{})
+	_, err := subagentTool.Execute(context.Background(), json.RawMessage(`{"slug":"worker","prompt":"work","timeout_seconds":9223372036}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestConversationSubagentToolRejectsInvalidOptions(t *testing.T) {
 				WorkingDirectory: func() string { return "/workspace" },
 				AvailableModels:  []ConversationSubagentModel{{ID: "known"}},
 			})
-			_, err := subagentTool.Execute(context.Background(), json.RawMessage(test.input), tool.Runtime{})
+			_, err := subagentTool.Execute(context.Background(), json.RawMessage(test.input), datool.Runtime{})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)
 			}

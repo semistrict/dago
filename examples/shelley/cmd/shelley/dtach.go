@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"shelley.exe.dev/dtach"
+	"github.com/semistrict/dago/examples/shelley/dtach"
 )
 
 // ptyEnv returns the parent environment with TERM/COLORTERM forced to values

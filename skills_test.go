@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/checkpoint/serde"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/model"
-	"github.com/semistrict/dago/model/modeltest"
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dacheckpoint/serde"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
 )
 
 func TestParseSkillYAMLMetadata(t *testing.T) {
@@ -32,10 +32,10 @@ func TestParseSkillYAMLMetadata(t *testing.T) {
 }
 
 func TestSkillsLaterSourceWinsAndWarningsAreUntrusted(t *testing.T) {
-	memory, err := backend.NewMemory(map[string]backend.FileData{
-		"/base/research/SKILL.md":    {Content: "---\nname: research\ndescription: base\n---\nbody", Encoding: backend.EncodingUTF8},
-		"/project/research/SKILL.md": {Content: "---\nname: research\ndescription: project\n---\nbody", Encoding: backend.EncodingUTF8},
-		"/project/broken/SKILL.md":   {Content: "not yaml", Encoding: backend.EncodingUTF8},
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/base/research/SKILL.md":    {Content: "---\nname: research\ndescription: base\n---\nbody", Encoding: dabackend.EncodingUTF8},
+		"/project/research/SKILL.md": {Content: "---\nname: research\ndescription: project\n---\nbody", Encoding: dabackend.EncodingUTF8},
+		"/project/broken/SKILL.md":   {Content: "not yaml", Encoding: dabackend.EncodingUTF8},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestSkillsLaterSourceWinsAndWarningsAreUntrusted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		prompt := request.Messages[0].TextContent()
 		if !strings.Contains(prompt, "**research**: project") || strings.Contains(prompt, "**research**: base") {
 			return &skillTestError{"priority merge missing"}
@@ -56,12 +56,12 @@ func TestSkillsLaterSourceWinsAndWarningsAreUntrusted(t *testing.T) {
 			return &skillTestError{"safe warnings missing"}
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
-	compiled, err := agent.New(agent.Options{Model: script, Middleware: []agent.Middleware{middleware}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
+	compiled, err := dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(observedWarnings) == 0 {
@@ -70,32 +70,32 @@ func TestSkillsLaterSourceWinsAndWarningsAreUntrusted(t *testing.T) {
 }
 
 type partialSkillsBackend struct {
-	backend.Backend
-	listing backend.ListResult
+	dabackend.Backend
+	listing dabackend.ListResult
 	err     error
 }
 
-func (partial partialSkillsBackend) List(context.Context, string) (backend.ListResult, error) {
+func (partial partialSkillsBackend) List(context.Context, string) (dabackend.ListResult, error) {
 	return partial.listing, partial.err
 }
 
 func TestSkillsRetainPartialListingResults(t *testing.T) {
-	memory, err := backend.NewMemory(map[string]backend.FileData{
-		"/skills/research/SKILL.md": {Content: "---\nname: research\ndescription: found despite warning\n---\nbody", Encoding: backend.EncodingUTF8},
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/skills/research/SKILL.md": {Content: "---\nname: research\ndescription: found despite warning\n---\nbody", Encoding: dabackend.EncodingUTF8},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	partial := partialSkillsBackend{
 		Backend: memory,
-		listing: backend.ListResult{Entries: []backend.FileInfo{{Path: "/skills/research/", IsDir: true}}},
+		listing: dabackend.ListResult{Entries: []dabackend.FileInfo{{Path: "/skills/research/", IsDir: true}}},
 		err:     errors.New("one directory could not be inspected"),
 	}
 	middleware, err := SkillsMiddleware(SkillsOptions{Backend: partial, Sources: []string{"/skills"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	update, err := middleware.BeforeAgent(context.Background(), map[string]any{}, agent.Runtime{})
+	update, err := middleware.BeforeAgent(context.Background(), map[string]any{}, dagent.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestSkillsRetainPartialListingResults(t *testing.T) {
 }
 
 func TestSkillsSkipDiscoveryWhenCheckpointedMetadataExists(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestSkillsSkipDiscoveryWhenCheckpointedMetadataExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	update, err := middleware.BeforeAgent(context.Background(), map[string]any{"skills": []Skill{}}, agent.Runtime{})
+	update, err := middleware.BeforeAgent(context.Background(), map[string]any{"skills": []Skill{}}, dagent.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestSkillsSkipDiscoveryWhenCheckpointedMetadataExists(t *testing.T) {
 }
 
 func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		prompt := request.Messages[0].TextContent()
 		for _, expected := range []string{
 			"**Agents Skills**: `/home/me/.agents/skills`",
@@ -150,12 +150,12 @@ func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
 			}
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
-	compiled, err := agent.New(agent.Options{Model: script, Middleware: []agent.Middleware{middleware}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
+	compiled, err := dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -164,23 +164,23 @@ func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script = modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	script = modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if request.Messages[0].TextContent() != "go" {
 			return &skillTestError{"disabled skills prompt changed the request"}
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
-	compiled, err = agent.New(agent.Options{Model: script, Middleware: []agent.Middleware{middleware}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
+	compiled, err = dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestSkillsCustomPromptRequiresProgressiveDisclosureSlots(t *testing.T) {
-	memory, err := backend.NewMemory(nil)
+	memory, err := dabackend.NewMemory(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,8 +195,8 @@ func TestSkillsCustomPromptRequiresProgressiveDisclosureSlots(t *testing.T) {
 }
 
 func TestSkillsCatalogUsesApplicationActivationAndFilesystemOverrides(t *testing.T) {
-	memory, err := backend.NewMemory(map[string]backend.FileData{
-		"/project/research/SKILL.md": {Content: "---\nname: research\ndescription: project\n---\nbody", Encoding: backend.EncodingUTF8},
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/project/research/SKILL.md": {Content: "---\nname: research\ndescription: project\n---\nbody", Encoding: dabackend.EncodingUTF8},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -213,14 +213,14 @@ func TestSkillsCatalogUsesApplicationActivationAndFilesystemOverrides(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	update, err := middleware.BeforeAgent(context.Background(), map[string]any{}, agent.Runtime{})
+	update, err := middleware.BeforeAgent(context.Background(), map[string]any{}, dagent.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := serde.New(serde.Limits{}).Encode(update["skills"]); err != nil {
 		t.Fatalf("skills checkpoint state is not language-neutral: %v", err)
 	}
-	script := modeltest.New(model.Profile{}, modeltest.Step{Check: func(request model.Request) error {
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		prompt := request.Messages[0].TextContent()
 		for _, expected := range []string{"**research**: project", "**builtin**: embedded", "Run skill show research", "Run skill show builtin"} {
 			if !strings.Contains(prompt, expected) {
@@ -231,12 +231,12 @@ func TestSkillsCatalogUsesApplicationActivationAndFilesystemOverrides(t *testing
 			return &skillTestError{"filesystem source did not override catalog"}
 		}
 		return nil
-	}, Response: model.Response{Message: message.Assistant("done")}})
-	compiled, err := agent.New(agent.Options{Model: script, Middleware: []agent.Middleware{middleware}})
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
+	compiled, err := dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{middleware}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiled.Invoke(context.Background(), agent.Input{Messages: []message.Message{message.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 }

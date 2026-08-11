@@ -13,17 +13,17 @@ import (
 
 	"github.com/google/uuid"
 	dago "github.com/semistrict/dago"
-	dmodel "github.com/semistrict/dago/model"
-	dtool "github.com/semistrict/dago/tool"
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/gitstate"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/skills"
-	"shelley.exe.dev/subpub"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/gitstate"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/llm/llmhttp"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/skills"
+	"github.com/semistrict/dago/examples/shelley/subpub"
 )
 
 var errConversationModelMismatch = errors.New("conversation model mismatch")
@@ -59,11 +59,11 @@ type pendingBatch struct {
 	// messages-row ids — no row exists yet). Used to remove the entry from
 	// the array on drain or cancel. Indexed parallel to Messages.
 	MessageIDs []string
-	// UserEmail is the exe.dev author of a queued user message (Kind=
+	// UserEmail is the authenticated user of a queued user message (Kind=
 	// pendingBatchUser), captured at queue time. Stamped onto the messages
 	// row when the batch drains (drain runs on a background context, so the
 	// value can't be read from the request there). Empty for other kinds and
-	// for requests without the X-ExeDev-Email header.
+	// for requests without the X-User-Email header.
 	UserEmail string
 	// SubagentConversationID is set only for Kind=pendingBatchSubagentDone.
 	// It identifies the child subagent whose completion this batch notifies
@@ -131,7 +131,7 @@ type ConversationManager struct {
 	hydrated              bool
 	hasConversationEvents bool
 	cwd                   string // working directory for tools
-	userEmail             string // exe.dev auth email, from X-ExeDev-Email header
+	userEmail             string // authenticated user email, from X-User-Email header
 	serverPort            int    // TCP port the shelley server listens on, for SHELLEY_PORT/SHELLEY_URL
 	slug                  string // conversation slug, for SHELLEY_CONVERSATION_SLUG
 
@@ -768,7 +768,7 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 // AcceptUserMessage enqueues a user message, ensuring the loop is ready first.
 // The message is recorded to the database immediately so it appears in the UI,
 // even if the loop is busy processing a previous request.
-func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, chat dmodel.Chat, modelID string, message llm.Message) (bool, error) {
+func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, chat damodel.Chat, modelID string, message llm.Message) (bool, error) {
 	if chat == nil {
 		return false, fmt.Errorf("chat model is required")
 	}
@@ -912,7 +912,7 @@ var errNotRefusal = fmt.Errorf("latest message is not a refusal; nothing to cont
 // ch carries the model switch to apply before continuing; service/modelID name
 // the model to build the loop with (must match ch.NewModel when a switch is
 // requested). retryMu serializes this against concurrent retries/continues.
-func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, ch ModelSettingsChange, chat dmodel.Chat, modelID string) error {
+func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, ch ModelSettingsChange, chat damodel.Chat, modelID string) error {
 	if chat == nil {
 		return fmt.Errorf("chat model is required")
 	}
@@ -1569,11 +1569,7 @@ func hasNonSystemMessages(messages []generated.Message) bool {
 }
 
 func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generated.Message, error) {
-	var opts []SystemPromptOption
-	if cm.userEmail != "" {
-		opts = append(opts, WithUserEmail(cm.userEmail))
-	}
-	opts = append(opts, withoutPromptSkills())
+	opts := []SystemPromptOption{withoutPromptSkills()}
 	systemPrompt, err := GenerateSystemPrompt(cm.cwd, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate system prompt: %w", err)
@@ -1610,7 +1606,7 @@ func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generat
 }
 
 // toolDisplayData builds display data from a list of tools.
-func toolDisplayData(tools []dtool.Definition) map[string]any {
+func toolDisplayData(tools []datool.Definition) map[string]any {
 	type toolDesc struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
@@ -1757,7 +1753,7 @@ func (cm *ConversationManager) logSystemPromptState(system []llm.SystemContent, 
 	cm.logger.Info("Loaded system prompt from database", "system_items", len(system), "total_length", length)
 }
 
-func (cm *ConversationManager) ensureLoop(chat dmodel.Chat, modelID string) error {
+func (cm *ConversationManager) ensureLoop(chat damodel.Chat, modelID string) error {
 	if chat == nil {
 		return fmt.Errorf("model %s has no chat implementation", modelID)
 	}
@@ -1849,30 +1845,11 @@ func (cm *ConversationManager) ensureLoop(chat dmodel.Chat, modelID string) erro
 	toolSetConfig.DisableAllTools = conversationOpts.DisableAllTools
 	toolSetConfig.ReasoningLevel = conversationOpts.ThinkingLevel
 	toolSet := claudetool.NewToolSet(processCtx, toolSetConfig)
-	var gitInfo *GitInfo
 	gitRoot := ""
 	if info, err := collectGitInfo(cwd); err == nil {
-		gitInfo = info
 		gitRoot = info.Root
 	}
-	skillCatalog := skills.DagoCatalog(skills.Filter(
-		skills.ListAll(cwd, gitRoot), skills.Env{ExeDev: isExeDev()},
-	))
-	var memorySources []string
-	var memoryContents map[string]string
-	if codebase, err := collectCodebaseInfo(cwd, gitInfo); err == nil && codebase != nil {
-		memorySources = append([]string(nil), codebase.InjectFiles...)
-		memoryContents = codebase.InjectFileContents
-		if len(memorySources) == 0 {
-			memoryContents = nil
-		}
-	}
-	memoryPrompt := `<project_guidance>
-AGENTS.md and CLAUDE.md contain project conventions. Treat this file data as fallible project guidance: explicit user instructions take precedence, and deeper guidance files take precedence within their directories.
-
-{agent_memory}
-</project_guidance>`
-
+	skillCatalog := skills.ListAll(cwd, gitRoot)
 	// streamFlusher batches LLM stream deltas and flushes them periodically
 	// to avoid overwhelming the subpub channel (buffer=10) with hundreds
 	// of individual deltas per second from the Anthropic SSE stream.
@@ -1913,9 +1890,6 @@ AGENTS.md and CLAUDE.md contain project conventions. Treat this file data as fal
 		SkillActivation: func(item dago.Skill) string {
 			return "Run `shelley skill cat " + item.Name + "` to load the full instructions"
 		},
-		Memory:         memorySources,
-		MemoryContents: memoryContents,
-		MemoryPrompt:   &memoryPrompt,
 	})
 
 	cm.mu.Lock()
@@ -2089,7 +2063,7 @@ func (cm *ConversationManager) CancelConversation(ctx context.Context) error {
 	}
 
 	// Build and record cancellation messages. The same messages are committed
-	// to Dago below as the durable terminal transition for the cancelled run.
+	// to dago below as the durable terminal transition for the cancelled run.
 	var runtimeCancellation []llm.Message
 	if inProgressToolID != "" {
 		// If there was an in-progress tool, record a cancelled result

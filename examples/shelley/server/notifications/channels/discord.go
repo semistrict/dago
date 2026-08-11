@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"shelley.exe.dev/server/notifications"
+	"github.com/semistrict/dago/examples/shelley/server/notifications"
 )
 
 func init() {

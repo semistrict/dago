@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/semistrict/dago/state"
+	"github.com/semistrict/dago/dastate"
 )
 
 func checkpointTimestamp() string {
@@ -51,7 +51,7 @@ func decodeTasks(value any) ([]task, error) {
 			if !ok {
 				return nil, fmt.Errorf("decode checkpoint task %d input: got %T", index, rawInput)
 			}
-			task.input = state.Values(input)
+			task.input = dastate.Values(input)
 		}
 		result = append(result, task)
 	}

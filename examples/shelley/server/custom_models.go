@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 // ModelAPI is the API representation of a model
@@ -510,7 +510,7 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	response, err := chat.Invoke(ctx, dmodel.Request{Messages: []dmessage.Message{
+	response, err := chat.Invoke(ctx, damodel.Request{Messages: []dmessage.Message{
 		dmessage.Human("Say 'test successful' in exactly two words."),
 	}})
 	if err != nil {

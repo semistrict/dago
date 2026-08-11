@@ -23,16 +23,16 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/claudetool/browse"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/gitstate"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/models"
-	"shelley.exe.dev/slug"
-	"shelley.exe.dev/ui"
-	"shelley.exe.dev/version"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/claudetool/browse"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/gitstate"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/models"
+	"github.com/semistrict/dago/examples/shelley/slug"
+	"github.com/semistrict/dago/examples/shelley/ui"
+	"github.com/semistrict/dago/examples/shelley/version"
 )
 
 // handleRead serves files from limited allowed locations via /api/read?path=
@@ -644,14 +644,9 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 	defaultModel := s.effectiveDefaultModel(modelList)
 	markDefaultModel(modelList, defaultModel)
 
-	// Get hostname (add .exe.xyz suffix if no dots, matching system_prompt.go)
 	hostname := "localhost"
 	if h, err := os.Hostname(); err == nil {
-		if !strings.Contains(h, ".") {
-			hostname = h + ".exe.xyz"
-		} else {
-			hostname = h
-		}
+		hostname = h
 	}
 
 	// Get default working directory
@@ -675,39 +670,13 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 		"default_cwd":         defaultCwd,
 		"home_dir":            homeDir,
 		"user_agents_md_path": userAgentsMdPath,
-		// is_exe_dev lets the UI pick exe.dev-specific setup advice even when
-		// model_setup_hint is absent (the catalog can empty AFTER page load, via
-		// a detached integration plus Refresh).
-		"is_exe_dev": isExeDev(),
 	}
-	// With no models the UI cannot send anything, so tell it WHY. On exe.dev
-	// the usual cause is a missing reflection or llm integration, and each has
-	// a different fix; see modelSetupHintForModels. Only computed for the empty
-	// case, so the healthy path pays no reflection probe.
-	if hint := modelSetupHintForModels(r.Context(), modelList, isExeDev()); hint != "" {
+	if hint := modelSetupHintForModels(r.Context(), modelList); hint != "" {
 		initData["model_setup_hint"] = hint
-	}
-	// On exe.dev VMs (where /exe.dev exists), auto-derive the terminal URL and
-	// default links from the current hostname so they pick up hostname changes
-	// on reload.
-	if _, err := os.Stat("/exe.dev"); err == nil {
-		short := strings.SplitN(hostname, ".", 2)[0]
-		initData["terminal_url"] = "https://" + short + ".xterm.exe.xyz"
-		// Home icon — used historically by the "Back to exe.dev" link.
-		const homeIcon = "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
-		// External-link icon for the box's own web page.
-		const extIcon = "M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
-		initData["links"] = []Link{
-			{Title: hostname, URL: "https://" + hostname, IconSVG: extIcon},
-			{Title: "Back to exe.dev", URL: "https://exe.dev", IconSVG: homeIcon},
-		}
 	}
 
 	// Inject notification channel type metadata for the settings modal
 	initData["notification_channel_types"] = s.getNotificationChannelTypes()
-	// Whether this VM has an exe.dev "notify" integration, so the UI can show
-	// the auto-configured push-notification toggle.
-	initData["exe_notify_available"] = s.exeNotifyAvailable()
 	if s.Banner != "" {
 		initData["banner"] = s.Banner
 	}
@@ -1122,8 +1091,8 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
 		return
 	}
-	userEmail := r.Header.Get("X-ExeDev-Email")
-	// Thread the authenticated exe.dev account down to the message recorder so
+	userEmail := r.Header.Get("X-User-Email")
+	// Thread the authenticated authenticated user down to the message recorder so
 	// the user turn's row is attributed to its author. The active manager is a
 	// long-lived singleton shared across requests (its userEmail is only set at
 	// creation), so per-request context — not manager state — is the reliable
@@ -1450,7 +1419,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		Conversation: conversation,
 	})
 
-	userEmail := r.Header.Get("X-ExeDev-Email")
+	userEmail := r.Header.Get("X-User-Email")
 	// Attribute the user turn to its author; see handleChatConversation for why
 	// the recorder reads the email off ctx rather than the shared manager.
 	ctx = contextWithUserEmail(ctx, userEmail)
@@ -1620,7 +1589,7 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 
 	if !exists {
 		// No in-memory manager: hydrate one so we can retry from cold storage.
-		userEmail := r.Header.Get("X-ExeDev-Email")
+		userEmail := r.Header.Get("X-User-Email")
 		manager, err = s.getOrCreateConversationManager(ctx, conversationID, userEmail)
 		if err != nil {
 			s.logger.Error("Failed to get conversation manager for retry", "conversationID", conversationID, "error", err)
@@ -1718,7 +1687,7 @@ func (s *Server) handleContinueConversation(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	userEmail := r.Header.Get("X-ExeDev-Email")
+	userEmail := r.Header.Get("X-User-Email")
 	manager, err := s.getOrCreateConversationManager(ctx, conversationID, userEmail)
 	if err != nil {
 		s.logger.Error("Failed to get conversation manager for continue", "conversationID", conversationID, "error", err)
@@ -2275,8 +2244,8 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 type ModelInfo struct {
 	ID               string `json:"id"`
 	DisplayName      string `json:"display_name,omitempty"`
-	Source           string `json:"source,omitempty"`   // Human-readable source (e.g., "exe.dev gateway", "$ANTHROPIC_API_KEY")
-	BaseURL          string `json:"base_url,omitempty"` // Upstream origin (e.g., "https://llm.int.exe.xyz")
+	Source           string `json:"source,omitempty"`   // Human-readable source (e.g., "$OPENAI_API_KEY")
+	BaseURL          string `json:"base_url,omitempty"` // Upstream origin
 	APIType          string `json:"api_type,omitempty"` // Wire protocol (e.g., "anthropic-messages")
 	Ready            bool   `json:"ready"`
 	MaxContextTokens int    `json:"max_context_tokens,omitempty"`
@@ -2439,16 +2408,6 @@ func (s *Server) handleModelCommand(ctx context.Context, w http.ResponseWriter, 
 // They match the levels offered by the ThinkingLevelPicker in the UI. The word
 // "default" is deliberately not a level: it selects the default MODEL instead.
 var reasoningLevelNames = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
-
-func isReasoningLevelName(s string) bool {
-	s = strings.ToLower(strings.TrimSpace(s))
-	for _, name := range reasoningLevelNames {
-		if s == name {
-			return true
-		}
-	}
-	return false
-}
 
 // resolveReasoningArg matches a /model argument to a reasoning level, leniently.
 // It accepts an exact level name or any unambiguous case-insensitive prefix
@@ -3300,8 +3259,7 @@ func (s *Server) handleSetSetting(w http.ResponseWriter, r *http.Request) {
 
 	// Only allow known setting keys
 	allowedKeys := map[string]bool{
-		"auto_upgrade":      true,
-		exeNotifySettingKey: true,
+		"auto_upgrade": true,
 	}
 	if !allowedKeys[req.Key] {
 		http.Error(w, fmt.Sprintf("Invalid setting key: %s", req.Key), http.StatusBadRequest)
@@ -3313,9 +3271,6 @@ func (s *Server) handleSetSetting(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to set setting: %v", err), http.StatusInternalServerError)
 		return
 	}
-
-	// The exe_notify setting is read on each end-of-turn (see
-	// withExeNotifyHook), so no dispatcher reload is needed here.
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -3387,7 +3342,7 @@ func (s *Server) handleRegisterConversationHook(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	manager, err := s.getOrCreateConversationManager(r.Context(), conversationID, r.Header.Get("X-ExeDev-Email"))
+	manager, err := s.getOrCreateConversationManager(r.Context(), conversationID, r.Header.Get("X-User-Email"))
 	if errors.Is(err, errConversationModelMismatch) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

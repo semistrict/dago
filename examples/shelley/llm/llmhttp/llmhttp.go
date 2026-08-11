@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/version"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/version"
 )
 
 // contextKey is the type for context keys in this package.
@@ -23,22 +23,16 @@ type contextKey int
 
 const (
 	conversationIDKey contextKey = iota
-	modelIDKey
-	providerKey
 	requestTraceKey
 	purposeKey
 	usageCollectorKey
 )
 
 // shelleyRequestIDHeader is the header Shelley sets on every LLM request with a
-// locally-generated id. It flows through the exe.dev gateway into the access
-// logs, so a user-reported id can be correlated with the server-side trace_id.
+// locally-generated id so a user-reported request can be correlated with
+// provider logs.
 const shelleyRequestIDHeader = "Shelley-Request-Id"
 
-// upstreamRequestIDHeaders are response headers, in priority order, that
-// providers use to expose their own request/correlation id. The exe.dev
-// gateway strips account-identifying headers (Cf-Ray, rate limits, org) but
-// forwards these request ids, so Shelley can surface them.
 var upstreamRequestIDHeaders = []string{
 	"X-Request-Id",
 	"Request-Id",
@@ -54,20 +48,6 @@ type RequestTrace struct {
 	mu               sync.Mutex
 	shelleyRequestID string
 	upstreamID       string
-}
-
-// ShelleyRequestID returns the Shelley-generated request id, if assigned.
-func (t *RequestTrace) ShelleyRequestID() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.shelleyRequestID
-}
-
-// UpstreamRequestID returns the provider's request id, if one was seen.
-func (t *RequestTrace) UpstreamRequestID() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.upstreamID
 }
 
 // String renders the available ids compactly for inclusion in error messages
@@ -208,32 +188,6 @@ func (a *UsageAccumulator) Take() []llm.PurposedUsage {
 	entries := a.entries
 	a.entries = nil
 	return entries
-}
-
-// WithModelID returns a context with the model ID attached.
-func WithModelID(ctx context.Context, modelID string) context.Context {
-	return context.WithValue(ctx, modelIDKey, modelID)
-}
-
-// ModelIDFromContext returns the model ID from the context, if any.
-func ModelIDFromContext(ctx context.Context) string {
-	if v := ctx.Value(modelIDKey); v != nil {
-		return v.(string)
-	}
-	return ""
-}
-
-// WithProvider returns a context with the provider name attached.
-func WithProvider(ctx context.Context, provider string) context.Context {
-	return context.WithValue(ctx, providerKey, provider)
-}
-
-// ProviderFromContext returns the provider name from the context, if any.
-func ProviderFromContext(ctx context.Context) string {
-	if v := ctx.Value(providerKey); v != nil {
-		return v.(string)
-	}
-	return ""
 }
 
 // ErrIdleTimeout is returned (wrapped) when a response stream makes no

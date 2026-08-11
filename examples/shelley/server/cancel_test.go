@@ -13,21 +13,21 @@ import (
 	"testing"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 // setupTestDB creates a test database
 func setupTestDB(t *testing.T) (*db.DB, func()) {
 	t.Helper()
-	return db.NewTestDB(t)
+	return newTestDatabase(t)
 }
 
 // waitFor polls a condition until it returns true or the timeout is reached.
@@ -388,10 +388,10 @@ func TestCancelDuringTextGeneration(t *testing.T) {
 
 // testLLMManager is a simple test implementation of LLMProvider
 type testLLMManager struct {
-	service dmodel.Chat
+	service damodel.Chat
 }
 
-func (m *testLLMManager) GetChat(string) (dmodel.Chat, error) {
+func (m *testLLMManager) GetChat(string) (damodel.Chat, error) {
 	return m.service, nil
 }
 
@@ -413,22 +413,22 @@ func (m *testLLMManager) RefreshCustomModels() error {
 
 // switchableTestLLM wraps a native chat model and can be toggled to return errors.
 type switchableTestLLM struct {
-	inner dmodel.Chat
+	inner damodel.Chat
 	mu    sync.Mutex
 	err   error
 }
 
-func (s *switchableTestLLM) Profile() dmodel.Profile { return s.inner.Profile() }
-func (s *switchableTestLLM) Invoke(ctx context.Context, req dmodel.Request) (dmodel.Response, error) {
+func (s *switchableTestLLM) Profile() damodel.Profile { return s.inner.Profile() }
+func (s *switchableTestLLM) Invoke(ctx context.Context, req damodel.Request) (damodel.Response, error) {
 	s.mu.Lock()
 	err := s.err
 	s.mu.Unlock()
 	if err != nil {
-		return dmodel.Response{}, err
+		return damodel.Response{}, err
 	}
 	return s.inner.Invoke(ctx, req)
 }
-func (s *switchableTestLLM) Stream(ctx context.Context, req dmodel.Request) (dmodel.Stream, error) {
+func (s *switchableTestLLM) Stream(ctx context.Context, req damodel.Request) (damodel.Stream, error) {
 	s.mu.Lock()
 	err := s.err
 	s.mu.Unlock()

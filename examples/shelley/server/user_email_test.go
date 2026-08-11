@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
 )
 
 // findUserMessage returns the first user-type message in the conversation, or
@@ -33,7 +33,7 @@ func findUserMessage(t *testing.T, database *db.DB, conversationID string) *gene
 	return nil
 }
 
-// TestChatStampsUserEmail verifies the X-ExeDev-Email header is persisted onto
+// TestChatStampsUserEmail verifies the X-User-Email header is persisted onto
 // the user message row via the messages.user_email column on the immediate-send
 // path.
 func TestChatStampsUserEmail(t *testing.T) {
@@ -49,7 +49,7 @@ func TestChatStampsUserEmail(t *testing.T) {
 	body, _ := json.Marshal(ChatRequest{Message: "echo: hi", Model: "predictable"})
 	req := httptest.NewRequest("POST", "/api/conversation/"+conversationID+"/chat", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-ExeDev-Email", "alice@example.com")
+	req.Header.Set("X-User-Email", "alice@example.com")
 	w := httptest.NewRecorder()
 
 	server.handleChatConversation(w, req, conversationID)
@@ -67,7 +67,7 @@ func TestChatStampsUserEmail(t *testing.T) {
 }
 
 // TestChatWithoutEmailHeaderStoresNull verifies that a request lacking the
-// X-ExeDev-Email header stores NULL (nil) in user_email rather than an empty
+// X-User-Email header stores NULL (nil) in user_email rather than an empty
 // string.
 func TestChatWithoutEmailHeaderStoresNull(t *testing.T) {
 	t.Parallel()
@@ -97,7 +97,7 @@ func TestChatWithoutEmailHeaderStoresNull(t *testing.T) {
 	}
 }
 
-// TestQueuedChatStampsUserEmail verifies the X-ExeDev-Email header captured at
+// TestQueuedChatStampsUserEmail verifies the X-User-Email header captured at
 // queue time survives onto the user row when the queued message drains. The
 // drain runs on a background context (no request/header available), so the
 // email must be carried in the persisted QueuedMessage entry.
@@ -115,7 +115,7 @@ func TestQueuedChatStampsUserEmail(t *testing.T) {
 	body1, _ := json.Marshal(ChatRequest{Message: "delay: 2", Model: "predictable"})
 	req1 := httptest.NewRequest("POST", "/api/conversation/"+conversationID+"/chat", strings.NewReader(string(body1)))
 	req1.Header.Set("Content-Type", "application/json")
-	req1.Header.Set("X-ExeDev-Email", "alice@example.com")
+	req1.Header.Set("X-User-Email", "alice@example.com")
 	w1 := httptest.NewRecorder()
 	server.handleChatConversation(w1, req1, conversationID)
 	if w1.Code != http.StatusAccepted {
@@ -131,7 +131,7 @@ func TestQueuedChatStampsUserEmail(t *testing.T) {
 	body2, _ := json.Marshal(ChatRequest{Message: "echo: queued", Model: "predictable", Queue: true})
 	req2 := httptest.NewRequest("POST", "/api/conversation/"+conversationID+"/chat", strings.NewReader(string(body2)))
 	req2.Header.Set("Content-Type", "application/json")
-	req2.Header.Set("X-ExeDev-Email", "bob@example.com")
+	req2.Header.Set("X-User-Email", "bob@example.com")
 	w2 := httptest.NewRecorder()
 	server.handleChatConversation(w2, req2, conversationID)
 	if w2.Code != http.StatusAccepted {

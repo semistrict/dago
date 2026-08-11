@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 // BenchmarkAgentE2E measures the complete agent request path while replacing
@@ -216,7 +216,7 @@ func newSeededHistoryBenchmarkFixture(b *testing.B, priorTurns int) *agentBenchm
 func newAgentBenchmarkFixture(b *testing.B, workspace string, gated bool) *agentBenchmarkFixture {
 	b.Helper()
 	dbTB := &agentBenchmarkTB{b: b}
-	database, databaseClose := db.NewTestDB(dbTB)
+	database, databaseClose := newTestDatabase(dbTB)
 	hooksDir, err := os.MkdirTemp("", "shelley-agent-benchmark-hooks-")
 	if err != nil {
 		b.Fatal(err)
@@ -347,14 +347,14 @@ func newAgentBenchmarkModel(workspace string, gated bool) *agentBenchmarkModel {
 	return model
 }
 
-func (model *agentBenchmarkModel) Profile() dmodel.Profile {
-	return dmodel.Profile{
+func (model *agentBenchmarkModel) Profile() damodel.Profile {
+	return damodel.Profile{
 		Provider: "benchmark", Model: "benchmark", ContextWindow: 200000,
 		MaxOutputTokens: 8192, ToolCalling: true, SupportsSeparateSystemMessage: true,
 	}
 }
 
-func (model *agentBenchmarkModel) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
+func (model *agentBenchmarkModel) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
 	model.calls.Add(1)
 	model.gateMu.Lock()
 	gate := model.gate
@@ -363,31 +363,31 @@ func (model *agentBenchmarkModel) Invoke(ctx context.Context, request dmodel.Req
 		select {
 		case <-gate:
 		case <-ctx.Done():
-			return dmodel.Response{}, ctx.Err()
+			return damodel.Response{}, ctx.Err()
 		}
 	}
 
 	if len(request.Messages) > 0 && request.Messages[len(request.Messages)-1].Role == dmessage.RoleTool {
-		return dmodel.Response{Message: dmessage.Assistant("filesystem complete")}, nil
+		return damodel.Response{Message: dmessage.Assistant("filesystem complete")}, nil
 	}
 	if agentBenchmarkLastHumanText(request) == "benchmark filesystem" {
 		arguments, _ := json.Marshal(map[string]any{"path": model.workspace})
-		return dmodel.Response{Message: dmessage.Message{
+		return damodel.Response{Message: dmessage.Message{
 			Role: dmessage.RoleAssistant,
 			ToolCalls: []dmessage.ToolCall{{
 				ID: "benchmark-ls", Name: "ls", Arguments: arguments,
 			}},
 		}}, nil
 	}
-	return dmodel.Response{Message: dmessage.Assistant("benchmark complete")}, nil
+	return damodel.Response{Message: dmessage.Assistant("benchmark complete")}, nil
 }
 
-func (model *agentBenchmarkModel) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
+func (model *agentBenchmarkModel) Stream(ctx context.Context, request damodel.Request) (damodel.Stream, error) {
 	response, err := model.Invoke(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	return &agentBenchmarkStream{chunk: dmodel.Chunk{MessageDelta: response.Message, Done: true}}, nil
+	return &agentBenchmarkStream{chunk: damodel.Chunk{MessageDelta: response.Message, Done: true}}, nil
 }
 
 func (model *agentBenchmarkModel) release() {
@@ -406,7 +406,7 @@ func (model *agentBenchmarkModel) disableGate() {
 	model.gateMu.Unlock()
 }
 
-func agentBenchmarkRequestHasSystem(request dmodel.Request) bool {
+func agentBenchmarkRequestHasSystem(request damodel.Request) bool {
 	if request.SystemMessage != nil && request.SystemMessage.Role == dmessage.RoleSystem {
 		return true
 	}
@@ -418,7 +418,7 @@ func agentBenchmarkRequestHasSystem(request dmodel.Request) bool {
 	return false
 }
 
-func agentBenchmarkLastHumanText(request dmodel.Request) string {
+func agentBenchmarkLastHumanText(request damodel.Request) string {
 	for index := len(request.Messages) - 1; index >= 0; index-- {
 		if request.Messages[index].Role == dmessage.RoleHuman {
 			return request.Messages[index].TextContent()
@@ -428,13 +428,13 @@ func agentBenchmarkLastHumanText(request dmodel.Request) string {
 }
 
 type agentBenchmarkStream struct {
-	chunk dmodel.Chunk
+	chunk damodel.Chunk
 	done  bool
 }
 
-func (stream *agentBenchmarkStream) Next(context.Context) (dmodel.Chunk, error) {
+func (stream *agentBenchmarkStream) Next(context.Context) (damodel.Chunk, error) {
 	if stream.done {
-		return dmodel.Chunk{}, io.EOF
+		return damodel.Chunk{}, io.EOF
 	}
 	stream.done = true
 	return stream.chunk, nil
@@ -442,9 +442,9 @@ func (stream *agentBenchmarkStream) Next(context.Context) (dmodel.Chunk, error) 
 
 func (*agentBenchmarkStream) Close() error { return nil }
 
-type agentBenchmarkLLMManager struct{ model dmodel.Chat }
+type agentBenchmarkLLMManager struct{ model damodel.Chat }
 
-func (manager *agentBenchmarkLLMManager) GetChat(string) (dmodel.Chat, error) {
+func (manager *agentBenchmarkLLMManager) GetChat(string) (damodel.Chat, error) {
 	return manager.model, nil
 }
 func (*agentBenchmarkLLMManager) GetAvailableModels() []string { return []string{"benchmark"} }

@@ -1,14 +1,15 @@
 # Architecture and public API policy
 
-Dago is a focused Deep Agents implementation, not a general port of LangChain or
+dago is a focused Deep Agents implementation, not a general port of LangChain or
 LangGraph. The dependency direction is:
 
-`message/model/tool/state` → `store/cache/checkpoint` → internal graph → generic
-agent → deep middleware and backends → provider and remote adapters → examples.
+`damessage/damodel/datool/dastate` → `dastore/dacache/dacheckpoint` → internal graph
+→ generic agent → deep middleware and backends → provider and remote adapters →
+examples.
 
 Core contracts contain no provider SDK types. Database drivers live in concrete
 subpackages. The graph runtime remains internal until it has a separately reviewed
-public use case; public consumers use `agent.Agent` or `dago.DeepAgent`.
+public use case; public consumers use `dagent.Agent` or `dago.DeepAgent`.
 
 Public additions require intended-behavior tests, cancellation semantics for any
 blocking operation, a stable JSON representation for persisted or streamed data,

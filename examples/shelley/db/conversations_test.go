@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db/generated"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
 )
 
 func TestConversationService_Create(t *testing.T) {
@@ -1095,7 +1095,7 @@ func TestPromoteDraftAtomicOverrides(t *testing.T) {
 }
 
 // TestListConversationsParticipants verifies that the conversation list
-// queries collect the distinct exe.dev authors of each conversation's
+// queries collect the distinct authenticated users of each conversation's
 // messages, sorted and de-duplicated, ignoring messages with no author.
 func TestListConversationsParticipants(t *testing.T) {
 	db := setupTestDB(t)

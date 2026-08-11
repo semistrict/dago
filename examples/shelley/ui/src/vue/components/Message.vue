@@ -338,7 +338,7 @@ const isError = computed(() => props.message.type === "error");
 
 // When multiple distinct users have participated in the conversation,
 // ChatInterface provides showUserEmails=true so each human user message is
-// labeled with its author's exe.dev email. Elided otherwise, and for
+// labeled with its author's user email. Elided otherwise, and for
 // distilled/compacted user messages (which render agent-side and aren't a
 // single person's turn).
 const showUserEmails = inject<ComputedRef<boolean>>("showUserEmails");

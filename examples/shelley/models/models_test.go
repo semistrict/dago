@@ -9,16 +9,25 @@ import (
 	"sync"
 	"testing"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
-	"shelley.exe.dev/loop"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/llm/llmhttp"
+	"github.com/semistrict/dago/examples/shelley/loop"
 )
+
+func testIDs() []string {
+	models := All()
+	ids := make([]string, len(models))
+	for i, model := range models {
+		ids[i] = model.ID
+	}
+	return ids
+}
 
 // predictableBuilt returns a Built entry for the predictable test model.
 // Tests that need a manager seeded with at least one model use this.
@@ -106,7 +115,7 @@ func TestDefault(t *testing.T) {
 }
 
 func TestIDs(t *testing.T) {
-	ids := IDs()
+	ids := testIDs()
 	if len(ids) == 0 {
 		t.Fatal("expected at least one model ID")
 	}
@@ -162,7 +171,7 @@ func TestLoggingService(t *testing.T) {
 	logger := slog.Default()
 	loggingModel := &loggingChat{chat: mockModel, logger: logger, modelID: "test-model", provider: ProviderBuiltIn}
 
-	response, err := loggingModel.Invoke(context.Background(), dmodel.Request{Messages: []dmessage.Message{dmessage.Human("Hello")}})
+	response, err := loggingModel.Invoke(context.Background(), damodel.Request{Messages: []dmessage.Message{dmessage.Human("Hello")}})
 	if err != nil || response.Message.TextContent() == "" {
 		t.Fatalf("Invoke: response=%v err=%v", response, err)
 	}
@@ -185,7 +194,7 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 		logger:  slog.Default(),
 		modelID: "test-model",
 	}
-	req := dmodel.Request{Messages: []dmessage.Message{dmessage.Human("hi")}}
+	req := damodel.Request{Messages: []dmessage.Message{dmessage.Human("hi")}}
 	ctxWithCollector := llmhttp.WithUsageCollector(context.Background(), func(purpose string, usage llm.Usage) {
 		got = append(got, collected{purpose, usage})
 	})
@@ -242,7 +251,7 @@ type mockChat struct {
 	defaultReasoning   string
 }
 
-func (m *mockChat) Invoke(_ context.Context, request dmodel.Request) (dmodel.Response, error) {
+func (m *mockChat) Invoke(_ context.Context, request damodel.Request) (damodel.Response, error) {
 	if request.Reasoning != nil {
 		m.gotReasoning = request.Reasoning.Effort
 	}
@@ -250,14 +259,14 @@ func (m *mockChat) Invoke(_ context.Context, request dmodel.Request) (dmodel.Res
 	if !m.zeroUsage {
 		message.Usage = &dmessage.Usage{InputTokens: 10, OutputTokens: 5, CostUSD: 0.001}
 	}
-	return dmodel.Response{Message: message}, nil
+	return damodel.Response{Message: message}, nil
 }
 
-func (m *mockChat) Stream(context.Context, dmodel.Request) (dmodel.Stream, error) {
-	return dmodel.EmptyStream{}, nil
+func (m *mockChat) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
+	return damodel.EmptyStream{}, nil
 }
 
-func (m *mockChat) Profile() dmodel.Profile {
+func (m *mockChat) Profile() damodel.Profile {
 	contextWindow := m.tokenContextWindow
 	if contextWindow == 0 {
 		contextWindow = 4096
@@ -266,7 +275,7 @@ func (m *mockChat) Profile() dmodel.Profile {
 	if imageDimension == 0 {
 		imageDimension = 2048
 	}
-	return dmodel.Profile{ContextWindow: contextWindow, MaxImageDimension: imageDimension, MaxImageBytes: 5 * 1024 * 1024, SupportsImages: true, UseSimplifiedPatch: m.useSimplifiedPatch, SupportsReasoning: true, DefaultReasoningLevel: m.defaultReasoning}
+	return damodel.Profile{ContextWindow: contextWindow, MaxImageDimension: imageDimension, MaxImageBytes: 5 * 1024 * 1024, SupportsImages: true, UseSimplifiedPatch: m.useSimplifiedPatch, SupportsReasoning: true, DefaultReasoningLevel: m.defaultReasoning}
 }
 
 func (m *mockChat) TokenContextWindow() int {
@@ -476,7 +485,7 @@ func TestReasoningServiceMapping(t *testing.T) {
 	if !reflect.DeepEqual(levels, []string{"off", "minimal", "medium"}) {
 		t.Fatalf("levels = %v", levels)
 	}
-	if _, err := svc.Invoke(context.Background(), dmodel.Request{Reasoning: &dmodel.Reasoning{Effort: "minimal"}}); err != nil {
+	if _, err := svc.Invoke(context.Background(), damodel.Request{Reasoning: &damodel.Reasoning{Effort: "minimal"}}); err != nil {
 		t.Fatal(err)
 	}
 	if inner.gotReasoning != "low" {
@@ -490,7 +499,7 @@ func TestReasoningServiceDisabled(t *testing.T) {
 	if svc.Profile().SupportsReasoning {
 		t.Fatal("disabled service reports reasoning support")
 	}
-	if _, err := svc.Invoke(context.Background(), dmodel.Request{Reasoning: &dmodel.Reasoning{Effort: "high"}}); err != nil {
+	if _, err := svc.Invoke(context.Background(), damodel.Request{Reasoning: &damodel.Reasoning{Effort: "high"}}); err != nil {
 		t.Fatal(err)
 	}
 	if inner.gotReasoning != "" {
@@ -500,7 +509,7 @@ func TestReasoningServiceDisabled(t *testing.T) {
 
 func TestReasoningServiceRejectsUnsupportedLevel(t *testing.T) {
 	svc := WrapReasoningConfig(&mockChat{}, "", "unknown", "yes", `{"low":"low"}`)
-	_, err := svc.Invoke(context.Background(), dmodel.Request{Reasoning: &dmodel.Reasoning{Effort: "high"}})
+	_, err := svc.Invoke(context.Background(), damodel.Request{Reasoning: &damodel.Reasoning{Effort: "high"}})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("error = %v, want unsupported-level error", err)
 	}
@@ -512,7 +521,7 @@ func TestReasoningServiceMapsServiceDefault(t *testing.T) {
 	if got := svc.Profile().DefaultReasoningLevel; got != "low" {
 		t.Fatalf("default = %q, want low", got)
 	}
-	if _, err := svc.Invoke(context.Background(), dmodel.Request{}); err != nil {
+	if _, err := svc.Invoke(context.Background(), damodel.Request{}); err != nil {
 		t.Fatal(err)
 	}
 	if inner.gotReasoning != "low" {

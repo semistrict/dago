@@ -133,7 +133,7 @@ func TestLookupCost(t *testing.T) {
 	}{
 		// OpenAI snapshot names carry a date suffix that models.dev omits and
 		// resolve even when a Responses-compatible gateway host is unknown.
-		{"openai dated", "https://llm.int.exe.xyz/v1/responses", "gpt-5.5-2026-04-23", true, 5, 30},
+		{"openai dated", "https://api.example.test/v1/responses", "gpt-5.5-2026-04-23", true, 5, 30},
 		{"openai undated", "", "gpt-5.3-codex", true, 1.75, 14},
 		{"vendor without endpoint", "", "accounts/fireworks/models/kimi-k2p6", false, 0, 0},
 		{"unknown model", "", "predictable-v1", false, 0, 0},

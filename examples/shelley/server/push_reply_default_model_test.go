@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 // chatPost sends a /chat for conversationID and returns the recorder.

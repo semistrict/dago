@@ -8,10 +8,10 @@ import (
 	"os"
 
 	"github.com/semistrict/dago"
-	"github.com/semistrict/dago/agent"
-	"github.com/semistrict/dago/backend"
-	"github.com/semistrict/dago/message"
-	"github.com/semistrict/dago/providers/openai"
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/daproviders/openai"
 )
 
 func main() {
@@ -24,7 +24,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	workspace, err := backend.NewFilesystem(backend.FilesystemOptions{Root: "."})
+	workspace, err := dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: "."})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -32,8 +32,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	stream := compiled.Stream(context.Background(), agent.Input{
-		Messages: []message.Message{message.Human("Summarize this workspace.")},
+	stream := compiled.Stream(context.Background(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("Summarize this workspace.")},
 	}, 32)
 	defer stream.Close()
 	for {
@@ -44,7 +44,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if event.Mode == agent.EventToken && event.Chunk != nil {
+		if event.Mode == dagent.EventToken && event.Chunk != nil {
 			fmt.Print(event.Chunk.MessageDelta.TextContent())
 		}
 	}

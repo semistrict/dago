@@ -12,23 +12,23 @@ import (
 	"testing"
 	"time"
 
-	dmodel "github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 // twoModelLLMManager exposes two ready models ("model-a" and "model-b"), both
 // backed by the same PredictableService, so /model switching can be exercised
 // end-to-end without real providers.
 type twoModelLLMManager struct {
-	chat dmodel.Chat
+	chat damodel.Chat
 }
 
-func (m *twoModelLLMManager) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *twoModelLLMManager) GetChat(modelID string) (damodel.Chat, error) {
 	if modelID == "model-a" || modelID == "model-b" {
 		return m.chat, nil
 	}
@@ -56,10 +56,10 @@ func (m *twoModelLLMManager) RefreshCustomModels() error { return nil }
 // levelNamedModelLLMManager exposes a model literally named "high" (colliding
 // with a reasoning level) so the ambiguity-rejection path can be exercised.
 type levelNamedModelLLMManager struct {
-	chat dmodel.Chat
+	chat damodel.Chat
 }
 
-func (m *levelNamedModelLLMManager) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *levelNamedModelLLMManager) GetChat(modelID string) (damodel.Chat, error) {
 	if modelID == "model-a" || modelID == "high" {
 		return m.chat, nil
 	}
@@ -952,11 +952,11 @@ func TestChatMessageHookReceivesConversationReasoningLevel(t *testing.T) {
 }
 
 type defaultReasoningChat struct {
-	dmodel.Chat
+	damodel.Chat
 	level string
 }
 
-func (s defaultReasoningChat) Profile() dmodel.Profile {
+func (s defaultReasoningChat) Profile() damodel.Profile {
 	profile := s.Chat.Profile()
 	profile.DefaultReasoningLevel = s.level
 	return profile

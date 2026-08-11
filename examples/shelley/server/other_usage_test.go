@@ -12,11 +12,11 @@ import (
 	"testing/synctest"
 	"time"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/models"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/models"
 )
 
 func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
@@ -41,7 +41,7 @@ func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
 			"input_tokens": 1_000_000, "output_tokens": 1_000_000, "cost_usd": 1.25,
 		},
 		ModelName: "gpt-5.5",
-		LLMAPIURL: "https://llm.int.exe.xyz/v1/responses",
+		LLMAPIURL: "https://api.example.test/v1/responses",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
 		LLMData:        llm.Message{Role: llm.MessageRoleUser},
 		OtherUsageData: []llm.PurposedUsage{{
 			Purpose: "keyword_search",
-			Usage:   llm.Usage{InputTokens: 1_000_000, CostUSD: 0.75, Model: "gpt-5.5", URL: "https://llm.int.exe.xyz/v1/responses"},
+			Usage:   llm.Usage{InputTokens: 1_000_000, CostUSD: 0.75, Model: "gpt-5.5", URL: "https://api.example.test/v1/responses"},
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
 		LLMData:        llm.Message{Role: llm.MessageRoleUser},
 		OtherUsageData: []llm.PurposedUsage{{
 			Purpose: "compaction",
-			Usage:   llm.Usage{InputTokens: 999, CostUSD: 9, Model: "gpt-5.5", URL: "https://llm.int.exe.xyz/v1/responses"},
+			Usage:   llm.Usage{InputTokens: 999, CostUSD: 9, Model: "gpt-5.5", URL: "https://api.example.test/v1/responses"},
 		}},
 	}); err != nil {
 		t.Fatal(err)

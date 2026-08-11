@@ -9,17 +9,17 @@ import (
 	"testing"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
+	dmessage "github.com/semistrict/dago/damessage"
 
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/loop"
 )
 
 // nativeCancellationHarness exercises the same HTTP, database projection, and
 // conversation-manager path as the application while using Shelley's native
-// deterministic Dago model.
+// deterministic dago model.
 type nativeCancellationHarness struct {
 	t      *testing.T
 	server *Server

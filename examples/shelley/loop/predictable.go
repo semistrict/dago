@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	dmodel "github.com/semistrict/dago/model"
+	"github.com/semistrict/dago/damodel"
 )
 
 // Constants for the inline-image fixture. The model first writes a small PNG
@@ -28,12 +28,12 @@ const (
 	screenshotImageSentinel = "SHELLEY_SCREENSHOT_IMAGE_DEMO"
 )
 
-// PredictableService is a native Dago chat model used by Shelley's tests and
+// PredictableService is a native dago chat model used by Shelley's tests and
 // demos. Its supported prompts are implemented in invokeNative.
 type PredictableService struct {
 	tokenContextWindow int
 	mu                 sync.Mutex
-	recentRequests     []dmodel.Request
+	recentRequests     []damodel.Request
 	responseDelay      time.Duration
 }
 
@@ -48,8 +48,8 @@ func NewPredictableService() *PredictableService {
 	return service
 }
 
-func (service *PredictableService) Profile() dmodel.Profile {
-	return dmodel.Profile{
+func (service *PredictableService) Profile() damodel.Profile {
+	return damodel.Profile{
 		Provider: "builtin", Model: "predictable-v1", ContextWindow: service.tokenContextWindow,
 		MaxOutputTokens: 8192, ToolCalling: true, ParallelToolCalls: false,
 		SupportsReasoning: true,
@@ -57,16 +57,16 @@ func (service *PredictableService) Profile() dmodel.Profile {
 	}
 }
 
-func (service *PredictableService) Invoke(ctx context.Context, request dmodel.Request) (dmodel.Response, error) {
+func (service *PredictableService) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
 	return service.invokeNative(ctx, request)
 }
 
-func (service *PredictableService) Stream(ctx context.Context, request dmodel.Request) (dmodel.Stream, error) {
+func (service *PredictableService) Stream(ctx context.Context, request damodel.Request) (damodel.Stream, error) {
 	response, err := service.Invoke(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	return &predictableStream{chunk: dmodel.Chunk{
+	return &predictableStream{chunk: damodel.Chunk{
 		MessageDelta: response.Message,
 		Structured:   response.Structured,
 		Done:         true,
@@ -74,16 +74,16 @@ func (service *PredictableService) Stream(ctx context.Context, request dmodel.Re
 }
 
 type predictableStream struct {
-	chunk dmodel.Chunk
+	chunk damodel.Chunk
 	done  bool
 }
 
-func (stream *predictableStream) Next(ctx context.Context) (dmodel.Chunk, error) {
+func (stream *predictableStream) Next(ctx context.Context) (damodel.Chunk, error) {
 	if err := ctx.Err(); err != nil {
-		return dmodel.Chunk{}, err
+		return damodel.Chunk{}, err
 	}
 	if stream.done {
-		return dmodel.Chunk{}, io.EOF
+		return damodel.Chunk{}, io.EOF
 	}
 	stream.done = true
 	return stream.chunk, nil
@@ -92,14 +92,14 @@ func (stream *predictableStream) Next(ctx context.Context) (dmodel.Chunk, error)
 func (*predictableStream) Close() error { return nil }
 
 // GetRecentRequests returns a snapshot of the most recent native requests.
-func (service *PredictableService) GetRecentRequests() []dmodel.Request {
+func (service *PredictableService) GetRecentRequests() []damodel.Request {
 	service.mu.Lock()
 	defer service.mu.Unlock()
-	return append([]dmodel.Request(nil), service.recentRequests...)
+	return append([]damodel.Request(nil), service.recentRequests...)
 }
 
 // GetLastRequest returns the most recent native request, or nil if none exists.
-func (service *PredictableService) GetLastRequest() *dmodel.Request {
+func (service *PredictableService) GetLastRequest() *damodel.Request {
 	service.mu.Lock()
 	defer service.mu.Unlock()
 	if len(service.recentRequests) == 0 {

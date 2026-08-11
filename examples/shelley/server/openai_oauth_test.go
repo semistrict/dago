@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	dopenai "github.com/semistrict/dago/providers/openai"
+	dopenai "github.com/semistrict/dago/daproviders/openai"
 )
 
 type staticOAuthCredentials struct{}
@@ -46,7 +46,7 @@ func TestOpenAIOAuthLoadsPersistedSessionAndBuildsLuna(t *testing.T) {
 	}
 	profile := built[0].Chat.Profile()
 	if profile.Model != OpenAISubscriptionModelID || profile.Provider != "openai" || !profile.ToolCalling {
-		t.Fatalf("Dago profile = %#v", profile)
+		t.Fatalf("dago profile = %#v", profile)
 	}
 	if !profile.SupportsImages || !profile.SupportsReasoning || profile.ContextWindow <= 0 {
 		t.Fatalf("chat capabilities = %#v", profile)

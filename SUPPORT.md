@@ -2,7 +2,7 @@
 
 ## Go versions
 
-Dago requires Go 1.26 or newer. The normal test suite targets the current Go 1.26
+dago requires Go 1.26 or newer. The normal test suite targets the current Go 1.26
 release on Linux and macOS. Support for another operating system is not claimed until
 its filesystem, process, cancellation, and database conformance suites are running in
 continuous integration.

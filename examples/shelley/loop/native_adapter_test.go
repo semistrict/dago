@@ -4,16 +4,16 @@ import (
 	"encoding/json"
 	"testing"
 
-	"shelley.exe.dev/llm"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
-func TestMessagesToDagoOmitsRedundantShelleyEnvelope(t *testing.T) {
+func TestMessagesToNativeOmitsRedundantShelleyEnvelope(t *testing.T) {
 	for _, original := range []llm.Message{
 		{Role: llm.MessageRoleUser, Content: llm.TextContent("request")},
 		{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "database request", ToolInput: json.RawMessage("null")}}},
 		{Role: llm.MessageRoleAssistant, Content: llm.TextContent("response"), EndOfTurn: true},
 	} {
-		native, err := messagesToDago([]llm.Message{original})
+		native, err := messagesToNative([]llm.Message{original})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -23,7 +23,7 @@ func TestMessagesToDagoOmitsRedundantShelleyEnvelope(t *testing.T) {
 		if raw := native[0].Metadata[shelleyMessageMetadata]; len(raw) != 0 {
 			t.Fatalf("redundant Shelley envelope was retained: %s", raw)
 		}
-		projected, err := messagesFromDago(native)
+		projected, err := messagesFromNative(native)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -38,7 +38,7 @@ func TestMessagesToDagoOmitsRedundantShelleyEnvelope(t *testing.T) {
 	}
 }
 
-func TestMessagesToDagoRetainsLossyShelleyEnvelope(t *testing.T) {
+func TestMessagesToNativeRetainsLossyShelleyEnvelope(t *testing.T) {
 	original := llm.Message{
 		Role: llm.MessageRoleAssistant,
 		Content: []llm.Content{{
@@ -46,14 +46,14 @@ func TestMessagesToDagoRetainsLossyShelleyEnvelope(t *testing.T) {
 		}},
 		EndOfTurn: true,
 	}
-	native, err := messagesToDago([]llm.Message{original})
+	native, err := messagesToNative([]llm.Message{original})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(native) != 1 || len(native[0].Metadata[shelleyMessageMetadata]) == 0 {
 		t.Fatal("lossy message did not retain its Shelley envelope")
 	}
-	projected, err := messagesFromDago(native)
+	projected, err := messagesFromNative(native)
 	if err != nil {
 		t.Fatal(err)
 	}

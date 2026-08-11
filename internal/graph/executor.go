@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/semistrict/dago/checkpoint"
+	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/internal/graph/channel"
-	"github.com/semistrict/dago/state"
 )
 
 func (graph *Compiled) Invoke(ctx context.Context, invocation Invocation) (Execution, error) {
@@ -52,12 +52,12 @@ func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, sessio
 	}
 	if current.CheckpointID == "" {
 		tasks = graph.startTasks()
-		if _, err := machine.apply([]state.Values{invocation.State}); err != nil {
+		if _, err := machine.apply([]dastate.Values{invocation.State}); err != nil {
 			return Execution{}, fmt.Errorf("apply graph input: %w", err)
 		}
-		current, metadata, err = graph.persist(ctx, checkpoint.Config{
+		current, metadata, err = graph.persist(ctx, dacheckpoint.Config{
 			ThreadID: invocation.Config.ThreadID, Namespace: invocation.Config.Namespace,
-		}, checkpoint.Checkpoint{}, machine, tasks, MetadataInput{
+		}, dacheckpoint.Checkpoint{}, machine, tasks, MetadataInput{
 			Source: "input", Step: -1, Updated: keysOf(invocation.State),
 			ForceDeltaSnapshots: true,
 		})
@@ -73,11 +73,11 @@ func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, sessio
 				return Execution{}, err
 			}
 		}
-		overwrites, err := machine.apply([]state.Values{invocation.State})
+		overwrites, err := machine.apply([]dastate.Values{invocation.State})
 		if err != nil {
 			return Execution{}, fmt.Errorf("apply graph input: %w", err)
 		}
-		current, metadata, err = graph.persist(ctx, current, checkpoint.Checkpoint{}, machine, tasks, MetadataInput{
+		current, metadata, err = graph.persist(ctx, current, dacheckpoint.Checkpoint{}, machine, tasks, MetadataInput{
 			Source: "input", Step: metadata.Step + 1, Updated: keysOf(invocation.State),
 			Overwrites: overwrites, PreviousMetadata: metadata,
 		})
@@ -86,8 +86,8 @@ func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, sessio
 		}
 	}
 	if invocation.Resume != nil && graph.options.Saver != nil {
-		if err := graph.options.Saver.PutWrites(ctx, current, "__resume__", "", []checkpoint.ChannelWrite{{
-			Channel: checkpoint.ChannelResume, Value: invocation.Resume,
+		if err := graph.options.Saver.PutWrites(ctx, current, "__resume__", "", []dacheckpoint.ChannelWrite{{
+			Channel: dacheckpoint.ChannelResume, Value: invocation.Resume,
 		}}); err != nil {
 			return Execution{}, err
 		}
@@ -113,7 +113,7 @@ func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, sessio
 
 		interrupts := collectInterrupts(results)
 		if len(interrupts) > 0 {
-			updates := make([]state.Values, len(results))
+			updates := make([]dastate.Values, len(results))
 			for index, result := range results {
 				if result.command.Interrupt == nil || len(result.command.Update) == 0 {
 					continue
@@ -129,7 +129,7 @@ func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, sessio
 			if err != nil {
 				return Execution{}, err
 			}
-			current, metadata, err = graph.persist(ctx, current, checkpoint.Checkpoint{}, machine, tasks, MetadataInput{
+			current, metadata, err = graph.persist(ctx, current, dacheckpoint.Checkpoint{}, machine, tasks, MetadataInput{
 				Source: "loop", Step: metadata.Step + 1, Interrupts: interrupts,
 				Updated: updatedKeys(updates), Overwrites: overwrites, PreviousMetadata: metadata,
 			})
@@ -155,7 +155,7 @@ func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, sessio
 			}, nil
 		}
 
-		updates := make([]state.Values, len(results))
+		updates := make([]dastate.Values, len(results))
 		if graph.options.Saver != nil {
 			for index, result := range results {
 				updates[index] = result.command.Update
@@ -183,7 +183,7 @@ func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, sessio
 			return Execution{}, err
 		}
 		updated := updatedKeys(updates)
-		current, metadata, err = graph.persist(ctx, current, checkpoint.Checkpoint{}, machine, next, MetadataInput{
+		current, metadata, err = graph.persist(ctx, current, dacheckpoint.Checkpoint{}, machine, next, MetadataInput{
 			Source: "loop", Step: metadata.Step + 1, Updated: updated,
 			Overwrites: overwrites, PreviousMetadata: metadata,
 		})
@@ -223,7 +223,7 @@ func (graph *Compiled) restoreRetained(
 	ctx context.Context,
 	invocation Invocation,
 	session *threadSession,
-) (*stateMachine, checkpoint.Config, []task, checkpoint.Metadata, error) {
+) (*stateMachine, dacheckpoint.Config, []task, dacheckpoint.Metadata, error) {
 	if session != nil && session.valid {
 		return session.machine, session.config, session.tasks, session.metadata, nil
 	}
@@ -247,10 +247,10 @@ func (graph *Compiled) Cancel(ctx context.Context, invocation Invocation) (Execu
 	if err != nil {
 		return Execution{}, err
 	}
-	if _, err := machine.apply([]state.Values{invocation.State}); err != nil {
+	if _, err := machine.apply([]dastate.Values{invocation.State}); err != nil {
 		return Execution{}, fmt.Errorf("apply graph cancellation: %w", err)
 	}
-	previous := checkpoint.Checkpoint{}
+	previous := dacheckpoint.Checkpoint{}
 	if current.CheckpointID != "" && graph.options.Saver != nil {
 		tuple, err := graph.options.Saver.GetTuple(ctx, current)
 		if err != nil {
@@ -262,7 +262,7 @@ func (graph *Compiled) Cancel(ctx context.Context, invocation Invocation) (Execu
 	}
 	parent := current
 	if parent.ThreadID == "" {
-		parent = checkpoint.Config{ThreadID: invocation.Config.ThreadID, Namespace: invocation.Config.Namespace}
+		parent = dacheckpoint.Config{ThreadID: invocation.Config.ThreadID, Namespace: invocation.Config.Namespace}
 	}
 	step := metadata.Step + 1
 	if current.CheckpointID == "" {
@@ -282,18 +282,18 @@ func (graph *Compiled) Cancel(ctx context.Context, invocation Invocation) (Execu
 func (graph *Compiled) restore(
 	ctx context.Context,
 	invocation Invocation,
-) (*stateMachine, checkpoint.Config, []task, checkpoint.Metadata, error) {
+) (*stateMachine, dacheckpoint.Config, []task, dacheckpoint.Metadata, error) {
 	if graph.options.Saver == nil {
 		machine, err := newStateMachine(graph.schema, nil, nil)
-		return machine, checkpoint.Config{}, nil, checkpoint.Metadata{Step: -1}, err
+		return machine, dacheckpoint.Config{}, nil, dacheckpoint.Metadata{Step: -1}, err
 	}
 	tuple, err := graph.options.Saver.GetTuple(ctx, invocation.Config)
 	if err != nil {
-		return nil, checkpoint.Config{}, nil, checkpoint.Metadata{}, err
+		return nil, dacheckpoint.Config{}, nil, dacheckpoint.Metadata{}, err
 	}
 	if tuple == nil {
 		machine, err := newStateMachine(graph.schema, nil, nil)
-		return machine, checkpoint.Config{}, nil, checkpoint.Metadata{Step: -1}, err
+		return machine, dacheckpoint.Config{}, nil, dacheckpoint.Metadata{Step: -1}, err
 	}
 	deltaNames := make([]string, 0)
 	for key, field := range graph.schema.Fields {
@@ -304,13 +304,13 @@ func (graph *Compiled) restore(
 	sort.Strings(deltaNames)
 	histories, err := graph.options.Saver.GetDeltaChannelHistory(ctx, tuple.Config, deltaNames)
 	if err != nil {
-		return nil, checkpoint.Config{}, nil, checkpoint.Metadata{}, err
+		return nil, dacheckpoint.Config{}, nil, dacheckpoint.Metadata{}, err
 	}
 	storedState := make(map[string]any, len(tuple.Checkpoint.ChannelValues))
 	for key, value := range tuple.Checkpoint.ChannelValues {
 		switch key {
-		case checkpoint.ChannelTasks, checkpoint.ChannelInterrupt, checkpoint.ChannelResume,
-			checkpoint.ChannelError, checkpoint.ChannelScheduled:
+		case dacheckpoint.ChannelTasks, dacheckpoint.ChannelInterrupt, dacheckpoint.ChannelResume,
+			dacheckpoint.ChannelError, dacheckpoint.ChannelScheduled:
 			continue
 		default:
 			storedState[key] = value
@@ -318,11 +318,11 @@ func (graph *Compiled) restore(
 	}
 	machine, err := newStateMachine(graph.schema, storedState, histories)
 	if err != nil {
-		return nil, checkpoint.Config{}, nil, checkpoint.Metadata{}, err
+		return nil, dacheckpoint.Config{}, nil, dacheckpoint.Metadata{}, err
 	}
-	tasks, err := decodeTasks(tuple.Checkpoint.ChannelValues[checkpoint.ChannelTasks])
+	tasks, err := decodeTasks(tuple.Checkpoint.ChannelValues[dacheckpoint.ChannelTasks])
 	if err != nil {
-		return nil, checkpoint.Config{}, nil, checkpoint.Metadata{}, err
+		return nil, dacheckpoint.Config{}, nil, dacheckpoint.Metadata{}, err
 	}
 	return machine, tuple.Config, tasks, tuple.Metadata, nil
 }
@@ -334,20 +334,20 @@ type MetadataInput struct {
 	Overwrites          map[string]bool
 	Interrupts          []Interrupt
 	ForceDeltaSnapshots bool
-	PreviousMetadata    checkpoint.Metadata
+	PreviousMetadata    dacheckpoint.Metadata
 }
 
 func (graph *Compiled) persist(
 	ctx context.Context,
-	parent checkpoint.Config,
-	previous checkpoint.Checkpoint,
+	parent dacheckpoint.Config,
+	previous dacheckpoint.Checkpoint,
 	machine *stateMachine,
 	tasks []task,
 	input MetadataInput,
-) (checkpoint.Config, checkpoint.Metadata, error) {
-	metadata := checkpoint.Metadata{
+) (dacheckpoint.Config, dacheckpoint.Metadata, error) {
+	metadata := dacheckpoint.Metadata{
 		Source: input.Source, Step: input.Step,
-		CountersSinceDeltaSnapshot: make(map[string]checkpoint.DeltaCounter),
+		CountersSinceDeltaSnapshot: make(map[string]dacheckpoint.DeltaCounter),
 	}
 	for key, counter := range input.PreviousMetadata.CountersSinceDeltaSnapshot {
 		metadata.CountersSinceDeltaSnapshot[key] = counter
@@ -368,9 +368,9 @@ func (graph *Compiled) persist(
 				Updates: counter.Updates, Supersteps: counter.Supersteps,
 			}).ShouldSnapshot(frequency) {
 			snapshots[key] = true
-			counter = checkpoint.DeltaCounter{}
+			counter = dacheckpoint.DeltaCounter{}
 		}
-		if counter != (checkpoint.DeltaCounter{}) {
+		if counter != (dacheckpoint.DeltaCounter{}) {
 			metadata.CountersSinceDeltaSnapshot[key] = counter
 		} else {
 			delete(metadata.CountersSinceDeltaSnapshot, key)
@@ -378,11 +378,11 @@ func (graph *Compiled) persist(
 	}
 	values, err := machine.checkpointValues(snapshots)
 	if err != nil {
-		return checkpoint.Config{}, checkpoint.Metadata{}, err
+		return dacheckpoint.Config{}, dacheckpoint.Metadata{}, err
 	}
-	values[checkpoint.ChannelTasks] = encodeTasks(tasks)
+	values[dacheckpoint.ChannelTasks] = encodeTasks(tasks)
 	if len(input.Interrupts) > 0 {
-		values[checkpoint.ChannelInterrupt] = encodeInterrupts(input.Interrupts)
+		values[dacheckpoint.ChannelInterrupt] = encodeInterrupts(input.Interrupts)
 	}
 	if graph.options.Saver == nil {
 		return parent, metadata, nil
@@ -391,7 +391,7 @@ func (graph *Compiled) persist(
 	if len(baseVersions) == 0 && parent.CheckpointID != "" {
 		tuple, err := graph.options.Saver.GetTuple(ctx, parent)
 		if err != nil {
-			return checkpoint.Config{}, checkpoint.Metadata{}, err
+			return dacheckpoint.Config{}, dacheckpoint.Metadata{}, err
 		}
 		if tuple != nil {
 			baseVersions = tuple.Checkpoint.ChannelVersions
@@ -407,23 +407,23 @@ func (graph *Compiled) persist(
 			versionKeys = append(versionKeys, key)
 		}
 	}
-	versionKeys = append(versionKeys, checkpoint.ChannelTasks, checkpoint.ChannelInterrupt)
+	versionKeys = append(versionKeys, dacheckpoint.ChannelTasks, dacheckpoint.ChannelInterrupt)
 	versionKeys = uniqueSorted(versionKeys)
 	newVersions := make(map[string]string, len(versionKeys))
 	for _, key := range versionKeys {
 		version, err := graph.options.Saver.NextVersion(versions[key])
 		if err != nil {
-			return checkpoint.Config{}, checkpoint.Metadata{}, err
+			return dacheckpoint.Config{}, dacheckpoint.Metadata{}, err
 		}
 		versions[key] = version
 		newVersions[key] = version
 	}
-	id, err := checkpoint.NewID(input.Step)
+	id, err := dacheckpoint.NewID(input.Step)
 	if err != nil {
-		return checkpoint.Config{}, checkpoint.Metadata{}, err
+		return dacheckpoint.Config{}, dacheckpoint.Metadata{}, err
 	}
-	value := checkpoint.Checkpoint{
-		Version: checkpoint.LatestVersion, ID: id,
+	value := dacheckpoint.Checkpoint{
+		Version: dacheckpoint.LatestVersion, ID: id,
 		Timestamp: checkpointTimestamp(), ChannelValues: values,
 		ChannelVersions: versions, VersionsSeen: map[string]map[string]string{},
 		UpdatedChannels: uniqueSorted(input.Updated),
@@ -502,22 +502,22 @@ func collectInterrupts(results []taskResult) []Interrupt {
 	return result
 }
 
-func stateWrites(values state.Values) []checkpoint.ChannelWrite {
+func stateWrites(values dastate.Values) []dacheckpoint.ChannelWrite {
 	keys := keysOf(values)
-	result := make([]checkpoint.ChannelWrite, 0, len(keys))
+	result := make([]dacheckpoint.ChannelWrite, 0, len(keys))
 	for _, key := range keys {
-		if batch, ok := values[key].(state.Batch); ok {
+		if batch, ok := values[key].(dastate.Batch); ok {
 			for _, value := range batch.Values {
-				result = append(result, checkpoint.ChannelWrite{Channel: key, Value: value})
+				result = append(result, dacheckpoint.ChannelWrite{Channel: key, Value: value})
 			}
 			continue
 		}
-		result = append(result, checkpoint.ChannelWrite{Channel: key, Value: values[key]})
+		result = append(result, dacheckpoint.ChannelWrite{Channel: key, Value: values[key]})
 	}
 	return result
 }
 
-func keysOf(values state.Values) []string {
+func keysOf(values dastate.Values) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -526,7 +526,7 @@ func keysOf(values state.Values) []string {
 	return keys
 }
 
-func updatedKeys(updates []state.Values) []string {
+func updatedKeys(updates []dastate.Values) []string {
 	set := map[string]struct{}{}
 	for _, update := range updates {
 		for key := range update {

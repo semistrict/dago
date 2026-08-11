@@ -17,19 +17,19 @@ import (
 	"testing"
 	"time"
 
-	dmessage "github.com/semistrict/dago/message"
-	dmodel "github.com/semistrict/dago/model"
+	dmessage "github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
 
-	"shelley.exe.dev/claudetool"
-	"shelley.exe.dev/claudetool/browse"
-	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
-	"shelley.exe.dev/models"
-	"shelley.exe.dev/modelsources"
-	"shelley.exe.dev/server"
-	"shelley.exe.dev/slug"
+	"github.com/semistrict/dago/examples/shelley/claudetool"
+	"github.com/semistrict/dago/examples/shelley/claudetool/browse"
+	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
+	"github.com/semistrict/dago/examples/shelley/loop"
+	"github.com/semistrict/dago/examples/shelley/models"
+	"github.com/semistrict/dago/examples/shelley/modelsources"
+	"github.com/semistrict/dago/examples/shelley/server"
+	"github.com/semistrict/dago/examples/shelley/slug"
 )
 
 // newPredictableLLMConfig returns an LLMConfig with only the predictable
@@ -334,7 +334,7 @@ func TestPredictableServiceWithTools(t *testing.T) {
 	service := loop.NewPredictableService()
 
 	// First call should return greeting
-	resp1, err := service.Invoke(context.Background(), dmodel.Request{
+	resp1, err := service.Invoke(context.Background(), damodel.Request{
 		Messages: []dmessage.Message{dmessage.Human("Hello")},
 	})
 	if err != nil {
@@ -346,7 +346,7 @@ func TestPredictableServiceWithTools(t *testing.T) {
 	}
 
 	// Second call should return tool use (bash command)
-	resp2, err := service.Invoke(context.Background(), dmodel.Request{
+	resp2, err := service.Invoke(context.Background(), damodel.Request{
 		Messages: []dmessage.Message{dmessage.Human("bash: echo hello")},
 	})
 	if err != nil {
@@ -757,7 +757,7 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 		// The loop fires both a conversation request (with system prompt)
 		// and a slug-generation request (without). Check all requests
 		// so we find the one with the system prompt regardless of order.
-		var matchedReq *dmodel.Request
+		var matchedReq *damodel.Request
 		for i := 0; i < 500; i++ {
 			for _, req := range predictableService.GetRecentRequests() {
 				if requestHasRole(req, dmessage.RoleSystem) {
@@ -824,7 +824,7 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 		conversationID := createResp.ConversationID
 
 		// Wait for first message to be processed
-		var firstReq *dmodel.Request
+		var firstReq *damodel.Request
 		for i := 0; i < 50; i++ {
 			firstReq = predictableService.GetLastRequest()
 			if firstReq != nil {
@@ -857,7 +857,7 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 
 		// Poll for second message to be processed
 		// We need to wait for a request WITH a system prompt, not just any request
-		var lastReq *dmodel.Request
+		var lastReq *damodel.Request
 		for i := 0; i < 50; i++ {
 			lastReq = predictableService.GetLastRequest()
 			if lastReq != nil && requestHasRole(*lastReq, dmessage.RoleSystem) {
@@ -894,7 +894,7 @@ type inspectableLLMManager struct {
 	logger             *slog.Logger
 }
 
-func requestHasRole(request dmodel.Request, role dmessage.Role) bool {
+func requestHasRole(request damodel.Request, role dmessage.Role) bool {
 	for _, message := range request.Messages {
 		if message.Role == role {
 			return true
@@ -903,7 +903,7 @@ func requestHasRole(request dmodel.Request, role dmessage.Role) bool {
 	return false
 }
 
-func (m *inspectableLLMManager) GetChat(modelID string) (dmodel.Chat, error) {
+func (m *inspectableLLMManager) GetChat(modelID string) (damodel.Chat, error) {
 	if modelID != "predictable" {
 		return nil, fmt.Errorf("unsupported model: %s", modelID)
 	}

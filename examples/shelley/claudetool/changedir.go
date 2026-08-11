@@ -2,15 +2,14 @@ package claudetool
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	dtool "github.com/semistrict/dago/tool"
+	"github.com/semistrict/dago/datool"
 
-	"shelley.exe.dev/gitstate"
+	"github.com/semistrict/dago/examples/shelley/gitstate"
 )
 
 // tildeReplace replaces the home directory prefix with ~ for display.
@@ -41,41 +40,21 @@ Prefer this tool over 'cd <path> && ...' in bash: 'cd' inside a bash
 invocation does not persist, so you'd have to repeat it every call. Call
 change_dir once, then run subsequent commands directly.
 `
-	changeDirInputSchema = `{
-  "type": "object",
-  "required": ["path"],
-  "properties": {
-    "path": {
-      "type": "string",
-      "description": "The directory path to change to (absolute or relative)"
-    }
-  }
-}`
 )
 
 type changeDirInput struct {
-	Path string `json:"path"`
+	Path string `json:"path" description:"The directory path to change to (absolute or relative)" jsonschema:"minLength=1"`
 }
 
-// NativeTool returns the production Dago implementation.
-func (c *ChangeDirTool) NativeTool() dtool.Tool {
-	return dtool.Func{
-		Spec: dtool.Definition{
-			Name: changeDirName, Description: changeDirDescription,
-			InputSchema: json.RawMessage(changeDirInputSchema),
-		},
-		Run: func(ctx context.Context, raw json.RawMessage, _ dtool.Runtime) (dtool.Result, error) {
-			var input changeDirInput
-			if err := json.Unmarshal(raw, &input); err != nil {
-				return dtool.Result{}, fmt.Errorf("%w: %v", dtool.ErrInvalidArguments, err)
-			}
-			text, err := c.execute(ctx, input)
-			if err != nil {
-				return dtool.Result{}, err
-			}
-			return dtool.TextResult(text), nil
-		},
-	}
+// NativeTool returns the production dago implementation.
+func (c *ChangeDirTool) NativeTool() datool.Tool {
+	return datool.MustNew(changeDirName, changeDirDescription, func(ctx context.Context, input changeDirInput) (string, error) {
+		text, err := c.execute(ctx, input)
+		if err != nil {
+			return "", err
+		}
+		return text, nil
+	})
 }
 
 func (c *ChangeDirTool) execute(_ context.Context, req changeDirInput) (string, error) {

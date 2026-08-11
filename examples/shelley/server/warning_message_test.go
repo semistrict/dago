@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
+	"github.com/semistrict/dago/examples/shelley/db"
 )
 
 func TestPredictableFailRecordsWarningMessage(t *testing.T) {

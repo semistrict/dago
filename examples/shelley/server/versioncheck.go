@@ -24,7 +24,7 @@ import (
 
 	"github.com/fynelabs/selfupdate"
 
-	"shelley.exe.dev/version"
+	"github.com/semistrict/dago/examples/shelley/version"
 )
 
 // VersionChecker checks for new versions of Shelley from GitHub releases.

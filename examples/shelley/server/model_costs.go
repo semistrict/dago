@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"shelley.exe.dev/models/modelsdev"
+	"github.com/semistrict/dago/examples/shelley/models/modelsdev"
 )
 
 // handleModelCosts resolves pricing (USD per million tokens) for a batch of

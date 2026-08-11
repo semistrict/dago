@@ -4,7 +4,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/semistrict/dago/agent"
+	"github.com/semistrict/dago/dagent"
 )
 
 const anthropicUniversalPrompt = `<use_parallel_tool_calls>
@@ -89,7 +89,7 @@ func builtinEngineeringHarnessProfile(provider, model string) (Profile, bool) {
 	suffix := engineeringAgentPrompt
 	return Profile{
 		Kind: ProfileHarness, SystemPromptSuffix: &suffix,
-		Middleware: []agent.Middleware{agent.TodoList()},
+		Middleware: []dagent.Middleware{dagent.TodoList()},
 	}, true
 }
 
