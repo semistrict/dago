@@ -1,7 +1,14 @@
-dago includes an independently written example inspired by Shelley.
+dago
 
-Shelley is Copyright 2026 Bold Software, Inc. and licensed under the Apache
-License, Version 2.0. The reference revision and copied behavioral surfaces are
-listed in docs/upstream-manifest.json. The example UI and server implementation in
-this repository are original code; no generated or vendored Shelley distribution is
-included.
+The `examples/shelley` subtree contains source copied from and modified from
+Shelley, Copyright 2026 Bold Software, Inc. Shelley is licensed under the
+Apache License, Version 2.0. The pinned source revision is documented in
+`examples/shelley/UPSTREAM.md`, and the complete Apache license is available at
+`examples/shelley/LICENSE`.
+
+`examples/shelley/claudetool/editbuf` contains source derived from the Go
+project under a BSD-style license. Its license is available at
+`examples/shelley/claudetool/editbuf/LICENSE`.
+
+The browser build generates `THIRD_PARTY_NOTICES.txt` and `sbom.cdx.json` from
+the dependencies actually included in the artifact.

@@ -4,3 +4,10 @@ __pycache__/
 /bin/
 /coverage.out
 /.pnpm-store/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx

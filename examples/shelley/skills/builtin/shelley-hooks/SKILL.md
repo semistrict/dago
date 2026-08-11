@@ -72,10 +72,10 @@ stdin JSON:
   "type": "end_of_turn",
   "conversation_id": "cXXXXXX",
   "timestamp": "2024-01-02T03:04:05Z",
-  "hostname": "host.exe.xyz",
+  "hostname": "agent.example.test",
   "model": "claude-sonnet-4.5",
   "slug": "my-slug",
-  "conversation_url": "https://host.exe.xyz/c/my-slug",
+  "conversation_url": "https://agent.example.test/c/my-slug",
   "vm_name": "host",
   "final_response": "agent's last text or tool-call summary"
 }

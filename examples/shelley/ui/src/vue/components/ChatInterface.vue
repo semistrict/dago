@@ -365,11 +365,7 @@ import {
   reconcileComposerDraft,
 } from "../../services/draftCache";
 import { setFaviconStatus } from "../../services/favicon";
-import {
-  modelSetupHintKeys,
-  canSendWithModel,
-  needsModel,
-} from "../../utils/modelSetupHint";
+import { modelSetupHintKeys, canSendWithModel, needsModel } from "../../utils/modelSetupHint";
 import { useMarkdownMode } from "../composables/markdownMode";
 import { useI18n } from "../composables/i18n";
 import { useDraftAutosave } from "../composables/draftAutosave";
@@ -549,7 +545,9 @@ const models = ref<
 // Ready model ids, surfaced to MessageInput for /model argument autocomplete.
 const readyModelIds = computed(() => models.value.filter((m) => m.ready).map((m) => m.id));
 
-const modelSetupHint = computed(() => modelSetupHintKeys(window.__SHELLEY_INIT__?.model_setup_hint));
+const modelSetupHint = computed(() =>
+  modelSetupHintKeys(window.__SHELLEY_INIT__?.model_setup_hint),
+);
 
 // noModelErrorMessage is the terse inline error when a send is blocked for
 // want of a model. The remedies live in the warning panel (and its suggest
@@ -1155,9 +1153,7 @@ const displayTitle = computed(() => {
 });
 
 const hasCwd = computed(() => !!(props.currentConversation?.cwd || selectedCwd.value));
-const welcomeParts = computed(() =>
-  t("welcomeMessage").split(/(\{hostname\})/),
-);
+const welcomeParts = computed(() => t("welcomeMessage").split(/(\{hostname\})/));
 
 const coalescedItems = computed(
   perfWrap("chat.coalesceMessages", () => coalesceMessages(messages.value)),
@@ -1810,15 +1806,10 @@ async function loadMessages(focusedId: string) {
   // the request first preserves instant cached rendering while establishing a
   // clear handoff from persisted history to the server-confirmed tail.
   const incrementalFromSeq =
-    cached && cached.hasFullHistory && cached.messages.length > 0
-      ? cached.maxSequenceId
-      : null;
-  const incrementalFetchStarted =
-    incrementalFromSeq === null ? 0 : performance.now();
+    cached && cached.hasFullHistory && cached.messages.length > 0 ? cached.maxSequenceId : null;
+  const incrementalFetchStarted = incrementalFromSeq === null ? 0 : performance.now();
   const incrementalRequest =
-    incrementalFromSeq === null
-      ? null
-      : api.getConversationSince(focusedId, incrementalFromSeq);
+    incrementalFromSeq === null ? null : api.getConversationSince(focusedId, incrementalFromSeq);
   unblockStoreSync();
 
   if (cached) applyConversationRecord(cached);
@@ -2769,6 +2760,10 @@ watch(
       .then((newModels) => {
         models.value = newModels;
         if (window.__SHELLEY_INIT__) window.__SHELLEY_INIT__.models = newModels;
+        const preferred = localStorage.getItem("shelley_selected_model");
+        if (preferred && newModels.some((model) => model.id === preferred && model.ready)) {
+          applyModel(preferred);
+        }
       })
       .catch((err) => console.error("Failed to refresh models:", err));
   },

@@ -7,7 +7,6 @@ import {
   GitFileInfo,
   GitFileDiff,
   VersionInfo,
-  CommitInfo,
 } from "../types";
 
 // Extract a useful error message from a failed fetch response. Prefers the
@@ -691,70 +690,12 @@ class ApiService {
     return response.json();
   }
 
-  async getChangelog(currentTag: string, latestTag: string): Promise<CommitInfo[]> {
-    const params = new URLSearchParams({ current: currentTag, latest: latestTag });
-    const response = await fetch(`/version-changelog?${params}`);
-    if (!response.ok) {
-      throw new Error(`Failed to get changelog: ${response.statusText}`);
-    }
-    return response.json();
-  }
-
-  async upgrade(restart: boolean = false): Promise<{ status: string; message: string }> {
-    const url = restart ? "/upgrade?restart=true" : "/upgrade";
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "X-Shelley-Request": "1" },
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || response.statusText);
-    }
-    return response.json();
-  }
-
-  async upgradeHeadlessShell(): Promise<{ status: string; message: string; version: string }> {
-    const response = await fetch("/upgrade-headless-shell", {
-      method: "POST",
-      headers: { "X-Shelley-Request": "1" },
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || response.statusText);
-    }
-    return response.json();
-  }
-
   async exit(): Promise<{ status: string; message: string }> {
     const response = await fetch("/exit", {
       method: "POST",
     });
     if (!response.ok) {
       throw new Error(`Failed to exit: ${response.statusText}`);
-    }
-    return response.json();
-  }
-
-  async getSettings(): Promise<Record<string, string>> {
-    const response = await fetch("/settings");
-    if (!response.ok) {
-      throw new Error(`Failed to get settings: ${response.statusText}`);
-    }
-    return response.json();
-  }
-
-  async setSetting(key: string, value: string): Promise<{ status: string }> {
-    const response = await fetch("/settings", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shelley-Request": "1",
-      },
-      body: JSON.stringify({ key, value }),
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || response.statusText);
     }
     return response.json();
   }

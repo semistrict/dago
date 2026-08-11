@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as zlib from "zlib";
 import * as crypto from "crypto";
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 
 // Esbuild plugin: rewrite any "monaco-editor*" import (including deep paths
 // like monaco-editor/esm/vs/editor/editor.api) to the deployed runtime URL,
@@ -43,7 +43,7 @@ function justBashBrowserShims() {
 const isWatch = process.argv.includes("--watch");
 const isProd = !isWatch;
 const verbose = process.env.VERBOSE === "1" || process.env.VERBOSE === "true";
-// Release builds (NO_SOURCEMAPS=1, set by release.yml) ship no JS source maps
+// Release builds (NO_SOURCEMAPS=1) ship no JS source maps
 // to keep the embedded binary small. Other builds emit them (gzip-compressed)
 // so devtools work in development.
 const dropSourceMaps = process.env.NO_SOURCEMAPS === "1";
@@ -64,6 +64,13 @@ const buildDefines = {
 };
 const gzipLevel = fastBuild ? 1 : 9;
 const noSourceMaps = dropSourceMaps || fastBuild;
+const bundleMetafiles = [];
+
+async function buildBundle(options) {
+  const result = await esbuild.build({ ...options, metafile: true });
+  bundleMetafiles.push(result.metafile);
+  return result;
+}
 
 function normalizeBasePath(value) {
   const withLeadingSlash = value.startsWith("/") ? value : `/${value}`;
@@ -88,7 +95,7 @@ async function build() {
 
     // Build Monaco editor worker separately (IIFE format for web worker)
     log("Building Monaco editor worker...");
-    await esbuild.build({
+    await buildBundle({
       entryPoints: ["node_modules/monaco-editor/esm/vs/editor/editor.worker.js"],
       bundle: true,
       outfile: "dist/editor.worker.js",
@@ -99,7 +106,7 @@ async function build() {
 
     // Build @pierre/diffs worker for syntax highlighting (IIFE format for web worker)
     log("Building diffs worker...");
-    await esbuild.build({
+    await buildBundle({
       entryPoints: ["src/diffs-worker.ts"],
       bundle: true,
       outfile: "dist/diffs-worker.js",
@@ -110,7 +117,7 @@ async function build() {
 
     // Browser-native Shelley runs the portable Go application in this worker.
     log("Building WASM application worker...");
-    await esbuild.build({
+    await buildBundle({
       entryPoints: ["src/wasm-worker.ts"],
       bundle: true,
       outfile: "dist/wasm-worker.js",
@@ -126,7 +133,7 @@ async function build() {
     // exports of /monaco-editor.js — that way monaco-vim runs against the
     // *same* Monaco instance the rest of the app loads.
     log("Building Monaco editor bundle...");
-    await esbuild.build({
+    await buildBundle({
       entryPoints: ["src/monaco-bundle-entry.js"],
       bundle: true,
       outfile: "dist/monaco-editor.js",
@@ -141,14 +148,13 @@ async function build() {
     // Build the Vue 3 + PrimeVue app (src/vue/main.ts). It emits dist/main.js +
     // dist/main.css, which index.html links statically (see src/index.html).
     log("Building main application (src/vue/main.ts)...");
-    await esbuild.build({
+    await buildBundle({
       entryPoints: ["src/vue/main.ts"],
       bundle: true,
       outfile: "dist/main.js",
       format: "esm",
       minify: isProd,
       sourcemap: !noSourceMaps,
-      metafile: true,
       external: ["monaco-editor", monacoRuntimePath],
       define: buildDefines,
       loader: {
@@ -181,7 +187,7 @@ async function build() {
     // its own opaque origin, sidestepping CORS.
     log("Building /static/excalidraw bundle...");
     fs.mkdirSync("dist/static/excalidraw", { recursive: true });
-    await esbuild.build({
+    await buildBundle({
       entryPoints: ["src/excalidraw-skill.js"],
       bundle: true,
       outfile: "dist/static/excalidraw/skill.js",
@@ -230,10 +236,9 @@ async function build() {
       }
     }
 
-    // Write build info
-    // Get the absolute path to the src directory for staleness checking
-    const srcDir = new URL("../src", import.meta.url).pathname;
+    writeThirdPartyArtifacts(bundleMetafiles);
 
+    // Write build info without embedding local filesystem paths.
     // Get git commit info
     let commit = "";
     let commitTime = "";
@@ -255,7 +260,6 @@ async function build() {
     const buildInfo = {
       timestamp: Date.now(),
       date: new Date().toISOString(),
-      srcDir: srcDir,
       commit: commit,
       commitTime: commitTime,
       modified: modified,
@@ -362,6 +366,149 @@ async function build() {
     console.error("Build failed:", error);
     process.exit(1);
   }
+}
+
+function writeThirdPartyArtifacts(metafiles) {
+  const components = new Map();
+  for (const metafile of metafiles) {
+    for (const input of Object.keys(metafile.inputs)) {
+      const packageRoot = findNodePackageRoot(path.resolve(input));
+      if (!packageRoot) continue;
+      const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+      if (!manifest.name || !manifest.version) continue;
+      const key = `npm:${manifest.name}@${manifest.version}`;
+      const packageName = manifest.name.startsWith("@")
+        ? `%40${manifest.name.slice(1)}`
+        : manifest.name;
+      const licenseFiles = readLicenseFiles(packageRoot);
+      const declaredLicense = normalizeLicense(manifest.license);
+      components.set(key, {
+        type: "library",
+        group: manifest.name.startsWith("@") ? manifest.name.split("/")[0].slice(1) : undefined,
+        name: manifest.name,
+        version: manifest.version,
+        license: declaredLicense === "NOASSERTION" ? detectLicense(licenseFiles) : declaredLicense,
+        licenseFiles,
+        purl: `pkg:npm/${packageName}@${manifest.version}`,
+      });
+    }
+  }
+
+  if (wasmBuild) {
+    const goTemplate = "{{with .Module}}{{.Path}}|{{.Version}}|{{.Dir}}{{end}}";
+    const goModules = execFileSync(
+      "go",
+      ["list", "-deps", "-f", goTemplate, "./cmd/shelley-wasm"],
+      {
+        cwd: "..",
+        encoding: "utf8",
+        env: { ...process.env, GOOS: "js", GOARCH: "wasm" },
+      },
+    );
+    for (const line of goModules.split("\n")) {
+      if (!line.trim()) continue;
+      const [modulePath, version, moduleDir] = line.split("|");
+      if (!modulePath || !moduleDir) continue;
+      const resolvedVersion = version || "local";
+      const key = `go:${modulePath}@${resolvedVersion}`;
+      const licenseFiles = readLicenseFiles(moduleDir);
+      components.set(key, {
+        type: "library",
+        name: modulePath,
+        version: resolvedVersion,
+        license: detectLicense(licenseFiles),
+        licenseFiles,
+        purl: version ? `pkg:golang/${modulePath}@${version}` : undefined,
+      });
+    }
+  }
+
+  const sorted = [...components.values()].sort((left, right) =>
+    `${left.name}@${left.version}`.localeCompare(`${right.name}@${right.version}`),
+  );
+  const bom = {
+    bomFormat: "CycloneDX",
+    specVersion: "1.5",
+    version: 1,
+    metadata: {
+      component: {
+        type: "application",
+        name: "Shelley browser app",
+        licenses: [{ expression: "Apache-2.0" }],
+      },
+    },
+    components: sorted.map(({ licenseFiles, license, ...component }) => ({
+      ...component,
+      licenses: [{ expression: license }],
+    })),
+  };
+  fs.writeFileSync("dist/sbom.cdx.json", `${JSON.stringify(bom, null, 2)}\n`);
+
+  const notice = [
+    "THIRD-PARTY SOFTWARE NOTICES",
+    "",
+    "This browser application was copied from and modified from Shelley, Copyright 2026 Bold Software, Inc., under the Apache License, Version 2.0.",
+    "",
+    "--- Shelley application LICENSE ---",
+    fs.readFileSync("../LICENSE", "utf8").trim(),
+    "",
+    "This artifact contains the following bundled components. License texts are reproduced below when supplied by the component.",
+    "",
+  ];
+  for (const component of sorted) {
+    notice.push(
+      `${component.name} ${component.version}`,
+      `Declared license: ${component.license}`,
+      "",
+    );
+    for (const file of component.licenseFiles) {
+      notice.push(`--- ${file.name} ---`, file.text.trim(), "");
+    }
+  }
+  fs.writeFileSync("dist/THIRD_PARTY_NOTICES.txt", `${notice.join("\n").trim()}\n`);
+}
+
+function findNodePackageRoot(input) {
+  let directory = path.dirname(input);
+  while (directory.startsWith(process.cwd())) {
+    const manifest = path.join(directory, "package.json");
+    if (directory.includes(`${path.sep}node_modules${path.sep}`) && fs.existsSync(manifest)) {
+      return directory;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return null;
+}
+
+function readLicenseFiles(directory) {
+  if (!fs.existsSync(directory)) return [];
+  return fs
+    .readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /^(license|copying|notice)([._-]|$)/i.test(entry.name))
+    .map((entry) => ({
+      name: entry.name,
+      text: fs.readFileSync(path.join(directory, entry.name), "utf8"),
+    }));
+}
+
+function normalizeLicense(license) {
+  if (typeof license === "string" && license.trim()) return license.trim();
+  if (license && typeof license.type === "string" && license.type.trim())
+    return license.type.trim();
+  return "NOASSERTION";
+}
+
+function detectLicense(files) {
+  const text = files
+    .map((file) => file.text)
+    .join("\n")
+    .toLowerCase();
+  if (text.includes("apache license") && text.includes("version 2.0")) return "Apache-2.0";
+  if (text.includes("permission is hereby granted, free of charge")) return "MIT";
+  if (text.includes("redistribution and use in source and binary forms")) return "BSD-3-Clause";
+  return "NOASSERTION";
 }
 
 build();

@@ -45,35 +45,95 @@ func TestRequireHeaderMiddleware_AllowsAPIWithHeader(t *testing.T) {
 	}
 }
 
-func TestRequireHeaderMiddleware_AllowsNonAPIWithoutHeader(t *testing.T) {
+func TestRequireHeaderMiddleware_AllowsPublicUIWithoutHeader(t *testing.T) {
 	t.Parallel()
 	handler := RequireHeaderMiddleware("X-User-ID")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200 for non-API request without required header, got %d", w.Code)
+	for _, path := range []string{"/", "/new", "/c/example", "/main.js", "/styles.css", "/icon.png", "/app.wasm", "/manifest.json"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200 for public UI path %q without required header, got %d", path, w.Code)
+		}
 	}
 }
 
-func TestRequireHeaderMiddleware_AllowsVersionEndpointWithoutHeader(t *testing.T) {
+func TestRequireHeaderMiddleware_BlocksPrivilegedNonAPIRoutes(t *testing.T) {
 	t.Parallel()
 	handler := RequireHeaderMiddleware("X-User-ID")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/version", nil)
+	for _, path := range []string{"/version", "/settings", "/feature-flags", "/debug/pprof/", "/exit"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected status 403 for privileged path %q without required header, got %d", path, w.Code)
+		}
+	}
+}
+
+func TestRequireHeaderMiddleware_BlocksNonGETStaticLookalike(t *testing.T) {
+	t.Parallel()
+	handler := RequireHeaderMiddleware("X-User-ID")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/main.js", nil)
 	w := httptest.NewRecorder()
-
 	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
 
+func TestRegisterRoutesOnlyExposesDebugEndpointsWhenEnabled(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+
+	withoutDebug := http.NewServeMux()
+	(&Server{}).RegisterRoutes(withoutDebug)
+	_, pattern := withoutDebug.Handler(request)
+	if pattern != "/" {
+		t.Fatalf("debug-disabled pattern = %q, want static fallback", pattern)
+	}
+
+	withDebug := http.NewServeMux()
+	(&Server{Debug: true}).RegisterRoutes(withDebug)
+	_, pattern = withDebug.Handler(request)
+	if pattern != "GET /debug/pprof/" {
+		t.Fatalf("debug-enabled pattern = %q", pattern)
+	}
+}
+
+func TestVersionCheckReportsOnlyLocalBuildInformation(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/version-check", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200 for /version without required header, got %d", w.Code)
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	for _, key := range []string{"current_version", "checked_at"} {
+		if _, ok := body[key]; !ok {
+			t.Errorf("response is missing %q: %v", key, body)
+		}
+	}
+	for _, key := range []string{"has_update", "latest_version", "download_url", "headless_shell_update"} {
+		if _, ok := body[key]; ok {
+			t.Errorf("response unexpectedly includes removed release field %q", key)
+		}
 	}
 }
 
@@ -158,7 +218,7 @@ func TestRoutesPreferZstd(t *testing.T) {
 	}{
 		{"/api/models", json.Valid},
 		{"/c/compressed-page", func(body []byte) bool {
-			return bytes.Contains(body, []byte("window.__SHELLEY_INIT__"))
+			return bytes.Contains(body, []byte(`id="shelley-init"`))
 		}},
 	}
 	for _, tc := range tests {

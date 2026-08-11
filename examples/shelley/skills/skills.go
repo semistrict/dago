@@ -177,6 +177,51 @@ func ListAll(workingDir, gitRoot string) []Skill {
 	return all
 }
 
+// ListTrusted returns user-installed and built-in skills without reading the
+// active repository. It is the safe default for unreviewed workspaces.
+func ListTrusted() []Skill {
+	dirs := DefaultDirs()
+	all := Discover(dirs)
+	claimed := dirSkillNames(dirs)
+	for _, skill := range all {
+		claimed[skill.Name] = true
+	}
+	for _, skill := range BuiltinSkills() {
+		if !claimed[skill.Name] {
+			all = append(all, skill)
+		}
+	}
+	return all
+}
+
+// FindTrustedByName resolves only user-installed and built-in skills, ignoring
+// repository files even when they use the same skill name.
+func FindTrustedByName(name string) (string, error) {
+	dirs := DefaultDirs()
+	for _, skill := range Discover(dirs) {
+		if skill.Name == name {
+			content, err := os.ReadFile(skill.Path)
+			if err != nil {
+				return "", fmt.Errorf("reading skill %q: %w", name, err)
+			}
+			return string(content), nil
+		}
+	}
+	if dirSkillNames(dirs)[name] {
+		return "", fmt.Errorf("skill %q is disabled", name)
+	}
+	for _, skill := range BuiltinSkills() {
+		if skill.Name == name {
+			content, err := builtinFS.ReadFile("builtin/" + name + "/SKILL.md")
+			if err != nil {
+				return "", fmt.Errorf("reading built-in skill %q: %w", name, err)
+			}
+			return string(content), nil
+		}
+	}
+	return "", fmt.Errorf("skill %q not found", name)
+}
+
 // FindByName looks up a skill by name and returns its raw SKILL.md content.
 //
 // Filesystem skills take priority: if a SKILL.md exists on the filesystem

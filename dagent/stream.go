@@ -15,13 +15,13 @@ import (
 type EventMode string
 
 const (
-	EventTask      EventMode = "task"
-	EventUpdate    EventMode = "update"
-	EventValues    EventMode = "values"
-	EventInterrupt EventMode = "interrupt"
-	EventCustom    EventMode = "custom"
-	EventToken     EventMode = "token"
-	EventChild     EventMode = "child"
+	EventTask         EventMode = "task"
+	EventUpdate       EventMode = "update"
+	EventValues       EventMode = "values"
+	EventInterrupt    EventMode = "interrupt"
+	EventCustom       EventMode = "custom"
+	EventToken        EventMode = "token"
+	EventChild        EventMode = "child"
 	EventToolProgress EventMode = "tool_progress"
 )
 
@@ -53,16 +53,16 @@ type ChildEvent struct {
 // Event is a version-stable public execution event. Provider token chunks are
 // represented separately from graph lifecycle events in model streams.
 type Event struct {
-	Mode      EventMode       `json:"mode"`
-	Step      int             `json:"step"`
-	Node      string          `json:"node,omitempty"`
-	TaskID    string          `json:"task_id,omitempty"`
-	Update    dastate.Values  `json:"update,omitempty"`
-	Values    dastate.Values  `json:"values,omitempty"`
-	Interrupt *Interrupt      `json:"interrupt,omitempty"`
-	Custom    json.RawMessage `json:"custom,omitempty"`
-	Chunk     *damodel.Chunk  `json:"chunk,omitempty"`
-	Child     *ChildEvent     `json:"child,omitempty"`
+	Mode         EventMode        `json:"mode"`
+	Step         int              `json:"step"`
+	Node         string           `json:"node,omitempty"`
+	TaskID       string           `json:"task_id,omitempty"`
+	Update       dastate.Values   `json:"update,omitempty"`
+	Values       dastate.Values   `json:"values,omitempty"`
+	Interrupt    *Interrupt       `json:"interrupt,omitempty"`
+	Custom       json.RawMessage  `json:"custom,omitempty"`
+	Chunk        *damodel.Chunk   `json:"chunk,omitempty"`
+	Child        *ChildEvent      `json:"child,omitempty"`
 	ToolProgress *datool.Progress `json:"tool_progress,omitempty"`
 }
 

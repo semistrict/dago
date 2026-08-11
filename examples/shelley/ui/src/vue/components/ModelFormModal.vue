@@ -368,7 +368,7 @@ watch(
         provider_type: m.provider_type,
         endpoint: m.endpoint,
         endpoint_custom: m.endpoint !== DEFAULT_ENDPOINTS[m.provider_type as ProviderType],
-        api_key: m.api_key,
+        api_key: "",
         model_name: m.model_name,
         max_tokens: m.max_tokens,
         tags: m.tags,
@@ -434,7 +434,7 @@ async function handleTest() {
 }
 
 async function handleSave() {
-  if (!form.display_name || !form.api_key || !form.model_name) {
+  if (!form.display_name || (!form.api_key && !props.editModel) || !form.model_name) {
     error.value = "Display name, API key, and model name are required";
     return;
   }
@@ -458,6 +458,7 @@ async function handleSave() {
     } else {
       await customModelsApi.createCustomModel(request);
     }
+    form.api_key = "";
     emit("saved");
     emit("close");
   } catch (err) {

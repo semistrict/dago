@@ -40,6 +40,9 @@ func (w *MutableWorkingDir) Set(dir string) {
 
 // ToolSetConfig contains configuration for creating a ToolSet.
 type ToolSetConfig struct {
+	// TrustWorkspaceGuidance allows repository guidance files and repository
+	// skills to influence the agent. Keep this false for unreviewed checkouts.
+	TrustWorkspaceGuidance bool
 	// WorkingDir is the initial working directory for tools.
 	WorkingDir string
 	// LLMProvider provides access to LLM services for tool validation.

@@ -347,7 +347,8 @@ const showActiveTrigger = ref(0);
 function handleBrowserOpenAIConfigured(model: string) {
   browserOpenAIKeyModalOpen.value = false;
   localStorage.setItem("shelley_selected_model", model);
-  window.location.assign(appPath("/new"));
+  modelsRefreshTrigger.value++;
+  startNewConversation();
 }
 
 // ---- non-reactive refs ----

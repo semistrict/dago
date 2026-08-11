@@ -35,6 +35,7 @@ type SystemPromptData struct {
 	IsSudoAvailable  bool
 	SkillsXML        string // Compatibility-only standalone prompt projection
 	skipSkills       bool
+	trustWorkspace   bool
 }
 
 // DBPath is the path to the shelley database, set at startup
@@ -80,6 +81,10 @@ func withoutPromptSkills() SystemPromptOption {
 	return func(d *SystemPromptData) { d.skipSkills = true }
 }
 
+func withTrustedWorkspaceGuidance() SystemPromptOption {
+	return func(d *SystemPromptData) { d.trustWorkspace = true }
+}
+
 // GenerateSystemPrompt generates the system prompt using the embedded template.
 // If workingDir is empty, it uses the current working directory.
 func GenerateSystemPrompt(workingDir string, opts ...SystemPromptOption) (string, error) {
@@ -87,7 +92,7 @@ func GenerateSystemPrompt(workingDir string, opts ...SystemPromptOption) (string
 	for _, opt := range opts {
 		opt(settings)
 	}
-	data, err := collectSystemData(workingDir, settings.skipSkills)
+	data, err := collectSystemData(workingDir, settings.skipSkills, settings.trustWorkspace)
 	if err != nil {
 		return "", fmt.Errorf("failed to collect system data: %w", err)
 	}
@@ -607,7 +612,7 @@ func runHook(name, prompt string) (string, error) {
 	return result, nil
 }
 
-func collectSystemData(workingDir string, skipSkills bool) (*SystemPromptData, error) {
+func collectSystemData(workingDir string, skipSkills, trustWorkspace bool) (*SystemPromptData, error) {
 	wd := workingDir
 	if wd == "" {
 		var err error
@@ -643,7 +648,7 @@ func collectSystemData(workingDir string, skipSkills bool) (*SystemPromptData, e
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		codebaseInfo, codebaseErr = collectCodebaseInfo(wd, gitInfo)
+		codebaseInfo, codebaseErr = collectCodebaseInfo(wd, gitInfo, trustWorkspace)
 	}()
 	if !skipSkills {
 		wg.Add(1)
@@ -689,7 +694,7 @@ func collectGitInfo(dir string) (*GitInfo, error) {
 	}, nil
 }
 
-func collectCodebaseInfo(wd string, gitInfo *GitInfo) (*CodebaseInfo, error) {
+func collectCodebaseInfo(wd string, gitInfo *GitInfo, trustWorkspace bool) (*CodebaseInfo, error) {
 	info := &CodebaseInfo{
 		InjectFiles:        []string{},
 		InjectFileContents: make(map[string]string),
@@ -723,6 +728,9 @@ func collectCodebaseInfo(wd string, gitInfo *GitInfo) (*CodebaseInfo, error) {
 				seenContents[contentKey] = true
 			}
 		}
+	}
+	if !trustWorkspace {
+		return info, nil
 	}
 
 	// Determine the root directory to search

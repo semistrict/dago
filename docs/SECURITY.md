@@ -34,7 +34,21 @@ output. It never forwards the original video to the model. Use a separately isol
 decoder process when media itself is untrusted.
 
 The example web application is single-user software and does not add authentication.
-Bind it to loopback or place it behind an authenticated reverse proxy. Its terminal
-and local-shell paths execute trusted host commands in the selected workspace; they
-are enabled only when that backend is selected and are not a substitute for sandbox
-isolation.
+Its native server refuses non-loopback TCP listeners. An authenticated reverse proxy
+may connect to that loopback listener; `--require-header` is only a defense-in-depth
+proxy integration and is safe only when the proxy removes caller-supplied copies of
+the header. Terminal and local-shell paths execute trusted host commands and are not
+a substitute for sandbox isolation.
+
+Repository guidance and repository skills are ignored by default because a checkout
+may be unreviewed. `serve --trust-workspace-guidance` opts into those prompt inputs
+after the operator has reviewed them; user-installed and built-in skills remain
+available without that flag. Tool authorization is enforced independently of prompt
+content.
+
+The browser-only example holds provider credentials in Web Worker memory and asks for
+them again after reload. Conversations and virtual-workspace files remain readable to
+scripts on the deployment origin through IndexedDB, so deploy it on a dedicated origin
+and treat any same-origin script as trusted. The published entry point includes a
+Content Security Policy, but that policy is defense in depth rather than storage
+encryption or origin isolation.

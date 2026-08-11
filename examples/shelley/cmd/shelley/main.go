@@ -103,7 +103,7 @@ func main() {
 
 func runSkill(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: shelley skill <cat|ls|new> [name]\n")
+		fmt.Fprintf(os.Stderr, "Usage: shelley skill <cat|cat-trusted|ls|new> [name]\n")
 		os.Exit(1)
 	}
 
@@ -120,6 +120,18 @@ func runSkill(args []string) {
 			os.Exit(1)
 		}
 		content, err := skills.FindByName(args[1], wd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(content)
+
+	case "cat-trusted":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: shelley skill cat-trusted SKILL_NAME\n")
+			os.Exit(1)
+		}
+		content, err := skills.FindTrustedByName(args[1])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -145,7 +157,7 @@ func runSkill(args []string) {
 		fmt.Println(path)
 
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown skill subcommand: %s\nUsage: shelley skill <cat|ls|new> [name]\n", args[0])
+		fmt.Fprintf(os.Stderr, "Unknown skill subcommand: %s\nUsage: shelley skill <cat|cat-trusted|ls|new> [name]\n", args[0])
 		os.Exit(1)
 	}
 }
@@ -153,14 +165,20 @@ func runSkill(args []string) {
 func runServe(global GlobalConfig, args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.String("port", "9000", "Port to listen on")
+	listenHost := fs.String("listen-host", "127.0.0.1", "Host or IP address to listen on")
 	portFile := fs.String("port-file", "", "Write the actual listening port to this file (useful with --port 0)")
 	systemdActivation := fs.Bool("systemd-activation", false, "Use systemd socket activation (listen on fd from systemd)")
 	requireHeader := fs.String("require-header", "", "Require this header on all API requests (e.g., X-User-ID)")
+	trustWorkspaceGuidance := fs.Bool("trust-workspace-guidance", false, "Allow reviewed repository guidance and skills to influence the agent")
 	socketPath := fs.String("socket", client.DefaultSocketPath(), "Path to Unix socket for local CLI client access (set to 'none' to disable)")
 	banner := fs.String("banner", "", "If set, shows this text in a banner at the top of the UI (useful for marking demo instances)")
 	fs.Parse(args)
 
 	logger := setupLogging(global.Debug)
+	if err := validateListenHost(*listenHost); err != nil {
+		logger.Error("Refusing unsafe listener", "error", err)
+		os.Exit(1)
+	}
 
 	database := setupDatabase(global.DBPath, logger)
 	defer database.Close()
@@ -191,12 +209,14 @@ func runServe(global GlobalConfig, args []string) {
 	logger.Info("Available models", "models", strings.Join(availableModels, ", "))
 
 	toolSetConfig := setupToolSetConfig(llmManager, llmManager)
+	toolSetConfig.TrustWorkspaceGuidance = *trustWorkspaceGuidance
 
 	// Create server
 	svr := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.DefaultModel, *requireHeader)
 	svr.SetModelRefresher(llmConfig.RefreshBuiltModels)
 	svr.SetOpenAIOAuth(openAIOAuth)
 	svr.Banner = *banner
+	svr.Debug = global.Debug
 
 	// Load notification channels from DB.
 	svr.ReloadNotificationChannels()
@@ -213,10 +233,16 @@ func runServe(global GlobalConfig, args []string) {
 			logger.Error("Failed to get systemd listener", "error", listenerErr)
 			os.Exit(1)
 		}
+		tcpAddress, ok := listener.Addr().(*net.TCPAddr)
+		if !ok || validateListenHost(tcpAddress.IP.String()) != nil {
+			listener.Close()
+			logger.Error("Refusing non-loopback systemd listener", "address", listener.Addr().String())
+			os.Exit(1)
+		}
 		logger.Info("Using systemd socket activation")
 		err = svr.StartWithListeners(listener, effectiveSocket)
 	} else {
-		listener, listenerErr := net.Listen("tcp", ":"+*port)
+		listener, listenerErr := net.Listen("tcp", net.JoinHostPort(*listenHost, *port))
 		if listenerErr != nil {
 			logger.Error("Failed to create listener", "error", listenerErr)
 			os.Exit(1)
@@ -235,6 +261,20 @@ func runServe(global GlobalConfig, args []string) {
 		logger.Error("Server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func validateListenHost(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("listen host is required")
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("non-loopback host %q is not supported; use a loopback listener behind an authenticated proxy", host)
 }
 
 func setupLogging(debug bool) *slog.Logger {
@@ -325,7 +365,7 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 	return claudetool.ToolSetConfig{
 		WorkingDir:           wd,
 		LLMProvider:          llmProvider,
-		EnableJITInstall:     claudetool.EnableBashToolJITInstall,
+		EnableJITInstall:     claudetool.NoBashToolJITInstall,
 		EnableBrowser:        true,
 		BuildAvailableModels: buildAvailableModels,
 	}

@@ -4,7 +4,9 @@ import (
 	"compress/gzip"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,21 +27,42 @@ func LoggerMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	return sloghttp.NewWithConfig(logger, config)
 }
 
-// RequireHeaderMiddleware requires a specific header to be present on all API requests.
-// This is used to ensure requests come through an authenticated proxy.
+// RequireHeaderMiddleware requires a specific header on every non-static route.
+// This is used to ensure privileged requests come through an authenticated proxy.
+// Only the application shell, its assets, and client-side conversation routes are
+// reachable without the proxy header.
 func RequireHeaderMiddleware(headerName string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Only check API routes
-			if strings.HasPrefix(r.URL.Path, "/api/") {
-				if r.Header.Get(headerName) == "" {
-					http.Error(w, "missing required header: "+headerName, http.StatusForbidden)
-					return
-				}
+			if !isPublicUIRequest(r) && r.Header.Get(headerName) == "" {
+				http.Error(w, "missing required header: "+headerName, http.StatusForbidden)
+				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func isPublicUIRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if r.URL.Path == "/" || r.URL.Path == "/new" || strings.HasPrefix(r.URL.Path, "/c/") {
+		return true
+	}
+	if r.URL.Path == "/manifest.json" {
+		return true
+	}
+	mediaType := mime.TypeByExtension(strings.ToLower(filepath.Ext(r.URL.Path)))
+	return strings.HasPrefix(mediaType, "text/css") ||
+		strings.HasPrefix(mediaType, "text/javascript") ||
+		strings.HasPrefix(mediaType, "application/javascript") ||
+		strings.HasPrefix(mediaType, "image/") ||
+		strings.HasPrefix(mediaType, "font/") ||
+		strings.HasPrefix(mediaType, "audio/") ||
+		strings.HasPrefix(mediaType, "video/") ||
+		strings.HasPrefix(mediaType, "application/wasm") ||
+		strings.HasPrefix(mediaType, "application/manifest+json")
 }
 
 // compressedResponseWriter compresses non-streaming HTTP responses.

@@ -270,31 +270,7 @@ export interface VersionInfo {
   current_version: string;
   current_tag?: string;
   current_commit?: string;
-  current_commit_time?: string;
-  latest_version?: string;
-  latest_tag?: string;
-  published_at?: string;
-  has_update: boolean; // True if minor version is newer (show upgrade button)
-  should_notify: boolean; // True if should show red dot (newer + 5 days apart)
-  customized: boolean; // True for user-customized builds (upgrade via rebase)
-  customization_dir?: string; // Canonical customization checkout (~/.config/shelley/shelley-customization)
-  custom_commits?: CommitInfo[]; // Commits the customization branch carries on top of mainline
-  download_url?: string;
-  executable_path?: string;
-  commits?: CommitInfo[];
   checked_at: string;
-  error?: string;
-  running_under_systemd: boolean; // True if INVOCATION_ID env var is set
-  headless_shell_current?: string; // e.g. "Chromium 141.0.7390.55"
-  headless_shell_latest?: string; // e.g. "Chromium 147.0.7727.24"
-  headless_shell_update: boolean; // True if latest > current
-}
-
-export interface CommitInfo {
-  sha: string;
-  message: string;
-  author: string;
-  date: string;
 }
 
 // Helper to read a message's distill_status value ("in_progress" | "complete"

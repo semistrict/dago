@@ -112,9 +112,7 @@ test.describe("local browser model", () => {
   });
 });
 
-test("browser asks once for an OpenAI key and keeps model selection in the picker", async ({
-  page,
-}) => {
+test("browser keeps the OpenAI key in worker memory only", async ({ page }) => {
   const endpoint = process.env.SHELLEY_OPENAI_MOCK_URL;
   if (!endpoint) throw new Error("SHELLEY_OPENAI_MOCK_URL is not configured");
   await page.addInitScript((testEndpoint) => {
@@ -200,9 +198,9 @@ test("browser asks once for an OpenAI key and keeps model selection in the picke
     });
     return { session: sessionStorage.getItem("shelley_wasm_openai_key"), durable };
   });
-  expect(persisted.session).toBe("browser-test-key");
+  expect(persisted.session).toBeNull();
   expect(persisted.durable).not.toContain("browser-test-key");
 
   await page.reload();
-  await expect(keyDialog).toBeHidden();
+  await expect(keyDialog).toBeVisible();
 });

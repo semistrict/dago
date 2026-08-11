@@ -65,6 +65,19 @@ func TestSanitizeSlug(t *testing.T) {
 	}
 }
 
+func TestValidateListenHost(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "::1", "localhost"} {
+		if err := validateListenHost(host); err != nil {
+			t.Errorf("validateListenHost(%q) = %v", host, err)
+		}
+	}
+	for _, host := range []string{"", "0.0.0.0", "::", "192.0.2.1", "example.test"} {
+		if err := validateListenHost(host); err == nil {
+			t.Errorf("validateListenHost(%q) succeeded", host)
+		}
+	}
+}
+
 // TestGlobalFlagsDefaultModelEmptyByDefault guards the production fix: the
 // -default-model flag must default to empty so shelley.json's default_model
 // takes effect on VMs (where the systemd unit passes no -default-model). A

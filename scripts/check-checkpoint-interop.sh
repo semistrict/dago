@@ -2,7 +2,8 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-python_graph=${LANGGRAPH_PYTHON_ROOT:-/Users/ramon/src/langgraph}
+: "${LANGGRAPH_PYTHON_ROOT:?set LANGGRAPH_PYTHON_ROOT to a pinned langgraph-python checkout}"
+python_graph=$LANGGRAPH_PYTHON_ROOT
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/dago-checkpoint-interop.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 
@@ -13,7 +14,7 @@ uv run \
   generate "$temporary/python-safe.sqlite"
 
 DAGO_PYTHON_SQLITE_FIXTURE="$temporary/python-safe.sqlite" \
-  go test "$repo_root/checkpoint/sqlite" -run TestReadsAndContinuesPinnedPythonSafeFixture -count=1
+  go test "$repo_root/dacheckpoint/sqlite" -run TestReadsAndContinuesPinnedPythonSafeFixture -count=1
 
 go run "$repo_root/internal/conformance/cmd/checkpoint-fixture" "$temporary/go-safe.sqlite"
 
@@ -32,7 +33,7 @@ if test -n "${DAGO_POSTGRES_TEST_DSN:-}"; then
     generate "$DAGO_POSTGRES_TEST_DSN"
 
   DAGO_PYTHON_POSTGRES_FIXTURE_DSN="$DAGO_POSTGRES_TEST_DSN" \
-    go test "$repo_root/checkpoint/postgres" -run TestReadsAndContinuesPinnedPythonSafeFixture -count=1
+    go test "$repo_root/dacheckpoint/postgres" -run TestReadsAndContinuesPinnedPythonSafeFixture -count=1
 
   go run "$repo_root/internal/conformance/cmd/checkpoint-fixture" postgres "$DAGO_POSTGRES_TEST_DSN"
 

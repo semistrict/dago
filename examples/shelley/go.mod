@@ -8,7 +8,6 @@ require (
 	github.com/chromedp/chromedp v0.15.1
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
-	github.com/fynelabs/selfupdate v0.2.1
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.19.0
 	github.com/sahilm/fuzzy v0.1.3
@@ -16,7 +15,7 @@ require (
 	go.skia.org/infra v0.0.0-20260709164234-a736e8709729
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.44.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.22.0 // indirect
 	mvdan.cc/sh/v3 v3.13.1
 	tailscale.com v1.100.0
 )

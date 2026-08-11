@@ -114,9 +114,9 @@ Stdout (empty = no-op):
   "type": "end_of_turn",
   "conversation_id": "cMT7MTV",
   "timestamp": "2026-05-27T00:34:31.961478145Z",
-  "hostname": "vm.exe.xyz",
+  "hostname": "agent.example.test",
   "model": "predictable",
-  "conversation_url": "https://vm.exe.xyz/",
+  "conversation_url": "https://agent.example.test/",
   "vm_name": "vm",
   "final_response": "Done."
 }

@@ -1,6 +1,6 @@
 # Shelley Makefile
 
-.PHONY: build build-custom build-linux-aarch64 build-linux-x86 wasm wasm-serve test test-go test-e2e test-e2e-wasm bench-agent bench-scaling ui serve clean help templates demo
+.PHONY: build build-linux-aarch64 build-linux-x86 wasm wasm-serve test test-go test-e2e test-e2e-wasm bench-agent bench-scaling ui serve clean help templates demo
 
 # Default target
 all: build
@@ -16,31 +16,6 @@ templates:
 build: ui templates
 	@echo "Building Shelley..."
 	go build -o bin/shelley ./cmd/shelley
-
-# Build a customized Shelley binary (see the customizing-shelley skill).
-# Stamps the release tag this branch diverged from (latest release tag at the
-# merge-base with origin/main) and marks the build as customized, so the
-# version dialog knows the build has diverged from mainline and offers
-# rebase-style upgrades instead of binary self-updates.
-build-custom: ui templates
-	@set -e; \
-	CANON="$$HOME/.config/shelley/shelley-customization"; \
-	if [ "$$(pwd -P)" != "$$(cd "$$CANON" 2>/dev/null && pwd -P)" ]; then \
-		echo "warning: building outside $$CANON; the version dialog's rebase-upgrade flow assumes that checkout" >&2; \
-	fi; \
-	git fetch --tags origin main; \
-	BASE=$$(git merge-base HEAD origin/main); \
-	TAG=$$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$$BASE") || { \
-		echo "error: no release tag reachable from the merge-base with origin/main; is this a shallow clone? (need a full clone with tags)" >&2; \
-		exit 1; \
-	}; \
-	SHA=$$(git rev-parse --short HEAD); \
-	go build -ldflags "\
-	  -X github.com/semistrict/dago/examples/shelley/version.Version=$${TAG#v}-custom.$$SHA \
-	  -X github.com/semistrict/dago/examples/shelley/version.Tag=$$TAG \
-	  -X github.com/semistrict/dago/examples/shelley/version.Customized=true" \
-	  -o bin/shelley ./cmd/shelley; \
-	echo "Built bin/shelley: customized, based on $$TAG, HEAD $$SHA"
 
 # Build for Linux (auto-detect architecture)
 build-linux: ui templates
@@ -142,7 +117,6 @@ help:
 	@echo "Shelley Build Commands:"
 	@echo ""
 	@echo "  build         Build UI, templates, and Go binary"
-	@echo "  build-custom  Build a customized binary stamped as diverged from mainline"
 	@echo "  build-linux-aarch64  Build for Linux ARM64"
 	@echo "  build-linux-x86      Build for Linux x86_64"
 	@echo "  ui            Build UI only"

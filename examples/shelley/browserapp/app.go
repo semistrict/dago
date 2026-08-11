@@ -215,7 +215,7 @@ func (app *App) Handle(request Request) Response {
 	case method == "GET" && path == "/api/capabilities":
 		shellReady := dabackend.CapabilitiesOf(app.backend).Execute
 		local := []string{"agent", "conversations", "virtual_filesystem", "checkpoint_snapshot"}
-		unavailable := []string{"shell", "pty", "host_filesystem", "git_worktrees", "local_browser_control", "self_update"}
+		unavailable := []string{"shell", "pty", "host_filesystem", "git_worktrees", "local_browser_control"}
 		if shellReady {
 			local = append(local, "shell")
 			unavailable = unavailable[1:]
@@ -284,8 +284,6 @@ func (app *App) Handle(request Request) Response {
 		return app.testCustomModel(request.Body)
 	case strings.HasPrefix(path, "/api/custom-models/"):
 		return app.handleCustomModel(method, strings.TrimPrefix(path, "/api/custom-models/"), request.Body)
-	case method == "POST" && path == "/api/browser-models/restore":
-		return app.restoreCustomModels(request.Body)
 	case method == "GET" && path == "/api/model-costs":
 		return jsonResponse(200, map[string]any{"costs": map[string]any{}})
 	default:
@@ -817,7 +815,7 @@ func (app *App) configureBrowserOpenAI(body string) Response {
 func (app *App) handleCustomModels(method, body string) Response {
 	switch method {
 	case "GET":
-		return jsonResponse(200, app.listCustomModels())
+		return jsonResponse(200, publicCustomModels(app.listCustomModels()))
 	case "POST":
 		var model CustomModel
 		if err := json.Unmarshal([]byte(body), &model); err != nil {
@@ -830,7 +828,7 @@ func (app *App) handleCustomModels(method, body string) Response {
 		if err != nil {
 			return errorResponse(400, err)
 		}
-		return jsonResponse(201, saved)
+		return jsonResponse(201, publicCustomModel(saved))
 	default:
 		return errorResponse(405, fmt.Errorf("method not allowed"))
 	}
@@ -862,14 +860,14 @@ func (app *App) handleCustomModel(method, tail, body string) Response {
 		if err != nil {
 			return errorResponse(400, err)
 		}
-		return jsonResponse(201, saved)
+		return jsonResponse(201, publicCustomModel(saved))
 	}
 	if action != "" {
 		return errorResponse(404, fmt.Errorf("model action not found"))
 	}
 	switch method {
 	case "GET":
-		return jsonResponse(200, existing)
+		return jsonResponse(200, publicCustomModel(existing))
 	case "PUT":
 		var updated CustomModel
 		if err := json.Unmarshal([]byte(body), &updated); err != nil {
@@ -883,7 +881,7 @@ func (app *App) handleCustomModel(method, tail, body string) Response {
 		if err != nil {
 			return errorResponse(400, err)
 		}
-		return jsonResponse(200, saved)
+		return jsonResponse(200, publicCustomModel(saved))
 	case "DELETE":
 		app.mu.Lock()
 		delete(app.customModels, id)
@@ -922,19 +920,6 @@ func (app *App) testCustomModel(body string) Response {
 		return jsonResponse(200, map[string]any{"success": false, "message": "Test failed: empty response from model"})
 	}
 	return jsonResponse(200, map[string]any{"success": true, "message": "Test successful! Response: " + result.Message.TextContent()})
-}
-
-func (app *App) restoreCustomModels(body string) Response {
-	var models []CustomModel
-	if err := json.Unmarshal([]byte(body), &models); err != nil {
-		return errorResponse(400, fmt.Errorf("decode browser models: %w", err))
-	}
-	for _, model := range models {
-		if _, err := app.setCustomModel(model, false); err != nil {
-			return errorResponse(400, err)
-		}
-	}
-	return jsonResponse(200, map[string]string{"status": "restored"})
 }
 
 func (app *App) setCustomModel(model CustomModel, replacing bool) (CustomModel, error) {
@@ -997,6 +982,18 @@ func (app *App) listCustomModels() []CustomModel {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].DisplayName < result[j].DisplayName })
 	return result
+}
+
+func publicCustomModel(model CustomModel) CustomModel {
+	model.APIKey = ""
+	return model
+}
+
+func publicCustomModels(models []CustomModel) []CustomModel {
+	for index := range models {
+		models[index] = publicCustomModel(models[index])
+	}
+	return models
 }
 
 func (app *App) uniqueModelID(modelName string) string {

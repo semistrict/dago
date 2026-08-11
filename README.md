@@ -176,9 +176,8 @@ LangChain or LangGraph compatibility.
 - [`examples/basic`](examples/basic) is a network-free invocation.
 - [`examples/openai`](examples/openai) streams a live workspace summary with an API
   key.
-- [`examples/shelley`](examples/shelley) is the complete imported Shelley
-  application, retained as an end-to-end integration example and behavioral suite
-  while its agent runtime is ported to dago.
+- [`examples/shelley`](examples/shelley) is a copied and modified Shelley
+  application used as an end-to-end dago integration example.
 
 ## Verification
 
@@ -187,8 +186,8 @@ make check
 make checkpoint-interop
 ```
 
-`make check` runs formatting, generated-fixture drift, upstream-pin validation, vet,
-the deterministic suite, and race tests. PostgreSQL integration tests additionally
+`make check` runs formatting, generated-fixture drift, configured upstream-pin
+validation, vet, the deterministic suite, and race tests. PostgreSQL integration tests additionally
 require `DAGO_POSTGRES_TEST_DSN`. Cross-language SQLite fixtures require `uv` and the
 pinned Python packages resolved by the interop script.
 
@@ -200,4 +199,5 @@ cannot constrain shell commands, so an application must use an isolated sandbox 
 omit `execute` when path-level permissions are required. See
 [`docs/SECURITY.md`](docs/SECURITY.md) before exposing an agent or the web example.
 
-The project is MIT licensed. See [`NOTICE`](NOTICE) for reference-project attribution.
+The core project is MIT licensed. The copied and modified Shelley example is
+Apache-2.0 licensed. See [`NOTICE`](NOTICE) for attribution and additional notices.

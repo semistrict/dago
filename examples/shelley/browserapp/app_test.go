@@ -261,6 +261,9 @@ func TestBrowserCustomModelUsesDirectResponsesAPIWithoutPersistingKey(t *testing
 	if model.ModelID == "" || !model.SupportsReasoning || !model.SupportsImages {
 		t.Fatalf("created model = %#v", model)
 	}
+	if model.APIKey != "" || strings.Contains(string(created.Body), "browser-secret") {
+		t.Fatal("create response exposed browser API key")
+	}
 
 	testBody, err := json.Marshal(CustomModel{
 		ModelID: model.ModelID, ProviderType: model.ProviderType, Endpoint: model.Endpoint,
@@ -286,6 +289,10 @@ func TestBrowserCustomModelUsesDirectResponsesAPIWithoutPersistingKey(t *testing
 	}
 	if strings.Contains(string(snapshot), "browser-secret") {
 		t.Fatal("browser API key leaked into durable application snapshot")
+	}
+	listed := app.Handle(Request{Method: "GET", URL: "/api/custom-models"})
+	if strings.Contains(string(listed.Body), "browser-secret") {
+		t.Fatal("custom model listing exposed browser API key")
 	}
 	catalog := app.Handle(Request{Method: "GET", URL: "/api/models"})
 	if !strings.Contains(string(catalog.Body), model.ModelID) {

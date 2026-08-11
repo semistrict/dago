@@ -18,19 +18,10 @@ type RuntimeMessage =
   | { type: "response-error"; id: number; error: string }
   | { type: "stream-event"; event: string };
 
-const runtimePaths = [
-  "/api/",
-  "/feature-flags",
-  "/settings",
-  "/version-check",
-  "/version-changelog",
-  "/upgrade",
-  "/exit",
-];
-const browserModelsKey = "shelley_wasm_models";
-const browserOpenAIKey = "shelley_wasm_openai_key";
+const runtimePaths = ["/api/", "/feature-flags", "/version-check", "/upgrade", "/exit"];
 const browserLocalModelKey = "shelley_wasm_local_model";
 const browserOpenAITestEndpointKey = "shelley_wasm_openai_test_endpoint";
+let browserOpenAIConfigured = false;
 
 function browserOpenAIRequest(apiKey: string): { api_key: string; endpoint?: string } {
   const endpoint = sessionStorage.getItem(browserOpenAITestEndpointKey);
@@ -197,34 +188,10 @@ export async function installWasmRuntime(): Promise<void> {
     if (!isRuntimeRequest(requestURL)) return nativeFetch(input, init);
     if (!runtime) throw new Error("WASM runtime is not installed");
     const request = new Request(input, init);
-    const response = await runtime.fetch(request);
-    if (response.ok && isCustomModelMutation(requestURL.pathname, request.method)) {
-      await saveBrowserModels(runtime);
-    }
-    return response;
+    return runtime.fetch(request);
   };
   globalThis.EventSource = WasmEventSource as unknown as typeof EventSource;
   await runtime.ready;
-
-  const storedOpenAIKey = sessionStorage.getItem(browserOpenAIKey);
-  if (storedOpenAIKey) {
-    const configured = await runtime.fetch("/api/browser-openai-key", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(browserOpenAIRequest(storedOpenAIKey)),
-    });
-    if (!configured.ok) throw new Error(`Failed to restore OpenAI key: ${configured.status}`);
-  }
-
-  const storedModels = sessionStorage.getItem(browserModelsKey);
-  if (storedModels) {
-    const restored = await runtime.fetch("/api/browser-models/restore", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: storedModels,
-    });
-    if (!restored.ok) throw new Error(`Failed to restore browser models: ${restored.status}`);
-  }
 
   const selectedDirectory = localStorage.getItem("shelley_selected_cwd");
   if (selectedDirectory !== "/workspace" && !selectedDirectory?.startsWith("/workspace/")) {
@@ -258,7 +225,7 @@ export function browserOpenAIKeyRequired(): boolean {
   return (
     sessionStorage.getItem("shelley_runtime") === "wasm" &&
     !sessionStorage.getItem(browserLocalModelKey) &&
-    !sessionStorage.getItem(browserOpenAIKey)
+    !browserOpenAIConfigured
   );
 }
 
@@ -277,23 +244,11 @@ export async function configureBrowserOpenAIKey(apiKey: string): Promise<string>
   if (!response.ok) {
     throw new Error(body.error || `OpenAI setup failed: ${response.status}`);
   }
-  sessionStorage.setItem(browserOpenAIKey, normalized);
+  // The worker owns the credential after this request. Do not retain it in
+  // origin-scoped browser storage or in the main-thread application state.
+  browserOpenAIConfigured = true;
   sessionStorage.removeItem(browserLocalModelKey);
   return (
     body.models?.find((model) => model.is_default)?.id || body.models?.[0]?.id || "gpt-5.6-luna"
   );
-}
-
-function isCustomModelMutation(pathname: string, method: string): boolean {
-  if (method === "POST" && pathname === "/api/custom-models") return true;
-  if ((method === "PUT" || method === "DELETE") && pathname.startsWith("/api/custom-models/")) {
-    return true;
-  }
-  return method === "POST" && pathname.endsWith("/duplicate");
-}
-
-async function saveBrowserModels(activeRuntime: WasmRuntime): Promise<void> {
-  const response = await activeRuntime.fetch("/api/custom-models");
-  if (!response.ok) throw new Error(`Failed to retain browser models: ${response.status}`);
-  sessionStorage.setItem(browserModelsKey, JSON.stringify(await response.json()));
 }

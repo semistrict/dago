@@ -21,14 +21,14 @@
     "test:e2e:debug": "pnpm run build && playwright test --debug"
   },
   "dependencies": {
-    "@excalidraw/excalidraw": "0.18.0",
+    "@excalidraw/excalidraw": "0.18.1",
     "@pierre/diffs": "1.1.20",
     "@primeuix/themes": "^2.0.3",
     "@xterm/addon-fit": "0.12.0-beta.213",
     "@xterm/addon-web-links": "0.13.0-beta.213",
     "@xterm/xterm": "6.1.0-beta.213",
     "ansi_up": "^6.0.6",
-    "dompurify": "^3.3.1",
+    "dompurify": "^3.4.13",
     "fflate": "^0.8.3",
     "idb": "^8.0.3",
     "jszip": "^3.10.1",
@@ -72,7 +72,13 @@
       "shiki": "^3.22.0",
       "@shikijs/core": "^3.22.0",
       "@shikijs/engine-javascript": "^3.22.0",
-      "@shikijs/transformers": "^3.22.0"
+      "@shikijs/transformers": "^3.22.0",
+      "sass>immutable": "4.3.9",
+      "postcss": "8.5.23",
+      "lodash-es": "4.18.1",
+      "postcss>nanoid": "3.3.17",
+      "@excalidraw/excalidraw>nanoid": "3.3.17",
+      "@excalidraw/mermaid-to-excalidraw>nanoid": "5.1.16"
     },
     "patchedDependencies": {
       "@primevue/core@4.5.5": "patches/@primevue__core@4.5.5.patch"

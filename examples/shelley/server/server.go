@@ -360,7 +360,6 @@ type Server struct {
 	refreshBuiltModels       func(context.Context) ([]models.Built, error)
 	openAIOAuth              *OpenAIOAuth
 	conversationGroup        singleflight.Group[string, *ConversationManager]
-	versionChecker           *VersionChecker
 	notifDispatcher          *notifications.Dispatcher
 	conversationListStream   *conversationListStream
 	conversationListGitCache *conversationListGitCache
@@ -379,6 +378,10 @@ type Server struct {
 	// the UI. Useful for marking demo instances so they're not confused
 	// with the primary Shelley. Set by `serve --banner`.
 	Banner string
+
+	// Debug enables diagnostic and profiling endpoints. These endpoints are
+	// intentionally absent unless the process was started with --debug.
+	Debug bool
 
 	// hooksDir is the directory searched for user hook scripts
 	// (end-of-turn, new-conversation). Defaults to
@@ -410,7 +413,6 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		predictableOnly:     predictableOnly,
 		defaultModel:        defaultModel,
 		requireHeader:       requireHeader,
-		versionChecker:      NewVersionChecker(),
 		notifDispatcher:     notifications.NewDispatcher(logger),
 		shutdownCh:          make(chan struct{}),
 		hooksDir:            defaultHooksDir(),
@@ -527,12 +529,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Version endpoints
 	mux.Handle("GET /version", http.HandlerFunc(s.handleVersion))
 	mux.Handle("GET /version-check", http.HandlerFunc(s.handleVersionCheck))
-	mux.Handle("GET /version-changelog", http.HandlerFunc(s.handleVersionChangelog))
-	mux.Handle("POST /upgrade", http.HandlerFunc(s.handleUpgrade))
-	mux.Handle("POST /upgrade-headless-shell", http.HandlerFunc(s.handleUpgradeHeadlessShell))
 	mux.Handle("POST /exit", http.HandlerFunc(s.handleExit))
-	mux.Handle("GET /settings", http.HandlerFunc(s.handleGetSettings))
-	mux.Handle("POST /settings", http.HandlerFunc(s.handleSetSetting))
 	mux.Handle("GET /feature-flags", http.HandlerFunc(s.handleGetFeatureFlags))
 	mux.Handle("POST /feature-flags", http.HandlerFunc(s.handleSetFeatureFlag))
 	mux.Handle("DELETE /feature-flags", http.HandlerFunc(s.handleDeleteFeatureFlag))
@@ -542,21 +539,21 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/cache-key", http.HandlerFunc(s.handleCacheKey))
 	mux.Handle("POST /api/cache-session/clear", http.HandlerFunc(s.handleCacheSessionClear))
 
-	// Debug endpoints
-	mux.Handle("GET /debug/conversations", http.HandlerFunc(s.handleDebugConversationsPage))
-	mux.Handle("GET /debug/conversation-stream", http.HandlerFunc(s.handleDebugConversationStreamPage))
-	mux.Handle("GET /debug/conversation-stream/history", http.HandlerFunc(s.handleDebugConversationStreamHistory))
-	mux.Handle("GET /debug/stylebook", http.HandlerFunc(s.handleDebugStylebook))
-	mux.Handle("GET /debug/loremipsum", http.HandlerFunc(s.handleDebugLoremIpsum))
-	mux.Handle("POST /debug/loremipsum", http.HandlerFunc(s.handleDebugLoremIpsum))
-	mux.Handle("GET /debug/histograms", http.HandlerFunc(s.handleDebugHistograms))
+	if s.Debug {
+		mux.Handle("GET /debug/conversations", http.HandlerFunc(s.handleDebugConversationsPage))
+		mux.Handle("GET /debug/conversation-stream", http.HandlerFunc(s.handleDebugConversationStreamPage))
+		mux.Handle("GET /debug/conversation-stream/history", http.HandlerFunc(s.handleDebugConversationStreamHistory))
+		mux.Handle("GET /debug/stylebook", http.HandlerFunc(s.handleDebugStylebook))
+		mux.Handle("GET /debug/loremipsum", http.HandlerFunc(s.handleDebugLoremIpsum))
+		mux.Handle("POST /debug/loremipsum", http.HandlerFunc(s.handleDebugLoremIpsum))
+		mux.Handle("GET /debug/histograms", http.HandlerFunc(s.handleDebugHistograms))
 
-	// pprof endpoints
-	mux.Handle("GET /debug/pprof/", http.HandlerFunc(pprof.Index))
-	mux.Handle("GET /debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
-	mux.Handle("GET /debug/pprof/profile", http.HandlerFunc(pprof.Profile))
-	mux.Handle("GET /debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
-	mux.Handle("GET /debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+		mux.Handle("GET /debug/pprof/", http.HandlerFunc(pprof.Index))
+		mux.Handle("GET /debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
+		mux.Handle("GET /debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+		mux.Handle("GET /debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+		mux.Handle("GET /debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	}
 
 	// Serve embedded UI assets
 	mux.Handle("/", s.staticHandler(ui.Assets()))
@@ -1804,7 +1801,7 @@ func (s *Server) Cleanup() {
 
 // Start starts the HTTP server and handles the complete lifecycle
 func (s *Server) Start(port string) error {
-	listener, err := net.Listen("tcp", ":"+port)
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
 	if err != nil {
 		s.logger.Error("Failed to create listener", "error", err, "port_info", getPortOwnerInfo(port))
 		return err
@@ -1847,9 +1844,6 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 			s.Cleanup()
 		}
 	}()
-
-	// Start auto-upgrade routine
-	go s.autoUpgradeRoutine()
 
 	// Get actual port from listener
 	actualPort := tcpListener.Addr().(*net.TCPAddr).Port
@@ -1952,124 +1946,6 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 
 	s.logger.Info("Server exited")
 	return nil
-}
-
-// autoUpgradeRoutine checks for upgrades every 24 hours if auto-upgrade is enabled
-func (s *Server) autoUpgradeRoutine() {
-	// Wait a bit before starting to let the server fully initialize
-	timer := time.NewTimer(1 * time.Minute)
-	defer timer.Stop()
-
-	select {
-	case <-timer.C:
-		// Continue to main loop
-	case <-s.shutdownCh:
-		return
-	}
-
-	// Do initial check after startup delay
-	s.tryAutoUpgrade()
-
-	ticker := time.NewTicker(24 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			s.tryAutoUpgrade()
-		case <-s.shutdownCh:
-			return
-		}
-	}
-}
-
-// tryAutoUpgrade attempts to upgrade if auto-upgrade is enabled and server is idle
-func (s *Server) tryAutoUpgrade() {
-	ctx := context.Background()
-
-	// Check if auto-upgrade is enabled
-	autoUpgradeEnabled, err := s.db.GetSetting(ctx, "auto_upgrade")
-	if err != nil || autoUpgradeEnabled != "true" {
-		return
-	}
-
-	// Check for updates first
-	versionInfo, err := s.versionChecker.Check(ctx, true)
-	if err != nil {
-		s.logger.Error("Auto-upgrade version check failed", "error", err)
-		return
-	}
-
-	if !versionInfo.HasUpdate {
-		s.logger.Debug("Auto-upgrade: no update available")
-		return
-	}
-
-	if versionInfo.Customized {
-		s.logger.Info("Auto-upgrade: skipping customized build (upgrade via rebase; see customizing-shelley skill)")
-		return
-	}
-
-	s.logger.Info("Auto-upgrade: update available", "current", versionInfo.CurrentTag, "latest", versionInfo.LatestTag)
-
-	// Try to find an idle spot for up to 1 hour (check every 10 minutes)
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-	timeout := time.After(1 * time.Hour)
-
-	// Check immediately first
-	if s.isServerIdle() {
-		s.performUpgradeAndRestart(ctx, versionInfo)
-		return
-	}
-
-	s.logger.Info("Auto-upgrade: waiting for idle window (will retry for 1 hour)")
-
-	for {
-		select {
-		case <-ticker.C:
-			if s.isServerIdle() {
-				s.performUpgradeAndRestart(ctx, versionInfo)
-				return
-			}
-			s.logger.Debug("Auto-upgrade: server still busy, will retry")
-		case <-timeout:
-			s.logger.Info("Auto-upgrade: timed out waiting for idle window (1 hour)")
-			return
-		case <-s.shutdownCh:
-			return
-		}
-	}
-}
-
-// isServerIdle checks if any conversations are actively running
-func (s *Server) isServerIdle() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, cm := range s.activeConversations {
-		if cm.IsAgentWorking() {
-			return false
-		}
-	}
-	return true
-}
-
-// performUpgradeAndRestart performs the upgrade and restarts the server
-func (s *Server) performUpgradeAndRestart(ctx context.Context, versionInfo *VersionInfo) {
-	s.logger.Info("Auto-upgrade: starting upgrade", "current", versionInfo.CurrentTag, "latest", versionInfo.LatestTag)
-
-	err := s.versionChecker.DoUpgrade(ctx)
-	if err != nil {
-		s.logger.Error("Auto-upgrade failed", "error", err)
-		return
-	}
-
-	s.logger.Info("Auto-upgrade complete, restarting")
-
-	// Exit to trigger restart (systemd will restart us)
-	time.Sleep(100 * time.Millisecond)
-	os.Exit(0)
 }
 
 // resolveSocketPath finds an available socket path. If the requested path has a

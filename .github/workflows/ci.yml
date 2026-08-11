@@ -8,19 +8,89 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  core:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.26.x'
+          go-version-file: examples/shelley/go.mod
           cache: true
-      - run: test -z "$(gofmt -l .)"
-      - run: go run ./internal/conformance/cmd/generate -check
+      - run: make check
+
+  shelley:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/shelley
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: examples/shelley/go.mod
+          cache-dependency-path: examples/shelley/go.sum
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          package_json_file: examples/shelley/ui/package.json
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: examples/shelley/ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: examples/shelley/ui
+      - run: pnpm type-check
+        working-directory: examples/shelley/ui
+      - run: pnpm type-check:vue
+        working-directory: examples/shelley/ui
+      - run: pnpm lint
+        working-directory: examples/shelley/ui
+      - run: pnpm test
+        working-directory: examples/shelley/ui
+      - run: pnpm build
+        working-directory: examples/shelley/ui
       - run: go vet ./...
       - run: go test ./...
       - run: go test -race ./...
+      - run: pnpm audit --prod --audit-level low
+        working-directory: examples/shelley/ui
+
+  browser:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/shelley/ui
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: examples/shelley/go.sum
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          package_json_file: examples/shelley/ui/package.json
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: examples/shelley/ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - run: pnpm test:e2e:wasm
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11 # v3.96.0
+        with:
+          path: ./
+          base: ""
+          head: ${{ github.sha }}
+          extra_args: --only-verified

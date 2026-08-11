@@ -25,10 +25,7 @@ type PermissionCallback func(command string) error
 // just-in-time package validation.
 var PreferredToolModels = []string{"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "predictable"}
 
-const (
-	EnableBashToolJITInstall = true
-	NoBashToolJITInstall     = false
-)
+const NoBashToolJITInstall = false
 
 func isNoTrailerSet() bool {
 	out, err := exec.Command("git", "config", "--get", "shelley.no-trailer").Output()
@@ -148,55 +145,92 @@ func (installer commandInstaller) finishToolInstall(ctx context.Context, command
 	if response == "" {
 		return fmt.Errorf("no package name provided for tool %s", command)
 	}
+	if !validPackageName(response) {
+		return fmt.Errorf("invalid package name returned for tool %s", command)
+	}
 	return installer.installPackage(ctx, command, response, manager)
 }
 
 func (installer commandInstaller) installPackage(ctx context.Context, command, packageName, manager string) error {
-	var updateCommand, installCommand string
-	switch manager {
-	case "apt", "apt-get":
-		updateCommand = fmt.Sprintf("sudo %s update", manager)
-		installCommand = fmt.Sprintf("sudo %s install -y %s", manager, packageName)
-	case "brew":
-		installCommand = fmt.Sprintf("brew install %s", packageName)
-	case "apk":
-		updateCommand = "sudo apk update"
-		installCommand = fmt.Sprintf("sudo apk add %s", packageName)
-	case "yum", "dnf":
-		installCommand = fmt.Sprintf("sudo %s install -y %s", manager, packageName)
-	case "pacman":
-		updateCommand = "sudo pacman -Sy"
-		installCommand = fmt.Sprintf("sudo pacman -S --noconfirm %s", packageName)
-	case "zypper":
-		updateCommand = "sudo zypper refresh"
-		installCommand = fmt.Sprintf("sudo zypper install -y %s", packageName)
-	case "xbps-install":
-		updateCommand = "sudo xbps-install -S"
-		installCommand = fmt.Sprintf("sudo xbps-install -y %s", packageName)
-	case "emerge":
-		installCommand = fmt.Sprintf("sudo emerge %s", packageName)
-	case "nix-env":
-		installCommand = fmt.Sprintf("nix-env -i %s", packageName)
-	case "guix":
-		installCommand = fmt.Sprintf("guix install %s", packageName)
-	case "pkg":
-		updateCommand = "sudo pkg update"
-		installCommand = fmt.Sprintf("sudo pkg install -y %s", packageName)
-	case "slackpkg":
-		updateCommand = "sudo slackpkg update"
-		installCommand = fmt.Sprintf("sudo slackpkg install %s", packageName)
-	default:
-		return fmt.Errorf("unsupported package manager: %s", manager)
+	updateCommand, installCommand, err := packageInstallCommands(manager, packageName)
+	if err != nil {
+		return err
 	}
-	if updateCommand != "" {
-		if output, err := exec.CommandContext(ctx, "sh", "-c", updateCommand).CombinedOutput(); err != nil {
-			slog.WarnContext(ctx, "package cache update failed, proceeding with install anyway", "error", err, "output", string(output))
+	if updateCommand.name != "" {
+		if output, runErr := exec.CommandContext(ctx, updateCommand.name, updateCommand.args...).CombinedOutput(); runErr != nil {
+			slog.WarnContext(ctx, "package cache update failed, proceeding with install anyway", "error", runErr, "output", string(output))
 		}
 	}
-	output, err := exec.CommandContext(ctx, "sh", "-c", installCommand).CombinedOutput()
+	output, err := exec.CommandContext(ctx, installCommand.name, installCommand.args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to install %s: %w\nOutput: %s", packageName, err, string(output))
 	}
 	slog.InfoContext(ctx, "tool installation successful", "tool", command, "package", packageName)
 	return nil
+}
+
+type packageCommand struct {
+	name string
+	args []string
+}
+
+func packageInstallCommands(manager, packageName string) (packageCommand, packageCommand, error) {
+	if !validPackageName(packageName) {
+		return packageCommand{}, packageCommand{}, fmt.Errorf("invalid package name")
+	}
+	var updateCommand, installCommand packageCommand
+	switch manager {
+	case "apt", "apt-get":
+		updateCommand = packageCommand{name: "sudo", args: []string{manager, "update"}}
+		installCommand = packageCommand{name: "sudo", args: []string{manager, "install", "-y", packageName}}
+	case "brew":
+		installCommand = packageCommand{name: "brew", args: []string{"install", packageName}}
+	case "apk":
+		updateCommand = packageCommand{name: "sudo", args: []string{"apk", "update"}}
+		installCommand = packageCommand{name: "sudo", args: []string{"apk", "add", packageName}}
+	case "yum", "dnf":
+		installCommand = packageCommand{name: "sudo", args: []string{manager, "install", "-y", packageName}}
+	case "pacman":
+		updateCommand = packageCommand{name: "sudo", args: []string{"pacman", "-Sy"}}
+		installCommand = packageCommand{name: "sudo", args: []string{"pacman", "-S", "--noconfirm", packageName}}
+	case "zypper":
+		updateCommand = packageCommand{name: "sudo", args: []string{"zypper", "refresh"}}
+		installCommand = packageCommand{name: "sudo", args: []string{"zypper", "install", "-y", packageName}}
+	case "xbps-install":
+		updateCommand = packageCommand{name: "sudo", args: []string{"xbps-install", "-S"}}
+		installCommand = packageCommand{name: "sudo", args: []string{"xbps-install", "-y", packageName}}
+	case "emerge":
+		installCommand = packageCommand{name: "sudo", args: []string{"emerge", packageName}}
+	case "nix-env":
+		installCommand = packageCommand{name: "nix-env", args: []string{"-i", packageName}}
+	case "guix":
+		installCommand = packageCommand{name: "guix", args: []string{"install", packageName}}
+	case "pkg":
+		updateCommand = packageCommand{name: "sudo", args: []string{"pkg", "update"}}
+		installCommand = packageCommand{name: "sudo", args: []string{"pkg", "install", "-y", packageName}}
+	case "slackpkg":
+		updateCommand = packageCommand{name: "sudo", args: []string{"slackpkg", "update"}}
+		installCommand = packageCommand{name: "sudo", args: []string{"slackpkg", "install", packageName}}
+	default:
+		return packageCommand{}, packageCommand{}, fmt.Errorf("unsupported package manager: %s", manager)
+	}
+	return updateCommand, installCommand, nil
+}
+
+func validPackageName(name string) bool {
+	if name == "" || len(name) > 256 || strings.HasPrefix(name, "-") {
+		return false
+	}
+	for _, char := range name {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
+			continue
+		}
+		switch char {
+		case '-', '_', '.', '+', ':', '/', '@', '=':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }

@@ -18,6 +18,13 @@ import { browserWasmBuild } from "../basePath";
 import App from "./App.vue";
 import ExportPage from "./components/ExportPage.vue";
 
+function initializeServerData(): void {
+  if (window.__SHELLEY_INIT__) return;
+  const element = document.getElementById("shelley-init");
+  if (!element?.textContent) return;
+  window.__SHELLEY_INIT__ = JSON.parse(element.textContent);
+}
+
 async function initializeRuntime(): Promise<void> {
   const runtimeKey = "shelley_runtime";
   const queryRuntime = new URLSearchParams(window.location.search).get("runtime");
@@ -29,6 +36,7 @@ async function initializeRuntime(): Promise<void> {
 }
 
 // Apply theme before render to avoid a flash of the wrong color scheme.
+initializeServerData();
 initializeTheme();
 
 const rootElement = document.getElementById("root");

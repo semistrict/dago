@@ -14,7 +14,6 @@ generate:
 drift:
 	go run ./internal/conformance/cmd/generate -check
 	sh scripts/check-upstream.sh
-	sh scripts/check-shelley-test-contracts.sh
 
 vet:
 	go vet ./...

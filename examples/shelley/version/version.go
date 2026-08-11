@@ -7,10 +7,9 @@ import (
 	"runtime/debug"
 )
 
-// Version, Tag, and Customized are set at build time via ldflags.
-// Customized is set to "true" by 'make build-custom' for user-customized
-// builds (see the customizing-shelley skill); Tag then holds the upstream
-// release tag the custom branch diverged from.
+// Version, Tag, and Customized may be set at build time via ldflags.
+// Customized identifies a locally modified build when set by a downstream
+// packager.
 var (
 	Version    = "dev"
 	Tag        = ""

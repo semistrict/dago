@@ -29,7 +29,7 @@ func TestSystemPromptIncludesCwdGuidanceFiles(t *testing.T) {
 	}
 
 	// Generate system prompt for this directory
-	prompt, err := GenerateSystemPrompt(tmpDir)
+	prompt, err := GenerateSystemPrompt(tmpDir, withTrustedWorkspaceGuidance())
 	if err != nil {
 		t.Fatalf("GenerateSystemPrompt failed: %v", err)
 	}
@@ -44,6 +44,21 @@ func TestSystemPromptIncludesCwdGuidanceFiles(t *testing.T) {
 	// Verify the file path is mentioned in guidance section
 	if !strings.Contains(prompt, agentsFile) {
 		t.Errorf("system prompt should reference the AGENTS.md file path")
+	}
+}
+
+func TestSystemPromptExcludesWorkspaceGuidanceByDefault(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("UNTRUSTED_WORKSPACE_MARKER"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := GenerateSystemPrompt(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "UNTRUSTED_WORKSPACE_MARKER") {
+		t.Fatal("workspace guidance was included without explicit trust")
 	}
 }
 

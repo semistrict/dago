@@ -83,12 +83,12 @@ explicitly, so retry layers cannot multiply transport attempts.
 
 Completion requires all of the following:
 
-1. `make drift` proves the complete original test corpus is still represented after
-   native API migrations.
-2. Every original Go package test passes, including race runs and Linux-only cases.
-3. Every original UI unit test, Playwright specification, and LazyCue scenario passes.
+1. `make drift` proves generated compatibility fixtures match their checked-in inputs
+   and validates any explicitly configured reference checkout.
+2. Every current Go package test passes, including race runs and Linux-only cases.
+3. Every current UI unit test, Playwright specification, and LazyCue scenario passes.
 4. Provider integration suites pass against the native dago provider implementations.
 5. Browser tests prove approvals, continuation, cancellation, tool ordering, streaming,
-   OAuth, and Luna behavior through the real application.
+   and configured-provider behavior through the real application.
 6. The executable dependency graph contains no `dagoruntime` package and no reachable
    legacy Shelley model/tool loop.

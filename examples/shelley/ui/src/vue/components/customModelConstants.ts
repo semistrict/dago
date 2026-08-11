@@ -14,9 +14,9 @@ export const PROVIDER_LABELS: Record<ProviderType, string> = {
 // Autocomplete suggestions offered for the model-name field, per provider.
 export const DEFAULT_MODELS: Record<ProviderType, { name: string; model_name: string }[]> = {
   "openai-responses": [
-	{ name: "GPT-5.6 Sol", model_name: "gpt-5.6-sol" },
-	{ name: "GPT-5.6 Terra", model_name: "gpt-5.6-terra" },
-	{ name: "GPT-5.6 Luna", model_name: "gpt-5.6-luna" },
+    { name: "GPT-5.6 Sol", model_name: "gpt-5.6-sol" },
+    { name: "GPT-5.6 Terra", model_name: "gpt-5.6-terra" },
+    { name: "GPT-5.6 Luna", model_name: "gpt-5.6-luna" },
     { name: "GPT-5.5", model_name: "gpt-5.5" },
     { name: "GPT-5.4", model_name: "gpt-5.4" },
     { name: "GPT-5.4 mini", model_name: "gpt-5.4-mini" },
@@ -58,8 +58,8 @@ export interface FormData {
 
 export const emptyForm: FormData = {
   display_name: "",
-	provider_type: "openai-responses",
-	endpoint: DEFAULT_ENDPOINTS["openai-responses"],
+  provider_type: "openai-responses",
+  endpoint: DEFAULT_ENDPOINTS["openai-responses"],
   endpoint_custom: false,
   api_key: "",
   model_name: "",

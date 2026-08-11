@@ -1,73 +1,29 @@
 # Upstream manifest
 
-This manifest anchors every normative source used by the port. Updating a revision
-requires reviewing the named surfaces, their tests, generated compatibility fixtures,
-and any affected intentional differences.
+[`upstream-manifest.json`](upstream-manifest.json) pins every normative source
+used by the port. Updating a revision requires reviewing the named source
+surfaces, their tests, generated compatibility fixtures, and intentional
+differences.
 
-| Project | Repository | Revision | Local checkout |
-|---|---|---|---|
-| Deep Agents Python | `langchain-ai/deepagents` | `d60560d695e8c436e11dee96965e7a1447409737` | `/Users/ramon/src/deepagents` |
-| LangGraph Python | `langchain-ai/langgraph` | `fde3068970679184b68d3d068a92c83c966a4888` | `/Users/ramon/src/langgraph` |
-| LangChain Python | `langchain-ai/langchain` | `d048fbe170573b6e7056b5ef5f78d8451e54abaf` | `/Users/ramon/src/langchain-py` |
-| Deep Agents TypeScript | `langchain-ai/deepagentsjs` | `945b362d06d03728d16bc0020cb242a9eeae8451` | `/Users/ramon/src/deepagentsjs` |
-| LangChain TypeScript | `langchain-ai/langchainjs` | `62fc484b2a0d1ec5b8bebff4a8a0efe6300ada72` | `/Users/ramon/src/langchain` |
-| Shelley | `boldsoftware/shelley` | `1d4cbe79c6be45cc0105d46819cb54844f98eddd` | `/Users/ramon/src/shelley` |
+Optional local checkouts are configured by environment variable; no checkout
+path is embedded in the repository.
 
-## Normative surfaces
+| Project | Revision | Checkout variable |
+|---|---|---|
+| Deep Agents Python | `d60560d695e8c436e11dee96965e7a1447409737` | `DEEPAGENTS_PYTHON_ROOT` |
+| LangGraph Python | `fde3068970679184b68d3d068a92c83c966a4888` | `LANGGRAPH_PYTHON_ROOT` |
+| LangChain Python | `d048fbe170573b6e7056b5ef5f78d8451e54abaf` | `LANGCHAIN_PYTHON_ROOT` |
+| Deep Agents TypeScript | `945b362d06d03728d16bc0020cb242a9eeae8451` | `DEEPAGENTS_TYPESCRIPT_ROOT` |
+| LangChain TypeScript | `62fc484b2a0d1ec5b8bebff4a8a0efe6300ada72` | `LANGCHAIN_TYPESCRIPT_ROOT` |
+| Shelley | `1d4cbe79c6be45cc0105d46819cb54844f98eddd` | `SHELLEY_UPSTREAM_ROOT` |
 
-### Deep Agents
-
-- `libs/deepagents/deepagents/graph.py`
-- `libs/deepagents/deepagents/backends`
-- `libs/deepagents/deepagents/middleware`
-- Public tests for constructor, middleware, backends, subagents, context management,
-  skills, memory, profiles, and structured responses
-
-### LangGraph
-
-- `libs/langgraph/langgraph/channels`
-- `libs/langgraph/langgraph/graph`
-- `libs/langgraph/langgraph/pregel`
-- `libs/langgraph/langgraph/types.py`
-- `libs/checkpoint/langgraph/checkpoint`
-- `libs/checkpoint-sqlite/langgraph/checkpoint/sqlite`
-- `libs/checkpoint-postgres/langgraph/checkpoint/postgres`
-- `libs/checkpoint-conformance/langgraph/checkpoint/conformance/spec`
-
-### LangChain
-
-- `libs/langchain_v1/langchain/agents/factory.py`
-- `libs/langchain_v1/langchain/agents/middleware`
-- `libs/langchain_v1/langchain/agents/structured_output.py`
-- `libs/langchain_v1/langchain/chat_models/base.py`
-- `libs/core/langchain_core/messages`
-- `libs/core/langchain_core/language_models`
-- `libs/core/langchain_core/tools`
-- `libs/core/langchain_core/runnables/config.py`
-
-### Shelley
-
-The original Shelley tests and their fixtures are the behavioral contract for the
-dago-native example. Original hashes remain recorded in
-`docs/shelley-upstream-tests.sha256` for provenance. The active migration inventory
-is `docs/shelley-upstream-test-contracts.tsv`; `make drift` fails if an artifact or
-named Go case disappears, or if a UI test file loses test calls. Tests may otherwise
-be migrated to native dago APIs. To regenerate both baselines after intentionally
-advancing the pinned upstream revision, run:
-
-```sh
-sh scripts/sync-shelley-upstream-tests.sh /Users/ramon/src/shelley
-sh scripts/generate-shelley-test-contracts.sh /Users/ramon/src/shelley
-```
-
-Additional dago-specific tests may be added. Existing cases may change only to follow
-the native API replacement while preserving their behavioral assertion.
+`make drift` validates the manifest structure and verifies the exact Git
+revision of each checkout whose variable is set. Missing optional checkouts do
+not make the normal suite machine-specific.
 
 ## Provenance rules
 
 - Port observable contracts and intended behavior, not source structure.
-- Cite the upstream file and test in every generated compatibility fixture.
-- Preserve upstream license notices when code or fixture data is copied
-  substantially.
-- Treat existing Go experiments as non-normative until a behavior is independently
-  established by the pinned sources.
+- Cite the upstream file and test in generated compatibility fixtures.
+- Preserve license notices when source or fixture data is copied substantially.
+- Treat experiments as non-normative until pinned sources establish a behavior.

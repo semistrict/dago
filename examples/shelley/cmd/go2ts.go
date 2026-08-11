@@ -12,11 +12,11 @@ import (
 	"os"
 	"time"
 
-	"go.skia.org/infra/go/go2ts"
 	"github.com/semistrict/dago/examples/shelley/db"
 	"github.com/semistrict/dago/examples/shelley/db/generated"
 	"github.com/semistrict/dago/examples/shelley/llm"
 	"github.com/semistrict/dago/examples/shelley/server/notifications"
+	"go.skia.org/infra/go/go2ts"
 )
 
 func main() {

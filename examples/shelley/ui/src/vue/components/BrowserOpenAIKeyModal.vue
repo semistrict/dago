@@ -14,7 +14,9 @@
         placeholder="sk-…"
         :disabled="saving"
       />
-      <p class="browser-key-note">Kept in this tab session. It is not stored with conversations.</p>
+      <p class="browser-key-note">
+        Kept only in worker memory. You will be asked again after reloading the page.
+      </p>
       <p v-if="error" class="browser-key-error" role="alert">{{ error }}</p>
 
       <div class="browser-key-actions">

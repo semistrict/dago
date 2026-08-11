@@ -1570,6 +1570,9 @@ func hasNonSystemMessages(messages []generated.Message) bool {
 
 func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generated.Message, error) {
 	opts := []SystemPromptOption{withoutPromptSkills()}
+	if cm.toolSetConfig.TrustWorkspaceGuidance {
+		opts = append(opts, withTrustedWorkspaceGuidance())
+	}
 	systemPrompt, err := GenerateSystemPrompt(cm.cwd, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate system prompt: %w", err)
@@ -1849,7 +1852,12 @@ func (cm *ConversationManager) ensureLoop(chat damodel.Chat, modelID string) err
 	if info, err := collectGitInfo(cwd); err == nil {
 		gitRoot = info.Root
 	}
-	skillCatalog := skills.ListAll(cwd, gitRoot)
+	skillCatalog := skills.ListTrusted()
+	skillCommand := "shelley skill cat-trusted "
+	if toolSetConfig.TrustWorkspaceGuidance {
+		skillCatalog = skills.ListAll(cwd, gitRoot)
+		skillCommand = "shelley skill cat "
+	}
 	// streamFlusher batches LLM stream deltas and flushes them periodically
 	// to avoid overwhelming the subpub channel (buffer=10) with hundreds
 	// of individual deltas per second from the Anthropic SSE stream.
@@ -1888,7 +1896,7 @@ func (cm *ConversationManager) ensureLoop(chat damodel.Chat, modelID string) err
 		FilesystemTools: toolSet.FilesystemTools(),
 		SkillCatalog:    skillCatalog,
 		SkillActivation: func(item dago.Skill) string {
-			return "Run `shelley skill cat " + item.Name + "` to load the full instructions"
+			return "Run `" + skillCommand + item.Name + "` to load the full instructions"
 		},
 	})
 

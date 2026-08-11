@@ -628,7 +628,7 @@ func TestConversationCwdReturnedInList(t *testing.T) {
 // is created with a specific cwd, the system prompt is generated using that
 // directory (not the server's working directory). This tests the fix for
 // https://github.com/boldsoftware/shelley/issues/30
-func TestSystemPromptUsesCwdFromConversation(t *testing.T) {
+func TestSystemPromptUsesTrustedGuidanceFromConversationCwd(t *testing.T) {
 	t.Parallel()
 	// Create a temp directory with an AGENTS.md file
 	tmpDir, err := os.MkdirTemp("", "shelley_cwd_test")
@@ -645,6 +645,7 @@ func TestSystemPromptUsesCwdFromConversation(t *testing.T) {
 	}
 
 	h := NewTestHarness(t)
+	h.server.toolSetConfig.TrustWorkspaceGuidance = true
 
 	// Create a conversation with the temp directory as cwd
 	h.NewConversation("bash: echo hello", tmpDir)

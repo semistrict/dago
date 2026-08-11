@@ -2,16 +2,16 @@
 // The actual port is communicated via --port-file, then exported as
 // PLAYWRIGHT_TEST_BASE_URL so every worker's baseURL fixture picks it up.
 
-import { execSync, spawn, type ChildProcess } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { execSync, spawn, type ChildProcess } from "child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import path from "path";
+import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const shelleyDir = path.resolve(__dirname, '../..');
-const binPath = path.join(shelleyDir, 'bin', 'shelley');
+const shelleyDir = path.resolve(__dirname, "../..");
+const binPath = path.join(shelleyDir, "bin", "shelley");
 
 let serverProcess: ChildProcess | null = null;
 let tempDir: string | null = null;
@@ -26,39 +26,48 @@ export default async function globalSetup() {
   // Always rebuild after the UI build performed by test:e2e. Reusing an older
   // binary would reuse the UI files embedded in that binary even though dist/
   // now contains the current build.
-  console.log('Building shelley binary…');
-  execSync('go build -o bin/shelley ./cmd/shelley', {
+  console.log("Building shelley binary…");
+  execSync("go build -o bin/shelley ./cmd/shelley", {
     cwd: shelleyDir,
-    stdio: 'inherit',
+    stdio: "inherit",
   });
 
   // Create temp dir for database and port file.
-  tempDir = mkdtempSync(path.join(tmpdir(), 'shelley-e2e-'));
-  const testDb = path.join(tempDir, 'test.db');
-  const portFile = path.join(tempDir, 'port');
+  tempDir = mkdtempSync(path.join(tmpdir(), "shelley-e2e-"));
+  const testDb = path.join(tempDir, "test.db");
+  const portFile = path.join(tempDir, "port");
 
   console.log(`Starting shelley (db=${testDb}, port-file=${portFile})`);
 
   let earlyExit = false;
   let exitCode: number | null = null;
 
-  serverProcess = spawn(binPath, [
-    '--predictable-only',
-    '--db', testDb,
-    'serve',
-    '--port', '0',
-    '--port-file', portFile,
-    '--socket', 'none',
-  ], {
-    cwd: shelleyDir,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      PREDICTABLE_DELAY_MS: process.env.PREDICTABLE_DELAY_MS || '20',
+  serverProcess = spawn(
+    binPath,
+    [
+      "--debug",
+      "--predictable-only",
+      "--db",
+      testDb,
+      "serve",
+      "--port",
+      "0",
+      "--port-file",
+      portFile,
+      "--socket",
+      "none",
+    ],
+    {
+      cwd: shelleyDir,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        PREDICTABLE_DELAY_MS: process.env.PREDICTABLE_DELAY_MS || "20",
+      },
     },
-  });
+  );
 
-  serverProcess.on('exit', (code) => {
+  serverProcess.on("exit", (code) => {
     earlyExit = true;
     exitCode = code;
   });
@@ -70,12 +79,12 @@ export default async function globalSetup() {
       throw new Error(`Shelley server exited (code ${exitCode}) before writing port file`);
     }
     if (Date.now() > deadline) {
-      throw new Error('Shelley server did not write port file within 30s');
+      throw new Error("Shelley server did not write port file within 30s");
     }
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 50));
   }
 
-  const port = readFileSync(portFile, 'utf8').trim();
+  const port = readFileSync(portFile, "utf8").trim();
   const baseURL = `http://localhost:${port}`;
   console.log(`Shelley test server listening at ${baseURL}`);
 
@@ -88,11 +97,14 @@ export default async function globalSetup() {
     }
     try {
       const res = await fetch(baseURL);
-      if (res.ok) { httpReady = true; break; }
+      if (res.ok) {
+        httpReady = true;
+        break;
+      }
     } catch {
       // not ready yet
     }
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
   }
   if (!httpReady) {
     throw new Error(`Shelley server at ${baseURL} never responded OK within 30s`);
@@ -104,7 +116,7 @@ export default async function globalSetup() {
   // Return teardown function.
   return async () => {
     if (serverProcess) {
-      serverProcess.kill('SIGTERM');
+      serverProcess.kill("SIGTERM");
       serverProcess = null;
     }
     if (tempDir) {

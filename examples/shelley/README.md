@@ -1,87 +1,45 @@
-# Shelley
+# Shelley example
 
-Shelley is a mobile-friendly, web-based, multi-conversation, multi-modal,
-multi-model, single-user coding agent. It does not include authorization or
-sandboxing; deployments must provide those boundaries.
+Shelley is a browser-based, multi-conversation coding-agent example built on
+dago. This subtree was copied from and modified from the upstream Shelley
+application; see [`UPSTREAM.md`](UPSTREAM.md) and [`LICENSE`](LICENSE).
 
-*Mobile-friendly* because ideas can come any time.
+## Run locally
 
-*Web-based*, because terminal-based scroll back is punishment for shoplifting in some countries.
+Install the UI dependencies with pnpm, then build and run the native server:
 
-*Multi-modal* because screenshots, charts, and graphs are necessary, not to mention delightful.
-
-*Multi-model* to benefit from all the innovation going on.
-
-*Single-user* because it makes sense to bring the agent to the compute.
-
-# Installation
-
-## Pre-Built Binaries (macOS/Linux)
-
-```bash
-curl -Lo shelley "https://github.com/boldsoftware/shelley/releases/latest/download/shelley_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x shelley
+```sh
+cd examples/shelley/ui
+pnpm install --frozen-lockfile
+cd ..
+make serve
 ```
 
-The binaries are on the [releases page](https://github.com/boldsoftware/shelley/releases/latest).
+The server listens on loopback by default. It has no multi-user authorization
+or process sandbox: do not expose it to an untrusted network, and do not enable
+host shell tools outside an appropriately isolated environment.
 
-## Homebrew (macOS)
+Repository guidance files and repository skills are disabled by default. After
+reviewing a workspace, opt in with `serve --trust-workspace-guidance`.
 
-```bash
-brew install --cask boldsoftware/tap/shelley
+## Run in a browser only
+
+```sh
+make wasm-serve
 ```
 
-## Build from Source
+The browser build prompts once for an OpenAI API key and keeps it in the Web
+Worker's memory. Reloading the page clears the key. Files and shell commands use
+the browser-local virtual filesystem and do not access the host.
 
-You'll need Go and Node.
+## Verify
 
-```bash
-git clone https://github.com/boldsoftware/shelley.git
-cd shelley
-make
+```sh
+make test
 ```
 
-# Releases
+The UI directory also provides `pnpm test`, `pnpm typecheck`,
+`pnpm test:e2e`, and `pnpm test:e2e:wasm`.
 
-New releases are automatically created on every commit to `main`. Versions
-follow the pattern `v0.N.9OCTAL` where N is the total commit count and 9OCTAL is the commit SHA encoded as octal (prefixed with 9).
-
-# Architecture
-
-The technical stack is Go for the backend, SQLite for storage, and Typescript
-with Vue 3 + PrimeVue for the UI.
-
-The data model is that Conversations have Messages, which might be from the
-user, the model, the tools, or the harness. All of that is stored in the
-database, and we use a SSE endpoint to keep the UI updated.
-
-# History
-
-Shelley is partially based on our previous coding agent effort, [Sketch](https://github.com/boldsoftware/sketch).
-
-Unsurprisingly, much of Shelley is written by Shelley, Sketch, Claude Code, and other coding agents.
-
-# Shelley's Name
-
-Shelley is so named because the main tool it uses is the shell, and I like
-putting "-ey" at the end of words. It is also named after Percy Bysshe Shelley,
-with an appropriately ironic nod at
-"[Ozymandias](https://www.poetryfoundation.org/poems/46565/ozymandias)."
-Shelley is a computer program, and, it's an it.
-
-# Open source
-
-Shelley is Apache licensed. We require a CLA for contributions.
-
-# Building Shelley
-
-Run `make`. Run `make serve` to start Shelley locally.
-
-## Dev Tricks
-
-If you want to see how mobile looks, and you're on your home
-network where you've got mDNS working fine, you can
-run
-
-```
-socat TCP-LISTEN:9001,fork TCP:localhost:9000
-```
+The browser artifact includes a generated CycloneDX SBOM and third-party
+notices alongside the application files.

@@ -14,9 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -698,9 +696,11 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 	faviconDataURI := "data:image/svg+xml," + url.PathEscape(faviconSVG)
 	faviconLink := fmt.Sprintf(`<link rel="icon" type="image/svg+xml" href="%s"/>`, faviconDataURI)
 
-	// Inject the script tag and favicon before </head>
-	initScript := fmt.Sprintf(`<script>window.__SHELLEY_INIT__=%s;</script>`, initJSON)
-	injection := faviconLink + initScript
+	// Embed initialization as inert JSON. The external UI bundle parses this
+	// before mounting, which keeps the page compatible with a strict CSP that
+	// does not permit inline executable scripts.
+	initElement := fmt.Sprintf(`<script id="shelley-init" type="application/json">%s</script>`, initJSON)
+	injection := faviconLink + initElement
 	modifiedHTML := strings.Replace(string(indexHTML), "</head>", injection+"</head>", 1)
 
 	w.Write([]byte(modifiedHTML))
@@ -1817,7 +1817,6 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Vary", "Accept-Encoding")
 
 	// Compress SSE stream when the client accepts gzip or zstd. We keep a
@@ -3000,211 +2999,16 @@ func (s *Server) handleUpdateConversationTags(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(conversation)
 }
 
-// handleVersionCheck returns version check information including update availability
+// handleVersionCheck reports the running build without contacting an external
+// release service. This example deliberately does not update its own binary.
 func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
-	forceRefresh := r.URL.Query().Get("refresh") == "true"
-
-	info, err := s.versionChecker.Check(r.Context(), forceRefresh)
-	if err != nil {
-		s.logger.Error("Version check failed", "error", err)
-		http.Error(w, "Version check failed", http.StatusInternalServerError)
-		return
-	}
-
+	info := version.GetInfo()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(info)
-}
-
-// handleVersionChangelog returns the changelog between current and latest versions
-func (s *Server) handleVersionChangelog(w http.ResponseWriter, r *http.Request) {
-	currentTag := r.URL.Query().Get("current")
-	latestTag := r.URL.Query().Get("latest")
-
-	if currentTag == "" || latestTag == "" {
-		http.Error(w, "current and latest query parameters are required", http.StatusBadRequest)
-		return
-	}
-
-	commits, err := s.versionChecker.FetchChangelog(r.Context(), currentTag, latestTag)
-	if err != nil {
-		s.logger.Error("Failed to fetch changelog", "error", err, "current", currentTag, "latest", latestTag)
-		http.Error(w, "Failed to fetch changelog", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(commits)
-}
-
-// handleUpgrade performs a self-update of the Shelley binary
-// If restart=true query parameter is set, it will also restart after upgrade
-func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
-	err := s.versionChecker.DoUpgrade(r.Context())
-	if err != nil {
-		s.logger.Error("Upgrade failed", "error", err)
-		http.Error(w, fmt.Sprintf("Upgrade failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Check if restart was requested
-	restart := r.URL.Query().Get("restart") == "true"
-
-	w.Header().Set("Content-Type", "application/json")
-	if restart {
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Upgrade complete. Restarting..."})
-
-		// Flush the response
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-
-		// Exit after a short delay to allow response to be sent
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			s.logger.Info("Exiting Shelley after upgrade")
-			os.Exit(0)
-		}()
-	} else {
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Upgrade complete. Restart to apply."})
-	}
-}
-
-// handleUpgradeHeadlessShell downloads and installs the latest headless-shell tarball.
-func (s *Server) handleUpgradeHeadlessShell(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	// Check that we have a local headless-shell to upgrade
-	if _, err := os.Stat(headlessShellPath); err != nil {
-		http.Error(w, "headless-shell not installed at "+headlessShellPath, http.StatusBadRequest)
-		return
-	}
-
-	if !isSudoAvailable() {
-		http.Error(w, "sudo is required to upgrade headless-shell", http.StatusInternalServerError)
-		return
-	}
-
-	// Get cached version info
-	info, err := s.versionChecker.Check(ctx, false)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Version check failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if !info.HeadlessShellUpdate {
-		http.Error(w, "No headless-shell update available", http.StatusBadRequest)
-		return
-	}
-	if info.ReleaseInfo == nil {
-		http.Error(w, "No release info available", http.StatusInternalServerError)
-		return
-	}
-
-	downloadURL := findHeadlessShellURL(info.ReleaseInfo)
-	if downloadURL == "" {
-		http.Error(w, fmt.Sprintf("No headless-shell download for %s/%s", runtime.GOOS, runtime.GOARCH), http.StatusBadRequest)
-		return
-	}
-
-	s.logger.Info("Upgrading headless-shell", "url", downloadURL, "from", info.HeadlessShellCurrent, "to", info.HeadlessShellLatest)
-
-	// Download the tarball
-	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
-		return
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to download: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		http.Error(w, fmt.Sprintf("Download returned status %d", resp.StatusCode), http.StatusInternalServerError)
-		return
-	}
-
-	// Write tarball to a temp file
-	tmpTar, err := os.CreateTemp("", "headless-shell-*.tar.gz")
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create temp file: %v", err), http.StatusInternalServerError)
-		return
-	}
-	tmpTarPath := tmpTar.Name()
-	defer os.Remove(tmpTarPath)
-
-	if _, err := io.Copy(tmpTar, resp.Body); err != nil {
-		tmpTar.Close()
-		http.Error(w, fmt.Sprintf("Failed to save tarball: %v", err), http.StatusInternalServerError)
-		return
-	}
-	tmpTar.Close()
-
-	// Extract to a temp directory
-	tmpDir, err := os.MkdirTemp("", "headless-shell-extract-*")
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create temp dir: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cmd := exec.CommandContext(ctx, "tar", "xzf", tmpTarPath, "-C", tmpDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		s.logger.Error("Failed to extract tarball", "error", err, "output", string(output))
-		http.Error(w, fmt.Sprintf("Failed to extract: %v\n%s", err, output), http.StatusInternalServerError)
-		return
-	}
-
-	// Verify the extracted binary works
-	extractedBin := filepath.Join(tmpDir, "headless-shell", "headless-shell")
-	cmd = exec.CommandContext(ctx, extractedBin, "--version")
-	versionOutput, err := cmd.Output()
-	if err != nil {
-		s.logger.Error("Extracted headless-shell --version failed", "error", err)
-		http.Error(w, fmt.Sprintf("Extracted binary failed --version: %v", err), http.StatusInternalServerError)
-		return
-	}
-	newVersion := strings.TrimSpace(string(versionOutput))
-	s.logger.Info("New headless-shell version verified", "version", newVersion)
-
-	// Replace the install dir using sudo: backup -> move new -> cleanup
-	installDir := filepath.Dir(headlessShellPath)
-	backupDir := installDir + ".old"
-
-	exec.CommandContext(ctx, "sudo", "rm", "-rf", backupDir).Run()
-
-	cmd = exec.CommandContext(ctx, "sudo", "mv", installDir, backupDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		s.logger.Error("Failed to backup old headless-shell", "error", err, "output", string(output))
-		http.Error(w, fmt.Sprintf("Failed to backup old installation: %v\n%s", err, output), http.StatusInternalServerError)
-		return
-	}
-
-	cmd = exec.CommandContext(ctx, "sudo", "mv", filepath.Join(tmpDir, "headless-shell"), installDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// Rollback: restore backup (use background context since request ctx may be cancelled)
-		exec.CommandContext(context.Background(), "sudo", "mv", backupDir, installDir).Run()
-		s.logger.Error("Failed to install new headless-shell", "error", err, "output", string(output))
-		http.Error(w, fmt.Sprintf("Failed to install: %v\n%s", err, output), http.StatusInternalServerError)
-		return
-	}
-
-	exec.CommandContext(ctx, "sudo", "chmod", "-R", "a+rx", installDir).Run()
-	exec.CommandContext(ctx, "sudo", "rm", "-rf", backupDir).Run()
-
-	// Invalidate version cache
-	vc := s.versionChecker
-	vc.mu.Lock()
-	vc.cachedInfo = nil
-	vc.mu.Unlock()
-
-	s.logger.Info("headless-shell upgraded successfully", "version", newVersion)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "ok",
-		"message": "Upgraded to " + newVersion,
-		"version": newVersion,
+	json.NewEncoder(w).Encode(map[string]any{
+		"current_version": info.Version,
+		"current_tag":     info.Tag,
+		"current_commit":  info.Commit,
+		"checked_at":      time.Now().UTC(),
 	})
 }
 
@@ -3225,55 +3029,6 @@ func (s *Server) handleExit(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("Exiting Shelley via /exit endpoint")
 		os.Exit(0)
 	}()
-}
-
-// handleGetSettings retrieves all settings
-func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	settings, err := s.db.GetAllSettings(r.Context())
-	if err != nil {
-		s.logger.Error("Failed to get settings", "error", err)
-		http.Error(w, fmt.Sprintf("Failed to get settings: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(settings)
-}
-
-// handleSetSetting sets a single setting
-func (s *Server) handleSetSetting(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Key   string `json:"key"`
-		Value string `json:"value"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.Key == "" {
-		http.Error(w, "Key is required", http.StatusBadRequest)
-		return
-	}
-
-	// Only allow known setting keys
-	allowedKeys := map[string]bool{
-		"auto_upgrade": true,
-	}
-	if !allowedKeys[req.Key] {
-		http.Error(w, fmt.Sprintf("Invalid setting key: %s", req.Key), http.StatusBadRequest)
-		return
-	}
-
-	if err := s.db.SetSetting(r.Context(), req.Key, req.Value); err != nil {
-		s.logger.Error("Failed to set setting", "error", err, "key", req.Key)
-		http.Error(w, fmt.Sprintf("Failed to set setting: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // handleCancelQueued handles POST /conversation/<id>/cancel-queued

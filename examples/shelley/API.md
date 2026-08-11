@@ -45,8 +45,8 @@ reconcile their state on every patch.
 ### Versioning
 
 - `GET /version` — `{tag, commit, commit_time, capabilities: [...]}`.
-- `GET /version-check` — `{has_update, current_tag, latest_tag, ...}`.
-- `GET /version-changelog` — markdown changelog.
+- `GET /version-check` — local build details for the version dialog. It does
+  not contact a release service or report update availability.
 
 ### Conversation list
 
