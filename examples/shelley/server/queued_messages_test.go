@@ -113,6 +113,67 @@ func TestQueuedMessageImmutableFlow(t *testing.T) {
 		len(queuedMessages(t, database, convID)))
 }
 
+// TestMessageDuringCancellationWaitsForReplacementLoop verifies that a send
+// arriving after cancellation has made the conversation idle is not delivered
+// to the loop that is still being torn down. It remains durable in the queue
+// until teardown completes, then runs exactly once on a replacement loop.
+func TestMessageDuringCancellationWaitsForReplacementLoop(t *testing.T) {
+	t.Parallel()
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	ctx := context.Background()
+
+	conversation, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	mgr, err := server.getOrCreateConversationManager(ctx, conversation.ConversationID, "")
+	if err != nil {
+		t.Fatalf("getOrCreateConversationManager: %v", err)
+	}
+
+	mgr.mu.Lock()
+	mgr.cancelling = true
+	mgr.agentWorking = false
+	mgr.mu.Unlock()
+
+	body := sendChat(t, server, conversation.ConversationID, "echo: after cancellation", false)
+	if !strings.Contains(body, "queued") {
+		t.Fatalf("send during cancellation = %s, want queued", body)
+	}
+	if userMessageRowExists(t, database, conversation.ConversationID, "after cancellation") {
+		t.Fatal("message entered the active history before cancellation completed")
+	}
+	if got := len(queuedMessages(t, database, conversation.ConversationID)); got != 1 {
+		t.Fatalf("queued messages = %d, want 1", got)
+	}
+
+	mgr.mu.Lock()
+	mgr.cancelling = false
+	mgr.mu.Unlock()
+	mgr.drainPendingMessages(server)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return userMessageRowExists(t, database, conversation.ConversationID, "after cancellation") &&
+			len(queuedMessages(t, database, conversation.ConversationID)) == 0 &&
+			!server.IsAgentWorking(conversation.ConversationID)
+	})
+
+	messages, err := database.ListMessages(ctx, conversation.ConversationID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	count := 0
+	for _, message := range messages {
+		if message.Type == string(db.MessageTypeUser) && message.LlmData != nil && strings.Contains(*message.LlmData, "after cancellation") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("drained user messages = %d, want exactly 1", count)
+	}
+}
+
 // TestCancelQueuedClearsArray verifies whole-queue and per-message cancel clear
 // the conversation's queued_messages array.
 func TestCancelQueuedClearsArray(t *testing.T) {

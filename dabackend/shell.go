@@ -102,6 +102,7 @@ func (shell *LocalShell) execute(ctx context.Context, command string, timeout ti
 	}
 	defer cancel()
 	process := exec.CommandContext(executionContext, shell.shell, "-c", command)
+	configureLocalProcess(process)
 	root, err := shell.currentRoot()
 	if err != nil {
 		return ExecuteResult{}, err

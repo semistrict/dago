@@ -1201,7 +1201,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// Decide whether this message will be queued or accepted immediately.
 	// The chat-message hook is told which path it will take so it can react
 	// accordingly.
-	willQueue := req.Queue || manager.IsDistilling()
+	willQueue := req.Queue || manager.IsDistilling() || manager.IsCancelling()
 
 	// Run chat-message hook; the hook may rewrite the message text. Hook
 	// failures abort the request — the user's message is not delivered.
@@ -1527,6 +1527,7 @@ func (s *Server) handleCancelConversation(w http.ResponseWriter, r *http.Request
 			http.Error(w, "Failed to cancel conversation", http.StatusInternalServerError)
 			return
 		}
+		go manager.drainPendingMessages(s)
 	}
 	s.cancelSubagentTree(ctx, conversationID)
 

@@ -546,6 +546,14 @@ func (cm *ConversationManager) IsAgentWorking() bool {
 	return cm.agentWorking
 }
 
+// IsCancelling reports whether the current loop is being torn down. Messages
+// arriving in this window must be queued for the replacement loop.
+func (cm *ConversationManager) IsCancelling() bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.cancelling
+}
+
 // SetDistilling marks the conversation as distilling. While true, queued
 // messages will not be drained immediately — they wait for distillation to
 // complete and the caller to invoke drainPendingMessages.
@@ -1202,7 +1210,7 @@ func (cm *ConversationManager) enqueueBatch(s *Server, b pendingBatch) {
 	}
 	cm.pendingBatches = append(cm.pendingBatches, b)
 	cm.lastActivity = time.Now()
-	needsDrain := !cm.agentWorking && !cm.distilling
+	needsDrain := !cm.agentWorking && !cm.distilling && !cm.cancelling
 	cm.mu.Unlock()
 
 	if needsDrain {
@@ -1370,13 +1378,10 @@ restart:
 	// invariant that no batch is fed to the loop while the conversation
 	// is being rewritten by distillation.
 	//
-	// We do NOT defensively check loopCancel / a cancellation generation
-	// here: CancelQueuedMessages and CancelConversation both clear the
-	// queue first, so an in-flight drain that sees an empty queue exits
-	// without further side effects. A drain that snapshotted batches
-	// *before* the cancel cleared them is the long-standing pre-existing
-	// race; the unified queue doesn't make it worse.
-	if cm.distilling {
+	// Cancellation clears batches that predate it, then leaves later sends
+	// queued until the replacement loop is ready. Do not snapshot those sends
+	// while teardown still owns the old loop.
+	if cm.distilling || cm.cancelling {
 		cm.mu.Unlock()
 		return
 	}
