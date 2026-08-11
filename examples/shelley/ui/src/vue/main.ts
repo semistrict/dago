@@ -14,14 +14,26 @@ import { initializeTheme } from "../services/theme";
 import { initializeNotifications } from "../services/notifications";
 import { i18nPlugin } from "./composables/i18n";
 import { exportConversationIdFromPath } from "./export";
+import { browserWasmBuild } from "../basePath";
 import App from "./App.vue";
 import ExportPage from "./components/ExportPage.vue";
+
+async function initializeRuntime(): Promise<void> {
+  const runtimeKey = "shelley_runtime";
+  const queryRuntime = new URLSearchParams(window.location.search).get("runtime");
+  if (queryRuntime === "wasm" || browserWasmBuild) sessionStorage.setItem(runtimeKey, "wasm");
+  const selected = queryRuntime || sessionStorage.getItem(runtimeKey);
+  if (selected !== "wasm") return;
+  const { installWasmRuntime } = await import("../services/wasmRuntime");
+  await installWasmRuntime();
+}
 
 // Apply theme before render to avoid a flash of the wrong color scheme.
 initializeTheme();
 
-const rootContainer = document.getElementById("root");
-if (!rootContainer) throw new Error("Root container not found");
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("Root container not found");
+const rootContainer: HTMLElement = rootElement;
 
 const primeVueOptions = {
   theme: {
@@ -35,22 +47,30 @@ const primeVueOptions = {
   },
 };
 
-const exportId = exportConversationIdFromPath();
-if (exportId) {
-  // Standalone, read-mostly export view. No notifications/app side-effects.
-  const app = createApp(ExportPage, { conversationId: exportId });
-  app.use(PrimeVue, primeVueOptions);
-  app.use(i18nPlugin);
-  app.directive("tooltip", Tooltip);
-  app.mount(rootContainer);
-} else {
-  initializeNotifications();
-  const app = createApp(App);
-  app.use(PrimeVue, primeVueOptions);
-  app.use(i18nPlugin);
-  app.directive("tooltip", Tooltip);
-  // Used by the hand-rolled full-screen overlays (PrimeVue's Dialog, behind
-  // Modal.vue, engages the trap itself).
-  app.directive("focustrap", FocusTrap);
-  app.mount(rootContainer);
+async function mount(): Promise<void> {
+  await initializeRuntime();
+  const exportId = exportConversationIdFromPath();
+  if (exportId) {
+    // Standalone, read-mostly export view. No notifications/app side-effects.
+    const app = createApp(ExportPage, { conversationId: exportId });
+    app.use(PrimeVue, primeVueOptions);
+    app.use(i18nPlugin);
+    app.directive("tooltip", Tooltip);
+    app.mount(rootContainer);
+  } else {
+    initializeNotifications();
+    const app = createApp(App);
+    app.use(PrimeVue, primeVueOptions);
+    app.use(i18nPlugin);
+    app.directive("tooltip", Tooltip);
+    // Used by the hand-rolled full-screen overlays (PrimeVue's Dialog, behind
+    // Modal.vue, engages the trap itself).
+    app.directive("focustrap", FocusTrap);
+    app.mount(rootContainer);
+  }
 }
+
+void mount().catch((error) => {
+  console.error("Failed to initialize Shelley:", error);
+  rootContainer.textContent = `Failed to initialize Shelley: ${error instanceof Error ? error.message : String(error)}`;
+});

@@ -2,19 +2,19 @@
   "name": "Shelley",
   "short_name": "Shelley",
   "description": "AI coding assistant",
-  "start_url": "/",
+  "start_url": "__SHELLEY_BASE_PATH__",
   "display": "standalone",
   "background_color": "#1f2937",
   "theme_color": "#1f2937",
   "icons": [
     {
-      "src": "/icon-192.png",
+      "src": "__SHELLEY_BASE_PATH__icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-512.png",
+      "src": "__SHELLEY_BASE_PATH__icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

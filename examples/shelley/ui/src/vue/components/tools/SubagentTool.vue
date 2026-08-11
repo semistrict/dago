@@ -88,7 +88,7 @@
       <div v-if="displayData?.conversation_id" class="tool-section">
         <div class="tool-label">Conversation:</div>
         <div class="tool-code">
-          <a :href="`/c/${liveSlug}`" class="subagent-link" @click="onLinkClick">
+          <a :href="appPath(`/c/${liveSlug}`)" class="subagent-link" @click="onLinkClick">
             View subagent conversation →
           </a>
         </div>
@@ -102,6 +102,7 @@ import { computed } from "vue";
 import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
 import { useSubagentLive, navigateToConversationSlug } from "../../composables/subagentLive";
+import { appPath } from "../../../basePath";
 
 interface SubagentInput {
   slug?: string;

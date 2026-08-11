@@ -10,7 +10,7 @@
     v-if="showLive"
     class="subagent-pill-live"
     data-testid="subagent-pill-live"
-    :href="`/c/${liveSlug}`"
+    :href="appPath(`/c/${liveSlug}`)"
     :title="`Open subagent '${liveSlug}'`"
     @click="onClick"
   >
@@ -21,6 +21,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import { appPath } from "../../basePath";
 import { useSubagentLive, navigateToConversationSlug } from "../composables/subagentLive";
 
 const props = defineProps<{

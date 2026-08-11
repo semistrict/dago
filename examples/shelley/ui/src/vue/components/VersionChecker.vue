@@ -180,6 +180,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import { api } from "../../services/api";
+import { appPath } from "../../basePath";
 import type { VersionInfo, CommitInfo } from "../../types";
 import Modal from "./Modal.vue";
 
@@ -281,7 +282,7 @@ async function handleRebaseUpgrade() {
       ...(dir ? { cwd: dir } : {}),
     });
     emit("close");
-    window.history.pushState({}, "", `/c/${response.conversation_id}`);
+    window.history.pushState({}, "", appPath(`/c/${response.conversation_id}`));
     window.dispatchEvent(new PopStateEvent("popstate"));
   } catch (err) {
     upgradeError.value = err instanceof Error ? err.message : String(err);

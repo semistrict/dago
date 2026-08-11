@@ -107,6 +107,12 @@ onMounted(() => {
   // each mount, so there's no duplication).
   xterm.write(`\x1b[2m$ ${props.term.command}\x1b[0m\r\n`);
 
+  if (sessionStorage.getItem("shelley_runtime") === "wasm") {
+    emit("status-change", props.term.id, "running", null);
+    void runBrowserCommand(xterm);
+    return;
+  }
+
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   // If we already have a persistent session id, reattach to it. Otherwise
   // spawn a new one by sending cmd+cwd.
@@ -176,6 +182,33 @@ onMounted(() => {
   });
   ro.observe(containerRef.value);
 });
+
+async function runBrowserCommand(xterm: Terminal) {
+  try {
+    const response = await fetch("/api/browser-shell", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: props.term.command, cwd: "/workspace" }),
+    });
+    const result = (await response.json()) as {
+      output?: string;
+      exit_code?: number;
+      error?: string;
+    };
+    if (!response.ok) throw new Error(result.error || `Shell request failed: ${response.status}`);
+    const code = result.exit_code ?? 0;
+    if (result.output) xterm.write(result.output.replace(/\r?\n/g, "\r\n"));
+    const color = code === 0 ? "32" : "31";
+    xterm.write(
+      `\r\n\x1b[2;${color}m${props.term.command} completed with exit code ${code}\x1b[0m\r\n`,
+    );
+    emit("status-change", props.term.id, "exited", code);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    xterm.write(`\r\n\x1b[31mError: ${message}\x1b[0m\r\n`);
+    emit("status-change", props.term.id, "error", null);
+  }
+}
 
 onUnmounted(() => {
   ro?.disconnect();

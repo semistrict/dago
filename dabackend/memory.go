@@ -21,6 +21,18 @@ type Memory struct {
 	now   func() time.Time
 }
 
+// Snapshot returns an independent copy of every virtual file. The result is
+// plain data suitable for durable stores such as IndexedDB.
+func (memory *Memory) Snapshot() map[string]FileData {
+	memory.mu.RLock()
+	defer memory.mu.RUnlock()
+	result := make(map[string]FileData, len(memory.files))
+	for name, data := range memory.files {
+		result[name] = data
+	}
+	return result
+}
+
 func NewMemory(initial map[string]FileData) (*Memory, error) {
 	result := &Memory{files: map[string]FileData{}, now: time.Now}
 	for name, data := range initial {

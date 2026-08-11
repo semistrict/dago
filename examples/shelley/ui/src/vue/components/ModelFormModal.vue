@@ -67,6 +67,7 @@
         <label>{{ t("model") }}</label>
         <InputText
           :model-value="form.model_name"
+          data-testid="model-name-input"
           placeholder="Model name (e.g., claude-sonnet-4-6)"
           fluid
           :dt="inputFieldDt"
@@ -90,6 +91,7 @@
         <label>{{ t("displayName") }}</label>
         <InputText
           v-model="form.display_name"
+          data-testid="model-display-name-input"
           :placeholder="t('nameShownInSelector')"
           fluid
           :dt="inputFieldDt"
@@ -101,6 +103,7 @@
         <label>{{ t("apiKey") }}</label>
         <InputText
           v-model="form.api_key"
+          data-testid="model-api-key-input"
           :placeholder="t('enterApiKey')"
           fluid
           :dt="inputFieldDt"

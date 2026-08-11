@@ -162,6 +162,11 @@
         @models-changed="modelsRefreshTrigger++"
       />
 
+      <BrowserOpenAIKeyModal
+        :is-open="browserOpenAIKeyModalOpen"
+        @configured="handleBrowserOpenAIConfigured"
+      />
+
       <NotificationsModal
         :is-open="notificationsModalOpen"
         @close="
@@ -214,6 +219,7 @@ import ChatInterface from "./components/ChatInterface.vue";
 import ConversationDrawer from "./components/ConversationDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import ModelsModal from "./components/ModelsModal.vue";
+import BrowserOpenAIKeyModal from "./components/BrowserOpenAIKeyModal.vue";
 import NotificationsModal from "./components/NotificationsModal.vue";
 import FeatureFlagsModal from "./components/FeatureFlagsModal.vue";
 import FileFinderModal from "./components/FileFinderModal.vue";
@@ -236,6 +242,8 @@ import {
 import { connectGlobalStream, type StreamStatus } from "../services/globalStream";
 import { handleNotificationEvent } from "../services/notifications";
 import { loadCachedDraft } from "../services/draftCache";
+import { browserOpenAIKeyRequired } from "../services/wasmRuntime";
+import { appPath, appPathname } from "../basePath";
 import { initialDrawerCollapsed, saveDrawerCollapsedPreference } from "../utils/drawerStartup";
 import { perfCount } from "../utils/perf";
 import { useI18n } from "./composables/i18n";
@@ -253,7 +261,7 @@ function isGeneratedId(slug: string | null): boolean {
   return /^c[a-z0-9]+$/i.test(slug);
 }
 function getSlugFromPath(): string | null {
-  const path = window.location.pathname;
+  const path = appPathname();
   if (path.startsWith("/c/")) {
     const slug = path.slice(3);
     if (slug) return slug;
@@ -261,7 +269,7 @@ function getSlugFromPath(): string | null {
   return null;
 }
 function isNewPath(): boolean {
-  return window.location.pathname === "/new";
+  return appPathname() === "/new";
 }
 
 // A brand-new-conversation draft composed offline never reaches the server
@@ -286,8 +294,8 @@ function updateUrlWithSlug(conversation: Conversation | undefined) {
     newSlug = conversation.conversation_id;
   }
   if (currentSlug !== newSlug) {
-    if (newSlug) window.history.replaceState({}, "", `/c/${newSlug}`);
-    else window.history.replaceState({}, "", "/");
+    if (newSlug) window.history.replaceState({}, "", appPath(`/c/${newSlug}`));
+    else window.history.replaceState({}, "", appPath());
   }
 }
 
@@ -317,6 +325,7 @@ const diffViewerTrigger = ref(0);
 const gitGraphTrigger = ref(0);
 const terminalTrigger = ref(0);
 const modelsModalOpen = ref(false);
+const browserOpenAIKeyModalOpen = ref(browserOpenAIKeyRequired());
 const notificationsModalOpen = ref(false);
 const featureFlagsModalOpen = ref(false);
 // Fuzzy file finder (Cmd/Ctrl+Shift+P) + the generic editor it opens.
@@ -334,6 +343,12 @@ const ephemeralTerminals = ref<EphemeralTerminal[]>([]);
 const streamStatus = ref<StreamStatus>("connected");
 const reconnectNonce = ref(0);
 const showActiveTrigger = ref(0);
+
+function handleBrowserOpenAIConfigured(model: string) {
+  browserOpenAIKeyModalOpen.value = false;
+  localStorage.setItem("shelley_selected_model", model);
+  window.location.assign(appPath("/new"));
+}
 
 // ---- non-reactive refs ----
 let initialSlugResolved = false;
@@ -508,7 +523,7 @@ async function resolveInitialSlug(convs: Conversation[]): Promise<Conversation |
   } catch (err) {
     console.error("Failed to resolve slug:", err);
   }
-  window.history.replaceState({}, "", "/");
+  window.history.replaceState({}, "", appPath());
   return null;
 }
 
@@ -556,7 +571,7 @@ function startNewConversation() {
   }
   currentConversationId.value = null;
   viewedConversation.value = null;
-  window.history.replaceState({}, "", "/new");
+  window.history.replaceState({}, "", appPath("/new"));
   drawerOpen.value = false;
 }
 
@@ -564,7 +579,7 @@ function startNewConversationWithCwd(cwd: string) {
   localStorage.setItem("shelley_selected_cwd", cwd);
   currentConversationId.value = null;
   viewedConversation.value = null;
-  window.history.replaceState({}, "", "/new");
+  window.history.replaceState({}, "", appPath("/new"));
   drawerOpen.value = false;
   cwdSyncTrigger.value++;
 }

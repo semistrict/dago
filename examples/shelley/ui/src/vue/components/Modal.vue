@@ -11,7 +11,7 @@
   <Dialog
     :visible="isOpen"
     modal
-    :dismissable-mask="true"
+    :dismissable-mask="closable !== false"
     :close-on-escape="false"
     :show-header="false"
     append-to="body"
@@ -28,6 +28,7 @@
             <slot name="title-right" />
           </div>
           <Button
+            v-if="closable !== false"
             class="btn-icon"
             text
             severity="secondary"
@@ -61,11 +62,15 @@ import Dialog from "primevue/dialog";
 import Button from "primevue/button";
 import { popModalEscape, pushModalEscape } from "../composables/modalEscapeStack";
 
-const props = defineProps<{
-  isOpen: boolean;
-  title: string;
-  className?: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    isOpen: boolean;
+    title: string;
+    className?: string;
+    closable?: boolean;
+  }>(),
+  { closable: true },
+);
 const emit = defineEmits<{ (e: "close"): void }>();
 
 // Route Escape through a shared stack so that with stacked modals only the
@@ -77,7 +82,7 @@ watch(
   () => props.isOpen,
   (open) => {
     popModalEscape(requestClose);
-    if (open) pushModalEscape(requestClose);
+    if (open && props.closable !== false) pushModalEscape(requestClose);
   },
   { immediate: true },
 );

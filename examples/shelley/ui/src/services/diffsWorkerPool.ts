@@ -9,11 +9,12 @@
 // of languages and run tokenization off the main thread.
 import type { SupportedLanguages } from "@pierre/diffs";
 import { getOrCreateWorkerPoolSingleton, type WorkerPoolManager } from "@pierre/diffs/worker";
+import { appPath } from "../basePath";
 
 // Workers run shiki/TextMate tokenization off the main thread so large
 // conversations (hundreds of diffs) don't freeze the UI while highlighting.
 export const diffsPoolOptions = {
-  workerFactory: () => new Worker("/diffs-worker.js"),
+  workerFactory: () => new Worker(appPath("diffs-worker.js")),
 };
 
 // Languages to eagerly preload in the highlighter so the common cases render

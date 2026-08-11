@@ -7,24 +7,35 @@ import * as crypto from "crypto";
 import { execSync } from "child_process";
 
 // Esbuild plugin: rewrite any "monaco-editor*" import (including deep paths
-// like monaco-editor/esm/vs/editor/editor.api) to the runtime URL
-// /monaco-editor.js, marked external. Our custom bundle entry re-exports
+// like monaco-editor/esm/vs/editor/editor.api) to the deployed runtime URL,
+// marked external. Our custom bundle entry re-exports
 // everything monaco-vim needs from that single file.
 //
 // We also bypass monaco-vim's package.json exports map: it routes the
 // "browser" condition to a UMD bundle that esbuild wraps with a CJS
-// require() shim, which then tries to require('/monaco-editor.js') at
+// require() shim, which then tries to require the external Monaco bundle at
 // runtime and fails. Resolve directly to the ESM index.mjs instead.
-function monacoExternalPlugin() {
+function monacoExternalPlugin(monacoRuntimePath) {
   return {
     name: "monaco-external",
     setup(build) {
       build.onResolve({ filter: /^monaco-editor(\/|$)/ }, () => ({
-        path: "/monaco-editor.js",
+        path: monacoRuntimePath,
         external: true,
       }));
       const monacoVimEsm = path.resolve(process.cwd(), "node_modules/monaco-vim/dist/index.mjs");
       build.onResolve({ filter: /^monaco-vim$/ }, () => ({ path: monacoVimEsm }));
+    },
+  };
+}
+
+function justBashBrowserShims() {
+  return {
+    name: "just-bash-browser-shims",
+    setup(build) {
+      build.onResolve({ filter: /^node:zlib$/ }, () => ({
+        path: path.resolve(process.cwd(), "src/shims/node-zlib.ts"),
+      }));
     },
   };
 }
@@ -44,8 +55,24 @@ const dropSourceMaps = process.env.NO_SOURCEMAPS === "1";
 // which nothing downstream of a test run cares about. Worth ~5s per build, and
 // CI builds the UI once per shelley step (8 of them).
 const fastBuild = process.env.FAST_BUILD === "1";
+const wasmBuild = process.env.WASM_BUILD === "1";
+const publicBasePath = normalizeBasePath(process.env.PUBLIC_BASE_PATH || "/");
+const monacoRuntimePath = `${publicBasePath}monaco-editor.js`;
+const buildDefines = {
+  __SHELLEY_BASE_PATH__: JSON.stringify(publicBasePath),
+  __SHELLEY_WASM_BUILD__: JSON.stringify(wasmBuild),
+};
 const gzipLevel = fastBuild ? 1 : 9;
 const noSourceMaps = dropSourceMaps || fastBuild;
+
+function normalizeBasePath(value) {
+  const withLeadingSlash = value.startsWith("/") ? value : `/${value}`;
+  return withLeadingSlash.endsWith("/") ? withLeadingSlash : `${withLeadingSlash}/`;
+}
+
+function withPublicBasePath(value) {
+  return value.replaceAll("__SHELLEY_BASE_PATH__", publicBasePath);
+}
 
 function log(...args) {
   if (verbose) console.log(...args);
@@ -81,6 +108,18 @@ async function build() {
       sourcemap: !noSourceMaps,
     });
 
+    // Browser-native Shelley runs the portable Go application in this worker.
+    log("Building WASM application worker...");
+    await esbuild.build({
+      entryPoints: ["src/wasm-worker.ts"],
+      bundle: true,
+      outfile: "dist/wasm-worker.js",
+      format: "iife",
+      minify: isProd,
+      sourcemap: !noSourceMaps,
+      plugins: [justBashBrowserShims()],
+    });
+
     // Build Monaco editor as a separate chunk (JS + CSS).
     // We bundle through src/monaco-bundle-entry.js so we can also surface
     // the internal modules monaco-vim depends on (ShiftCommand) as named
@@ -110,7 +149,8 @@ async function build() {
       minify: isProd,
       sourcemap: !noSourceMaps,
       metafile: true,
-      external: ["monaco-editor", "/monaco-editor.js"],
+      external: ["monaco-editor", monacoRuntimePath],
+      define: buildDefines,
       loader: {
         ".png": "dataurl",
         ".svg": "text",
@@ -131,7 +171,7 @@ async function build() {
       // those to the same runtime URL the rest of the app uses, so we end
       // up with a single Monaco instance instead of two. The rewritten
       // imports are marked external (above) so esbuild emits them as-is.
-      plugins: [monacoExternalPlugin(), vuePlugin()],
+      plugins: [monacoExternalPlugin(monacoRuntimePath), vuePlugin()],
     });
 
     // /static/excalidraw/skill.js: self-contained Excalidraw + React +
@@ -162,14 +202,31 @@ async function build() {
     });
 
     // Copy static files
-    fs.copyFileSync("src/index.html", "dist/index.html");
+    const indexHTML = withPublicBasePath(fs.readFileSync("src/index.html", "utf8"));
+    fs.writeFileSync("dist/index.html", indexHTML);
     fs.copyFileSync("src/styles.css", "dist/styles.css");
+
+    for (const generatedPage of ["404.html", ".nojekyll"]) {
+      const generatedPath = `dist/${generatedPage}`;
+      if (fs.existsSync(generatedPath)) fs.unlinkSync(generatedPath);
+    }
+    if (wasmBuild) {
+      // Pages serves 404.html for client-side conversation routes while
+      // preserving the requested URL, allowing the app router to restore it.
+      fs.writeFileSync("dist/404.html", indexHTML);
+      fs.writeFileSync("dist/.nojekyll", "");
+    }
 
     // Copy assets (icons, manifest, etc.)
     const assetsDir = "src/assets";
     if (fs.existsSync(assetsDir)) {
       for (const file of fs.readdirSync(assetsDir)) {
-        fs.copyFileSync(`${assetsDir}/${file}`, `dist/${file}`);
+        if (file === "manifest.json") {
+          const manifest = withPublicBasePath(fs.readFileSync(`${assetsDir}/${file}`, "utf8"));
+          fs.writeFileSync(`dist/${file}`, manifest);
+        } else {
+          fs.copyFileSync(`${assetsDir}/${file}`, `dist/${file}`);
+        }
       }
     }
 
@@ -212,6 +269,7 @@ async function build() {
       "monaco-editor.js",
       "editor.worker.js",
       "diffs-worker.js",
+      "wasm-worker.js",
       "monaco-editor.css",
       "styles.css",
       "main.js",
@@ -244,8 +302,9 @@ async function build() {
           console.log(`  ${file}: ${origKb} KB -> ${gzKb} KB gzip (${ratio}%) [${hash}]`);
         }
 
-        // Remove original to save space in embedded binary
-        fs.unlinkSync(inputPath);
+        // Native builds embed only compressed assets. A standalone WASM build
+        // is served by an ordinary static server, so it keeps originals too.
+        if (!wasmBuild) fs.unlinkSync(inputPath);
       }
     }
 

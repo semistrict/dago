@@ -1,6 +1,6 @@
 # Shelley Makefile
 
-.PHONY: build build-custom build-linux-aarch64 build-linux-x86 test test-go test-e2e bench-agent bench-scaling ui serve clean help templates demo
+.PHONY: build build-custom build-linux-aarch64 build-linux-x86 wasm wasm-serve test test-go test-e2e test-e2e-wasm bench-agent bench-scaling ui serve clean help templates demo
 
 # Default target
 all: build
@@ -67,6 +67,16 @@ build-linux-x86: ui templates
 ui:
 	@cd ui && pnpm install --frozen-lockfile --silent && pnpm run --silent build
 
+# Build a standalone browser application. Open /?runtime=wasm so the existing
+# UI routes application requests to the Go worker instead of an HTTP server.
+wasm:
+	@cd ui && pnpm install --frozen-lockfile --silent && WASM_BUILD=1 pnpm run --silent build
+	GOOS=js GOARCH=wasm go build -o ui/dist/shelley.wasm ./cmd/shelley-wasm
+	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" ui/dist/wasm_exec.js
+
+wasm-serve: wasm
+	go run ./cmd/shelley-wasm-serve
+
 # Run Go tests
 test-go: ui
 	@echo "Running Go tests..."
@@ -76,6 +86,10 @@ test-go: ui
 test-e2e: ui
 	@echo "Running E2E tests..."
 	cd ui && pnpm run test:e2e
+
+test-e2e-wasm:
+	@echo "Running browser-native E2E tests..."
+	cd ui && pnpm run test:e2e:wasm
 
 # Run E2E tests in headed mode (with visible browser)
 test-e2e-headed: ui
@@ -132,10 +146,13 @@ help:
 	@echo "  build-linux-aarch64  Build for Linux ARM64"
 	@echo "  build-linux-x86      Build for Linux x86_64"
 	@echo "  ui            Build UI only"
+	@echo "  wasm          Build standalone browser application"
+	@echo "  wasm-serve    Build and serve browser application on port 9000"
 	@echo "  templates     Build template tarballs"
 	@echo "  test          Run all tests (Go + E2E)"
 	@echo "  test-go       Run Go tests only"
 	@echo "  test-e2e      Run E2E tests (headless)"
+	@echo "  test-e2e-wasm Run browser-native E2E tests"
 	@echo "  test-e2e-headed  Run E2E tests (visible browser)"
 	@echo "  test-e2e-ui   Open E2E test UI"
 	@echo "  bench-agent   Benchmark the agent path with a mocked model"
