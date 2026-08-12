@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"syscall/js"
 
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/examples/shelley/browserapp"
 )
 
 var retained []js.Func
 
 func main() {
-	app, err := browserapp.NewWithShell(executeJustBash)
+	saver := browserapp.NewIndexedDBSaver(jsCheckpointStore{})
+	app, err := browserapp.NewWithShellAndSaver(executeJustBash, saver)
 	if err != nil {
 		panic(err)
 	}
@@ -67,6 +70,32 @@ func main() {
 		app.SetEventSink(func(event json.RawMessage) { sink.Invoke(string(event)) })
 		return nil
 	})
+	register("shelleyWasmConfigureWebGPUModel", func([]js.Value) any {
+		if err := app.ConfigureWebGPUModel(webGPUChat{}); err != nil {
+			return err.Error()
+		}
+		return ""
+	})
+	register("shelleyWasmReplaceWorkspace", func(arguments []js.Value) any {
+		if len(arguments) == 0 {
+			return "workspace argument is required"
+		}
+		var files map[string]dabackend.FileData
+		if err := json.Unmarshal([]byte(arguments[0].String()), &files); err != nil {
+			return fmt.Sprintf("decode browser workspace: %v", err)
+		}
+		if err := app.ReplaceWorkspace(files); err != nil {
+			return err.Error()
+		}
+		return ""
+	})
+	register("shelleyWasmWorkspaceSnapshot", func([]js.Value) any {
+		encoded, err := json.Marshal(app.WorkspaceSnapshot())
+		if err != nil {
+			return encodeError(err)
+		}
+		return string(encoded)
+	})
 
 	ready := js.Global().Get("shelleyWasmReady")
 	if ready.Type() != js.TypeFunction {
@@ -74,6 +103,93 @@ func main() {
 	}
 	ready.Invoke()
 	select {}
+}
+
+type jsCheckpointStore struct{}
+
+func (jsCheckpointStore) Execute(ctx context.Context, operation string, payload []byte) ([]byte, error) {
+	execute := js.Global().Get("shelleyCheckpointStore")
+	if execute.Type() != js.TypeFunction {
+		return nil, fmt.Errorf("IndexedDB checkpoint store is unavailable")
+	}
+	result, err := awaitContextPromiseString(ctx, execute.Invoke(operation, string(payload)))
+	if err != nil {
+		return nil, err
+	}
+	return []byte(result), nil
+}
+
+type webGPUChat struct{}
+
+func (webGPUChat) Profile() damodel.Profile {
+	return damodel.Profile{
+		Provider: "webgpu", Model: "local-webgpu", ContextWindow: 8192,
+		MaxOutputTokens: 1024, ToolCalling: true, SupportsSeparateSystemMessage: true,
+	}
+}
+
+func (webGPUChat) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
+	invoke := js.Global().Get("shelleyWebGPUInvoke")
+	if invoke.Type() != js.TypeFunction {
+		return damodel.Response{}, fmt.Errorf("WebGPU model is unavailable")
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return damodel.Response{}, fmt.Errorf("encode WebGPU request: %w", err)
+	}
+	raw, err := awaitWebGPU(ctx, invoke.Invoke(string(encoded)))
+	if err != nil {
+		return damodel.Response{}, err
+	}
+	var response damodel.Response
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		return damodel.Response{}, fmt.Errorf("decode WebGPU response: %w", err)
+	}
+	return response, nil
+}
+
+func (webGPUChat) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
+	return damodel.EmptyStream{}, nil
+}
+
+func awaitWebGPU(ctx context.Context, promise js.Value) (string, error) {
+	type outcome struct {
+		value string
+		err   error
+	}
+	completed := make(chan outcome, 1)
+	resolve := js.FuncOf(func(_ js.Value, arguments []js.Value) any {
+		value := ""
+		if len(arguments) > 0 {
+			value = arguments[0].String()
+		}
+		completed <- outcome{value: value}
+		return nil
+	})
+	reject := js.FuncOf(func(_ js.Value, arguments []js.Value) any {
+		message := jsRejectionMessage(arguments, "WebGPU inference failed")
+		completed <- outcome{err: fmt.Errorf("%s", message)}
+		return nil
+	})
+	promise.Call("then", resolve).Call("catch", reject)
+	select {
+	case <-ctx.Done():
+		interrupt := js.Global().Get("shelleyWebGPUInterrupt")
+		if interrupt.Type() == js.TypeFunction {
+			interrupt.Invoke()
+		}
+	case result := <-completed:
+		resolve.Release()
+		reject.Release()
+		return result.value, result.err
+	}
+	result := <-completed
+	resolve.Release()
+	reject.Release()
+	if result.err != nil {
+		return "", result.err
+	}
+	return "", ctx.Err()
 }
 
 func executeJustBash(_ context.Context, request browserapp.ShellRequest) (browserapp.ShellResponse, error) {
@@ -111,10 +227,7 @@ func awaitPromiseString(promise js.Value) (string, error) {
 		return nil
 	})
 	reject := js.FuncOf(func(_ js.Value, arguments []js.Value) any {
-		message := "just-bash execution failed"
-		if len(arguments) > 0 {
-			message = arguments[0].String()
-		}
+		message := jsRejectionMessage(arguments, "just-bash execution failed")
 		completed <- outcome{err: fmt.Errorf("%s", message)}
 		return nil
 	})
@@ -123,6 +236,67 @@ func awaitPromiseString(promise js.Value) (string, error) {
 	resolve.Release()
 	reject.Release()
 	return result.value, result.err
+}
+
+func awaitContextPromiseString(ctx context.Context, promise js.Value) (string, error) {
+	type outcome struct {
+		value string
+		err   error
+	}
+	completed := make(chan outcome, 1)
+	resolve := js.FuncOf(func(_ js.Value, arguments []js.Value) any {
+		value := ""
+		if len(arguments) > 0 {
+			value = arguments[0].String()
+		}
+		completed <- outcome{value: value}
+		return nil
+	})
+	reject := js.FuncOf(func(_ js.Value, arguments []js.Value) any {
+		message := jsRejectionMessage(arguments, "IndexedDB operation failed")
+		completed <- outcome{err: fmt.Errorf("%s", message)}
+		return nil
+	})
+	release := func() {
+		resolve.Release()
+		reject.Release()
+	}
+	promise.Call("then", resolve).Call("catch", reject)
+	select {
+	case result := <-completed:
+		release()
+		return result.value, result.err
+	case <-ctx.Done():
+		go func() {
+			<-completed
+			release()
+		}()
+		return "", ctx.Err()
+	}
+}
+
+func jsRejectionMessage(arguments []js.Value, fallback string) string {
+	if len(arguments) == 0 {
+		return fallback
+	}
+	value := arguments[0]
+	if value.Type() == js.TypeString {
+		return value.String()
+	}
+	if value.Type() == js.TypeObject || value.Type() == js.TypeFunction {
+		message := value.Get("message")
+		if message.Type() == js.TypeString && message.String() != "" {
+			return message.String()
+		}
+	}
+	stringConstructor := js.Global().Get("String")
+	if stringConstructor.Type() == js.TypeFunction {
+		message := stringConstructor.Invoke(value)
+		if message.Type() == js.TypeString && message.String() != "" && message.String() != "[object Object]" {
+			return message.String()
+		}
+	}
+	return fallback
 }
 
 func asyncString(work func() string) js.Value {

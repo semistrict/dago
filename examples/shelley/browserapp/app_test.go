@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dacheckpoint"
 )
 
 func TestBrowserAppRunsDagoTurnAndPublishesOrderedMessages(t *testing.T) {
@@ -203,6 +204,65 @@ func TestBrowserRestoreKeepsLaterAssistantMessagesDistinct(t *testing.T) {
 	}
 }
 
+func TestBrowserAppRestoresGraphCheckpointWithoutReplayingHistory(t *testing.T) {
+	saver := dacheckpoint.NewMemorySaver()
+	app, err := newApp(nil, saver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan json.RawMessage, 8)
+	app.SetEventSink(func(event json.RawMessage) { events <- append(json.RawMessage(nil), event...) })
+	response := app.Handle(Request{Method: "POST", URL: "/api/conversations/new", Body: `{"message":"hello"}`})
+	var created struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.Unmarshal(response.Body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if !app.Continue(response.ContinueConversation) {
+		t.Fatal("first turn did not continue")
+	}
+	waitForCompletedFrame(t, events)
+	if tuple, err := saver.GetTuple(context.Background(), dacheckpoint.Config{ThreadID: created.ConversationID}); err != nil || tuple == nil {
+		t.Fatalf("checkpoint after first turn = %#v, %v", tuple, err)
+	}
+	snapshot, err := app.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := newApp(nil, saver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Restore(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	restoredEvents := make(chan json.RawMessage, 8)
+	restored.SetEventSink(func(event json.RawMessage) {
+		restoredEvents <- append(json.RawMessage(nil), event...)
+	})
+	response = restored.Handle(Request{
+		Method: "POST", URL: "/api/conversation/" + created.ConversationID + "/chat",
+		Body: `{"message":"echo: after checkpoint"}`,
+	})
+	if !restored.Continue(response.ContinueConversation) {
+		t.Fatal("restored turn did not continue")
+	}
+	waitForCompletedFrame(t, restoredEvents)
+
+	response = restored.Handle(Request{Method: "GET", URL: "/api/conversation/" + created.ConversationID})
+	var conversation struct {
+		Messages []apiMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(response.Body, &conversation); err != nil {
+		t.Fatal(err)
+	}
+	if len(conversation.Messages) != 4 {
+		t.Fatalf("messages after checkpoint restore = %d, want 4", len(conversation.Messages))
+	}
+}
+
 func TestBrowserCapabilitiesDoNotPretendHostFeaturesExist(t *testing.T) {
 	app, err := New()
 	if err != nil {
@@ -326,6 +386,57 @@ func TestBrowserOpenAIKeyConfiguresStandardModelCatalogWithoutPersistingKey(t *t
 	}
 	if strings.Contains(string(snapshot), "one-time-browser-key") {
 		t.Fatal("OpenAI key leaked into durable application snapshot")
+	}
+}
+
+func TestConfigureWebGPUModelAddsLocalDefaultWithoutPersistingModelState(t *testing.T) {
+	app, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.ConfigureWebGPUModel(newPredictableModel()); err != nil {
+		t.Fatal(err)
+	}
+	catalog := app.Handle(Request{Method: "GET", URL: "/api/models"})
+	if !strings.Contains(string(catalog.Body), webGPUModelID) || !strings.Contains(string(catalog.Body), webGPUModelName) {
+		t.Fatalf("catalog omitted WebGPU model: %s", catalog.Body)
+	}
+	if app.defaultModelID() != webGPUModelID {
+		t.Fatalf("default model = %q", app.defaultModelID())
+	}
+	snapshot, err := app.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(snapshot), webGPUModelID) {
+		t.Fatalf("WebGPU runtime state leaked into snapshot: %s", snapshot)
+	}
+}
+
+func TestReplaceWorkspaceRefreshesFilesWithoutReplacingAgentState(t *testing.T) {
+	app, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.ReplaceWorkspace(map[string]dabackend.FileData{
+		workspaceRoot + "/main.go": {Content: "package main\n", Encoding: dabackend.EncodingUTF8},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.workspace.Read(context.Background(), workspaceRoot+"/README.md", 0, 10); err == nil {
+		t.Fatal("replaced workspace retained the previous README")
+	}
+	read, err := app.workspace.Read(context.Background(), workspaceRoot+"/main.go", 0, 10)
+	if err != nil || read.Data == nil || read.Data.Content != "package main\n" {
+		t.Fatalf("replacement file = %#v, %v", read, err)
+	}
+	if app.agents[modelID] == nil {
+		t.Fatal("workspace replacement removed the configured agent")
+	}
+	if err := app.ReplaceWorkspace(map[string]dabackend.FileData{
+		"/outside.txt": {Content: "no", Encoding: dabackend.EncodingUTF8},
+	}); err == nil {
+		t.Fatal("workspace replacement accepted a path outside /workspace")
 	}
 }
 

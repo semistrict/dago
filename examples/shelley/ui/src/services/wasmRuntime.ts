@@ -1,8 +1,30 @@
 import { appPath } from "../basePath";
+import {
+  browserDirectoryPermission,
+  browserDirectoryPickerSupported,
+  forgetBrowserDirectory,
+  loadRememberedBrowserDirectory,
+  pickBrowserDirectory,
+  rememberBrowserDirectory,
+  requestBrowserDirectoryPermission,
+} from "./browserDirectoryHandle";
+import type { BrowserDirectoryInfo } from "./browserDirectory";
 
 type PendingRequest = {
   resolve: (response: Response) => void;
   reject: (error: Error) => void;
+};
+
+type PendingWebGPUSetup = {
+  resolve: (model: string) => void;
+  reject: (error: Error) => void;
+  onProgress?: (progress: number, text: string) => void;
+};
+
+type PendingLocalDirectory = {
+  resolve: (info: BrowserDirectoryInfo) => void;
+  reject: (error: Error) => void;
+  onProgress?: (text: string) => void;
 };
 
 type WorkerResponse = {
@@ -16,13 +38,26 @@ type RuntimeMessage =
   | { type: "runtime-error"; error: string }
   | { type: "response"; id: number; response: WorkerResponse }
   | { type: "response-error"; id: number; error: string }
-  | { type: "stream-event"; event: string };
+  | { type: "stream-event"; event: string }
+  | { type: "webgpu-model-progress"; progress: number; text: string }
+  | { type: "webgpu-model-configured"; id: number; model: string }
+  | { type: "webgpu-model-error"; id: number; error: string }
+  | { type: "local-directory-progress"; id: number; text: string }
+  | { type: "local-directory-connected"; id: number; info: BrowserDirectoryInfo }
+  | { type: "local-directory-disconnected"; id: number }
+  | { type: "local-directory-error"; id: number; error: string }
+  | { type: "local-directory-sync-error"; error: string };
 
 const runtimePaths = ["/api/", "/feature-flags", "/version-check", "/upgrade", "/exit"];
-const browserLocalModelKey = "shelley_wasm_local_model";
+const browserPredictableModelKey = "shelley_wasm_predictable_model";
 const browserOpenAIKeyStorageKey = "shelley_wasm_openai_key";
 const browserOpenAITestEndpointKey = "shelley_wasm_openai_test_endpoint";
+const browserModelBackendKey = "shelley_wasm_model_backend";
 let browserOpenAIConfigured = false;
+let browserWebGPUConfigured = false;
+let rememberedDirectoryHandle: FileSystemDirectoryHandle | null = null;
+let browserDirectoryReconnect = false;
+let connectedDirectory: BrowserDirectoryInfo | null = null;
 
 function browserOpenAIRequest(apiKey: string): { api_key: string; endpoint?: string } {
   const endpoint = sessionStorage.getItem(browserOpenAITestEndpointKey);
@@ -38,6 +73,8 @@ function isRuntimeRequest(url: URL): boolean {
 class WasmRuntime {
   private readonly worker = new Worker(appPath("wasm-worker.js"));
   private readonly pending = new Map<number, PendingRequest>();
+  private webGPUSetup: PendingWebGPUSetup | null = null;
+  private localDirectorySetup: PendingLocalDirectory | null = null;
   private readonly streams = new Set<WasmEventSource>();
   private nextID = 1;
   private readyResolve!: () => void;
@@ -59,6 +96,10 @@ class WasmRuntime {
           this.readyReject(error);
           for (const pending of this.pending.values()) pending.reject(error);
           this.pending.clear();
+          this.webGPUSetup?.reject(error);
+          this.webGPUSetup = null;
+          this.localDirectorySetup?.reject(error);
+          this.localDirectorySetup = null;
           for (const stream of this.streams) stream.fail(error);
           return;
         }
@@ -84,6 +125,41 @@ class WasmRuntime {
         }
         case "stream-event":
           for (const stream of this.streams) stream.receive(data.event);
+          return;
+        case "webgpu-model-progress":
+          this.webGPUSetup?.onProgress?.(data.progress, data.text);
+          return;
+        case "webgpu-model-configured":
+          this.webGPUSetup?.resolve(data.model);
+          this.webGPUSetup = null;
+          return;
+        case "webgpu-model-error":
+          this.webGPUSetup?.reject(new Error(data.error));
+          this.webGPUSetup = null;
+          return;
+        case "local-directory-progress":
+          this.localDirectorySetup?.onProgress?.(data.text);
+          return;
+        case "local-directory-connected":
+          this.localDirectorySetup?.resolve(data.info);
+          this.localDirectorySetup = null;
+          return;
+        case "local-directory-disconnected":
+          this.localDirectorySetup?.resolve({ name: "", fileCount: 0, skippedCount: 0 });
+          this.localDirectorySetup = null;
+          return;
+        case "local-directory-error":
+          this.localDirectorySetup?.reject(new Error(data.error));
+          this.localDirectorySetup = null;
+          return;
+        case "local-directory-sync-error":
+          connectedDirectory = null;
+          browserDirectoryReconnect = true;
+          console.error(`Local directory disconnected: ${data.error}`);
+          window.dispatchEvent(
+            new CustomEvent("shelley-local-directory-error", { detail: data.error }),
+          );
+          return;
       }
     });
   }
@@ -122,6 +198,44 @@ class WasmRuntime {
 
   removeStream(stream: WasmEventSource): void {
     this.streams.delete(stream);
+  }
+
+  async configureWebGPUModel(
+    onProgress?: (progress: number, text: string) => void,
+  ): Promise<string> {
+    await this.ready;
+    if (this.webGPUSetup) throw new Error("A local model is already loading");
+    const id = this.nextID++;
+    const promise = new Promise<string>((resolve, reject) => {
+      this.webGPUSetup = { resolve, reject, onProgress };
+    });
+    this.worker.postMessage({ type: "configure-webgpu-model", id });
+    return promise;
+  }
+
+  async connectLocalDirectory(
+    handle: FileSystemDirectoryHandle,
+    onProgress?: (text: string) => void,
+  ): Promise<BrowserDirectoryInfo> {
+    await this.ready;
+    if (this.localDirectorySetup) throw new Error("A local folder operation is already running");
+    const id = this.nextID++;
+    const promise = new Promise<BrowserDirectoryInfo>((resolve, reject) => {
+      this.localDirectorySetup = { resolve, reject, onProgress };
+    });
+    this.worker.postMessage({ type: "connect-local-directory", id, handle });
+    return promise;
+  }
+
+  async disconnectLocalDirectory(): Promise<void> {
+    await this.ready;
+    if (this.localDirectorySetup) throw new Error("A local folder operation is already running");
+    const id = this.nextID++;
+    const promise = new Promise<BrowserDirectoryInfo>((resolve, reject) => {
+      this.localDirectorySetup = { resolve, reject };
+    });
+    this.worker.postMessage({ type: "disconnect-local-directory", id });
+    await promise;
   }
 }
 
@@ -194,13 +308,39 @@ export async function installWasmRuntime(): Promise<void> {
   globalThis.EventSource = WasmEventSource as unknown as typeof EventSource;
   await runtime.ready;
 
-  const storedOpenAIKey = localStorage.getItem(browserOpenAIKeyStorageKey);
-  if (storedOpenAIKey) {
+  if (browserDirectoryPickerSupported()) {
     try {
-      await configureBrowserOpenAIKey(storedOpenAIKey);
+      rememberedDirectoryHandle = await loadRememberedBrowserDirectory();
+      if (rememberedDirectoryHandle) {
+        const permission = await browserDirectoryPermission(rememberedDirectoryHandle);
+        if (permission === "granted") {
+          connectedDirectory = await runtime.connectLocalDirectory(rememberedDirectoryHandle);
+        } else {
+          browserDirectoryReconnect = true;
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to restore the local directory", error);
+      browserDirectoryReconnect = rememberedDirectoryHandle !== null;
+    }
+  }
+
+  const selectedBackend = localStorage.getItem(browserModelBackendKey);
+  if (selectedBackend === "webgpu") {
+    try {
+      await configureBrowserWebGPUModel();
     } catch {
-      // Keep loading the app so the connection dialog can replace a stale or
-      // invalid key. The failed key remains available for a later retry.
+      localStorage.removeItem(browserModelBackendKey);
+    }
+  } else {
+    const storedOpenAIKey = localStorage.getItem(browserOpenAIKeyStorageKey);
+    if (storedOpenAIKey) {
+      try {
+        await configureBrowserOpenAIKey(storedOpenAIKey);
+      } catch {
+        // Keep loading the app so the connection dialog can replace a stale or
+        // invalid key. The failed key remains available for a later retry.
+      }
     }
   }
 
@@ -225,19 +365,87 @@ export async function installWasmRuntime(): Promise<void> {
     home_dir: "/workspace",
     hostname: "browser",
     notification_channel_types: [],
-    banner: "Browser runtime: conversations and workspace files stay in this browser.",
+    banner:
+      "Browser runtime: conversations stay in this browser. Folder access is limited to directories you choose.",
   };
 }
 
 export function browserOpenAIKeyRequired(): boolean {
-  if (new URLSearchParams(location.search).get("model") === "local") {
-    sessionStorage.setItem(browserLocalModelKey, "1");
+  if (new URLSearchParams(location.search).get("model") === "predictable") {
+    sessionStorage.setItem(browserPredictableModelKey, "1");
   }
   return (
     sessionStorage.getItem("shelley_runtime") === "wasm" &&
-    !sessionStorage.getItem(browserLocalModelKey) &&
-    !browserOpenAIConfigured
+    (browserDirectoryReconnect ||
+      (!sessionStorage.getItem(browserPredictableModelKey) &&
+        !browserOpenAIConfigured &&
+        !browserWebGPUConfigured))
   );
+}
+
+export function browserLocalDirectorySupported(): boolean {
+  return browserDirectoryPickerSupported();
+}
+
+export function browserLocalDirectoryReconnectRequired(): boolean {
+  return browserDirectoryReconnect;
+}
+
+export function browserModelConfigured(): boolean {
+  return (
+    Boolean(sessionStorage.getItem(browserPredictableModelKey)) ||
+    browserOpenAIConfigured ||
+    browserWebGPUConfigured
+  );
+}
+
+export function browserConnectedDirectory(): BrowserDirectoryInfo | null {
+  return connectedDirectory;
+}
+
+export async function connectBrowserLocalDirectory(
+  onProgress?: (text: string) => void,
+): Promise<BrowserDirectoryInfo> {
+  if (!runtime) throw new Error("WASM runtime is not installed");
+  let handle = rememberedDirectoryHandle;
+  if (handle && browserDirectoryReconnect) {
+    // The handle is already in memory, so permission is the first awaited
+    // browser operation and still carries the button click's user activation.
+    await requestBrowserDirectoryPermission(handle);
+  } else {
+    handle = await pickBrowserDirectory();
+  }
+  const info = await runtime.connectLocalDirectory(handle, onProgress);
+  rememberedDirectoryHandle = handle;
+  connectedDirectory = info;
+  browserDirectoryReconnect = false;
+  try {
+    await rememberBrowserDirectory(handle);
+  } catch (error) {
+    console.warn("The local directory is connected but could not be remembered", error);
+  }
+  return info;
+}
+
+export async function useBrowserWorkspaceInstead(): Promise<void> {
+  if (!runtime) throw new Error("WASM runtime is not installed");
+  await runtime.disconnectLocalDirectory();
+  await forgetBrowserDirectory();
+  rememberedDirectoryHandle = null;
+  connectedDirectory = null;
+  browserDirectoryReconnect = false;
+}
+
+export async function configureBrowserWebGPUModel(
+  onProgress?: (progress: number, text: string) => void,
+): Promise<string> {
+  if (!runtime) throw new Error("WASM runtime is not installed");
+  const model = await runtime.configureWebGPUModel(onProgress);
+  browserWebGPUConfigured = true;
+  browserOpenAIConfigured = false;
+  localStorage.setItem(browserModelBackendKey, "webgpu");
+  sessionStorage.removeItem(browserPredictableModelKey);
+  return model;
 }
 
 export async function configureBrowserOpenAIKey(apiKey: string): Promise<string> {
@@ -256,8 +464,10 @@ export async function configureBrowserOpenAIKey(apiKey: string): Promise<string>
     throw new Error(body.error || `OpenAI setup failed: ${response.status}`);
   }
   localStorage.setItem(browserOpenAIKeyStorageKey, normalized);
+  localStorage.setItem(browserModelBackendKey, "openai");
   browserOpenAIConfigured = true;
-  sessionStorage.removeItem(browserLocalModelKey);
+  browserWebGPUConfigured = false;
+  sessionStorage.removeItem(browserPredictableModelKey);
   return (
     body.models?.find((model) => model.is_default)?.id || body.models?.[0]?.id || "gpt-5.6-luna"
   );

@@ -6,7 +6,7 @@ test.describe("local browser model", () => {
   test("browser runtime persists agent turns and virtual files across reloads", async ({
     page,
   }) => {
-    await page.goto(`${basePath}?model=local`);
+    await page.goto(`${basePath}?model=predictable`);
     const input = page.getByTestId("message-input");
     await expect(input).toBeVisible();
 
@@ -43,7 +43,7 @@ test.describe("local browser model", () => {
   });
 
   test("browser runtime reports host-only capabilities as unavailable", async ({ page }) => {
-    await page.goto(`${basePath}?model=local`);
+    await page.goto(`${basePath}?model=predictable`);
     const result = await page.evaluate(async () => {
       const capabilities = await (await fetch("/api/capabilities")).json();
       const response = await fetch("/api/git/diffs?cwd=%2Fworkspace");
@@ -63,7 +63,7 @@ test.describe("local browser model", () => {
   });
 
   test("just-bash powers terminal commands and the agent execute tool", async ({ page }) => {
-    await page.goto(`${basePath}?model=local`);
+    await page.goto(`${basePath}?model=predictable`);
     const input = page.getByTestId("message-input");
 
     await input.fill("!printf 'from terminal\\n' > /workspace/terminal.txt");
@@ -112,6 +112,129 @@ test.describe("local browser model", () => {
   });
 });
 
+test("Chrome directory access imports and writes through the browser workspace", async ({
+  page,
+}) => {
+  const endpoint = process.env.SHELLEY_OPENAI_MOCK_URL;
+  if (!endpoint) throw new Error("SHELLEY_OPENAI_MOCK_URL is not configured");
+  await page.addInitScript((testEndpoint) => {
+    sessionStorage.setItem("shelley_wasm_openai_test_endpoint", testEndpoint);
+    Object.defineProperty(window, "showDirectoryPicker", {
+      configurable: true,
+      value: async () => {
+        const root = await navigator.storage.getDirectory();
+        try {
+          await root.removeEntry("connected-project", { recursive: true });
+        } catch {
+          // The test directory does not exist on the first run.
+        }
+        const directory = await root.getDirectoryHandle("connected-project", { create: true });
+        const seed = await directory.getFileHandle("seed.txt", { create: true });
+        const writable = await seed.createWritable();
+        await writable.write("from local folder\n");
+        await writable.close();
+        for (const [path, content] of [
+          [[".git"], "local git metadata\n"],
+          [["node_modules", "pkg"], "local dependency\n"],
+        ] as const) {
+          let parent = directory;
+          for (const part of path) {
+            parent = await parent.getDirectoryHandle(part, { create: true });
+          }
+          const protectedFile = await parent.getFileHandle("protected.txt", { create: true });
+          const protectedWritable = await protectedFile.createWritable();
+          await protectedWritable.write(content);
+          await protectedWritable.close();
+        }
+        return directory;
+      },
+    });
+  }, endpoint);
+
+  await page.goto(basePath);
+  const setup = page.getByRole("dialog", { name: "Set up browser workspace" });
+  await setup.getByRole("button", { name: "Open folder" }).click();
+  await expect(setup).toContainText("connected-project · 1 files · 2 excluded");
+
+  await setup.getByTestId("browser-openai-key-input").fill("browser-test-key");
+  await setup.getByRole("button", { name: "Continue" }).click();
+  await expect(setup).toBeHidden();
+
+  const imported = await page.evaluate(async () => {
+    const response = await fetch("/api/list-directory?path=%2Fworkspace");
+    return response.json() as Promise<{ entries: Array<{ name: string }> }>;
+  });
+  expect(imported.entries.map((entry) => entry.name)).toEqual(["seed.txt"]);
+
+  await page.evaluate(async () => {
+    const response = await fetch("/api/browser-shell", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        command:
+          "mkdir -p /workspace/.git /workspace/node_modules/pkg; " +
+          "printf 'hacked\\n' > /workspace/.git/protected.txt; " +
+          "printf 'hacked\\n' > /workspace/node_modules/pkg/protected.txt; " +
+          "printf 'written through wasm\\n' > /workspace/result.txt",
+      }),
+    });
+    if (!response.ok) throw new Error(`browser shell failed: ${response.status}`);
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        const directory = await root.getDirectoryHandle("connected-project");
+        const handle = await directory.getFileHandle("result.txt");
+        return (await handle.getFile()).text();
+      }),
+    )
+    .toBe("written through wasm\n");
+  const protectedContents = await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const directory = await root.getDirectoryHandle("connected-project");
+    const read = async (parts: string[]) => {
+      let parent = directory;
+      for (const part of parts.slice(0, -1)) parent = await parent.getDirectoryHandle(part);
+      const file = await parent.getFileHandle(parts.at(-1) || "");
+      return (await file.getFile()).text();
+    };
+    return Promise.all([
+      read([".git", "protected.txt"]),
+      read(["node_modules", "pkg", "protected.txt"]),
+    ]);
+  });
+  expect(protectedContents).toEqual(["local git metadata\n", "local dependency\n"]);
+
+  await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const directory = await root.getDirectoryHandle("connected-project");
+    const seed = await directory.getFileHandle("seed.txt");
+    const writable = await seed.createWritable();
+    await writable.write("changed outside the app\n");
+    await writable.close();
+  });
+
+  await page.reload();
+  await expect(setup).toBeHidden();
+  const restored = await page.evaluate(async () => {
+    const response = await fetch("/api/list-directory?path=%2Fworkspace");
+    return response.json() as Promise<{ entries: Array<{ name: string }> }>;
+  });
+  expect(restored.entries.map((entry) => entry.name)).toEqual(
+    expect.arrayContaining(["result.txt", "seed.txt"]),
+  );
+  const refreshed = await page.evaluate(async () => {
+    const response = await fetch("/api/browser-shell", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: "cat /workspace/seed.txt" }),
+    });
+    return response.json() as Promise<{ output: string }>;
+  });
+  expect(refreshed.output).toBe("changed outside the app\n");
+});
+
 test("browser saves the OpenAI key locally and restores it after reload", async ({ page }) => {
   const endpoint = process.env.SHELLEY_OPENAI_MOCK_URL;
   if (!endpoint) throw new Error("SHELLEY_OPENAI_MOCK_URL is not configured");
@@ -119,8 +242,10 @@ test("browser saves the OpenAI key locally and restores it after reload", async 
     sessionStorage.setItem("shelley_wasm_openai_test_endpoint", testEndpoint);
   }, endpoint);
   await page.goto(basePath);
-  const keyDialog = page.getByRole("dialog", { name: "Connect OpenAI" });
+  const keyDialog = page.getByRole("dialog", { name: "Set up browser workspace" });
   await expect(keyDialog).toBeVisible();
+  await expect(keyDialog.getByRole("button", { name: "Open folder" })).toBeVisible();
+  await expect(keyDialog.getByRole("button", { name: "Use local model" })).toBeVisible();
   await expect(keyDialog.locator("input")).toHaveCount(1);
   await expect(keyDialog).not.toContainText("Endpoint");
   await expect(keyDialog).not.toContainText("Model name");
@@ -180,19 +305,37 @@ test("browser saves the OpenAI key locally and restores it after reload", async 
     "direct browser response",
   ]);
   const persisted = await page.evaluate(async () => {
-    const durable = await new Promise<string>((resolve, reject) => {
-      const open = indexedDB.open("shelley-wasm", 1);
+    const durable = await new Promise<{
+      stores: string[];
+      conversations: unknown[];
+      files: unknown[];
+      checkpoints: unknown[];
+      writes: unknown[];
+    }>((resolve, reject) => {
+      const open = indexedDB.open("shelley-wasm-runtime", 1);
       open.onerror = () => reject(open.error);
       open.onsuccess = () => {
         const database = open.result;
-        const request = database
-          .transaction("state", "readonly")
-          .objectStore("state")
-          .get("application-state");
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
+        const transaction = database.transaction(
+          ["conversations", "files", "checkpoints", "checkpoint_writes"],
+          "readonly",
+        );
+        const requests = {
+          conversations: transaction.objectStore("conversations").getAll(),
+          files: transaction.objectStore("files").getAll(),
+          checkpoints: transaction.objectStore("checkpoints").getAll(),
+          writes: transaction.objectStore("checkpoint_writes").getAll(),
+        };
+        transaction.onerror = () => reject(transaction.error);
+        transaction.oncomplete = () => {
           database.close();
-          resolve(typeof request.result === "string" ? request.result : "");
+          resolve({
+            stores: [...database.objectStoreNames],
+            conversations: requests.conversations.result,
+            files: requests.files.result,
+            checkpoints: requests.checkpoints.result,
+            writes: requests.writes.result,
+          });
         };
       };
     });
@@ -204,9 +347,21 @@ test("browser saves the OpenAI key locally and restores it after reload", async 
   });
   expect(persisted.local).toBe("browser-test-key");
   expect(persisted.session).toBeNull();
-  expect(persisted.durable).not.toContain("browser-test-key");
+  expect(persisted.durable.stores).not.toContain("state");
+  expect(persisted.durable.conversations).toHaveLength(1);
+  expect(persisted.durable.checkpoints.length).toBeGreaterThan(0);
+  expect(JSON.stringify(persisted.durable)).not.toContain("browser-test-key");
 
   await page.reload();
   await expect(keyDialog).toBeHidden();
   await expect(page.locator(".model-picker.p-select")).toContainText("GPT-5.6 Luna");
+  await input.fill("continue after restoring the checkpoint");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByTestId("agent-thinking")).toBeHidden();
+  await expect(page.locator('[role="article"]')).toHaveText([
+    "answer through the direct provider",
+    "direct browser response",
+    "continue after restoring the checkpoint",
+    "direct browser response",
+  ]);
 });

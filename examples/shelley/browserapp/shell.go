@@ -113,6 +113,17 @@ func (workspace *browserWorkspace) Snapshot() map[string]dabackend.FileData {
 	return workspace.memory.Snapshot()
 }
 
+func (workspace *browserWorkspace) Replace(files map[string]dabackend.FileData) error {
+	memory, err := dabackend.NewMemory(files)
+	if err != nil {
+		return err
+	}
+	workspace.mu.Lock()
+	workspace.memory = memory
+	workspace.mu.Unlock()
+	return nil
+}
+
 type browserSandbox struct {
 	*browserWorkspace
 	shellMu sync.Mutex

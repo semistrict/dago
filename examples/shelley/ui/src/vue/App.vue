@@ -165,6 +165,7 @@
       <BrowserOpenAIKeyModal
         :is-open="browserOpenAIKeyModalOpen"
         @configured="handleBrowserOpenAIConfigured"
+        @directory-connected="handleBrowserDirectoryConnected"
       />
 
       <NotificationsModal
@@ -242,7 +243,7 @@ import {
 import { connectGlobalStream, type StreamStatus } from "../services/globalStream";
 import { handleNotificationEvent } from "../services/notifications";
 import { loadCachedDraft } from "../services/draftCache";
-import { browserOpenAIKeyRequired } from "../services/wasmRuntime";
+import { browserModelConfigured, browserOpenAIKeyRequired } from "../services/wasmRuntime";
 import { appPath, appPathname } from "../basePath";
 import { initialDrawerCollapsed, saveDrawerCollapsedPreference } from "../utils/drawerStartup";
 import { perfCount } from "../utils/perf";
@@ -349,6 +350,11 @@ function handleBrowserOpenAIConfigured(model: string) {
   localStorage.setItem("shelley_selected_model", model);
   modelsRefreshTrigger.value++;
   startNewConversation();
+}
+
+function handleBrowserDirectoryConnected() {
+  cwdSyncTrigger.value++;
+  if (browserModelConfigured()) browserOpenAIKeyModalOpen.value = false;
 }
 
 // ---- non-reactive refs ----

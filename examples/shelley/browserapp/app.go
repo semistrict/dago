@@ -29,6 +29,9 @@ import (
 const (
 	snapshotVersion = 1
 	modelID         = "browser-predictable"
+	webGPUModelID   = "local-webgpu"
+	webGPUModelName = "Qwen3.5 0.8B (WebGPU)"
+	webGPUContext   = 8192
 	workspaceRoot   = "/workspace"
 )
 
@@ -141,6 +144,8 @@ type App struct {
 	agents         map[string]*dago.DeepAgent
 	customModels   map[string]CustomModel
 	providerModels map[string]CustomModel
+	webGPUModel    damodel.Chat
+	saver          dacheckpoint.Saver
 	workspace      *browserWorkspace
 	backend        dabackend.Backend
 	shellExecutor  ShellExecutor
@@ -153,7 +158,7 @@ type App struct {
 // local model. A remote model bridge can replace this model without changing
 // the UI transport or persistence protocol.
 func New() (*App, error) {
-	return newApp(nil)
+	return newApp(nil, nil)
 }
 
 // NewWithShell constructs the browser application with an isolated shell
@@ -162,10 +167,65 @@ func NewWithShell(executor ShellExecutor) (*App, error) {
 	if executor == nil {
 		return nil, fmt.Errorf("browser shell executor is required")
 	}
-	return newApp(executor)
+	return newApp(executor, nil)
 }
 
-func newApp(executor ShellExecutor) (*App, error) {
+// NewWithShellAndSaver constructs the browser application with durable graph
+// checkpoints and an isolated browser shell executor.
+func NewWithShellAndSaver(executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
+	if executor == nil {
+		return nil, fmt.Errorf("browser shell executor is required")
+	}
+	if saver == nil {
+		return nil, fmt.Errorf("browser checkpoint saver is required")
+	}
+	return newApp(executor, saver)
+}
+
+// ConfigureWebGPUModel installs the browser worker's local inference bridge.
+// Model weights and execution remain owned by the worker; the Go application
+// only sees the provider-neutral model contract.
+func (app *App) ConfigureWebGPUModel(model damodel.Chat) error {
+	if model == nil {
+		return fmt.Errorf("browser WebGPU model is required")
+	}
+	app.mu.RLock()
+	backend := app.backend
+	app.mu.RUnlock()
+	agent, err := newAgent(backend, model, webGPUModelID, app.saver)
+	if err != nil {
+		return err
+	}
+	app.mu.Lock()
+	app.webGPUModel = model
+	app.agents[webGPUModelID] = agent
+	app.mu.Unlock()
+	return nil
+}
+
+// ReplaceWorkspace refreshes the portable workspace from a user-authorized
+// browser directory without changing conversations or rebuilding agents.
+func (app *App) ReplaceWorkspace(files map[string]dabackend.FileData) error {
+	for path := range files {
+		if !strings.HasPrefix(path, workspaceRoot+"/") {
+			return fmt.Errorf("browser workspace path must be inside %s: %q", workspaceRoot, path)
+		}
+	}
+	app.mu.RLock()
+	workspace := app.workspace
+	app.mu.RUnlock()
+	return workspace.Replace(files)
+}
+
+// WorkspaceSnapshot returns an isolated copy for the browser directory sync.
+func (app *App) WorkspaceSnapshot() map[string]dabackend.FileData {
+	app.mu.RLock()
+	workspace := app.workspace
+	app.mu.RUnlock()
+	return workspace.Snapshot()
+}
+
+func newApp(executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
 	workspace, err := newBrowserWorkspace(map[string]dabackend.FileData{
 		workspaceRoot + "/README.md": {
 			Content:  "# Browser workspace\n\nFiles created by the agent are stored in this browser.\n",
@@ -179,13 +239,14 @@ func newApp(executor ShellExecutor) (*App, error) {
 	if executor != nil {
 		backend = &browserSandbox{browserWorkspace: workspace, execute: executor}
 	}
-	agent, err := newAgent(backend, newPredictableModel(), modelID)
+	agent, err := newAgent(backend, newPredictableModel(), modelID, saver)
 	if err != nil {
 		return nil, err
 	}
 	return &App{
 		agents: map[string]*dago.DeepAgent{modelID: agent}, customModels: map[string]CustomModel{},
 		providerModels: map[string]CustomModel{},
+		saver:          saver,
 		workspace:      workspace, backend: backend, shellExecutor: executor,
 		conversations: map[string]*record{}, now: time.Now,
 	}, nil
@@ -400,6 +461,14 @@ func (app *App) handleConversation(method, path string, query url.Values, body s
 		if record := app.conversations[id]; record != nil && record.Cancel != nil {
 			record.Cancel()
 		}
+		saver := app.saver
+		app.mu.Unlock()
+		if saver != nil {
+			if err := saver.DeleteThread(context.Background(), id); err != nil {
+				return errorResponse(500, err)
+			}
+		}
+		app.mu.Lock()
 		delete(app.conversations, id)
 		app.mu.Unlock()
 		return changedResponse(200, map[string]string{"status": "deleted"})
@@ -485,19 +554,33 @@ func (app *App) runTurn(ctx context.Context, id string, history []damessage.Mess
 	app.mu.RLock()
 	record := app.conversations[id]
 	selectedModel := ""
+	messageCount := 0
 	if record != nil {
 		selectedModel = pointerText(record.Conversation.Model)
+		messageCount = len(record.Messages)
 	}
 	agent := app.agents[selectedModel]
+	saver := app.saver
 	app.mu.RUnlock()
 	var result dagent.Result
 	var err error
 	if agent == nil {
 		err = fmt.Errorf("model %q is not configured in this browser session", selectedModel)
 	} else {
-		result, err = agent.Invoke(ctx, dagent.Input{
-			Config: dacheckpoint.Config{ThreadID: id}, Messages: history,
-		})
+		input := history
+		if saver != nil {
+			tuple, checkpointErr := saver.GetTuple(ctx, dacheckpoint.Config{ThreadID: id})
+			if checkpointErr != nil {
+				err = checkpointErr
+			} else if tuple != nil && len(history) > 0 {
+				input = history[len(history)-1:]
+			}
+		}
+		if err == nil {
+			result, err = agent.Invoke(ctx, dagent.Input{
+				Config: dacheckpoint.Config{ThreadID: id}, Messages: input,
+			})
+		}
 	}
 	app.mu.Lock()
 	record = app.conversations[id]
@@ -518,7 +601,7 @@ func (app *App) runTurn(ctx context.Context, id string, history []damessage.Mess
 		record.API = append(record.API, projected)
 		additions = append(additions, projected)
 	} else {
-		start := len(history)
+		start := messageCount
 		if start > len(result.Messages) {
 			start = len(result.Messages)
 		}
@@ -793,7 +876,7 @@ func (app *App) configureBrowserOpenAI(body string) Response {
 		if err != nil {
 			return errorResponse(400, err)
 		}
-		agent, err := newAgent(app.backend, chat, model.ModelID)
+		agent, err := newAgent(app.backend, chat, model.ModelID, app.saver)
 		if err != nil {
 			return errorResponse(400, err)
 		}
@@ -948,7 +1031,7 @@ func (app *App) setCustomModel(model CustomModel, replacing bool) (CustomModel, 
 	if err != nil {
 		return CustomModel{}, err
 	}
-	agent, err := newAgent(app.backend, chat, model.ModelID)
+	agent, err := newAgent(app.backend, chat, model.ModelID, app.saver)
 	if err != nil {
 		return CustomModel{}, err
 	}
@@ -1050,7 +1133,7 @@ func (app *App) Restore(data []byte) error {
 	if app.shellExecutor != nil {
 		backend = &browserSandbox{browserWorkspace: workspace, execute: app.shellExecutor}
 	}
-	defaultAgent, err := newAgent(backend, newPredictableModel(), modelID)
+	defaultAgent, err := newAgent(backend, newPredictableModel(), modelID, app.saver)
 	if err != nil {
 		return err
 	}
@@ -1063,17 +1146,25 @@ func (app *App) Restore(data []byte) error {
 	for _, model := range app.providerModels {
 		models = append(models, model)
 	}
+	webGPUModel := app.webGPUModel
 	app.mu.RUnlock()
 	for _, model := range models {
 		chat, chatErr := openAIChat(model)
 		if chatErr != nil {
 			return chatErr
 		}
-		agent, agentErr := newAgent(backend, chat, model.ModelID)
+		agent, agentErr := newAgent(backend, chat, model.ModelID, app.saver)
 		if agentErr != nil {
 			return agentErr
 		}
 		agents[model.ModelID] = agent
+	}
+	if webGPUModel != nil {
+		agent, agentErr := newAgent(backend, webGPUModel, webGPUModelID, app.saver)
+		if agentErr != nil {
+			return agentErr
+		}
+		agents[webGPUModelID] = agent
 	}
 	restored := make(map[string]*record, len(saved.Conversations))
 	for id, value := range saved.Conversations {
@@ -1105,7 +1196,7 @@ func newPredictableModel() damodel.Chat {
 	return &uniqueIDModel{Chat: model, prefix: prefix + "-"}
 }
 
-func newAgent(backend dabackend.Backend, model damodel.Chat, name string) (*dago.DeepAgent, error) {
+func newAgent(backend dabackend.Backend, model damodel.Chat, name string, saver dacheckpoint.Saver) (*dago.DeepAgent, error) {
 	tools := []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"}
 	if dabackend.CapabilitiesOf(backend).Execute {
 		tools = append(tools, "execute")
@@ -1114,6 +1205,7 @@ func newAgent(backend dabackend.Backend, model damodel.Chat, name string) (*dago
 		Name:             "shelley-browser-" + name,
 		Model:            model,
 		Backend:          backend,
+		Saver:            saver,
 		FilesystemTools:  tools,
 		EnableTodo:       true,
 		DisableSubagents: true,
@@ -1228,9 +1320,10 @@ func (app *App) availableModels() []map[string]any {
 			providerModels = append(providerModels, model)
 		}
 	}
+	webGPUReady := app.webGPUModel != nil
 	app.mu.RUnlock()
 	customModels := app.listCustomModels()
-	result := make([]map[string]any, 0, len(providerModels)+len(customModels)+1)
+	result := make([]map[string]any, 0, len(providerModels)+len(customModels)+2)
 	for index, model := range providerModels {
 		result = append(result, map[string]any{
 			"id": model.ModelID, "display_name": model.DisplayName, "source": "OpenAI",
@@ -1247,9 +1340,16 @@ func (app *App) availableModels() []map[string]any {
 			"supports_reasoning": model.SupportsReasoning,
 		})
 	}
+	if webGPUReady {
+		result = append(result, map[string]any{
+			"id": webGPUModelID, "display_name": webGPUModelName, "source": "local WebGPU",
+			"ready": true, "is_default": len(providerModels) == 0 && len(customModels) == 0,
+			"max_context_tokens": webGPUContext,
+		})
+	}
 	result = append(result, map[string]any{
 		"id": modelID, "display_name": "Browser predictable", "source": "local WASM",
-		"ready": true, "is_default": len(providerModels) == 0 && len(customModels) == 0, "max_context_tokens": 200000,
+		"ready": true, "is_default": len(providerModels) == 0 && len(customModels) == 0 && !webGPUReady, "max_context_tokens": 200000,
 	})
 	return result
 }
@@ -1257,6 +1357,7 @@ func (app *App) availableModels() []map[string]any {
 func (app *App) defaultModelID() string {
 	app.mu.RLock()
 	_, openAIReady := app.providerModels["gpt-5.6-luna"]
+	webGPUReady := app.webGPUModel != nil
 	app.mu.RUnlock()
 	if openAIReady {
 		return "gpt-5.6-luna"
@@ -1264,6 +1365,9 @@ func (app *App) defaultModelID() string {
 	models := app.listCustomModels()
 	if len(models) > 0 {
 		return models[0].ModelID
+	}
+	if webGPUReady {
+		return webGPUModelID
 	}
 	return modelID
 }
