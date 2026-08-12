@@ -17,6 +17,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Bidirectional Python payload fixtures | verified | SQLite and PostgreSQL are generated, read, and continued in both directions |
 | State, memory, store, filesystem, composite, local shell | verified | shared backend and thread-scoped delta-state tests |
 | LangSmith remote sandbox | verified | SDK adapter tests; live test is credential-gated |
+| Docker local sandbox | implemented | hardened creation, workspace confinement, execution, cancellation restart, cleanup, and opt-in live-container tests |
 | Context Hub persistent agent repository | verified | lazy pull, commit chaining, linked entries, cache recovery, batch transfer, and LangSmith SDK transport tests |
 | Filesystem tools and permission approval | verified | root vertical-slice tests |
 | Declarative and precompiled subagents, isolation, state propagation, and nested approval resume | verified | root and agent tests |
@@ -28,8 +29,9 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
 | Asynchronous hosted-subagent lifecycle and durable task state | verified | provider-neutral runner and five management-tool tests |
 | Remote Agent Protocol background client | verified | thread/run create, status/result, interrupting update, cancellation, auth, path escaping, and redirect-boundary tests |
+| LangSmith Studio / Agent Server development API | verified | info and schema discovery; assistant, thread, run, checkpoint state/history/update/fork, store, cancellation, replayable SSE, CORS, generated-wrapper, and config tests |
 | Video processing | verified | pluggable extractor contract plus optional bounded FFmpeg adapter; video-window, frame, truncation, fallback, and failure tests |
-| Shelley end-to-end application | verified | HTTP route tests plus desktop/mobile browser interaction checks |
+| shelley-in-dago end-to-end application | verified | HTTP route tests plus desktop/mobile browser interaction checks |
 
 ## Intentional differences
 
@@ -55,3 +57,9 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
   the default and no decoder library is a core dependency.
 - General tracing integrations remain separate optional adapters and are not core
   runtime dependencies.
+- The local Agent Server implements the Studio and SDK surface needed for dago
+  development. It does not execute arbitrary Python/JavaScript graph imports, host
+  custom web applications, schedule crons, provide LangSmith tracing, or implement
+  the protocol-v2 long-lived thread websocket. Go graph paths are compiled into a
+  generated wrapper, and runs use the existing dago graph rather than a general
+  LangGraph runtime.

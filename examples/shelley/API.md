@@ -1,6 +1,6 @@
-# Shelley HTTP/SSE API
+# shelley-in-dago HTTP/SSE API
 
-This document describes the API contract between a Shelley server and its
+This document describes the API contract between a shelley-in-dago server and its
 clients (the web UI, the iOS app, the CLI in `client/`, and tests). All
 routes are mounted under `/api/` unless noted; the version endpoint is at
 `/version`.

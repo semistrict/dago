@@ -1,6 +1,6 @@
-# Shelley LazyCue tests
+# shelley-in-dago LazyCue tests
 
-Self-healing browser tests for the Shelley UI, powered by
+Self-healing browser tests for the shelley-in-dago UI, powered by
 [LazyCue](../../lazycue). Each test is a plain-English description living in a Go
 test function (`shelley/test/lazycue_test.go`). At run time:
 
@@ -24,7 +24,7 @@ source of truth; if the app diverges from it, the test fails.
 ## Running locally
 
 The tests run as ordinary Go integration tests in `shelley/test`. `TestMain`
-boots one in-process, predictable-mode Shelley server shared by all of them,
+boots one in-process, predictable-mode shelley-in-dago server shared by all of them,
 and each `TestNewPage*` drives its description through a package-level
 `lazycue.Harness` — no separate server process and no `lazycue` binary. They're
 gated behind an env var so they stay out of the default `go test ./...` path:

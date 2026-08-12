@@ -15,7 +15,7 @@
         :disabled="saving"
       />
       <p class="browser-key-note">
-        Kept only in worker memory. You will be asked again after reloading the page.
+        Saved in this browser so you stay connected after reloading the page.
       </p>
       <p v-if="error" class="browser-key-error" role="alert">{{ error }}</p>
 

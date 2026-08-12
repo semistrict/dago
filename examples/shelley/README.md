@@ -1,7 +1,7 @@
-# Shelley example
+# shelley-in-dago example
 
-Shelley is a browser-based, multi-conversation coding-agent example built on
-dago. This subtree was copied from and modified from the upstream Shelley
+shelley-in-dago is a browser-based, multi-conversation coding-agent example built
+on dago. This subtree was copied from and modified from the upstream Shelley
 application; see [`UPSTREAM.md`](UPSTREAM.md) and [`LICENSE`](LICENSE).
 
 ## Run locally
@@ -28,9 +28,9 @@ reviewing a workspace, opt in with `serve --trust-workspace-guidance`.
 make wasm-serve
 ```
 
-The browser build prompts once for an OpenAI API key and keeps it in the Web
-Worker's memory. Reloading the page clears the key. Files and shell commands use
-the browser-local virtual filesystem and do not access the host.
+The browser build prompts once for an OpenAI API key and saves it in that origin's
+`localStorage`, then restores it into the Web Worker after a reload. Files and shell
+commands use the browser-local virtual filesystem and do not access the host.
 
 ## Verify
 

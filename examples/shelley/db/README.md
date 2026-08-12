@@ -1,6 +1,6 @@
 # Database Package
 
-This package provides database operations for the Shelley AI coding agent using SQLite and sqlc.
+This package provides database operations for the shelley-in-dago AI coding agent using SQLite and sqlc.
 
 ## Architecture
 

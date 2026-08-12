@@ -20,6 +20,7 @@ type RuntimeMessage =
 
 const runtimePaths = ["/api/", "/feature-flags", "/version-check", "/upgrade", "/exit"];
 const browserLocalModelKey = "shelley_wasm_local_model";
+const browserOpenAIKeyStorageKey = "shelley_wasm_openai_key";
 const browserOpenAITestEndpointKey = "shelley_wasm_openai_test_endpoint";
 let browserOpenAIConfigured = false;
 
@@ -193,6 +194,16 @@ export async function installWasmRuntime(): Promise<void> {
   globalThis.EventSource = WasmEventSource as unknown as typeof EventSource;
   await runtime.ready;
 
+  const storedOpenAIKey = localStorage.getItem(browserOpenAIKeyStorageKey);
+  if (storedOpenAIKey) {
+    try {
+      await configureBrowserOpenAIKey(storedOpenAIKey);
+    } catch {
+      // Keep loading the app so the connection dialog can replace a stale or
+      // invalid key. The failed key remains available for a later retry.
+    }
+  }
+
   const selectedDirectory = localStorage.getItem("shelley_selected_cwd");
   if (selectedDirectory !== "/workspace" && !selectedDirectory?.startsWith("/workspace/")) {
     localStorage.setItem("shelley_selected_cwd", "/workspace");
@@ -244,8 +255,7 @@ export async function configureBrowserOpenAIKey(apiKey: string): Promise<string>
   if (!response.ok) {
     throw new Error(body.error || `OpenAI setup failed: ${response.status}`);
   }
-  // The worker owns the credential after this request. Do not retain it in
-  // origin-scoped browser storage or in the main-thread application state.
+  localStorage.setItem(browserOpenAIKeyStorageKey, normalized);
   browserOpenAIConfigured = true;
   sessionStorage.removeItem(browserLocalModelKey);
   return (

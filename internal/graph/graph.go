@@ -116,6 +116,15 @@ type Execution struct {
 	Steps      int
 }
 
+// Snapshot is one reconstructed durable graph state without executing pending
+// tasks. Next contains the nodes scheduled by the addressed checkpoint.
+type Snapshot struct {
+	Config   dacheckpoint.Config
+	State    dastate.Values
+	Metadata dacheckpoint.Metadata
+	Next     []string
+}
+
 // CompileOptions configure one compiled graph.
 type CompileOptions struct {
 	Saver dacheckpoint.Saver

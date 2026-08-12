@@ -1,13 +1,13 @@
 # Intentional differences from Deep Agents
 
 Deep Agents Python is the behavioral authority for the agent harness used by this
-example. Shelley-specific behavior is retained only at the application boundary:
+example. shelley-in-dago-specific behavior is retained only at the application boundary:
 HTTP and SSE payloads, database projections, OAuth and model discovery, browser UI,
 notifications, terminal sessions, and application-only tools.
 
 The following differences are intentional:
 
-- dago requires delta channels. Shelley does not offer a non-delta execution or
+- dago requires delta channels. shelley-in-dago does not offer a non-delta execution or
   checkpoint mode.
 - SQLite and PostgreSQL use the Python-compatible schemas and language-neutral
   payload subset. Python-specific serialized objects, imports, constructors, and
@@ -19,5 +19,5 @@ The following differences are intentional:
   alone never grants command execution authority.
 
 Temporary migration gaps are not intentional differences and must not be added to
-this file. They remain implementation work until Shelley delegates the corresponding
+this file. They remain implementation work until shelley-in-dago delegates the corresponding
 harness responsibility to dago.

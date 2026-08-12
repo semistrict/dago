@@ -1,6 +1,6 @@
-# Shelley E2E Tests with Playwright
+# shelley-in-dago E2E Tests with Playwright
 
-This directory contains end-to-end tests for the Shelley web interface using Playwright.
+This directory contains end-to-end tests for the shelley-in-dago web interface using Playwright.
 
 ## Features
 
@@ -79,7 +79,7 @@ Screenshots are automatically saved in `test-results/` directory:
 
 ## Predictable LLM
 
-The tests use Shelley's predictable LLM model which provides:
+The tests use shelley-in-dago's predictable LLM model, which provides:
 - Consistent responses for the same inputs
 - Deterministic tool usage
 - Predictable conversation flows
@@ -88,7 +88,7 @@ The tests use Shelley's predictable LLM model which provides:
 ## Configuration
 
 Playwright configuration is in `playwright.config.ts`:
-- Auto-starts Shelley server with predictable model
+- Auto-starts the shelley-in-dago server with a predictable model
 - Configures mobile-first viewports
 - Sets up screenshot and video capture
 - Handles test timeouts and retries
@@ -102,7 +102,7 @@ Playwright configuration is in `playwright.config.ts`:
 
 ## Frontend: Vue 3 + PrimeVue
 
-The Shelley frontend is a single Vue 3 + PrimeVue app (`src/vue`), built into
+The shelley-in-dago frontend is a single Vue 3 + PrimeVue app (`src/vue`), built into
 the binary and served by the Go server. Every spec under `e2e/*.spec.ts` runs
 against it.
 

@@ -1,7 +1,7 @@
-Shelley is an agentic loop with tool use. See
+shelley-in-dago is an agentic loop with tool use. See
 https://sketch.dev/blog/agent-loop for an example of the idea.
 
-When Shelley is started with "go run ./cmd/shelley" it starts a web server and
+When shelley-in-dago is started with `go run ./cmd/shelley`, it starts a web server and
 opens a sqlite database, and users interact with the ui built in ui/. (The
 server itself is implemented in server/; cmd/shelley is a very thing shim.)
 
@@ -75,6 +75,6 @@ Various tools for the LLM.
 
 ## Other
 
-Shelley talks to the LLMs using the llm/ library.
+shelley-in-dago talks to LLMs using the `llm` library.
 
 Logging happens with slog and the tint library.

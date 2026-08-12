@@ -1,0 +1,8 @@
+{
+  "graphs": {
+    "agent": {
+      "path": ".:NewAgent",
+      "description": "A network-free dago agent for trying Studio."
+    }
+  }
+}

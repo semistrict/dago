@@ -1,6 +1,6 @@
-# Shelley Hooks
+# shelley-in-dago Hooks
 
-You can customize Shelley behavior by placing executable scripts
+You can customize shelley-in-dago behavior by placing executable scripts
 in `$HOME/.config/shelley/hooks/<name>`.
 
 If a hook fails (non-zero exit, invalid output, etc.) the operation it
@@ -19,7 +19,7 @@ logged.
 
 ## Example payloads
 
-The samples below are stdin captured from a real Shelley instance with
+The samples below are stdin captured from a real shelley-in-dago instance with
 `tee`-only hooks installed.
 
 ### `system-prompt`
@@ -99,7 +99,7 @@ For subagent conversations, `readonly.is_subagent` is `true`,
 }
 ```
 
-`reasoning_level` is the conversation override when set; otherwise Shelley materializes the service's configured default. It is empty only when the provider chooses the default dynamically and Shelley cannot know it in advance.
+`reasoning_level` is the conversation override when set; otherwise shelley-in-dago materializes the service's configured default. It is empty only when the provider chooses the default dynamically and shelley-in-dago cannot know it in advance.
 
 Stdout (empty = no-op):
 

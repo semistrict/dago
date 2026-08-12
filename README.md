@@ -8,7 +8,7 @@ to reproduce either framework in full.
 
 The public API is currently pre-1.0.
 
-[Try the Shelley browser demo](https://semistrict.github.io/dago/).
+[Try the shelley-in-dago browser demo](https://semistrict.github.io/dago/).
 
 ## Install
 
@@ -148,6 +148,63 @@ Cross-language payload compatibility is intentionally limited to the safe plain-
 subset in [`docs/SERIALIZATION.md`](docs/SERIALIZATION.md); Python-specific object
 records are rejected with typed context instead of reconstructed.
 
+## LangSmith Studio
+
+`dago dev` exposes configured Go agent factories through the LangGraph Agent
+Server protocol, persists development threads and store values in SQLite, watches
+Go/module/config/environment files, and rebuilds the server when they change.
+
+```sh
+go install github.com/semistrict/dago/cmd/dago@latest
+```
+
+Export a factory that accepts the server-owned runtime. Using its saver and store
+is required for Studio state, history, replay, and thread operations to address the
+same durable data as agent runs:
+
+```go
+func NewAgent(_ context.Context, runtime daserver.Runtime) (*dago.DeepAgent, error) {
+	return dago.New(dago.Options{
+		Model: chat,
+		Saver: runtime.Saver,
+		Store: runtime.Store,
+	})
+}
+```
+
+Point `dago.json` at the package and exported factory:
+
+```json
+{
+  "graphs": {
+    "agent": {
+      "path": "./agent:NewAgent",
+      "description": "Workspace agent"
+    }
+  },
+  "env": ".env"
+}
+```
+
+Then start the API and Studio:
+
+```sh
+dago dev
+```
+
+The default API is `http://localhost:2024`; `--no-browser`, `--host`, `--port`,
+`--config`, and `--n-jobs-per-worker` are available. Development data and the
+generated wrapper stay under the ignored `.dago_api` directory. The
+[`examples/studio`](examples/studio) configuration is a network-free smoke test:
+
+```sh
+dago dev -c examples/studio/dago.json
+```
+
+This is a focused local Studio integration, not a claim that arbitrary LangGraph
+applications can run in Go. Its supported Agent Server resources and current
+limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
+
 ## Packages
 
 | Package | Purpose |
@@ -157,6 +214,7 @@ records are rejected with typed context instead of reconstructed.
 | `damessage`, `damodel`, `datool`, `dastate` | Stable public contracts and reducers |
 | `damodel/modeltest` | Scripted and prompt-driven predictable model doubles for offline tests and examples |
 | `dabackend` | State, memory, host filesystem, namespaced store, composite, and explicit local-shell backends |
+| `dabackend/docker` | Owned local Docker sandbox with a confined workspace, hardened defaults, resource limits, and lifecycle cleanup |
 | `dabackend/langsmith` | Adapter for an existing LangSmith sandbox using `langsmith-go` |
 | `dabackend/contexthub` | Persistent Context Hub agent-repository files with linked-entry and parent-commit support |
 | `dacheckpoint` | Saver contract and in-memory implementation |
@@ -164,17 +222,48 @@ records are rejected with typed context instead of reconstructed.
 | `dastore`, `dastore/sqlite`, `dacache` | Namespaced data store and cache contracts and implementations |
 | `daproviders/openai` | Focused Responses API adapter and credential flows |
 | `daskill` | Agent Skills parsing, discovery, validation, and rendering contracts |
+| `daserver` | Embeddable LangGraph Agent Server protocol for LangSmith Studio and SDK clients |
 
 The graph runtime is internal. dago claims compatibility only for the Deep Agents
 surface documented in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md), not general
 LangChain or LangGraph compatibility.
+
+## Docker sandbox
+
+`dabackend/docker` creates and owns a container from an image that is already
+available to the local Docker daemon. It never pulls an image implicitly. The
+image must provide `/bin/sh` and `sleep`.
+
+```go
+sandbox, err := docker.New(ctx, docker.Options{
+	Image: "my-agent-sandbox:local",
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer sandbox.Close()
+
+compiled, err := dago.New(dago.Options{
+	Model:   chat,
+	Backend: sandbox,
+})
+```
+
+By default the container has no network, a read-only root filesystem, no Linux
+capabilities, `no-new-privileges`, bounded memory/CPU/PIDs, a writable `/tmp`, and
+one private workspace bind mount. Set `Network`, resource fields, `User`, or
+`WritableRoot` explicitly when the workload requires broader authority. Closing
+the backend forcibly removes its container and its automatically created workspace.
 
 ## Examples
 
 - [`examples/basic`](examples/basic) is a network-free invocation.
 - [`examples/openai`](examples/openai) streams a live workspace summary with an API
   key.
-- [`examples/shelley`](examples/shelley) is a full web application powered by dago.
+- [`examples/studio`](examples/studio) runs a network-free agent through `dago dev`
+  and LangSmith Studio.
+- [`examples/shelley`](examples/shelley) contains shelley-in-dago, a full web
+  application powered by dago.
   [Run it in your browser](https://semistrict.github.io/dago/).
 
 ## Security
@@ -185,5 +274,5 @@ cannot constrain shell commands, so an application must use an isolated sandbox 
 omit `execute` when path-level permissions are required. See
 [`docs/SECURITY.md`](docs/SECURITY.md) before exposing an agent or the web example.
 
-The core project is MIT licensed. The copied and modified Shelley example is
+The core project is MIT licensed. The copied and modified shelley-in-dago example is
 Apache-2.0 licensed. See [`NOTICE`](NOTICE) for attribution and additional notices.

@@ -1,7 +1,7 @@
 dago
 
-The `examples/shelley` subtree contains source copied from and modified from
-Shelley, Copyright 2026 Bold Software, Inc. Shelley is licensed under the
+The `examples/shelley` subtree contains shelley-in-dago, with source copied from
+and modified from Shelley, Copyright 2026 Bold Software, Inc. Shelley is licensed under the
 Apache License, Version 2.0. The pinned source revision is documented in
 `examples/shelley/UPSTREAM.md`, and the complete Apache license is available at
 `examples/shelley/LICENSE`.

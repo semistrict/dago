@@ -1,6 +1,6 @@
-# Shelley Agent Testing Guide
+# shelley-in-dago Agent Testing Guide
 
-This document provides instructions for automated testing of the Shelley coding agent product.
+This document provides instructions for automated testing of the shelley-in-dago coding agent product.
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ This document provides instructions for automated testing of the Shelley coding 
 
 ## Setup Instructions
 
-### 1. Build Shelley
+### 1. Build shelley-in-dago
 
 ```bash
 cd /path/to/shelley
@@ -31,7 +31,7 @@ pnpm install
 pnpm exec playwright install chromium
 ```
 
-### 3. Start Shelley Server
+### 3. Start the shelley-in-dago server
 
 For testing with Claude:
 ```bash
@@ -79,7 +79,7 @@ pnpm run test:e2e -- --grep "cancellation"
 ### Headless Browser Testing
 
 ```bash
-# Navigate to Shelley
+# Navigate to shelley-in-dago
 headless navigate http://localhost:9001
 
 # Check page title

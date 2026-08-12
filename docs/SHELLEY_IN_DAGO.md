@@ -1,6 +1,6 @@
-# dago-native Shelley
+# dago-native shelley-in-dago
 
-Shelley's pinned upstream tests are the behavioral specification. Production code
+The original Shelley's pinned upstream tests are the behavioral specification. Production code
 may preserve package names, exported identifiers, and concrete facade types required
 by those tests, but the executable runtime must use dago's model, message, tool,
 agent, backend, interrupt, stream, and checkpoint contracts directly.
@@ -11,31 +11,31 @@ agent, backend, interrupt, stream, and checkpoint contracts directly.
   `1d4cbe79c6be45cc0105d46819cb54844f98eddd` remains represented. UI test-call
   counts may grow but may not shrink.
 - Tests migrate to dago-native contracts with the production surface they exercise;
-  they are not frozen around removed Shelley model, message, or tool types.
+  they are not frozen around removed shelley-in-dago model, message, or tool types.
 - Temporary compatibility facades are deleted once their corresponding upstream
   tests have migrated. No executable compatibility path is an acceptable endpoint.
-- dago checkpoints are the canonical execution state. Shelley's database is a UI and
+- dago checkpoints are the canonical execution state. The shelley-in-dago database is a UI and
   product read model populated from dago events, not a second agent state machine.
 - The running application invokes a dago `damodel.Chat` directly and executes dago
   `datool.Tool` implementations directly. It must not convert a native dago model or
-  tool into a Shelley request and then convert it back into dago.
+  tool into a shelley-in-dago request and then convert it back into dago.
 - Approvals and other pauses are dago interrupts resumed through `dagent.Input.Resume`.
 - Cancellation is resolved through dago's durable cancellation operation.
 
 ## Target dependency direction
 
 ```text
-Shelley HTTP/UI server
+shelley-in-dago HTTP/UI server
   -> dago deep agent
      -> dago damodel.Chat
      -> dago datool.Tool
      -> dago dabackend.Backend
      -> dago dacheckpoint.Saver
-  -> Shelley database projection
-  -> Shelley SSE/UI event projection
+  -> shelley-in-dago database projection
+  -> shelley-in-dago SSE/UI event projection
 ```
 
-The former `dagoruntime` migration package and the Shelley model-service facade have
+The former `dagoruntime` migration package and the shelley-in-dago model-service facade have
 been removed from the executable dependency graph. Provider construction returns a
 dago `damodel.Chat` directly, tools implement `datool.Tool` directly, and the remaining
 runtime projection lives inside `loop`. Test-only probes may translate native results
@@ -51,10 +51,10 @@ into assertion-friendly values, but they do not introduce an executable fallback
 | `claudetool` | `datool.Tool` plus dago backends | Tool implementations receive dago runtime/state directly; no `llm.Tool` execution path in the binary |
 | `models`, `modelsources` | dago model registry/factories | Catalog APIs remain, but every ready runtime model exposes a native `damodel.Chat` |
 | conversation approvals | dago interrupts | UI approval endpoints persist and resume native interrupt values |
-| conversation cancellation | dago cancellation | No separate pending-tool or pending-model scheduler in Shelley |
-| message and tool streaming | dago stream events | Shelley translates events to its established SSE payloads without reconstructing execution order |
-| conversation history | dago checkpoint state | Shelley message rows are an append-only projection used by the UI, search, export, and audit features |
-| subagents, skills, memory, summary, todo | dago middleware | Shelley supplies configuration and UI projection rather than parallel implementations |
+| conversation cancellation | dago cancellation | No separate pending-tool or pending-model scheduler in shelley-in-dago |
+| message and tool streaming | dago stream events | shelley-in-dago translates events to its established SSE payloads without reconstructing execution order |
+| conversation history | dago checkpoint state | shelley-in-dago message rows are an append-only projection used by the UI, search, export, and audit features |
+| subagents, skills, memory, summary, todo | dago middleware | shelley-in-dago supplies configuration and UI projection rather than parallel implementations |
 
 ## Test ownership
 
@@ -75,7 +75,7 @@ machine.
 
 Provider retryability, attempt metadata, finish reasons, refusal details, usage,
 reasoning state, citations, and provider-hosted tool blocks are native dago model
-metadata. Shelley translates them only when writing its established database and UI
+metadata. shelley-in-dago translates them only when writing its established database and UI
 records. Callers that own a higher-level retry budget disable the provider retry loop
 explicitly, so retry layers cannot multiply transport attempts.
 
@@ -91,4 +91,4 @@ Completion requires all of the following:
 5. Browser tests prove approvals, continuation, cancellation, tool ordering, streaming,
    and configured-provider behavior through the real application.
 6. The executable dependency graph contains no `dagoruntime` package and no reachable
-   legacy Shelley model/tool loop.
+   legacy shelley-in-dago model/tool loop.
