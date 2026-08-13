@@ -79,6 +79,24 @@
       "surfaces": ["crates/quickjs-wasm", "crates/quickjs-wasm-transform", "quickjs_rs/_engine.py", "quickjs_rs/context.py", "quickjs_rs/_transform.py", "tests"]
     },
     {
+      "name": "agent-client-protocol",
+      "repository": "https://github.com/agentclientprotocol/agent-client-protocol",
+      "revision": "70286d45bcea5cdc0afd7b0f14a80488ccded2e9",
+      "version": "1",
+      "license": "Apache-2.0",
+      "checkout_env": "ACP_ROOT",
+      "surfaces": ["schema/v1/schema.json", "docs/protocol/v1"]
+    },
+    {
+      "name": "acp-go-sdk",
+      "repository": "https://github.com/coder/acp-go-sdk",
+      "revision": "0845a3bb9eddda5bfc22a94dd3598c90cb842451",
+      "version": "0.13.5",
+      "license": "Apache-2.0",
+      "checkout_env": "ACP_GO_SDK_ROOT",
+      "surfaces": ["agent.go", "connection.go", "types_gen.go"]
+    },
+    {
       "name": "wafl",
       "repository": "https://github.com/semistrict/wafl",
       "revision": "c1585f4c3efbf2ba9354d1989cee8f075d013f27",

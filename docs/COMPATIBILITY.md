@@ -41,6 +41,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
 | Asynchronous hosted-subagent lifecycle and durable task state | verified | provider-neutral runner and five management-tool tests |
 | Remote Agent Protocol background client | verified | thread/run create, status/result, interrupting update, cancellation, auth, path escaping, and redirect-boundary tests |
+| Agent Client Protocol v1 server | verified | initialize/new/prompt/cancel/close lifecycle; content conversion; text, reasoning, tool, progress, and plan projection; approve/reject permission resume; stop reasons; and transport tests in `daacp` |
 | LangSmith Studio / Agent Server development API | verified | info and schema discovery; assistant, thread, run, checkpoint state/history/update/fork, store, cancellation, replayable SSE, CORS, generated-wrapper, and config tests |
 | Video processing | verified | pluggable extractor contract plus optional bounded FFmpeg adapter; video-window, frame, truncation, fallback, and failure tests |
 | Executable upstream conformance provenance | verified | generator validates pinned source paths and test selectors; generated-contract tests strictly decode, validate, mutate, and round-trip every fixture |
@@ -81,3 +82,8 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
   the protocol-v2 long-lived thread websocket. Go graph paths are compiled into a
   generated wrapper, and runs use the existing dago graph rather than a general
   LangGraph runtime.
+- The ACP adapter implements the stable version 1 baseline and session close. It does
+  not advertise session load/list/resume, modes, configuration options, additional
+  workspace roots, MCP transport, or client-owned filesystem and terminal operations.
+  Human approval maps only approve and reject decisions because ACP permission choices
+  do not carry edited tool arguments or free-form responses.

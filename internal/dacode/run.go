@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/semistrict/dago/daacp"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dagoal"
@@ -31,6 +32,7 @@ type cliOptions struct {
 	approvalModel  string
 	quiet          bool
 	version        bool
+	acp            bool
 	serveXtermJS   bool
 	xtermJSAddress string
 }
@@ -101,12 +103,20 @@ func Run(ctx context.Context, arguments []string, stdin io.Reader, stdout, stder
 		Authentication: authentication, BaseURL: os.Getenv("OPENAI_BASE_URL"), Model: options.model,
 		WorkingDir: workingDir, StateDir: options.stateDir,
 		ReviewTools: !options.yolo, Shell: !nonInteractive || options.yolo || options.autoApprove,
-		AutoReview: options.autoApprove, ReviewModel: options.approvalModel,
+		AutoReview: options.autoApprove && !options.acp, ReviewModel: options.approvalModel,
 	})
 	if err != nil {
 		return err
 	}
 	defer closer.Close()
+	if options.acp {
+		compiled, ok := runner.(*dagoRunner)
+		if !ok {
+			return fmt.Errorf("start ACP server: unsupported runner %T", runner)
+		}
+		server := daacp.New(compiled.agent, daacp.Options{Name: "dacode", Version: buildVersion()})
+		return server.Serve(ctx, stdin, stdout)
+	}
 
 	threadID := options.resume
 	if threadID == "" {
@@ -172,6 +182,7 @@ func parseCLI(arguments []string, output io.Writer) (cliOptions, error) {
 	flags.BoolVar(&options.quiet, "q", false, "print only the final response in non-interactive mode")
 	flags.BoolVar(&options.version, "version", false, "show version")
 	flags.BoolVar(&options.version, "v", false, "show version")
+	flags.BoolVar(&options.acp, "acp", false, "serve Agent Client Protocol over stdin and stdout")
 	flags.BoolVar(&options.serveXtermJS, "serve-xtermjs", false, "serve the TUI through xterm.js")
 	flags.StringVar(&options.xtermJSAddress, "xtermjs-address", defaultXtermJSAddress, "xterm.js loopback listen address")
 	flags.Usage = func() { printUsage(output) }
@@ -194,6 +205,25 @@ func parseCLI(arguments []string, output io.Writer) (cliOptions, error) {
 	}
 	if options.quiet && options.nonInteractive == "" {
 		return cliOptions{}, fmt.Errorf("--quiet requires --non-interactive")
+	}
+	if options.acp {
+		var incompatible []string
+		for _, option := range []struct {
+			name    string
+			enabled bool
+		}{
+			{name: "--message", enabled: options.message != ""},
+			{name: "--non-interactive", enabled: options.nonInteractive != ""},
+			{name: "--resume", enabled: options.resume != "" || options.resumePicker},
+			{name: "--serve-xtermjs", enabled: options.serveXtermJS},
+		} {
+			if option.enabled {
+				incompatible = append(incompatible, option.name)
+			}
+		}
+		if len(incompatible) > 0 {
+			return cliOptions{}, fmt.Errorf("--acp cannot be used with %s", strings.Join(incompatible, ", "))
+		}
 	}
 	if manualReview && options.yolo {
 		return cliOptions{}, fmt.Errorf("--manual-review and --yolo cannot be used together")
@@ -223,6 +253,7 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "  --yolo                   Run local actions without review")
 	fmt.Fprintln(output, "  -q, --quiet              Clean one-shot output")
 	fmt.Fprintln(output, "  -v, --version            Show version")
+	fmt.Fprintln(output, "  --acp                    Serve ACP over stdin and stdout")
 	fmt.Fprintln(output, "  --serve-xtermjs          Serve the TUI through xterm.js")
 	fmt.Fprintln(output, "  --xtermjs-address ADDR   Loopback listen address (default 127.0.0.1:0)")
 	fmt.Fprintln(output, "  -h, --help               Show this help")
@@ -358,9 +389,13 @@ func reviewMessages(messages []damessage.Message) string {
 }
 
 func versionText() string {
+	return "dacode " + buildVersion()
+}
+
+func buildVersion() string {
 	version := "development"
 	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		version = info.Main.Version
 	}
-	return "dacode " + version
+	return version
 }

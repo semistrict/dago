@@ -18,6 +18,8 @@ path is embedded in the repository.
 | Shelley | `1d4cbe79c6be45cc0105d46819cb54844f98eddd` | `SHELLEY_UPSTREAM_ROOT` |
 | Deep Agents QuickJS | `217b9eb372fa51b0439434f31abc3ac22e6cd7f2` | `DEEPAGENTS_QUICKJS_ROOT` |
 | quickjs-rs | `278cf32d17b07a9ba2951ebc826256eef703182d` | `QUICKJS_RS_ROOT` |
+| Agent Client Protocol | `70286d45bcea5cdc0afd7b0f14a80488ccded2e9` | `ACP_ROOT` |
+| ACP Go SDK | `0845a3bb9eddda5bfc22a94dd3598c90cb842451` | `ACP_GO_SDK_ROOT` |
 | WAFL | `c1585f4c3efbf2ba9354d1989cee8f075d013f27` | `WAFL_ROOT` |
 
 `make drift` validates the manifest structure and verifies the exact Git

@@ -58,6 +58,10 @@ blocked. `/goal show`, `/goal pause`, `/goal resume`, `/goal clear`, and
 `/goal budget <tokens|clear>` control the persisted goal. Active goals resume
 automatically when the thread becomes idle; one-shot mode follows the same lifecycle.
 
+Use `--acp` to serve the coding agent to an ACP-compatible editor over standard
+input and output. The editor owns the session and permission prompts in this mode;
+`--yolo` remains available to bypass mutating-tool approval gates.
+
 `--serve-xtermjs` serves the same PTY-backed TUI on a loopback-only web address
 and prints its URL. Use `--xtermjs-address HOST:PORT` to select a specific
 loopback listener.
@@ -289,6 +293,29 @@ Cross-language payload compatibility is intentionally limited to the safe plain-
 subset in [`docs/SERIALIZATION.md`](docs/SERIALIZATION.md); Python-specific object
 records are rejected with typed context instead of reconstructed.
 
+## Agent Client Protocol
+
+`daacp` exposes an agent to ACP-compatible editors over newline-delimited JSON-RPC.
+The process must reserve standard output for protocol messages; send logs to standard
+error.
+
+```go
+server := daacp.New(compiled, daacp.Options{
+	Name:    "workspace-agent",
+	Version: "1.0.0",
+})
+if err := server.Serve(ctx, os.Stdin, os.Stdout); err != nil {
+	log.Fatal(err)
+}
+```
+
+The adapter supports ACP v1 session creation, prompts, cancellation, close, streamed
+text and reasoning, tool status and progress, plans, and approve/reject permission
+requests. The session working directory is available to tools as
+`daacp.ConfigurableCWD`; construct the agent's backend for that same workspace before
+serving it. Session loading/listing, additional roots, client filesystem/terminal
+delegation, and MCP transport are not advertised.
+
 ## LangSmith Studio
 
 `dago dev` exposes configured Go agent factories through the LangGraph Agent
@@ -367,6 +394,7 @@ limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 | `daproviders/nemotron` | Opt-in Nemotron harness profiles and model-output repair middleware |
 | `daproviders/profile` | Explicit provider-construction profile sets and built-in defaults |
 | `davideo` | Video extraction contracts and optional bounded FFmpeg adapter |
+| `daacp` | Agent Client Protocol v1 server adapter for editor integration |
 | `daagentprotocol` | Agent Protocol background-subagent client |
 | `daprofilecfg` | JSON/YAML-safe harness-profile configuration |
 | `daskill` | Agent Skills parsing, discovery, validation, and rendering contracts |

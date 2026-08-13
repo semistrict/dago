@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	acp "github.com/coder/acp-go-sdk"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dagoal"
@@ -417,6 +418,119 @@ func TestParseCLIResumeCommandRejectsMultipleIDs(t *testing.T) {
 		t.Fatal("multiple resume IDs were accepted")
 	}
 }
+
+func TestParseCLIACP(t *testing.T) {
+	options, err := parseCLI([]string{"--acp", "--cwd", "/work", "--yolo"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.acp || options.workingDir != "/work" || !options.yolo {
+		t.Fatalf("options = %#v", options)
+	}
+}
+
+func TestRunACPServesProtocolOnStandardIO(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	root := t.TempDir()
+	stateDirectory := t.TempDir()
+	clientToServerReader, clientToServerWriter := io.Pipe()
+	serverToClientReader, serverToClientWriter := io.Pipe()
+	var stderr bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(t.Context(), []string{
+			"--acp", "--cwd", root, "--state-dir", stateDirectory,
+		}, clientToServerReader, serverToClientWriter, &stderr)
+	}()
+	connection := acp.NewClientSideConnection(discardACPClient{}, clientToServerWriter, serverToClientReader)
+
+	initialized, err := connection.Initialize(t.Context(), acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersionNumber})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initialized.AgentInfo == nil || initialized.AgentInfo.Name != "dacode" || initialized.ProtocolVersion != acp.ProtocolVersionNumber {
+		t.Fatalf("initialize = %#v", initialized)
+	}
+	created, err := connection.NewSession(t.Context(), acp.NewSessionRequest{Cwd: root, McpServers: []acp.McpServer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.CloseSession(t.Context(), acp.CloseSessionRequest{SessionId: created.SessionId}); err != nil {
+		t.Fatal(err)
+	}
+	if err := clientToServerWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v; stderr: %s", err, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ACP server did not stop after standard input closed")
+	}
+	_ = serverToClientReader.Close()
+}
+
+func TestParseCLIACPRejectsOtherSessionModes(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"--acp", "--message", "hello"},
+		{"--acp", "--non-interactive", "hello"},
+		{"--acp", "--resume", "thread-1"},
+		{"resume", "--acp"},
+		{"--acp", "--serve-xtermjs"},
+	} {
+		if _, err := parseCLI(arguments, io.Discard); err == nil || !strings.Contains(err.Error(), "--acp cannot be used with") {
+			t.Errorf("parseCLI(%#v) error = %v", arguments, err)
+		}
+	}
+}
+
+func TestUsageIncludesACP(t *testing.T) {
+	var output bytes.Buffer
+	printUsage(&output)
+	if !strings.Contains(output.String(), "--acp") {
+		t.Fatalf("usage missing --acp:\n%s", output.String())
+	}
+}
+
+type discardACPClient struct{}
+
+func (discardACPClient) RequestPermission(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+	return acp.RequestPermissionResponse{Outcome: acp.NewRequestPermissionOutcomeCancelled()}, nil
+}
+
+func (discardACPClient) SessionUpdate(context.Context, acp.SessionNotification) error { return nil }
+
+func (discardACPClient) ReadTextFile(context.Context, acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
+	return acp.ReadTextFileResponse{}, nil
+}
+
+func (discardACPClient) WriteTextFile(context.Context, acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
+	return acp.WriteTextFileResponse{}, nil
+}
+
+func (discardACPClient) CreateTerminal(context.Context, acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
+	return acp.CreateTerminalResponse{}, nil
+}
+
+func (discardACPClient) KillTerminal(context.Context, acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
+	return acp.KillTerminalResponse{}, nil
+}
+
+func (discardACPClient) TerminalOutput(context.Context, acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error) {
+	return acp.TerminalOutputResponse{}, nil
+}
+
+func (discardACPClient) ReleaseTerminal(context.Context, acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error) {
+	return acp.ReleaseTerminalResponse{}, nil
+}
+
+func (discardACPClient) WaitForTerminalExit(context.Context, acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error) {
+	return acp.WaitForTerminalExitResponse{}, nil
+}
+
+var _ acp.Client = discardACPClient{}
 
 func TestXtermJSServerOnlyBindsLoopback(t *testing.T) {
 	for _, address := range []string{"127.0.0.1:0", "[::1]:0", "localhost:0"} {
