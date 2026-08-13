@@ -142,8 +142,8 @@
         </div>
       </div>
 
-      <!-- Legacy provider default for OpenAI Responses models -->
-      <div v-if="form.provider_type === 'openai-responses'" class="form-group">
+      <!-- Optional provider default for Responses models -->
+      <div class="form-group">
         <label>{{ t("reasoningEffort") }}</label>
         <InputText
           v-model="form.reasoning_effort"

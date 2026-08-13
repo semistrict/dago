@@ -73,6 +73,18 @@ make checkpoint-interop
 It requires `uv` and resolves the pinned Python packages through the interop script.
 Live PostgreSQL integration tests require `DAGO_POSTGRES_TEST_DSN`.
 
+Live OpenRouter provider coverage is opt-in and reads the API key only from the
+process environment:
+
+```sh
+OPENROUTER_API_KEY=... make openrouter-e2e
+```
+
+The suite uses `deepseek/deepseek-v4-flash-0731` by default. Set
+`DAGO_OPENROUTER_E2E_MODEL` to exercise another Responses-compatible model.
+The same target also verifies that Shelley's custom-model builder can call the
+default model with a forced tool request.
+
 For shelley-in-dago, install UI dependencies first and run the Go and UI checks from their
 respective module directories:
 

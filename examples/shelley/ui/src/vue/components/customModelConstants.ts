@@ -1,14 +1,16 @@
 // Shared constants + form types for the custom-model UI, used by both
 // ModelsModal.vue (the list) and ModelFormModal.vue (the add/edit dialog).
 
-export type ProviderType = "openai-responses";
+export type ProviderType = "openai-responses" | "openrouter-responses";
 
 export const DEFAULT_ENDPOINTS: Record<ProviderType, string> = {
   "openai-responses": "https://api.openai.com/v1",
+  "openrouter-responses": "https://openrouter.ai/api/v1",
 };
 
 export const PROVIDER_LABELS: Record<ProviderType, string> = {
   "openai-responses": "OpenAI (Responses API)",
+  "openrouter-responses": "OpenRouter (Responses API)",
 };
 
 // Autocomplete suggestions offered for the model-name field, per provider.
@@ -22,11 +24,15 @@ export const DEFAULT_MODELS: Record<ProviderType, { name: string; model_name: st
     { name: "GPT-5.4 mini", model_name: "gpt-5.4-mini" },
     { name: "GPT-5.3 Codex", model_name: "gpt-5.3-codex" },
   ],
+  "openrouter-responses": [
+    { name: "DeepSeek V4 Flash 0731", model_name: "deepseek/deepseek-v4-flash-0731" },
+  ],
 };
 
 // Maps the server-reported api_type of built-in models to a display label.
 export const API_TYPE_LABELS: Record<string, string> = {
   "openai-responses": "OpenAI (Responses API)",
+  "openrouter-responses": "OpenRouter (Responses API)",
   builtin: "Built-in",
 };
 
@@ -39,7 +45,7 @@ export const DEFAULT_REASONING_MAP: ReasoningMap = Object.fromEntries(
   REASONING_LEVELS.map((level) => [level, level]),
 ) as ReasoningMap;
 
-export const providerTypes: ProviderType[] = ["openai-responses"];
+export const providerTypes: ProviderType[] = ["openai-responses", "openrouter-responses"];
 
 export interface FormData {
   display_name: string;

@@ -36,6 +36,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Token/update/task/interrupt/custom streaming | verified | graph, agent, and provider stream tests |
 | Agent-event and model-chunk iterators | verified | completion, terminal-error, and early-break closure tests while retaining explicit `Next`/`Close` |
 | API-key and subscription OAuth model access | verified | request, PKCE, refresh, persistence, HTTP streaming, default Responses WebSocket transport, incremental continuation, remote V2 compaction trigger/state replay, and cancellation tests |
+| OpenRouter Responses model access | verified | API-key authentication, app attribution, provider routing, tool requests, usage, streaming keepalives, typed errors, and an opt-in live structured/tool/stream suite |
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
 | Asynchronous hosted-subagent lifecycle and durable task state | verified | provider-neutral runner and five management-tool tests |
 | Remote Agent Protocol background client | verified | thread/run create, status/result, interrupting update, cancellation, auth, path escaping, and redirect-boundary tests |

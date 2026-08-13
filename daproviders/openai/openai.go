@@ -92,20 +92,38 @@ type Client struct {
 	boundTools   []datool.Definition
 	subscription bool
 	websockets   *responsesWebSocketPool
+	provider     string
 }
 
 // NewAPIKey creates a model authenticated with an API key.
 func NewAPIKey(apiKey string, options Options) (*Client, error) {
-	if strings.TrimSpace(apiKey) == "" {
-		return nil, fmt.Errorf("openai: API key is required")
+	return newAPIKey(apiKey, "openai", options)
+}
+
+// NewCompatibleAPIKey creates a model for a service that implements the OpenAI
+// Responses wire protocol. Provider identifies that service in profiles,
+// errors, and retry events. Provider-specific adapters should normally expose
+// their own options and constructor instead of asking applications to call this
+// function directly.
+func NewCompatibleAPIKey(apiKey, provider string, options Options) (*Client, error) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return nil, fmt.Errorf("openai: compatible provider is required")
 	}
-	return newClient(staticCredentials{Credentials{AccessToken: apiKey}}, options)
+	return newAPIKey(apiKey, provider, options)
+}
+
+func newAPIKey(apiKey, provider string, options Options) (*Client, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, fmt.Errorf("%s: API key is required", provider)
+	}
+	return newClient(staticCredentials{Credentials{AccessToken: apiKey}}, options, provider)
 }
 
 // NewOAuth creates a model authenticated by a caller-owned OAuth session. Callers
 // choose the endpoint explicitly; NewSubscription configures the subscription API.
 func NewOAuth(source CredentialSource, options Options) (*Client, error) {
-	return newClient(source, options)
+	return newClient(source, options, "openai")
 }
 
 // NewSubscription creates a model for the subscription-backed Responses endpoint.
@@ -123,7 +141,7 @@ func NewSubscription(source CredentialSource, options Options) (*Client, error) 
 	}
 	store := false
 	options.Store = &store
-	client, err := newClient(source, options)
+	client, err := newClient(source, options, "openai")
 	if err != nil {
 		return nil, err
 	}
@@ -131,12 +149,12 @@ func NewSubscription(source CredentialSource, options Options) (*Client, error) 
 	return client, nil
 }
 
-func newClient(source CredentialSource, options Options) (*Client, error) {
+func newClient(source CredentialSource, options Options, provider string) (*Client, error) {
 	if source == nil {
-		return nil, fmt.Errorf("openai: credential source is required")
+		return nil, fmt.Errorf("%s: credential source is required", provider)
 	}
 	if strings.TrimSpace(options.Model) == "" {
-		return nil, fmt.Errorf("openai: model is required")
+		return nil, fmt.Errorf("%s: model is required", provider)
 	}
 	if options.CompactionThreshold < 0 {
 		return nil, fmt.Errorf("openai: compaction threshold must not be negative")
@@ -162,7 +180,7 @@ func newClient(source CredentialSource, options Options) (*Client, error) {
 	} else {
 		options.RetryBackoff = append([]time.Duration(nil), options.RetryBackoff...)
 	}
-	client := &Client{options: options, credentials: source}
+	client := &Client{options: options, credentials: source, provider: provider}
 	websocketEnabled := standardEndpoint
 	if options.ResponsesWebSocket != nil {
 		websocketEnabled = *options.ResponsesWebSocket
@@ -211,7 +229,7 @@ func (client *Client) Profile() damodel.Profile {
 		defaultReasoning = client.options.DefaultReasoning.Effort
 	}
 	return damodel.Profile{
-		Provider: "openai", Model: client.options.Model,
+		Provider: client.provider, Model: client.options.Model,
 		ContextWindow: client.options.ContextWindow, MaxOutputTokens: client.options.MaxOutputTokens,
 		ToolCalling: true, ParallelToolCalls: true, StructuredOutput: true,
 		NativeStreaming: true, SupportsPromptCaching: true, SupportsSeparateSystemMessage: true, SupportsReasoning: true,
@@ -274,7 +292,7 @@ func (client *Client) Invoke(ctx context.Context, request damodel.Request) (damo
 			}
 			continue
 		}
-		if err := client.decorateError(responseError(response)); err != nil {
+		if err := client.decorateError(responseErrorForProvider(response, client.provider)); err != nil {
 			if !client.canRetry(ctx, attempt, err) {
 				return damodel.Response{}, err
 			}
@@ -287,7 +305,7 @@ func (client *Client) Invoke(ctx context.Context, request damodel.Request) (damo
 		decodeErr := decodeJSON(response.Body, &payload)
 		response.Body.Close()
 		if decodeErr != nil {
-			wrapped := fmt.Errorf("openai: decode response: %w", decodeErr)
+			wrapped := fmt.Errorf("%s: decode response: %w", client.provider, decodeErr)
 			if !isRetryableDecodeError(decodeErr) || !client.canRetry(ctx, attempt, wrapped) {
 				return damodel.Response{}, wrapped
 			}
@@ -296,7 +314,7 @@ func (client *Client) Invoke(ctx context.Context, request damodel.Request) (damo
 			}
 			continue
 		}
-		return normalizeResponse(payload, request.ResponseFormat)
+		return normalizeResponse(payload, request.ResponseFormat, client.provider)
 	}
 }
 
@@ -315,7 +333,7 @@ func (client *Client) invokeStream(ctx context.Context, request damodel.Request)
 	if request.ResponseFormat != nil && len(response.Message.ToolCalls) == 0 {
 		text := strings.TrimSpace(response.Message.TextContent())
 		if !json.Valid([]byte(text)) {
-			return damodel.Response{}, fmt.Errorf("openai: structured response is not valid JSON")
+			return damodel.Response{}, fmt.Errorf("%s: structured response is not valid JSON", client.provider)
 		}
 		response.Structured = json.RawMessage(text)
 	}
@@ -445,7 +463,7 @@ func (client *Client) streamPayload(ctx context.Context, payload responsesReques
 			}
 			continue
 		}
-		if err := client.decorateError(responseError(response)); err != nil {
+		if err := client.decorateError(responseErrorForProvider(response, client.provider)); err != nil {
 			if !client.canRetry(ctx, attempt, err) {
 				return nil, err
 			}
@@ -454,7 +472,7 @@ func (client *Client) streamPayload(ctx context.Context, payload responsesReques
 			}
 			continue
 		}
-		return newResponseStream(ctx, response.Body), nil
+		return newResponseStream(ctx, response.Body, client.provider), nil
 	}
 }
 
@@ -475,7 +493,7 @@ func (client *Client) waitRetry(ctx context.Context, attempt int, retryErr error
 	if errors.As(retryErr, &providerErr) && providerErr.RetryAfter > delay {
 		delay = providerErr.RetryAfter
 	}
-	event := damodel.RetryEvent{Attempt: attempt + 1, Delay: delay, Retryable: true, Err: retryErr.Error(), Provider: "openai", Model: client.options.Model}
+	event := damodel.RetryEvent{Attempt: attempt + 1, Delay: delay, Retryable: true, Err: retryErr.Error(), Provider: client.provider, Model: client.options.Model}
 	var reporter damodel.RetryReporter
 	if errors.As(retryErr, &reporter) {
 		event = reporter.RetryEvent(attempt+1, delay)
@@ -497,7 +515,7 @@ func (client *Client) waitRetry(ctx context.Context, attempt int, retryErr error
 func (client *Client) decorateError(err error) error {
 	var providerErr *Error
 	if errors.As(err, &providerErr) {
-		providerErr.Provider = "openai"
+		providerErr.Provider = client.provider
 		providerErr.Model = client.options.Model
 		providerErr.URL = client.options.BaseURL + "/responses"
 	}
@@ -511,10 +529,10 @@ func isRetryableDecodeError(err error) bool {
 func (client *Client) do(ctx context.Context, payload []byte) (*http.Response, error) {
 	credentials, err := client.credentials.Credentials(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("openai: credentials: %w", err)
+		return nil, fmt.Errorf("%s: credentials: %w", client.provider, err)
 	}
 	if credentials.AccessToken == "" {
-		return nil, fmt.Errorf("openai: credential source returned an empty token")
+		return nil, fmt.Errorf("%s: credential source returned an empty token", client.provider)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.options.BaseURL+"/responses", bytes.NewReader(payload))
 	if err != nil {
@@ -539,7 +557,7 @@ func (client *Client) do(ctx context.Context, payload []byte) (*http.Response, e
 	}
 	response, err := client.options.HTTPClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("openai: request: %w", err)
+		return nil, fmt.Errorf("%s: request: %w", client.provider, err)
 	}
 	return response, nil
 }
@@ -613,7 +631,7 @@ func (client *Client) requestPayload(request damodel.Request, stream bool) (resp
 			}
 			continue
 		}
-		converted, err := inputItems(item)
+		converted, err := inputItems(item, client.provider)
 		if err != nil {
 			return responsesRequest{}, err
 		}
@@ -661,7 +679,7 @@ func (client *Client) requestPayload(request damodel.Request, stream bool) (resp
 		for key, raw := range request.Metadata {
 			var value any
 			if err := json.Unmarshal(raw, &value); err != nil {
-				return responsesRequest{}, fmt.Errorf("openai: metadata %q: %w", key, err)
+				return responsesRequest{}, fmt.Errorf("%s: metadata %q: %w", client.provider, key, err)
 			}
 			payload.Metadata[key] = value
 		}
@@ -673,7 +691,7 @@ func (client *Client) requestPayload(request damodel.Request, stream bool) (resp
 		case "tool", "function":
 			payload.ToolChoice = map[string]any{"type": "function", "name": request.ToolChoice.Name}
 		default:
-			return responsesRequest{}, fmt.Errorf("openai: unsupported tool choice %q", request.ToolChoice.Mode)
+			return responsesRequest{}, fmt.Errorf("%s: unsupported tool choice %q", client.provider, request.ToolChoice.Mode)
 		}
 	}
 	if request.ResponseFormat != nil {
@@ -693,12 +711,16 @@ type reasoningState struct {
 	EncryptedContent string            `json:"encrypted_content"`
 }
 
-func inputItems(value damessage.Message) ([]any, error) {
+func inputItems(value damessage.Message, providers ...string) ([]any, error) {
+	provider := "openai"
+	if len(providers) > 0 && providers[0] != "" {
+		provider = providers[0]
+	}
 	if err := value.Validate(); err != nil {
-		return nil, fmt.Errorf("openai: message: %w", err)
+		return nil, fmt.Errorf("%s: message: %w", provider, err)
 	}
 	if value.Role == damessage.RoleRemove {
-		return nil, fmt.Errorf("openai: remove messages must be reduced before model invocation")
+		return nil, fmt.Errorf("%s: remove messages must be reduced before model invocation", provider)
 	}
 	items := make([]any, 0, 1+len(value.ToolCalls))
 	if value.Role == damessage.RoleTool {
@@ -740,7 +762,7 @@ func inputItems(value damessage.Message) ([]any, error) {
 			contents = append(contents, map[string]any{"type": typeName, "text": block.Text})
 		case damessage.BlockImage:
 			if value.Role != damessage.RoleHuman {
-				return nil, fmt.Errorf("openai: image content is only supported in human messages")
+				return nil, fmt.Errorf("%s: image content is only supported in human messages", provider)
 			}
 			imageURL := block.URL
 			if imageURL == "" && len(block.Data) > 0 {
@@ -749,12 +771,12 @@ func inputItems(value damessage.Message) ([]any, error) {
 			contents = append(contents, map[string]any{"type": "input_image", "image_url": imageURL})
 		case damessage.BlockFile:
 			if block.URL == "" {
-				return nil, fmt.Errorf("openai: file block requires a URL")
+				return nil, fmt.Errorf("%s: file block requires a URL", provider)
 			}
 			contents = append(contents, map[string]any{"type": "input_file", "file_url": block.URL})
 		case damessage.BlockReasoning:
 			if value.Role != damessage.RoleAssistant {
-				return nil, fmt.Errorf("openai: reasoning content is only supported in assistant messages")
+				return nil, fmt.Errorf("%s: reasoning content is only supported in assistant messages", provider)
 			}
 			raw := block.Extra[reasoningStateKey]
 			if len(raw) == 0 {
@@ -764,7 +786,7 @@ func inputItems(value damessage.Message) ([]any, error) {
 			}
 			var state reasoningState
 			if err := json.Unmarshal(raw, &state); err != nil {
-				return nil, fmt.Errorf("openai: decode reasoning state: %w", err)
+				return nil, fmt.Errorf("%s: decode reasoning state: %w", provider, err)
 			}
 			if state.EncryptedContent == "" {
 				continue
@@ -783,7 +805,7 @@ func inputItems(value damessage.Message) ([]any, error) {
 			})
 		case damessage.BlockServerTool:
 			if value.Role != damessage.RoleAssistant {
-				return nil, fmt.Errorf("openai: server tool content is only supported in assistant messages")
+				return nil, fmt.Errorf("%s: server tool content is only supported in assistant messages", provider)
 			}
 			raw := block.Extra[responseOutputStateKey]
 			if len(raw) == 0 {
@@ -797,13 +819,13 @@ func inputItems(value damessage.Message) ([]any, error) {
 				ID   string `json:"id"`
 			}
 			if err := json.Unmarshal(raw, &replay); err != nil {
-				return nil, fmt.Errorf("openai: decode server tool state: %w", err)
+				return nil, fmt.Errorf("%s: decode server tool state: %w", provider, err)
 			}
 			if replay.Type != "web_search_call" {
-				return nil, fmt.Errorf("openai: unsupported server tool state %q", replay.Type)
+				return nil, fmt.Errorf("%s: unsupported server tool state %q", provider, replay.Type)
 			}
 			if block.ID != "" && replay.ID != block.ID {
-				return nil, fmt.Errorf("openai: server tool state id %q does not match block id %q", replay.ID, block.ID)
+				return nil, fmt.Errorf("%s: server tool state id %q does not match block id %q", provider, replay.ID, block.ID)
 			}
 			items = append(items, append(json.RawMessage(nil), raw...))
 		case damessage.BlockNonStandard:
@@ -823,7 +845,7 @@ func inputItems(value damessage.Message) ([]any, error) {
 				return nil, fmt.Errorf("openai: unsupported non-standard state %q", replay.Type)
 			}
 		default:
-			return nil, fmt.Errorf("openai: unsupported content block %q", block.Type)
+			return nil, fmt.Errorf("%s: unsupported content block %q", provider, block.Type)
 		}
 	}
 	if len(contents) > 0 {
@@ -837,6 +859,7 @@ func inputItems(value damessage.Message) ([]any, error) {
 
 type responsesResponse struct {
 	ID                string                     `json:"id"`
+	Model             string                     `json:"model,omitempty"`
 	Status            string                     `json:"status"`
 	IncompleteDetails *responseIncompleteDetails `json:"incomplete_details,omitempty"`
 	Output            []responseOutput           `json:"output"`
@@ -906,6 +929,7 @@ type responseUsage struct {
 	OutputTokens        int                         `json:"output_tokens"`
 	OutputTokensDetails *responseOutputTokenDetails `json:"output_tokens_details,omitempty"`
 	TotalTokens         int                         `json:"total_tokens"`
+	Cost                float64                     `json:"cost,omitempty"`
 }
 
 type responseInputTokenDetails struct {
@@ -916,9 +940,13 @@ type responseOutputTokenDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
-func normalizeResponse(payload responsesResponse, format *damodel.ResponseFormat) (damodel.Response, error) {
+func normalizeResponse(payload responsesResponse, format *damodel.ResponseFormat, providers ...string) (damodel.Response, error) {
+	provider := "openai"
+	if len(providers) > 0 && providers[0] != "" {
+		provider = providers[0]
+	}
 	if payload.Error != nil {
-		return damodel.Response{}, apiErrorValue(payload.Error, http.StatusOK)
+		return damodel.Response{}, apiErrorValue(payload.Error, http.StatusOK, provider)
 	}
 	result := damessage.Message{ID: payload.ID, Role: damessage.RoleAssistant}
 	var refusalText string
@@ -989,7 +1017,7 @@ func normalizeResponse(payload responsesResponse, format *damodel.ResponseFormat
 	default:
 		damodel.SetOutcome(&result, finishReason, nil)
 	}
-	if payload.Usage.TotalTokens != 0 || payload.Usage.InputTokens != 0 || payload.Usage.OutputTokens != 0 {
+	if payload.Usage.TotalTokens != 0 || payload.Usage.InputTokens != 0 || payload.Usage.OutputTokens != 0 || payload.Usage.Cost != 0 {
 		cached := 0
 		if payload.Usage.InputTokensDetails != nil {
 			cached = payload.Usage.InputTokensDetails.CachedTokens
@@ -1000,7 +1028,8 @@ func normalizeResponse(payload responsesResponse, format *damodel.ResponseFormat
 		}
 		result.Usage = &damessage.Usage{
 			InputTokens: max(0, payload.Usage.InputTokens-cached), OutputTokens: payload.Usage.OutputTokens,
-			TotalTokens: payload.Usage.TotalTokens,
+			TotalTokens: payload.Usage.TotalTokens, CostUSD: payload.Usage.Cost,
+			Provider: provider, Model: payload.Model,
 		}
 		if cached > 0 {
 			result.Usage.InputDetails = map[string]int{"cache_read": cached}
@@ -1013,7 +1042,7 @@ func normalizeResponse(payload responsesResponse, format *damodel.ResponseFormat
 	if format != nil && len(result.ToolCalls) == 0 {
 		text := strings.TrimSpace(result.TextContent())
 		if !json.Valid([]byte(text)) {
-			return damodel.Response{}, fmt.Errorf("openai: structured response is not valid JSON")
+			return damodel.Response{}, fmt.Errorf("%s: structured response is not valid JSON", provider)
 		}
 		response.Structured = json.RawMessage(text)
 	}
@@ -1060,10 +1089,14 @@ type Error struct {
 }
 
 func (err *Error) Error() string {
-	if err.Code != "" {
-		return fmt.Sprintf("openai: status %d (%s): %s", err.Status, err.Code, err.Message)
+	provider := err.Provider
+	if provider == "" {
+		provider = "openai"
 	}
-	return fmt.Sprintf("openai: status %d: %s", err.Status, err.Message)
+	if err.Code != "" {
+		return fmt.Sprintf("%s: status %d (%s): %s", provider, err.Status, err.Code, err.Message)
+	}
+	return fmt.Sprintf("%s: status %d: %s", provider, err.Status, err.Message)
 }
 
 func (err *Error) RetryEvent(attempt int, delay time.Duration) damodel.RetryEvent {
@@ -1082,21 +1115,29 @@ func (err *Error) retryableError() bool {
 }
 
 func responseError(response *http.Response) error {
+	return responseErrorForProvider(response, "openai")
+}
+
+func responseErrorForProvider(response *http.Response, provider string) error {
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		return nil
 	}
 	defer response.Body.Close()
 	limited, err := io.ReadAll(io.LimitReader(response.Body, 4<<10))
 	if err != nil {
-		return fmt.Errorf("openai: read error response: %w", err)
+		return fmt.Errorf("%s: read error response: %w", provider, err)
 	}
 	var envelope struct {
-		Error *apiError `json:"error"`
+		Error     *apiError `json:"error"`
+		ErrorType string    `json:"error_type"`
 	}
 	if json.Unmarshal(limited, &envelope) != nil || envelope.Error == nil {
 		envelope.Error = &apiError{Message: strings.TrimSpace(string(limited))}
 	}
-	err = apiErrorValue(envelope.Error, response.StatusCode)
+	if envelope.Error.Type == "" {
+		envelope.Error.Type = envelope.ErrorType
+	}
+	err = apiErrorValue(envelope.Error, response.StatusCode, provider)
 	var providerErr *Error
 	if errors.As(err, &providerErr) {
 		providerErr.RetryAfter = parseRetryAfter(response.Header.Get("Retry-After"), time.Now())
@@ -1118,12 +1159,17 @@ func parseRetryAfter(value string, now time.Time) time.Duration {
 	return 0
 }
 
-func apiErrorValue(value *apiError, status int) error {
+func apiErrorValue(value *apiError, status int, providers ...string) error {
+	provider := "openai"
+	if len(providers) > 0 && providers[0] != "" {
+		provider = providers[0]
+	}
 	err := &Error{
-		Status: status, Code: value.Code, Type: value.Type, Message: value.Message,
+		Status: status, Code: value.Code, Type: value.Type, Message: value.Message, Provider: provider,
 		retryable: value.Code == "previous_response_not_found" || value.Code == "websocket_connection_limit_reached",
 	}
-	if value.Code == "context_length_exceeded" || value.Code == "context_window_exceeded" {
+	if value.Code == "context_length_exceeded" || value.Code == "context_window_exceeded" ||
+		value.Type == "context_length_exceeded" || value.Type == "context_window_exceeded" {
 		return errors.Join(damodel.ErrContextOverflow, err)
 	}
 	return err
@@ -1133,6 +1179,7 @@ type responseStream struct {
 	ctx               context.Context
 	body              io.ReadCloser
 	scanner           *bufio.Scanner
+	provider          string
 	queued            []damodel.Chunk
 	calls             map[string]responseOutput
 	done              bool
@@ -1145,11 +1192,11 @@ type responseStream struct {
 	completed         *responsesResponse
 }
 
-func newResponseStream(ctx context.Context, body io.ReadCloser) *responseStream {
+func newResponseStream(ctx context.Context, body io.ReadCloser, provider string) *responseStream {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 2<<20)
 	return &responseStream{
-		ctx: ctx, body: body, scanner: scanner, calls: map[string]responseOutput{},
+		ctx: ctx, body: body, scanner: scanner, provider: provider, calls: map[string]responseOutput{},
 		emittedCalls: map[string]struct{}{}, emittedReasoning: map[string]string{}, emittedServer: map[string]struct{}{},
 	}
 }
@@ -1190,7 +1237,7 @@ func (stream *responseStream) Next(ctx context.Context) (damodel.Chunk, error) {
 	}
 	if err := stream.scanner.Err(); err != nil {
 		stream.Close()
-		return damodel.Chunk{}, fmt.Errorf("openai: read stream: %w", err)
+		return damodel.Chunk{}, fmt.Errorf("%s: read stream: %w", stream.provider, err)
 	}
 	chunk, emit, err := stream.flushEvent()
 	if err != nil {
@@ -1201,8 +1248,19 @@ func (stream *responseStream) Next(ctx context.Context) (damodel.Chunk, error) {
 		return chunk, nil
 	}
 	stream.Close()
-	return damodel.Chunk{}, ErrIncompleteStream
+	if stream.provider == "openai" {
+		return damodel.Chunk{}, ErrIncompleteStream
+	}
+	return damodel.Chunk{}, incompleteStreamError{provider: stream.provider}
 }
+
+type incompleteStreamError struct{ provider string }
+
+func (err incompleteStreamError) Error() string {
+	return err.provider + ": response stream ended before completion"
+}
+
+func (incompleteStreamError) Unwrap() error { return ErrIncompleteStream }
 
 func (stream *responseStream) flushEvent() (damodel.Chunk, bool, error) {
 	if len(stream.data) == 0 {
@@ -1228,9 +1286,10 @@ func (stream *responseStream) event(data []byte) (damodel.Chunk, bool, error) {
 		Response    responsesResponse `json:"response"`
 		Error       *apiError         `json:"error"`
 		Status      int               `json:"status"`
+		ErrorType   string            `json:"error_type"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		return damodel.Chunk{}, false, fmt.Errorf("openai: decode stream event: %w", err)
+		return damodel.Chunk{}, false, fmt.Errorf("%s: decode stream event: %w", stream.provider, err)
 	}
 	switch envelope.Type {
 	case "response.output_text.delta":
@@ -1291,7 +1350,7 @@ func (stream *responseStream) event(data []byte) (damodel.Chunk, bool, error) {
 		delete(stream.calls, envelope.ItemID)
 		arguments, err := normalizeToolArguments(call.Arguments)
 		if err != nil {
-			return damodel.Chunk{}, false, fmt.Errorf("openai: streamed tool arguments for %q are invalid JSON", call.CallID)
+			return damodel.Chunk{}, false, fmt.Errorf("%s: streamed tool arguments for %q are invalid JSON", stream.provider, call.CallID)
 		}
 		stream.emittedCalls[call.CallID] = struct{}{}
 		return damodel.Chunk{MessageDelta: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: call.CallID, Name: call.Name, Arguments: arguments}}}}, true, nil
@@ -1304,15 +1363,18 @@ func (stream *responseStream) event(data []byte) (damodel.Chunk, bool, error) {
 			envelope.Error = envelope.Response.Error
 		}
 		if envelope.Error == nil {
-			return damodel.Chunk{}, false, fmt.Errorf("openai: response stream failed")
+			return damodel.Chunk{}, false, fmt.Errorf("%s: response stream failed", stream.provider)
 		}
-		return damodel.Chunk{}, false, apiErrorValue(envelope.Error, envelope.Status)
+		if envelope.Error.Type == "" {
+			envelope.Error.Type = envelope.ErrorType
+		}
+		return damodel.Chunk{}, false, apiErrorValue(envelope.Error, envelope.Status, stream.provider)
 	}
 	return damodel.Chunk{}, false, nil
 }
 
 func (stream *responseStream) completedChunk(payload responsesResponse) (damodel.Chunk, bool, error) {
-	response, err := normalizeResponse(payload, nil)
+	response, err := normalizeResponse(payload, nil, stream.provider)
 	if err != nil {
 		return damodel.Chunk{}, false, err
 	}

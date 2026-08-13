@@ -15,6 +15,7 @@ import (
 	dmessage "github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	dopenai "github.com/semistrict/dago/daproviders/openai"
+	dopenrouter "github.com/semistrict/dago/daproviders/openrouter"
 	"github.com/semistrict/dago/datool"
 
 	"github.com/semistrict/dago/examples/shelley/db"
@@ -29,8 +30,9 @@ import (
 type Provider string
 
 const (
-	ProviderOpenAI  Provider = "openai"
-	ProviderBuiltIn Provider = "builtin"
+	ProviderOpenAI     Provider = "openai"
+	ProviderOpenRouter Provider = "openrouter"
+	ProviderBuiltIn    Provider = "builtin"
 )
 
 // SourceCustomLabel is the label used for custom (DB-backed) models.
@@ -50,8 +52,9 @@ const (
 type APIType string
 
 const (
-	APITypeOpenAIResponses APIType = "openai-responses"
-	APITypeBuiltIn         APIType = "builtin"
+	APITypeOpenAIResponses     APIType = "openai-responses"
+	APITypeOpenRouterResponses APIType = "openrouter-responses"
+	APITypeBuiltIn             APIType = "builtin"
 )
 
 // Model is one entry in Shelley's catalog of built-in models.
@@ -172,8 +175,44 @@ func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client
 	}), nil
 }
 
-// openAIResponsesModel constructs one catalog entry for the sole supported
-// external provider protocol.
+// OpenRouterResponsesOptions describes capabilities attached to an OpenRouter Responses model.
+type OpenRouterResponsesOptions = OpenAIResponsesOptions
+
+// NewOpenRouterResponses constructs a native OpenRouter Responses model.
+func NewOpenRouterResponses(apiKey, modelID, baseURL string, httpClient *http.Client, options OpenRouterResponsesOptions) (damodel.Chat, error) {
+	effort := options.ReasoningEffort
+	if effort == "" {
+		effort = options.DefaultReasoningLevel
+	}
+	var defaultReasoning *damodel.Reasoning
+	if options.SupportsReasoning && effort != "" && effort != "off" {
+		defaultReasoning = &damodel.Reasoning{Effort: effort, Summary: "auto"}
+	}
+	requireParameters := true
+	chat, err := dopenrouter.New(apiKey, dopenrouter.Options{
+		Model: modelID, BaseURL: openRouterResponsesBaseURL(baseURL), HTTPClient: httpClient,
+		ContextWindow: options.ContextWindow, MaxOutputTokens: options.MaxOutputTokens,
+		DefaultReasoning: defaultReasoning, WebSearch: options.SupportsWebSearch,
+		AppTitle: "Shelley",
+		Routing:  &dopenrouter.ProviderRouting{RequireParameters: &requireParameters},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return damodel.WithProfile(chat, func(profile *damodel.Profile) {
+		profile.SupportsImages = options.SupportsImages
+		profile.SupportsReasoning = options.SupportsReasoning
+		profile.SupportsWebSearch = options.SupportsWebSearch
+		profile.UseSimplifiedPatch = options.UseSimplifiedPatch
+		profile.MaxImageBytes = options.MaxImageBytes
+		profile.DefaultReasoningLevel = options.DefaultReasoningLevel
+		if options.SupportsReasoning {
+			profile.ReasoningLevels = standardReasoningLevels()
+		}
+	}), nil
+}
+
+// openAIResponsesModel constructs one catalog entry for OpenAI's Responses API.
 //
 // The `baseURL` parameter is a BARE origin/prefix with NO API-protocol
 // path on it. The native builder owns protocol URL normalization.
@@ -203,6 +242,14 @@ func openAIResponsesBaseURL(value string) string {
 		return value
 	}
 	return value + "/v1"
+}
+
+func openRouterResponsesBaseURL(value string) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return ""
+	}
+	return strings.TrimSuffix(value, "/responses")
 }
 
 func standardReasoningLevels() []string {
@@ -478,7 +525,7 @@ func (m *Manager) loadCustomModelsLocked(dbModels []generated.Model) {
 		}
 		m.models[model.ModelID] = modelEntry{
 			chat:        chat,
-			provider:    Provider(model.ProviderType),
+			provider:    providerForAPIType(model.ProviderType),
 			modelID:     model.ModelID,
 			source:      SourceCustomLabel,
 			displayName: model.DisplayName,
@@ -718,22 +765,43 @@ func parseReasoningMap(raw string) (map[llm.ThinkingLevel]reasoningMapping, []ll
 // createChatFromModel creates a native chat model from database configuration.
 func (m *Manager) createChatFromModel(model *generated.Model) (damodel.Chat, error) {
 	supportsImages := ResolveSupportsImages(model.Endpoint, model.ModelName, model.ImageSupport)
-	if model.ProviderType != "openai-responses" {
-		return nil, fmt.Errorf("unknown provider type %q", model.ProviderType)
-	}
 	effort := model.ReasoningEffort
 	if effort == "" {
 		effort = "medium"
 	}
-	chat, err := NewOpenAIResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, OpenAIResponsesOptions{
+	options := OpenAIResponsesOptions{
 		MaxOutputTokens: int(model.MaxTokens), SupportsImages: supportsImages,
-		SupportsReasoning: true, SupportsWebSearch: true,
-		MaxImageBytes: 20 * 1024 * 1024, DefaultReasoningLevel: "medium", ReasoningEffort: effort,
-	})
+		SupportsReasoning: true,
+		MaxImageBytes:     20 * 1024 * 1024, DefaultReasoningLevel: "medium", ReasoningEffort: effort,
+	}
+	var (
+		chat damodel.Chat
+		err  error
+	)
+	switch APIType(model.ProviderType) {
+	case APITypeOpenAIResponses:
+		options.SupportsWebSearch = true
+		chat, err = NewOpenAIResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, options)
+	case APITypeOpenRouterResponses:
+		chat, err = NewOpenRouterResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, options)
+	default:
+		return nil, fmt.Errorf("unknown provider type %q", model.ProviderType)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return WrapReasoningConfig(chat, model.Endpoint, model.ModelName, model.ReasoningSupport, model.ReasoningMap), nil
+}
+
+func providerForAPIType(value string) Provider {
+	switch APIType(value) {
+	case APITypeOpenAIResponses:
+		return ProviderOpenAI
+	case APITypeOpenRouterResponses:
+		return ProviderOpenRouter
+	default:
+		return Provider(value)
+	}
 }
 
 // ResolveSupportsImages turns a stored image_support value ("auto"|"yes"|"no")

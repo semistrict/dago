@@ -584,6 +584,59 @@ func TestBrowserCustomModelUsesDirectResponsesAPIWithoutPersistingKey(t *testing
 	}
 }
 
+func TestBrowserOpenRouterCustomModelUsesSelectedProvider(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/responses" {
+			t.Errorf("path = %q", request.URL.Path)
+		}
+		if request.Header.Get("Authorization") != "Bearer browser-router-secret" {
+			t.Errorf("authorization = %q", request.Header.Get("Authorization"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["model"] != "deepseek/deepseek-v4-flash-0731" {
+			t.Errorf("model = %#v", body["model"])
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"id":"resp_browser","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"test successful"}]}]}`)
+	}))
+	defer upstream.Close()
+
+	app, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelJSON, err := json.Marshal(CustomModel{
+		DisplayName: "Browser DeepSeek", ProviderType: "openrouter-responses", Endpoint: upstream.URL,
+		APIKey: "browser-router-secret", ModelName: "deepseek/deepseek-v4-flash-0731",
+		MaxTokens: 1_000_000, ReasoningSupport: "yes", ImageSupport: "no",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := app.Handle(Request{Method: "POST", URL: "/api/custom-models", Body: string(modelJSON)})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("create model status = %d, body = %s", created.Status, created.Body)
+	}
+	var model CustomModel
+	if err := json.Unmarshal(created.Body, &model); err != nil {
+		t.Fatal(err)
+	}
+	testBody, err := json.Marshal(CustomModel{
+		ModelID: model.ModelID, ProviderType: model.ProviderType, Endpoint: model.Endpoint,
+		ModelName: model.ModelName, ReasoningSupport: model.ReasoningSupport,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tested := app.Handle(Request{Method: "POST", URL: "/api/custom-models-test", Body: string(testBody)})
+	if tested.Status != http.StatusOK || !strings.Contains(string(tested.Body), `"success":true`) {
+		t.Fatalf("test model response = %#v body=%s", tested, tested.Body)
+	}
+}
+
 func TestBrowserOpenAIKeyConfiguresStandardModelCatalogWithoutPersistingKey(t *testing.T) {
 	app, err := New()
 	if err != nil {

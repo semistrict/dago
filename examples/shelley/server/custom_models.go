@@ -104,6 +104,15 @@ func validReasoningMap(raw string) error {
 	return nil
 }
 
+func validCustomProviderType(value string) bool {
+	switch models.APIType(value) {
+	case models.APITypeOpenAIResponses, models.APITypeOpenRouterResponses:
+		return true
+	default:
+		return false
+	}
+}
+
 // TestModelRequest is the request body for testing a model
 type TestModelRequest struct {
 	ModelID          string  `json:"model_id,omitempty"` // If provided, use stored API key
@@ -176,8 +185,8 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate provider type
-	if req.ProviderType != "openai-responses" {
-		http.Error(w, "provider_type must be 'openai-responses'", http.StatusBadRequest)
+	if !validCustomProviderType(req.ProviderType) {
+		http.Error(w, "provider_type must be 'openai-responses' or 'openrouter-responses'", http.StatusBadRequest)
 		return
 	}
 
@@ -296,6 +305,10 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request, model
 	var req UpdateModelRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	if !validCustomProviderType(req.ProviderType) {
+		http.Error(w, "provider_type must be 'openai-responses' or 'openrouter-responses'", http.StatusBadRequest)
 		return
 	}
 
@@ -483,15 +496,25 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 		reasoningEffort = *req.ReasoningEffort
 	}
 
-	if req.ProviderType != "openai-responses" {
+	if !validCustomProviderType(req.ProviderType) {
 		http.Error(w, "Invalid provider_type", http.StatusBadRequest)
 		return
 	}
-	chat, err := models.NewOpenAIResponses(req.APIKey, req.ModelName, req.Endpoint, nil, models.OpenAIResponsesOptions{
+	options := models.OpenAIResponsesOptions{
 		SupportsImages: true, SupportsWebSearch: true,
 		SupportsReasoning:     models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
 		DefaultReasoningLevel: "medium", ReasoningEffort: reasoningEffort,
-	})
+	}
+	var (
+		chat damodel.Chat
+		err  error
+	)
+	if models.APIType(req.ProviderType) == models.APITypeOpenRouterResponses {
+		options.SupportsWebSearch = false
+		chat, err = models.NewOpenRouterResponses(req.APIKey, req.ModelName, req.Endpoint, nil, options)
+	} else {
+		chat, err = models.NewOpenAIResponses(req.APIKey, req.ModelName, req.Endpoint, nil, options)
+	}
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Test failed: %v", err), http.StatusBadRequest)
 		return

@@ -887,9 +887,9 @@ func (app *App) distillNewGeneration(body string) Response {
 	}
 	var model damodel.Chat
 	if agentModel, ok := app.providerModels[selectedModel]; ok {
-		model, _ = openAIChat(agentModel)
+		model, _ = customModelChat(agentModel)
 	} else if customModel, ok := app.customModels[selectedModel]; ok {
-		model, _ = openAIChat(customModel)
+		model, _ = customModelChat(customModel)
 	} else if selectedModel == modelID {
 		model = newPredictableModel()
 	} else if selectedModel == webGPUModelID {
@@ -1651,7 +1651,7 @@ func (app *App) configureBrowserOpenAI(body string) Response {
 			MaxTokens: 1050000, ReasoningSupport: "yes", ImageSupport: "yes",
 			SupportsReasoning: true, SupportsImages: true,
 		}
-		chat, err := openAIChat(model)
+		chat, err := customModelChat(model)
 		if err != nil {
 			return errorResponse(400, err)
 		}
@@ -1766,7 +1766,7 @@ func (app *App) testCustomModel(body string) Response {
 		app.mu.RUnlock()
 		model.APIKey = stored.APIKey
 	}
-	chat, err := openAIChat(model)
+	chat, err := customModelChat(model)
 	if err != nil {
 		return errorResponse(400, err)
 	}
@@ -1792,8 +1792,8 @@ func (app *App) setCustomModel(model CustomModel, replacing bool) (CustomModel, 
 	if model.ModelID == "" || model.DisplayName == "" || model.Endpoint == "" || model.ModelName == "" || model.APIKey == "" {
 		return CustomModel{}, fmt.Errorf("display_name, endpoint, api_key, and model_name are required")
 	}
-	if model.ProviderType != "openai-responses" {
-		return CustomModel{}, fmt.Errorf("provider_type must be 'openai-responses'")
+	if model.ProviderType != "openai-responses" && model.ProviderType != "openrouter-responses" {
+		return CustomModel{}, fmt.Errorf("provider_type must be 'openai-responses' or 'openrouter-responses'")
 	}
 	if model.MaxTokens <= 0 {
 		model.MaxTokens = 200000
@@ -1806,7 +1806,7 @@ func (app *App) setCustomModel(model CustomModel, replacing bool) (CustomModel, 
 	}
 	model.SupportsImages = model.ImageSupport != "no"
 	model.SupportsReasoning = model.ReasoningSupport != "no"
-	chat, err := openAIChat(model)
+	chat, err := customModelChat(model)
 	if err != nil {
 		return CustomModel{}, err
 	}
@@ -1928,7 +1928,7 @@ func (app *App) Restore(data []byte) error {
 	webGPUModel := app.webGPUModel
 	app.mu.RUnlock()
 	for _, model := range models {
-		chat, chatErr := openAIChat(model)
+		chat, chatErr := customModelChat(model)
 		if chatErr != nil {
 			return chatErr
 		}

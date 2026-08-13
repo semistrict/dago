@@ -219,6 +219,29 @@ chat, err := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), openai.Options{
 The core package never discovers credentials or chooses a provider. OAuth token
 persistence is opt-in and writes only to the caller-provided private file.
 
+## OpenRouter adapter
+
+The OpenRouter adapter uses OpenRouter's Responses API and preserves the same
+text, multimodal, tool-calling, structured-output, reasoning, web-search, usage,
+and streaming contracts as the OpenAI adapter. It also supports optional app
+attribution and provider routing:
+
+```go
+chat, err := openrouter.New(os.Getenv("OPENROUTER_API_KEY"), openrouter.Options{
+	Model:    "anthropic/claude-sonnet-4.6",
+	AppURL:   "https://example.com/my-agent",
+	AppTitle: "My Agent",
+	Routing: &openrouter.ProviderRouting{
+		Ignore:         []string{"azure"},
+		DataCollection: "deny",
+	},
+	ContextWindow: 200_000,
+})
+```
+
+`BaseURL` defaults to `https://openrouter.ai/api/v1`. Credentials remain
+explicit; the adapter does not read environment variables itself.
+
 ## Durable execution
 
 ```go

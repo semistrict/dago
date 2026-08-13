@@ -1,6 +1,6 @@
 # Shelley Makefile
 
-.PHONY: build build-linux-aarch64 build-linux-x86 wasm wasm-tinygo wasm-tinygo-check wasm-serve test test-go test-e2e test-e2e-wasm bench-agent bench-scaling ui serve clean help templates demo
+.PHONY: build build-linux-aarch64 build-linux-x86 wasm wasm-tinygo wasm-tinygo-check wasm-serve test test-go test-e2e test-e2e-wasm openrouter-e2e bench-agent bench-scaling ui serve clean help templates demo
 
 # Default target
 all: build
@@ -76,6 +76,10 @@ test-e2e-wasm:
 	@echo "Running browser-native E2E tests..."
 	cd ui && pnpm run test:e2e:wasm
 
+openrouter-e2e:
+	@if test -z "$$OPENROUTER_API_KEY"; then echo "OPENROUTER_API_KEY is required"; exit 1; fi
+	SHELLEY_OPENROUTER_E2E=1 go test -count=1 -run '^TestOpenRouterShelleyLive$$' ./models
+
 # Run E2E tests in headed mode (with visible browser)
 test-e2e-headed: ui
 	@echo "Running E2E tests (headed)..."
@@ -139,6 +143,7 @@ help:
 	@echo "  test-go       Run Go tests only"
 	@echo "  test-e2e      Run E2E tests (headless)"
 	@echo "  test-e2e-wasm Run browser-native E2E tests"
+	@echo "  openrouter-e2e Run the live OpenRouter model integration test"
 	@echo "  test-e2e-headed  Run E2E tests (visible browser)"
 	@echo "  test-e2e-ui   Open E2E test UI"
 	@echo "  bench-agent   Benchmark the agent path with a mocked model"

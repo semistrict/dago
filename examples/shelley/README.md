@@ -15,6 +15,10 @@ cd ..
 make serve
 ```
 
+OpenRouter models can be added from **Manage Models → Add Model**. Select
+**OpenRouter (Responses API)**, enter the API key, and choose
+`deepseek/deepseek-v4-flash-0731` from the model suggestions.
+
 The server listens on loopback by default. It has no multi-user authorization
 or process sandbox: do not expose it to an untrusted network, and do not enable
 host shell tools outside an appropriately isolated environment.

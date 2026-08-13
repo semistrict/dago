@@ -552,6 +552,32 @@ func TestCheckpoint(t *testing.T) {
 	}
 }
 
+func TestOpenRouterModelProviderMigrationPreservesExistingModels(t *testing.T) {
+	database := setupDBMigratedThrough(t, 37)
+	ctx := context.Background()
+	existing, err := database.CreateModel(ctx, generated.CreateModelParams{
+		ModelID: "existing-openai", DisplayName: "Existing OpenAI",
+		ProviderType: "openai-responses", Endpoint: "https://api.openai.com/v1",
+		ApiKey: "openai-key", ModelName: "gpt-test", MaxTokens: 4096,
+	})
+	if err != nil {
+		t.Fatalf("create existing model: %v", err)
+	}
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("run OpenRouter migration: %v", err)
+	}
+	if _, err := database.GetModel(ctx, existing.ModelID); err != nil {
+		t.Fatalf("existing model was not preserved: %v", err)
+	}
+	if _, err := database.CreateModel(ctx, generated.CreateModelParams{
+		ModelID: "openrouter-deepseek", DisplayName: "DeepSeek V4 Flash 0731",
+		ProviderType: "openrouter-responses", Endpoint: "https://openrouter.ai/api/v1",
+		ApiKey: "openrouter-key", ModelName: "deepseek/deepseek-v4-flash-0731", MaxTokens: 1_000_000,
+	}); err != nil {
+		t.Fatalf("create OpenRouter model after migration: %v", err)
+	}
+}
+
 // TestCreateMessageWithExplicitCreatedAt verifies CreatedAt overrides the
 // CURRENT_TIMESTAMP default when set, and that a nil CreatedAt (every real
 // caller) still stamps real insertion time.

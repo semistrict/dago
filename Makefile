@@ -1,4 +1,4 @@
-.PHONY: check checkpoint-interop coverage dacode-e2e drift fmt fmt-check generate test test-openai-live test-race tinygo vet
+.PHONY: check checkpoint-interop coverage dacode-e2e drift fmt fmt-check generate openrouter-e2e test test-openai-live test-race tinygo vet
 
 check: fmt-check drift vet test test-race
 
@@ -40,3 +40,8 @@ dacode-e2e:
 
 checkpoint-interop:
 	./scripts/check-checkpoint-interop.sh
+
+openrouter-e2e:
+	@if test -z "$$OPENROUTER_API_KEY"; then echo "OPENROUTER_API_KEY is required"; exit 1; fi
+	DAGO_OPENROUTER_E2E=1 go test -count=1 -run '^TestOpenRouterLive$$' ./daproviders/openrouter
+	$(MAKE) -C examples/shelley openrouter-e2e
