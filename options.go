@@ -41,6 +41,11 @@ func WithSystemMessage(message damessage.Message) Option {
 	return optionFunc(func(options *agentConfig) { options.SystemMessage = message })
 }
 
+// WithSystemPrompt sets a plain-text system message.
+func WithSystemPrompt(prompt string) Option {
+	return WithSystemMessage(damessage.System(prompt))
+}
+
 // WithMiddleware sets the caller-provided middleware.
 func WithMiddleware(middleware ...dagent.Middleware) Option {
 	return optionFunc(func(options *agentConfig) { options.Middleware = append([]dagent.Middleware(nil), middleware...) })

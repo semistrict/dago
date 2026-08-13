@@ -68,10 +68,11 @@ SSE MCP servers. HTTP headers are forwarded for per-session MCP authentication.
 and prints its URL. Use `--xtermjs-address HOST:PORT` to select a specific
 loopback listener.
 
-## Quick start
+## Use dago as a library
 
-Models implement the small `damodel.Chat` interface. This example uses the OpenAI
-adapter, but the agent and tool APIs are provider-neutral:
+Models implement the small `damodel.Chat` interface, and tools implement
+`datool.Tool`. This complete example uses the OpenAI adapter and a typed local tool;
+the agent and tool APIs remain provider-neutral:
 
 ```go
 package main
@@ -86,7 +87,13 @@ import (
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/daproviders/openai"
+	"github.com/semistrict/dago/datool"
 )
+
+type addInput struct {
+	A int `json:"a" description:"First number"`
+	B int `json:"b" description:"Second number"`
+}
 
 func main() {
 	chat, err := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), openai.Options{
@@ -96,9 +103,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	compiled := dago.NewAgent(chat)
-	result, err := compiled.Invoke(context.Background(), dagent.Input{
-		Messages: []damessage.Message{damessage.Human("Introduce yourself.")},
+	add, err := datool.New("add", "Add two integers.", func(_ context.Context, input addInput) (int, error) {
+		return input.A + input.B, nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	agent := dago.NewAgent(chat,
+		dago.WithSystemPrompt("Use tools when they help answer accurately."),
+		dago.WithTools(add),
+	)
+	result, err := agent.Invoke(context.Background(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("What is 17 plus 25?")},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -151,7 +168,7 @@ researcher := dago.NewSubagent(
 	"researcher",
 	"Researches a topic and returns a concise answer.",
 	nil,
-	dago.WithSystemMessage(damessage.System("Research the delegated topic.")),
+	dago.WithSystemPrompt("Research the delegated topic."),
 	dago.WithTodo(),
 )
 compiled := dago.NewAgent(chat, dago.WithSubagents(researcher))
@@ -194,7 +211,7 @@ Typed adapters keep the state and checkpoint wire formats flexible without
 requiring application assertions. Use `dagent.Field` with a
 `dagent.FieldSpec[T]` to declare typed reducers, `datool.StateAs[T]` for tool
 state, and `dagent.DepsAs[T]` or `datool.DepsAs[T]` for application dependencies
-supplied through `Options.Deps`. `dagent.ResumeAs[T]` accepts both live Go values
+supplied through `WithDependencies`. `dagent.ResumeAs[T]` accepts both live Go values
 and checkpoint-restored plain JSON values. Structured results can be declared
 with `dagent.StructuredOutputFor[T]` and decoded with
 `dagent.StructuredAs[T]`; the latter validates against the schema derived from T.

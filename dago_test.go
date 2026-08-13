@@ -556,6 +556,25 @@ func TestStructuredSystemMessagePreservesBlocksAndAppendsProfilePrompt(t *testin
 	}
 }
 
+func TestSystemPromptCreatesPlainTextSystemMessage(t *testing.T) {
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{
+		Check: func(request damodel.Request) error {
+			if len(request.Messages) == 0 || request.Messages[0].Role != damessage.RoleSystem {
+				return errors.New("system message missing")
+			}
+			if got := request.Messages[0].TextContent(); got != "Be concise." {
+				return fmt.Errorf("system prompt = %q", got)
+			}
+			return nil
+		},
+		Response: damodel.Response{Message: damessage.Assistant("done")},
+	})
+	agent := NewAgent(script, WithSystemPrompt("Be concise."), WithoutSubagents(), WithoutSummary())
+	if _, err := agent.Invoke(t.Context(), dagent.Input{Messages: []damessage.Message{damessage.Human("hi")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStructuredSystemMessageValidation(t *testing.T) {
 	chat := modeltest.New(damodel.Profile{})
 	human := damessage.Human("not system")

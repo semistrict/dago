@@ -404,7 +404,7 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			}),
 		}
 		if prompt := runtimeSystemPrompt(system); prompt != "" {
-			agentOptions = append(agentOptions, dago.WithSystemMessage(dmessage.System(prompt)))
+			agentOptions = append(agentOptions, dago.WithSystemPrompt(prompt))
 		}
 		filesystem := dago.Filesystem{}
 		if l.filesystemTools == nil {
