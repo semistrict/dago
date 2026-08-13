@@ -47,6 +47,8 @@ Python test layout.
 - WAFL tracking is enabled for every interpreter instance and has no production
   opt-out. The benchmark's synthetic untracked case exists only to measure the
   tracking overhead against a controlled baseline.
+- TinyGo builds exclude the Wazero-backed interpreter. Explicit enablement fails
+  during agent construction, and Shelley omits `js_eval` from its TinyGo tool list.
 
 Run the deterministic port with `go test ./internal/quickjs ./internal/wafl .`.
 Run end-to-end interpreter, memory-tracking, snapshot, large-tool-output, and

@@ -179,7 +179,9 @@ Enable a persistent, sandboxed QuickJS-ng REPL with `Interpreter`. The `js_eval`
 tool supports top-level await, console output, functions and variables that persist
 through checkpoints, and concurrent programmatic tool calls. It runs the exact
 `quickjs-rs` 0.2.5 WASM guest under Wazero's interpreter backend, including in Go
-browser-WASM builds.
+browser-WASM builds. TinyGo builds exclude the Wazero-backed implementation;
+enabling `Interpreter` in a TinyGo build fails during agent construction, and the
+Shelley TinyGo application omits `js_eval` from its tool catalog.
 
 ```go
 compiled := dago.New(chat, dago.Options{

@@ -1,3 +1,5 @@
+//go:build !tinygo
+
 package dago
 
 import (
@@ -22,24 +24,6 @@ import (
 )
 
 const interpreterSnapshotKey = "_js_interpreter_snapshot"
-
-// Interpreter configures the agent-owned JavaScript code interpreter. It uses
-// an isolated QuickJS-ng WASM instance hosted by Wazero's portable interpreter.
-type Interpreter struct {
-	Enabled          bool
-	ToolName         string
-	Timeout          time.Duration
-	MemoryLimit      uint64
-	StackLimit       uint64
-	MaxStdoutChars   int
-	MaxResultChars   int
-	MaxSnapshotBytes int
-	MaxPTCCalls      int
-	// PTC is an allowlist of agent tool names exposed as async functions under
-	// tools.*. Nil selects the read-only filesystem tools; an empty non-nil
-	// slice disables programmatic tool calling.
-	PTC []string
-}
 
 type interpreterRuntime struct {
 	options Interpreter

@@ -1983,7 +1983,7 @@ func newAgent(backend dabackend.Backend, model damodel.Chat, name string, saver 
 		Backend:          backend,
 		Saver:            saver,
 		Filesystem:       dago.Filesystem{Tools: tools},
-		Interpreter:      dago.Interpreter{Enabled: true},
+		Interpreter:      dago.Interpreter{Enabled: browserInterpreterEnabled},
 		EnableTodo:       true,
 		DisableSubagents: true,
 		DisableSummary:   true,
@@ -2160,7 +2160,9 @@ func availableTools(includeExecute bool) []map[string]any {
 		{"write_file", "Write a browser-workspace file."}, {"edit_file", "Edit a browser-workspace file."},
 		{"delete", "Delete a browser-workspace path."}, {"glob", "Match browser-workspace paths."},
 		{"grep", "Search browser-workspace files."}, {"write_todos", "Track the agent plan."},
-		{"js_eval", "Evaluate persistent JavaScript with programmatic read-only filesystem tools."},
+	}
+	if browserInterpreterEnabled {
+		items = append(items, struct{ name, summary string }{"js_eval", "Evaluate persistent JavaScript with programmatic read-only filesystem tools."})
 	}
 	if includeExecute {
 		items = append(items, struct{ name, summary string }{"execute", "Run a sandboxed just-bash command in the browser workspace."})
