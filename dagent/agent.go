@@ -23,10 +23,8 @@ import (
 // Options configures a generic tool-calling agent.
 type Options struct {
 	Name             string
-	Model            damodel.Chat
 	Tools            []datool.Tool
-	SystemPrompt     string
-	SystemMessage    *damessage.Message
+	SystemMessage    damessage.Message
 	Middleware       []Middleware
 	StateFields      map[string]StateField
 	StructuredOutput *StructuredOutput
@@ -51,6 +49,7 @@ type Agent struct {
 	graph   *graph.Compiled
 	saver   dacheckpoint.Saver
 	private map[string]bool
+	tools   []datool.Tool
 }
 
 // Input starts or resumes one agent thread.
@@ -81,25 +80,27 @@ type Result struct {
 }
 
 // Interrupt is a language-neutral pause request.
-type Interrupt struct {
-	ID    string
-	Value any
+type Interrupt = datool.Interrupt
+
+// New compiles a model/tool graph. It panics when static construction options
+// violate an invariant; invocation and dependency failures remain errors on Agent methods.
+func New(model damodel.Chat, options Options) *Agent {
+	agent, err := newAgent(model, options)
+	if err != nil {
+		panic(err)
+	}
+	return agent
 }
 
-// New validates options and compiles the model/tool graph.
-func New(options Options) (*Agent, error) {
-	if options.Model == nil {
-		return nil, fmt.Errorf("create agent: model is required")
+func newAgent(model damodel.Chat, options Options) (*Agent, error) {
+	if model == nil {
+		return nil, fmt.Errorf("create agent: model is nil")
 	}
-	if options.SystemPrompt != "" && options.SystemMessage != nil {
-		return nil, fmt.Errorf("create agent: system prompt and system message are mutually exclusive")
-	}
-	if options.SystemMessage != nil {
+	if options.SystemMessage.Role != "" {
 		if options.SystemMessage.Role != damessage.RoleSystem {
 			return nil, fmt.Errorf("create agent: system message role must be system")
 		}
-		copy := options.SystemMessage.Clone()
-		options.SystemMessage = &copy
+		options.SystemMessage = options.SystemMessage.Clone()
 	}
 	options.Metadata = cloneRawMap(options.Metadata)
 	options.Tags = append([]string(nil), options.Tags...)
@@ -157,7 +158,7 @@ func New(options Options) (*Agent, error) {
 	schema.Fields[toolDirectKey] = graph.Ephemeral(identityClone)
 	schema.Fields[structuredRetryKey] = graph.Ephemeral(identityClone)
 
-	compiled := &compiler{options: options, tools: tools, fields: fields}
+	compiled := &compiler{chat: model, options: options, tools: tools, fields: fields}
 	builder := graph.NewBuilder(schema)
 	if err := compiled.addNodes(builder); err != nil {
 		return nil, err
@@ -177,7 +178,15 @@ func New(options Options) (*Agent, error) {
 			private[name] = true
 		}
 	}
-	return &Agent{graph: runtimeGraph, saver: options.Saver, private: private}, nil
+	return &Agent{graph: runtimeGraph, saver: options.Saver, private: private, tools: toolsSlice(tools)}, nil
+}
+
+// Tools returns the compiled model-visible tool set.
+func (agent *Agent) Tools() []datool.Tool {
+	if agent == nil {
+		return nil
+	}
+	return append([]datool.Tool(nil), agent.tools...)
 }
 
 type debugEventWriter struct{}
@@ -296,6 +305,7 @@ func publicState(values dastate.Values, private map[string]bool) dastate.Values 
 }
 
 type compiler struct {
+	chat    damodel.Chat
 	options Options
 	tools   map[string]datool.Tool
 	fields  map[string]StateField
@@ -393,16 +403,13 @@ func (compiler *compiler) model(ctx context.Context, values dastate.Values, runt
 		return graph.Command{}, err
 	}
 	request := ModelRequest{
-		Model: compiler.options.Model, Messages: messages, Tools: toolsSlice(compiler.tools),
+		Model: compiler.chat, Messages: messages, Tools: toolsSlice(compiler.tools),
 		State: current.Clone(), Runtime: convertRuntime(runtime),
 		MessagesReadOnly:   compiler.options.RetainThreadState,
 		InvocationMetadata: cloneRawMap(compiler.options.Metadata), InvocationTags: append([]string(nil), compiler.options.Tags...),
 	}
-	if compiler.options.SystemMessage != nil {
+	if compiler.options.SystemMessage.Role != "" {
 		system := compiler.options.SystemMessage.Clone()
-		request.SystemMessage = &system
-	} else if compiler.options.SystemPrompt != "" {
-		system := damessage.System(compiler.options.SystemPrompt)
 		request.SystemMessage = &system
 	}
 	configureStructuredRequest(&request, compiler.options.StructuredOutput)

@@ -14,7 +14,6 @@ import (
 // compaction. Applications may customize prompts and history rendering while
 // dago owns cut-point selection and the model invocation.
 type ConversationCompactionOptions struct {
-	Model        damodel.Chat
 	KeepMessages int
 	KeepTokens   int
 	// ValidCutoffs optionally constrains the first recent-message index to
@@ -41,14 +40,14 @@ type ConversationCompaction struct {
 // CompactConversation summarizes the portion of messages before a safe cut
 // point and returns the recent verbatim tail. It does not mutate checkpoints or
 // application projections.
-func CompactConversation(ctx context.Context, messages []damessage.Message, options ConversationCompactionOptions) (ConversationCompaction, error) {
-	if options.Model == nil {
-		return ConversationCompaction{}, fmt.Errorf("conversation compaction model is required")
+func CompactConversation(ctx context.Context, model damodel.Chat, messages []damessage.Message, options ConversationCompactionOptions) (ConversationCompaction, error) {
+	if model == nil {
+		panic("conversation compaction model is nil")
 	}
 	if options.KeepMessages <= 0 && options.KeepTokens <= 0 {
-		return ConversationCompaction{}, fmt.Errorf("conversation compaction keep budget is required")
+		options.KeepMessages = 6
 	}
-	cutoff := summaryCutoff(messages, SummarizationOptions{KeepMessages: options.KeepMessages, KeepTokens: options.KeepTokens})
+	cutoff := summaryCutoff(messages, Summarization{KeepMessages: options.KeepMessages, KeepTokens: options.KeepTokens})
 	if len(options.ValidCutoffs) > 0 {
 		cutoff = constrainedCompactionCutoff(messages, cutoff, options.ValidCutoffs)
 	}
@@ -85,7 +84,7 @@ func CompactConversation(ctx context.Context, messages []damessage.Message, opti
 		reasoning = &copy
 	}
 	result.Started = time.Now()
-	response, err := options.Model.Invoke(ctx, damodel.Request{
+	response, err := model.Invoke(ctx, damodel.Request{
 		Messages:  []damessage.Message{damessage.System(systemPrompt), damessage.Human(userPrompt)},
 		Reasoning: reasoning,
 	})

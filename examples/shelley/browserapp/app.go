@@ -152,7 +152,7 @@ type CustomModel struct {
 // portable dago agent. Events use the same JSON shapes as Shelley's SSE API.
 type App struct {
 	mu             sync.RWMutex
-	agents         map[string]*dago.DeepAgent
+	agents         map[string]*dagent.Agent
 	customModels   map[string]CustomModel
 	providerModels map[string]CustomModel
 	webGPUModel    damodel.Chat
@@ -253,7 +253,7 @@ func newAppWithWorkspace(workspace Workspace, executor ShellExecutor, saver dach
 		return nil, err
 	}
 	return &App{
-		agents: map[string]*dago.DeepAgent{modelID: agent}, customModels: map[string]CustomModel{},
+		agents: map[string]*dagent.Agent{modelID: agent}, customModels: map[string]CustomModel{},
 		providerModels: map[string]CustomModel{},
 		saver:          saver,
 		workspace:      workspace, backend: backend, shellExecutor: executor,
@@ -1158,7 +1158,7 @@ func (app *App) runTurn(ctx context.Context, id string, history []damessage.Mess
 		if err == nil {
 			stream := agent.Stream(ctx, dagent.Input{
 				Config: dacheckpoint.Config{ThreadID: id}, Messages: input,
-			}, 64)
+			})
 			defer stream.Close()
 			projected := make(map[string]bool)
 			for {
@@ -1644,7 +1644,7 @@ func (app *App) configureBrowserOpenAI(body string) Response {
 		{"gpt-5.6-sol", "GPT-5.6 Sol"},
 	}
 	models := make(map[string]CustomModel, len(specs))
-	agents := make(map[string]*dago.DeepAgent, len(specs))
+	agents := make(map[string]*dagent.Agent, len(specs))
 	for _, spec := range specs {
 		model := CustomModel{
 			ModelID: spec.id, DisplayName: spec.displayName, ProviderType: "openai-responses",
@@ -1928,7 +1928,7 @@ func (app *App) Restore(data []byte) error {
 	if err != nil {
 		return err
 	}
-	agents := map[string]*dago.DeepAgent{modelID: defaultAgent}
+	agents := map[string]*dagent.Agent{modelID: defaultAgent}
 	app.mu.RLock()
 	models := make([]CustomModel, 0, len(app.customModels)+len(app.providerModels))
 	for _, model := range app.customModels {
@@ -1985,20 +1985,20 @@ func newPredictableModel() damodel.Chat {
 	return &uniqueIDModel{Chat: model, prefix: prefix + "-"}
 }
 
-func newAgent(backend dabackend.Backend, model damodel.Chat, name string, saver dacheckpoint.Saver) (*dago.DeepAgent, error) {
+func newAgent(backend dabackend.Backend, model damodel.Chat, name string, saver dacheckpoint.Saver) (*dagent.Agent, error) {
 	tools := []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"}
 	if dabackend.CapabilitiesOf(backend).Execute {
 		tools = append(tools, "execute")
 	}
-	return dago.New(dago.Options{
+	return dago.New(model, dago.Options{
 		Name:             "shelley-browser-" + name,
-		Model:            model,
 		Backend:          backend,
 		Saver:            saver,
-		FilesystemTools:  tools,
+		Filesystem:       dago.Filesystem{Tools: tools},
 		EnableTodo:       true,
 		DisableSubagents: true,
-	})
+		DisableSummary:   true,
+	}), nil
 }
 
 // uniqueIDModel prevents a fresh WASM instance from reusing deterministic

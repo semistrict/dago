@@ -90,7 +90,7 @@ func TestNativeServerToolProjectionPreservesOpenAIOutputItem(t *testing.T) {
 	}
 }
 
-func TestLoopNativeHarnessExposesCanonicalDeepAgentTools(t *testing.T) {
+func TestLoopNativeHarnessExposesCanonicalAgentTools(t *testing.T) {
 	chat := &harnessSurfaceChat{}
 	runtime := NewLoop(Config{
 		Model: chat, WorkingDir: t.TempDir(), FilesystemTools: []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"},

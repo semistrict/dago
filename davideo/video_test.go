@@ -1,4 +1,4 @@
-package dago
+package davideo
 
 import (
 	"context"
@@ -14,11 +14,11 @@ import (
 )
 
 func TestValidateVideoWindow(t *testing.T) {
-	valid := VideoWindow{OffsetSeconds: 1.25, DurationSeconds: 10, SamplingRate: 0.5}
+	valid := Window{OffsetSeconds: 1.25, DurationSeconds: 10, SamplingRate: 0.5}
 	if err := validateVideoWindow(valid); err != nil {
 		t.Fatalf("valid window: %v", err)
 	}
-	tests := []VideoWindow{
+	tests := []Window{
 		{OffsetSeconds: -1, DurationSeconds: 1, SamplingRate: 1},
 		{OffsetSeconds: math.NaN(), DurationSeconds: 1, SamplingRate: 1},
 		{OffsetSeconds: math.Inf(1), DurationSeconds: 1, SamplingRate: 1},
@@ -60,10 +60,10 @@ func TestSplitJPEGStream(t *testing.T) {
 	}
 }
 
-func TestFFmpegVideoExtractorInterleavesAndCapsFrames(t *testing.T) {
+func TestFFmpegExtractorInterleavesAndCapsFrames(t *testing.T) {
 	executable := writeVideoFixture(t, "#!/bin/sh\nprintf '\\377\\330one\\377\\331\\377\\330two\\377\\331\\377\\330three\\377\\331'\n")
-	extractor := NewFFmpegVideoExtractor(FFmpegVideoOptions{Executable: executable, MaxFrames: 2, MaxEmittedBytes: 1024})
-	blocks, err := extractor.Extract(context.Background(), []byte("source"), VideoWindow{OffsetSeconds: 3, DurationSeconds: 8, SamplingRate: 0.5})
+	extractor := NewFFmpeg(FFmpegOptions{Executable: executable, MaxFrames: 2, MaxEmittedBytes: 1024})
+	blocks, err := extractor.Extract(context.Background(), []byte("source"), Window{OffsetSeconds: 3, DurationSeconds: 8, SamplingRate: 0.5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,29 +84,29 @@ func TestFFmpegVideoExtractorInterleavesAndCapsFrames(t *testing.T) {
 	}
 }
 
-func TestFFmpegVideoExtractorReportsDecoderFailure(t *testing.T) {
+func TestFFmpegExtractorReportsDecoderFailure(t *testing.T) {
 	executable := writeVideoFixture(t, "#!/bin/sh\necho 'invalid media' >&2\nexit 7\n")
-	extractor := NewFFmpegVideoExtractor(FFmpegVideoOptions{Executable: executable})
-	_, err := extractor.Extract(context.Background(), []byte("source"), VideoWindow{DurationSeconds: 1, SamplingRate: 1})
+	extractor := NewFFmpeg(FFmpegOptions{Executable: executable})
+	_, err := extractor.Extract(context.Background(), []byte("source"), Window{DurationSeconds: 1, SamplingRate: 1})
 	if err == nil || !strings.Contains(err.Error(), "invalid media") {
 		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestFFmpegVideoExtractorHonorsCancellation(t *testing.T) {
+func TestFFmpegExtractorHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	extractor := NewFFmpegVideoExtractor(FFmpegVideoOptions{Executable: "does-not-matter"})
-	_, err := extractor.Extract(ctx, []byte("source"), VideoWindow{DurationSeconds: 1, SamplingRate: 1})
+	extractor := NewFFmpeg(FFmpegOptions{Executable: "does-not-matter"})
+	_, err := extractor.Extract(ctx, []byte("source"), Window{DurationSeconds: 1, SamplingRate: 1})
 	if !errors.Is(err, context.Canceled) && (err == nil || !strings.Contains(err.Error(), "context canceled")) {
 		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestFFmpegVideoExtractorEnforcesOutputBudget(t *testing.T) {
+func TestFFmpegExtractorEnforcesOutputBudget(t *testing.T) {
 	executable := writeVideoFixture(t, "#!/bin/sh\nprintf '\\377\\330a-very-large-frame\\377\\331'\n")
-	extractor := NewFFmpegVideoExtractor(FFmpegVideoOptions{Executable: executable, MaxEmittedBytes: 8, DecodeTimeout: time.Second})
-	_, err := extractor.Extract(context.Background(), nil, VideoWindow{DurationSeconds: 1, SamplingRate: 1})
+	extractor := NewFFmpeg(FFmpegOptions{Executable: executable, MaxEmittedBytes: 8, DecodeTimeout: time.Second})
+	_, err := extractor.Extract(context.Background(), nil, Window{DurationSeconds: 1, SamplingRate: 1})
 	if err == nil || !strings.Contains(err.Error(), "safety budget") {
 		t.Fatalf("error = %v", err)
 	}

@@ -1,4 +1,4 @@
-package dago
+package profile
 
 import (
 	"errors"
@@ -11,7 +11,7 @@ func TestProviderProfilesMergeProviderExactDynamicAndCallerOptions(t *testing.T)
 	provider := "provider-profile-test"
 	exact := provider + ":model-one"
 	baseOptions := map[string]any{"base": true, "shared": "base"}
-	if err := RegisterProviderProfile(provider, ProviderProfile{
+	profiles := Profiles{provider: Profile{
 		Options: baseOptions,
 		PreInit: func(spec string) error {
 			order = append(order, "base-pre:"+spec)
@@ -21,11 +21,8 @@ func TestProviderProfilesMergeProviderExactDynamicAndCallerOptions(t *testing.T)
 			order = append(order, "base-factory")
 			return map[string]any{"base_dynamic": true, "dynamic_shared": "base"}, nil
 		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	baseOptions["base"] = false
-	if err := RegisterProviderProfile(exact, ProviderProfile{
+	}}
+	profiles[exact] = Profile{
 		Options: map[string]any{"exact": true, "shared": "exact"},
 		PreInit: func(spec string) error {
 			order = append(order, "exact-pre:"+spec)
@@ -35,12 +32,10 @@ func TestProviderProfilesMergeProviderExactDynamicAndCallerOptions(t *testing.T)
 			order = append(order, "exact-factory")
 			return map[string]any{"exact_dynamic": true, "dynamic_shared": "exact"}, nil
 		},
-	}); err != nil {
-		t.Fatal(err)
 	}
 
 	caller := map[string]any{"shared": "caller"}
-	got, err := ApplyProviderProfile(exact, caller, true)
+	got, err := profiles.ApplyWithPreInit(exact, caller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,15 +56,13 @@ func TestProviderProfilesMergeProviderExactDynamicAndCallerOptions(t *testing.T)
 	}
 }
 
-func TestProviderProfileRegistrationIsAdditive(t *testing.T) {
+func TestProviderProfilesMergeExplicitly(t *testing.T) {
 	key := "provider-additive-test"
-	if err := RegisterProviderProfile(key, ProviderProfile{Options: map[string]any{"one": 1, "shared": 1}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := RegisterProviderProfile(key, ProviderProfile{Options: map[string]any{"two": 2, "shared": 2}}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := ApplyProviderProfile(key, nil, false)
+	profiles := Profiles{key: Merge(
+		Profile{Options: map[string]any{"one": 1, "shared": 1}},
+		Profile{Options: map[string]any{"two": 2, "shared": 2}},
+	)}
+	got, err := profiles.Apply(key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,13 +74,11 @@ func TestProviderProfileRegistrationIsAdditive(t *testing.T) {
 func TestProviderProfileStopsChainedHooksOnError(t *testing.T) {
 	key := "provider-hook-error-test:model"
 	called := false
-	if err := RegisterProviderProfile(key, ProviderProfile{PreInit: func(string) error { return errors.New("blocked") }}); err != nil {
-		t.Fatal(err)
-	}
-	if err := RegisterProviderProfile(key, ProviderProfile{PreInit: func(string) error { called = true; return nil }}); err != nil {
-		t.Fatal(err)
-	}
-	_, err := ApplyProviderProfile(key, nil, true)
+	profiles := Profiles{key: Merge(
+		Profile{PreInit: func(string) error { return errors.New("blocked") }},
+		Profile{PreInit: func(string) error { called = true; return nil }},
+	)}
+	_, err := profiles.ApplyWithPreInit(key, nil)
 	if err == nil || called {
 		t.Fatalf("error = %v, override called = %v", err, called)
 	}
@@ -95,12 +86,12 @@ func TestProviderProfileStopsChainedHooksOnError(t *testing.T) {
 
 func TestProviderProfileLookupRejectsMalformedSpecs(t *testing.T) {
 	for _, spec := range []string{"", ":model", "provider:", "a:b:c", " provider"} {
-		if _, ok := LookupProviderProfile(spec); ok {
-			t.Fatalf("LookupProviderProfile(%q) matched", spec)
+		if _, ok := (Profiles{}).Lookup(spec); ok {
+			t.Fatalf("Lookup(%q) matched", spec)
 		}
 	}
 	options := map[string]any{"caller": true}
-	got, err := ApplyProviderProfile("unregistered-provider:model", options, true)
+	got, err := (Profiles{}).ApplyWithPreInit("unregistered-provider:model", options)
 	if err != nil || !reflect.DeepEqual(got, options) {
 		t.Fatalf("options = %#v, error = %v", got, err)
 	}

@@ -1,14 +1,17 @@
-package dago
+package daagentprotocol
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/semistrict/dago"
 )
 
 type protocolRequest struct {
@@ -52,32 +55,33 @@ func TestAgentProtocolRunnerLifecycle(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	runner, err := NewAgentProtocolRunner(AgentProtocolOptions{
-		URL: server.URL + "/api/", APIKey: "secret", Headers: map[string]string{"X-Custom": "yes"}, HTTPClient: server.Client(),
+	runner, err := New(server.URL+"/api/", Options{
+		APIKey: "test-api-key", Headers: map[string]string{"X-Custom": "yes"}, HTTPClient: server.Client(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	started, err := runner.Start(ctx, "research", "find it")
+	started, err := runner.Start(ctx, dago.AsyncStartRequest{GraphID: "research", Description: "find it"})
 	if err != nil || started.ThreadID != "thread/1" || started.RunID != "run/1" || started.Status != "running" {
 		t.Fatalf("start = %#v, err = %v", started, err)
 	}
-	checked, err := runner.Check(ctx, started.ThreadID, started.RunID)
-	if err != nil || checked.Status != "success" || checked.Result != "report" {
+	checked, err := runner.Check(ctx, dago.AsyncCheckRequest{ThreadID: started.ThreadID, RunID: started.RunID})
+	success, ok := checked.Outcome.(dago.AsyncSuccess)
+	if err != nil || checked.Status != "success" || !ok || success.Value != "report" {
 		t.Fatalf("check = %#v, err = %v", checked, err)
 	}
-	updated, err := runner.Update(ctx, "research", started.ThreadID, "more")
+	updated, err := runner.Update(ctx, dago.AsyncUpdateRequest{GraphID: "research", ThreadID: started.ThreadID, Message: "more"})
 	if err != nil || updated.RunID != "run/2" || updated.Status != "running" {
 		t.Fatalf("update = %#v, err = %v", updated, err)
 	}
-	if err := runner.Cancel(ctx, updated.ThreadID, updated.RunID); err != nil {
+	if err := runner.Cancel(ctx, dago.AsyncCancelRequest{ThreadID: updated.ThreadID, RunID: updated.RunID}); err != nil {
 		t.Fatal(err)
 	}
 	if len(requests) != 6 {
 		t.Fatalf("requests = %#v", requests)
 	}
-	if requests[0].headers.Get("x-api-key") != "secret" || requests[0].headers.Get("x-auth-scheme") != "langsmith" || requests[0].headers.Get("X-Custom") != "yes" {
+	if requests[0].headers.Get("x-api-key") != "test-api-key" || requests[0].headers.Get("x-auth-scheme") != "langsmith" || requests[0].headers.Get("X-Custom") != "yes" {
 		t.Fatalf("headers = %#v", requests[0].headers)
 	}
 	startInput := requests[1].body["input"].(map[string]any)["messages"].([]any)[0].(map[string]any)
@@ -107,14 +111,16 @@ func TestAgentProtocolCheckErrorAndMissingOutput(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"values":{}}`))
 	}))
 	defer server.Close()
-	runner, _ := NewAgentProtocolRunner(AgentProtocolOptions{URL: server.URL, APIKey: "none", HTTPClient: server.Client()})
-	failed, err := runner.Check(context.Background(), "thread", "run")
-	if err != nil || failed.Error != `{"message":"broken"}` {
+	runner, _ := New(server.URL, Options{APIKey: "none", HTTPClient: server.Client()})
+	failed, err := runner.Check(context.Background(), dago.AsyncCheckRequest{ThreadID: "thread", RunID: "run"})
+	failure, ok := failed.Outcome.(dago.AsyncFailure)
+	if err != nil || !ok || failure.Message != `{"message":"broken"}` {
 		t.Fatalf("failed = %#v, err = %v", failed, err)
 	}
 	status = "success"
-	finished, err := runner.Check(context.Background(), "thread", "run")
-	if err != nil || finished.Result != "(completed with no output messages)" {
+	finished, err := runner.Check(context.Background(), dago.AsyncCheckRequest{ThreadID: "thread", RunID: "run"})
+	success, ok := finished.Outcome.(dago.AsyncSuccess)
+	if err != nil || !ok || success.Value != nil {
 		t.Fatalf("finished = %#v, err = %v", finished, err)
 	}
 }
@@ -129,9 +135,10 @@ func TestAgentProtocolCheckIgnoresThreadFetchFailure(t *testing.T) {
 		http.Error(writer, "down", http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
-	runner, _ := NewAgentProtocolRunner(AgentProtocolOptions{URL: server.URL, APIKey: "none", HTTPClient: server.Client()})
-	result, err := runner.Check(context.Background(), "thread", "run")
-	if err != nil || result.Result != "(completed with no output messages)" {
+	runner, _ := New(server.URL, Options{APIKey: "none", HTTPClient: server.Client()})
+	result, err := runner.Check(context.Background(), dago.AsyncCheckRequest{ThreadID: "thread", RunID: "run"})
+	success, ok := result.Outcome.(dago.AsyncSuccess)
+	if err != nil || !ok || success.Value != nil {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}
 }
@@ -146,10 +153,11 @@ func TestAgentProtocolPreservesStructuredMessageContent(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"values":{"messages":[{"content":[{"type":"text","text":"report"}]}]}}`))
 	}))
 	defer server.Close()
-	runner, _ := NewAgentProtocolRunner(AgentProtocolOptions{URL: server.URL, APIKey: "none", HTTPClient: server.Client()})
-	result, err := runner.Check(context.Background(), "thread", "run")
-	parts, ok := result.ResultValue.([]any)
-	if err != nil || !ok || len(parts) != 1 || !strings.Contains(result.Result, "report") {
+	runner, _ := New(server.URL, Options{APIKey: "none", HTTPClient: server.Client()})
+	result, err := runner.Check(context.Background(), dago.AsyncCheckRequest{ThreadID: "thread", RunID: "run"})
+	success, ok := result.Outcome.(dago.AsyncSuccess)
+	parts, partsOK := success.Value.([]any)
+	if err != nil || !ok || !partsOK || len(parts) != 1 {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}
 }
@@ -162,8 +170,8 @@ func TestAgentProtocolDoesNotFollowRedirectsWithCredentials(t *testing.T) {
 		http.Redirect(writer, request, target.URL, http.StatusTemporaryRedirect)
 	}))
 	defer server.Close()
-	runner, _ := NewAgentProtocolRunner(AgentProtocolOptions{URL: server.URL, APIKey: "secret", HTTPClient: server.Client()})
-	if _, err := runner.Start(context.Background(), "graph", "task"); err == nil {
+	runner, _ := New(server.URL, Options{APIKey: "test-api-key", HTTPClient: server.Client()})
+	if _, err := runner.Start(context.Background(), dago.AsyncStartRequest{GraphID: "graph", Description: "task"}); err == nil {
 		t.Fatal("redirect succeeded")
 	}
 	if redirected != 0 {
@@ -173,25 +181,26 @@ func TestAgentProtocolDoesNotFollowRedirectsWithCredentials(t *testing.T) {
 
 func TestAgentProtocolConfigurationValidationAndEnvironmentKey(t *testing.T) {
 	for _, value := range []string{"", "localhost:8123", "ftp://example.com"} {
-		if _, err := NewAgentProtocolRunner(AgentProtocolOptions{URL: value}); err == nil {
+		if _, err := New(value, Options{}); err == nil {
 			t.Fatalf("URL %q accepted", value)
 		}
 	}
-	if _, err := NewAgentProtocolRunner(AgentProtocolOptions{URL: "https://example.com", Headers: map[string]string{"X-API-Key": "bad"}}); err == nil {
+	if _, err := New("https://example.com", Options{Headers: map[string]string{"X-API-Key": "bad"}}); err == nil {
 		t.Fatal("reserved header accepted")
 	}
-	t.Setenv("LANGGRAPH_API_KEY", " env-key ")
-	runner, err := NewAgentProtocolRunner(AgentProtocolOptions{URL: "https://example.com"})
-	if err != nil || runner.headers.Get("x-api-key") != "env-key" {
+	t.Setenv("LANGGRAPH_API_KEY", " test-env-api-key ")
+	runner, err := New("https://example.com", Options{})
+	if err != nil || runner.headers.Get("x-api-key") != "test-env-api-key" {
 		t.Fatalf("key = %q, err = %v", runner.headers.Get("x-api-key"), err)
 	}
 }
 
-func TestAsyncSubagentURLBuildsAgentProtocolRunner(t *testing.T) {
-	middleware, err := AsyncSubagentMiddleware(AsyncSubagentOptions{Subagents: []AsyncSubagent{{
-		Name: "remote", Description: "Remote worker", GraphID: "worker", URL: "https://example.com",
-	}}})
-	if err != nil || len(middleware.Tools) != 5 {
-		t.Fatalf("middleware = %#v, err = %v", middleware, err)
-	}
+func TestAsyncSubagentRequiresRunner(t *testing.T) {
+	defer func() {
+		value := recover()
+		if value == nil || !strings.Contains(fmt.Sprint(value), "runner is required") {
+			t.Fatalf("panic = %v", value)
+		}
+	}()
+	dago.AsyncSubagents(dago.AsyncSubagent{Name: "remote", Description: "Remote worker", GraphID: "worker"})
 }

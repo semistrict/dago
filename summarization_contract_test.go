@@ -18,6 +18,14 @@ import (
 	"github.com/semistrict/dago/datool"
 )
 
+func mustSummarization(model damodel.Chat, backend dabackend.Backend, options Summarization) dagent.Middleware {
+	middleware, err := newSummarization(options.modelFor(model), backend, options)
+	if err != nil {
+		panic(err)
+	}
+	return middleware
+}
+
 type failingHistoryBackend struct{ dabackend.Backend }
 
 func (failingHistoryBackend) Write(context.Context, string, string) (dabackend.WriteResult, error) {
@@ -36,7 +44,7 @@ func (failingMediaBackend) Upload(_ context.Context, values []dabackend.Upload) 
 
 func TestHistoryOffloadAppendsPerThreadAndFiltersSyntheticSummaries(t *testing.T) {
 	memory, _ := dabackend.NewMemory(nil)
-	options := SummarizationOptions{Backend: memory, HistoryRoot: "/conversation_history"}
+	options := summarizationRuntime{Summarization: Summarization{HistoryRoot: "/conversation_history"}, backend: memory}
 	previous := damessage.Human("old synthetic summary")
 	previous.Metadata = map[string]json.RawMessage{"lc_source": json.RawMessage(`"summarization"`)}
 	first := offloadConversationHistory(context.Background(), options, dagent.Runtime{
@@ -70,12 +78,11 @@ func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
-	middleware, err := SummarizationMiddleware(SummarizationOptions{
-		Model: summaryModel, Backend: failingHistoryBackend{Backend: memory}, TriggerTokens: 1, KeepMessages: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustSummarization(
+		summaryModel, failingHistoryBackend{Backend: memory}, Summarization{
+			TriggerClauses: []SummarizationTriggerClause{{Tokens: 1}}, KeepMessages: 1,
+		})
+
 	response, err := middleware.WrapModelCall(context.Background(), dagent.ModelRequest{
 		Model: mainModel, Messages: []damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}, State: dastate.Values{},
 	}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
@@ -102,16 +109,13 @@ func TestMediaOffloadFailureUsesBoundedPlaceholder(t *testing.T) {
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("summary")}})
 	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}})
-	middleware, err := SummarizationMiddleware(SummarizationOptions{
-		Model: summaryModel, Backend: failingMediaBackend{Backend: memory}, TriggerTokens: 1, KeepMessages: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	compiled, err := dagent.New(dagent.Options{Model: mainModel, Middleware: []dagent.Middleware{middleware}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustSummarization(
+		summaryModel, failingMediaBackend{Backend: memory}, Summarization{
+			TriggerClauses: []SummarizationTriggerClause{{Tokens: 1}}, KeepMessages: 1,
+		})
+
+	compiled := dagent.New(mainModel, dagent.Options{Middleware: []dagent.Middleware{middleware}})
+
 	old := damessage.Message{Role: damessage.RoleHuman, Content: []damessage.ContentBlock{{Type: damessage.BlockImage, MIMEType: "image/png", Data: []byte("secret-inline-data")}}}
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{old, damessage.Human("recent")}}); err != nil {
 		t.Fatal(err)
@@ -120,7 +124,7 @@ func TestMediaOffloadFailureUsesBoundedPlaceholder(t *testing.T) {
 
 func TestSummaryMediaOffloadsDataURLsAndPreservesRemoteReferences(t *testing.T) {
 	memory, _ := dabackend.NewMemory(nil)
-	options := SummarizationOptions{Backend: memory, MediaRoot: "/conversation_history/media"}
+	options := summarizationRuntime{Summarization: Summarization{MediaRoot: "/conversation_history/media"}, backend: memory}
 	messages := []damessage.Message{{Role: damessage.RoleHuman, Content: []damessage.ContentBlock{
 		{Type: damessage.BlockImage, URL: "data:image/png,diagram%20bytes", Name: "diagram.png"},
 		{Type: damessage.BlockAudio, URL: "https://media.example/audio.mp3", MIMEType: "audio/mpeg"},
@@ -163,7 +167,7 @@ func TestSummaryMediaUsesBoundedPlaceholderForMalformedDataURL(t *testing.T) {
 	got := offloadSummaryMedia(context.Background(), []damessage.Message{{
 		Role:    damessage.RoleHuman,
 		Content: []damessage.ContentBlock{{Type: damessage.BlockImage, URL: "data:image/png;base64,%%%"}},
-	}}, SummarizationOptions{Backend: memory, MediaRoot: "/media"})
+	}}, summarizationRuntime{Summarization: Summarization{MediaRoot: "/media"}, backend: memory})
 	if block := got[0].Content[0]; block.Type != damessage.BlockText || block.Text != "<image error=\"failed_to_offload\" />" || strings.Contains(block.Text, "%%") {
 		t.Fatalf("malformed data URL placeholder = %#v", block)
 	}
@@ -215,7 +219,7 @@ func TestSummarizationSupportsMessageTriggersAndTokenKeepWindows(t *testing.T) {
 		damessage.Human(strings.Repeat("a", 80)), damessage.Assistant(strings.Repeat("b", 80)),
 		damessage.Human(strings.Repeat("c", 80)), damessage.Assistant(strings.Repeat("d", 80)),
 	}
-	cutoff := summaryCutoff(messages, SummarizationOptions{KeepTokens: 25})
+	cutoff := summaryCutoff(messages, Summarization{KeepTokens: 25})
 	if cutoff != 3 {
 		t.Fatalf("token keep cutoff = %d", cutoff)
 	}
@@ -227,16 +231,13 @@ func TestSummarizationSupportsMessageTriggersAndTokenKeepWindows(t *testing.T) {
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
-	middleware, err := SummarizationMiddleware(SummarizationOptions{
-		Model: summaryModel, Backend: memory, TriggerMessages: 3, KeepMessages: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	compiled, err := dagent.New(dagent.Options{Model: mainModel, Middleware: []dagent.Middleware{middleware}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustSummarization(
+		summaryModel, memory, Summarization{
+			TriggerClauses: []SummarizationTriggerClause{{Messages: 3}}, KeepMessages: 1,
+		})
+
+	compiled := dagent.New(mainModel, dagent.Options{Middleware: []dagent.Middleware{middleware}})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: messages[:3]}); err != nil {
 		t.Fatal(err)
 	}
@@ -244,14 +245,14 @@ func TestSummarizationSupportsMessageTriggersAndTokenKeepWindows(t *testing.T) {
 
 func TestSummarizationTriggerClausesUseAndWithinOrAcross(t *testing.T) {
 	chat := modeltest.New(damodel.Profile{ContextWindow: 1_000})
-	options, err := normalizeSummarizationOptions(SummarizationOptions{
-		Model: chat,
+	memory, _ := dabackend.NewMemory(nil)
+	options, err := normalizeSummarization(chat, memory, Summarization{
 		TriggerClauses: []SummarizationTriggerClause{
 			{Messages: 10, Tokens: 400},
 			{Fraction: 0.8},
 		},
-		KeepFraction:              0.1,
-		DisableArgumentTruncation: true,
+		KeepFraction:       0.1,
+		ArgumentTruncation: &ArgumentTruncationOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -275,8 +276,9 @@ func TestSummarizationTriggerClausesUseAndWithinOrAcross(t *testing.T) {
 
 func TestSummarizationFractionsRequireKnownContextWindow(t *testing.T) {
 	chat := modeltest.New(damodel.Profile{})
-	_, err := normalizeSummarizationOptions(SummarizationOptions{
-		Model: chat, TriggerClauses: []SummarizationTriggerClause{{Fraction: 0.8}}, KeepMessages: 1,
+	memory, _ := dabackend.NewMemory(nil)
+	_, err := normalizeSummarization(chat, memory, Summarization{
+		TriggerClauses: []SummarizationTriggerClause{{Fraction: 0.8}}, KeepMessages: 1,
 	})
 	if err == nil || !strings.Contains(err.Error(), "context window") {
 		t.Fatalf("fraction error = %v", err)
@@ -292,19 +294,15 @@ func TestSummarizationTriggerCountsSystemPrompt(t *testing.T) {
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
-	middleware, err := SummarizationMiddleware(SummarizationOptions{
-		Model: summaryModel, Backend: memory, TriggerTokens: 40, KeepMessages: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	compiled, err := dagent.New(dagent.Options{
-		Model: mainModel, SystemPrompt: strings.Repeat("system context ", 40), Middleware: []dagent.Middleware{middleware},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}})
+	middleware := mustSummarization(
+		summaryModel, memory, Summarization{
+			TriggerClauses: []SummarizationTriggerClause{{Tokens: 40}}, KeepMessages: 1,
+		})
+
+	compiled := dagent.New(
+		mainModel, dagent.Options{SystemMessage: damessage.System(strings.Repeat("system context ", 40)), Middleware: []dagent.Middleware{middleware}})
+
+	_, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,19 +311,14 @@ func TestSummarizationTriggerCountsSystemPrompt(t *testing.T) {
 func TestManualSummarizationToolIsOptInAndSharesEventState(t *testing.T) {
 	memory, _ := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("manual summary")}})
-	automatic, err := SummarizationMiddleware(SummarizationOptions{Model: summaryModel, Backend: memory, TriggerMessages: 4, KeepMessages: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
+	automatic := mustSummarization(summaryModel, memory, Summarization{TriggerClauses: []SummarizationTriggerClause{{Messages: 4}}, KeepMessages: 2})
+
 	if len(automatic.Tools) != 0 {
 		t.Fatalf("automatic summarization exposed tools: %#v", automatic.Tools)
 	}
-	manual, err := SummarizationToolMiddleware(SummarizationToolOptions{Summarization: SummarizationOptions{
-		Model: summaryModel, Backend: memory, TriggerMessages: 4, KeepMessages: 2,
+	manual := SummarizationTool(summaryModel, memory, SummarizationToolOptions{Summarization: Summarization{
+		TriggerClauses: []SummarizationTriggerClause{{Messages: 4}}, KeepMessages: 2,
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if len(manual.Tools) != 1 || manual.Tools[0].Definition().Name != "compact_conversation" {
 		t.Fatalf("manual tools = %#v", manual.Tools)
 	}

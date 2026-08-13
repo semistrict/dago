@@ -1,4 +1,4 @@
-package dago
+package daprofilecfg
 
 import (
 	"encoding/json"
@@ -6,18 +6,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dagent"
 	"gopkg.in/yaml.v3"
 )
 
+func stringPointer(value string) *string { return &value }
+
 func TestHarnessProfileConfigJSONAndYAMLRoundTrip(t *testing.T) {
-	enabled := false
 	description := "Focused worker."
-	config := HarnessProfileConfig{
-		BaseSystemPrompt: new("base"), SystemPromptSuffix: new("suffix"),
+	config := Config{
+		BaseSystemPrompt: stringPointer("base"), SystemPromptSuffix: stringPointer("suffix"),
 		ToolDescriptionOverrides: map[string]string{"ls": "List files."},
 		ExcludedTools:            []string{"z", "a", "a"}, ExcludedMiddleware: []string{"summary", "memory"},
-		GeneralPurposeSubagent: &GeneralPurposeSubagentProfile{Enabled: &enabled, Description: &description},
+		GeneralPurposeSubagent: &dago.GeneralPurposeSubagentProfile{Mode: dago.GeneralPurposeSubagentDisabled, Description: &description},
 	}
 	want, err := config.ToMap()
 	if err != nil {
@@ -30,7 +32,7 @@ func TestHarnessProfileConfigJSONAndYAMLRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fromJSON HarnessProfileConfig
+	var fromJSON Config
 	if err := json.Unmarshal(encodedJSON, &fromJSON); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +47,7 @@ func TestHarnessProfileConfigJSONAndYAMLRoundTrip(t *testing.T) {
 	if strings.Contains(string(encodedYAML), "!!") {
 		t.Fatalf("YAML contains unsafe tags: %s", encodedYAML)
 	}
-	var fromYAML HarnessProfileConfig
+	var fromYAML Config
 	if err := yaml.Unmarshal(encodedYAML, &fromYAML); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +58,7 @@ func TestHarnessProfileConfigJSONAndYAMLRoundTrip(t *testing.T) {
 }
 
 func TestHarnessProfileConfigPreservesExplicitEmptySubprofile(t *testing.T) {
-	config, err := HarnessProfileConfigFromMap(map[string]any{"general_purpose_subagent": map[string]any{}})
+	config, err := FromMap(map[string]any{"general_purpose_subagent": map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +76,7 @@ func TestHarnessProfileConfigPreservesExplicitEmptySubprofile(t *testing.T) {
 	if err != nil || profile.GeneralPurpose == nil {
 		t.Fatalf("runtime profile = %#v, %v", profile, err)
 	}
-	restored, err := HarnessProfileConfigFromProfile(profile)
+	restored, err := FromProfile(profile)
 	if err != nil || restored.GeneralPurposeSubagent == nil {
 		t.Fatalf("restored config = %#v, %v", restored, err)
 	}
@@ -87,29 +89,27 @@ func TestHarnessProfileConfigRejectsInvalidAndRuntimeOnlyValues(t *testing.T) {
 		{"excluded_middleware": []any{"_private"}},
 		{"excluded_middleware": []any{"package:Type"}},
 		{"excluded_middleware": []any{"filesystem"}},
-		{"excluded_middleware": []any{"FilesystemMiddleware"}},
-		{"excluded_middleware": []any{"SubAgentMiddleware"}},
-		{"general_purpose_subagent": map[string]any{"enabled": "yes"}},
+		{"excluded_middleware": []any{"subagents"}},
+		{"general_purpose_subagent": map[string]any{"mode": "sometimes"}},
 	}
 	for _, value := range invalid {
-		if _, err := HarnessProfileConfigFromMap(value); err == nil {
+		if _, err := FromMap(value); err == nil {
 			t.Fatalf("invalid config passed: %#v", value)
 		}
 	}
-	if _, err := HarnessProfileConfigFromProfile(Profile{
-		Kind: ProfileHarness, Middleware: []dagent.Middleware{{Name: "runtime"}},
+	if _, err := FromProfile(dago.Profile{
+		Middleware: []dagent.Middleware{{Name: "runtime"}},
 	}); err == nil {
 		t.Fatal("runtime middleware should not serialize")
 	}
 }
 
-func TestRegisterHarnessProfileConfig(t *testing.T) {
-	name := "config-registration-test"
-	if err := RegisterHarnessProfileConfig(name, HarnessProfileConfig{SystemPromptSuffix: new("configured")}); err != nil {
+func TestConfigProducesExplicitProfile(t *testing.T) {
+	profile, err := (Config{SystemPromptSuffix: stringPointer("configured")}).ToProfile()
+	if err != nil {
 		t.Fatal(err)
 	}
-	profile, exists := LookupProfile(name)
-	if !exists || profile.SystemPromptSuffix == nil || *profile.SystemPromptSuffix != "configured" {
-		t.Fatalf("registered profile = %#v, %v", profile, exists)
+	if profile.SystemPromptSuffix == nil || *profile.SystemPromptSuffix != "configured" {
+		t.Fatalf("profile = %#v", profile)
 	}
 }

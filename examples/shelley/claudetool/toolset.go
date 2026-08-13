@@ -2,6 +2,7 @@ package claudetool
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 
@@ -204,10 +205,8 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	// MaxSubagentDepth of 0 means no limit; otherwise, only add if depth < max.
 	canSpawnSubagents := cfg.SubagentRunner != nil && cfg.SubagentDB != nil && cfg.ParentConversationID != ""
 	if canSpawnSubagents && (cfg.MaxSubagentDepth == 0 || cfg.SubagentDepth < cfg.MaxSubagentDepth) {
-		nativeTools = append(nativeTools, dago.ConversationSubagentTool(dago.ConversationSubagentOptions{
-			Store: cfg.SubagentDB, Runner: cfg.SubagentRunner,
+		nativeTools = append(nativeTools, dago.ConversationSubagentTool(cfg.SubagentDB, cfg.SubagentRunner, wd.Get, dago.ConversationSubagentOptions{
 			ParentConversationID: cfg.ParentConversationID,
-			WorkingDirectory:     wd.Get,
 			ModelID:              cfg.ModelID,
 			AvailableModels:      availableModels,
 			ParentReasoning:      cfg.ReasoningLevel,
@@ -340,13 +339,32 @@ func dagoFilesystemDefinitions(root string, names []string) []datool.Definition 
 	if err != nil {
 		return nil
 	}
-	middleware, err := dago.FilesystemMiddleware(dago.FilesystemOptions{Backend: files, Tools: names})
-	if err != nil {
-		return nil
+	compiled := dago.New(filesystemSchemaModel{}, dago.Options{
+		Backend: files, Filesystem: dago.Filesystem{Tools: names}, DisableSubagents: true, DisableSummary: true,
+	})
+	tools := compiled.Tools()
+	byName := make(map[string]datool.Definition, len(tools))
+	for _, executable := range tools {
+		definition := executable.Definition()
+		byName[definition.Name] = definition
 	}
-	result := make([]datool.Definition, 0, len(middleware.Tools))
-	for _, executable := range middleware.Tools {
-		result = append(result, executable.Definition())
+	result := make([]datool.Definition, 0, len(names))
+	for _, name := range names {
+		if definition, ok := byName[name]; ok {
+			result = append(result, definition)
+		}
 	}
 	return result
 }
+
+type filesystemSchemaModel struct{}
+
+func (filesystemSchemaModel) Invoke(context.Context, damodel.Request) (damodel.Response, error) {
+	return damodel.Response{}, errors.New("filesystem schema model cannot be invoked")
+}
+
+func (filesystemSchemaModel) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
+	return nil, errors.New("filesystem schema model cannot be streamed")
+}
+
+func (filesystemSchemaModel) Profile() damodel.Profile { return damodel.Profile{} }

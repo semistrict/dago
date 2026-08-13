@@ -32,7 +32,7 @@ func TestSubagentRunner_PersistsReasoning(t *testing.T) {
 
 	runner := NewSubagentRunner(f.server)
 	// Send with an explicit reasoning level; wait=false returns immediately.
-	if _, err := runner.RunSubagent(ctx, f.subagentID, "do it", false, time.Minute, "predictable", "high"); err != nil {
+	if _, err := runSubagent(runner, ctx, f.subagentID, "do it", false, time.Minute, "predictable", "high"); err != nil {
 		t.Fatalf("RunSubagent(reasoning=high): %v", err)
 	}
 
@@ -49,7 +49,7 @@ func TestSubagentRunner_PersistsReasoning(t *testing.T) {
 	}
 
 	// A subsequent empty reasoning must not clobber the stored level.
-	if _, err := runner.RunSubagent(ctx, f.subagentID, "again", false, time.Minute, "predictable", ""); err != nil {
+	if _, err := runSubagent(runner, ctx, f.subagentID, "again", false, time.Minute, "predictable", ""); err != nil {
 		t.Fatalf("RunSubagent(reasoning=\"\"): %v", err)
 	}
 	if err := f.database.Queries(ctx, func(q *generated.Queries) error {
@@ -102,7 +102,7 @@ func testSubagentBusy_WaitFalseQueues(t *testing.T) {
 	f.subagentMgr.SetAgentWorking(true)
 
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(context.Background(), f.subagentID, "do this next", false, time.Minute, "predictable", "")
+	res, err := runSubagent(runner, context.Background(), f.subagentID, "do this next", false, time.Minute, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=false): %v", err)
 	}
@@ -136,7 +136,7 @@ func testSubagentBusy_WaitTrueWaitsForIdle(t *testing.T) {
 	parentBefore := countSyntheticDonePairs(t, f.parentMessages())
 
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(context.Background(), f.subagentID, "echo: foo", true, 10*time.Second, "predictable", "")
+	res, err := runSubagent(runner, context.Background(), f.subagentID, "echo: foo", true, 10*time.Second, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=true): %v", err)
 	}
@@ -167,7 +167,7 @@ func testSubagentBusy_WaitTrueDeadline(t *testing.T) {
 	f.subagentMgr.SetAgentWorking(true)
 
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(context.Background(), f.subagentID, "echo: foo", true, 300*time.Millisecond, "predictable", "")
+	res, err := runSubagent(runner, context.Background(), f.subagentID, "echo: foo", true, 300*time.Millisecond, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=true) deadline: %v", err)
 	}
@@ -211,7 +211,7 @@ func testSubagentBusy_InFlightFinishThenFollowupTimeout(t *testing.T) {
 	f.llmSvc.SetResponseDelay(2 * time.Second)
 
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(context.Background(), f.subagentID, "echo: foo", true, 700*time.Millisecond, "predictable", "")
+	res, err := runSubagent(runner, context.Background(), f.subagentID, "echo: foo", true, 700*time.Millisecond, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=true): %v", err)
 	}

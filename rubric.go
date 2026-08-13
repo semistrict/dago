@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
-	"sync"
 
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
@@ -62,7 +61,6 @@ type RubricEvaluation struct {
 }
 
 type RubricOptions struct {
-	Model         damodel.Chat
 	SystemPrompt  string
 	Tools         []datool.Tool
 	MaxIterations int
@@ -79,11 +77,20 @@ var rubricPayloadCloser = regexp.MustCompile(`(?i)</(rubric|transcript)`)
 
 var rubricResponseSchema = json.RawMessage(`{"type":"object","properties":{"result":{"type":"string","enum":["satisfied","needs_revision","failed"]},"explanation":{"type":"string"},"criteria":{"type":"array","items":{"oneOf":[{"type":"object","properties":{"name":{"type":"string"},"passed":{"const":true}},"required":["name","passed"],"additionalProperties":false},{"type":"object","properties":{"name":{"type":"string"},"passed":{"const":false},"gap":{"type":"string"}},"required":["name","passed","gap"],"additionalProperties":false}]}}},"required":["result","explanation","criteria"],"additionalProperties":false}`)
 
-// RubricMiddleware grades natural agent completions and, when necessary,
-// injects actionable feedback before routing back to the model.
-func RubricMiddleware(options RubricOptions) (dagent.Middleware, error) {
-	if options.Model == nil {
-		return dagent.Middleware{}, fmt.Errorf("rubric model is required")
+// Rubric grades natural agent completions and, when necessary, injects
+// actionable feedback before routing back to the model. It panics when static
+// options violate an invariant.
+func Rubric(model damodel.Chat, options RubricOptions) dagent.Middleware {
+	middleware, err := newRubric(model, options)
+	if err != nil {
+		panic(err)
+	}
+	return middleware
+}
+
+func newRubric(model damodel.Chat, options RubricOptions) (dagent.Middleware, error) {
+	if model == nil {
+		return dagent.Middleware{}, fmt.Errorf("rubric model is nil")
 	}
 	if options.MaxIterations == 0 {
 		options.MaxIterations = 3
@@ -95,22 +102,14 @@ func RubricMiddleware(options RubricOptions) (dagent.Middleware, error) {
 		options.SystemPrompt = defaultRubricSystemPrompt
 	}
 
-	var graderOnce sync.Once
-	var grader *dagent.Agent
-	var graderErr error
-	ensureGrader := func() (*dagent.Agent, error) {
-		graderOnce.Do(func() {
-			grader, graderErr = dagent.New(dagent.Options{
-				Name: RubricGraderSource, Model: options.Model, Tools: append([]datool.Tool(nil), options.Tools...),
-				SystemPrompt: options.SystemPrompt, RecursionLimit: 9_999,
-				StructuredOutput: &dagent.StructuredOutput{
-					Strategy: dagent.StructuredAuto, Name: "GraderResponse",
-					Description: "A rubric verdict with per-criterion evidence.", Schema: rubricResponseSchema, Strict: true,
-				},
-			})
-		})
-		return grader, graderErr
-	}
+	grader := dagent.New(model, dagent.Options{
+		Name: RubricGraderSource, Tools: append([]datool.Tool(nil), options.Tools...),
+		SystemMessage: damessage.System(options.SystemPrompt), RecursionLimit: 9_999,
+		StructuredOutput: &dagent.StructuredOutput{
+			Strategy: dagent.StructuredAuto, Name: "GraderResponse",
+			Description: "A rubric verdict with per-criterion evidence.", Schema: rubricResponseSchema, Strict: true,
+		},
+	})
 
 	fields := map[string]dagent.StateField{
 		RubricKey:            {Kind: dagent.FieldLast, Contract: "dago.rubric.input.v1", Clone: cloneRubricScalar},
@@ -162,24 +161,19 @@ func RubricMiddleware(options RubricOptions) (dagent.Middleware, error) {
 			if err != nil {
 				return nil, err
 			}
-			compiled, err := ensureGrader()
 			var graded RubricGraderResponse
+			payload, err := buildRubricPayload(rubric, messages, iteration)
 			if err == nil {
-				payload, payloadErr := buildRubricPayload(rubric, messages, iteration)
-				if payloadErr != nil {
-					err = payloadErr
-				} else {
-					result, invokeErr := compiled.Invoke(ctx, dagent.Input{
-						Messages:     []damessage.Message{damessage.Human(payload)},
-						Deps:         runtime.Deps,
-						Configurable: runtime.Configurable.Snapshot(),
-					})
-					err = invokeErr
+				result, invokeErr := grader.Invoke(ctx, dagent.Input{
+					Messages:     []damessage.Message{damessage.Human(payload)},
+					Deps:         runtime.Deps,
+					Configurable: runtime.Configurable.Snapshot(),
+				})
+				err = invokeErr
+				if err == nil {
+					err = json.Unmarshal(result.Structured, &graded)
 					if err == nil {
-						err = json.Unmarshal(result.Structured, &graded)
-						if err == nil {
-							err = validateRubricResponse(graded)
-						}
+						err = validateRubricResponse(graded)
 					}
 				}
 			}

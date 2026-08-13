@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	dago "github.com/semistrict/dago"
 	dmessage "github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 
@@ -29,7 +30,12 @@ func NewSubagentRunner(s *Server) *SubagentRunner {
 }
 
 // RunSubagent implements claudetool.SubagentRunner.
-func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt string, wait bool, timeout time.Duration, modelID, reasoning string) (string, error) {
+func (r *SubagentRunner) RunSubagent(ctx context.Context, request dago.ConversationSubagentRun) (dago.ConversationSubagentReply, error) {
+	content, err := r.runSubagent(ctx, request.ConversationID, request.Prompt, request.Wait, request.Timeout, request.ModelID, request.Reasoning)
+	return dago.ConversationSubagentReply{Content: content}, err
+}
+
+func (r *SubagentRunner) runSubagent(ctx context.Context, conversationID, prompt string, wait bool, timeout time.Duration, modelID, reasoning string) (string, error) {
 	s := r.server
 
 	// Notify the UI about the subagent conversation.

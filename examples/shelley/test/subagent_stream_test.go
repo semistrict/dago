@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	dago "github.com/semistrict/dago"
 	"github.com/semistrict/dago/damodel"
 
 	"github.com/semistrict/dago/examples/shelley/claudetool"
@@ -237,7 +238,12 @@ func TestSubagentNotificationViaStream(t *testing.T) {
 	subagentRunner := server.NewSubagentRunner(svr)
 	go func() {
 		// Call RunSubagent with wait=false so it returns quickly
-		subagentRunner.RunSubagent(ctx, subConv.ConversationID, "Test prompt", false, 10*time.Second, "predictable", "")
+		subagentRunner.RunSubagent(ctx, dago.ConversationSubagentRun{
+			ConversationID: subConv.ConversationID,
+			Prompt:         "Test prompt",
+			Timeout:        10 * time.Second,
+			ModelID:        "predictable",
+		})
 	}()
 
 	// Wait for notification
@@ -326,7 +332,13 @@ func TestSubagentNoExternalNotification(t *testing.T) {
 
 	// Run the subagent to completion
 	subagentRunner := server.NewSubagentRunner(svr)
-	_, err = subagentRunner.RunSubagent(ctx, subConv.ConversationID, "Test prompt", true, 10*time.Second, "predictable", "")
+	_, err = subagentRunner.RunSubagent(ctx, dago.ConversationSubagentRun{
+		ConversationID: subConv.ConversationID,
+		Prompt:         "Test prompt",
+		Wait:           true,
+		Timeout:        10 * time.Second,
+		ModelID:        "predictable",
+	})
 	if err != nil {
 		t.Fatalf("RunSubagent failed: %v", err)
 	}

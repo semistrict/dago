@@ -63,7 +63,7 @@ func New(options Options) (*Server, error) {
 		graphs: map[string]GraphRegistration{}, assistants: map[string]*Assistant{},
 		threads: map[string]*Thread{}, runs: map[string]*Run{}, events: map[string]*eventLog{},
 		active: map[string]context.CancelFunc{}, threadLocks: map[string]*sync.Mutex{},
-		saver: options.Saver, store: options.Store, context: options.Context,
+		saver: options.Saver, store: options.Store, context: options.Deps,
 		statePath: options.StatePath, now: options.Now, origins: map[string]bool{},
 		queue: make(chan string, options.QueueWorkers*4), ctx: ctx, cancel: cancel,
 	}
@@ -192,7 +192,7 @@ func (server *Server) graphForAssistant(ctx context.Context, assistant *Assistan
 		runtimeContext = cloneJSON(assistant.Context)
 	}
 	return registration.Factory(ctx, Runtime{
-		Saver: server.saver, Store: server.store, Config: config, Context: runtimeContext,
+		Saver: server.saver, Store: server.store, Config: config, Deps: runtimeContext,
 	})
 }
 

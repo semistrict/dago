@@ -18,6 +18,7 @@ import (
 
 func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "checkpoints.sqlite")
+	limit := 4
 	lines := make([]string, 20)
 	for index := range lines {
 		lines[index] = fmt.Sprintf("line-%02d-%s", index+1, strings.Repeat("x", 40))
@@ -45,13 +46,11 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstAgent, err := New(Options{
-		Model: firstModel, Saver: firstSaver, HumanMessageTokenLimit: new(4),
-		DisableSubagents: true, DisableSummary: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	firstAgent := New(
+		firstModel, Options{
+			Saver: firstSaver, Filesystem: Filesystem{HumanMessageTokenLimit: limit},
+			DisableSubagents: true, DisableSummary: true,
+		})
 	config := dacheckpoint.Config{ThreadID: "human-eviction"}
 	first, err := firstAgent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{{
 		Role: damessage.RoleHuman,
@@ -99,13 +98,11 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 		t.Fatal(err)
 	}
 	defer secondSaver.Close()
-	secondAgent, err := New(Options{
-		Model: secondModel, Saver: secondSaver, HumanMessageTokenLimit: new(4),
-		DisableSubagents: true, DisableSummary: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	secondAgent := New(
+		secondModel, Options{
+			Saver: secondSaver, Filesystem: Filesystem{HumanMessageTokenLimit: limit},
+			DisableSubagents: true, DisableSummary: true,
+		})
 	second, err := secondAgent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("continue")}})
 	if err != nil {
 		t.Fatal(err)
@@ -130,12 +127,10 @@ func TestFilesystemEvictionLimitsCanBeDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := FilesystemMiddleware(FilesystemOptions{
-		Backend: memory, ToolResultTokenLimit: new(0), HumanMessageTokenLimit: new(0),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustFilesystem(
+		memory, Filesystem{
+			ToolResultLimit: ContentLimit{Unit: ContentTokens, Amount: -1}, HumanMessageTokenLimit: -1,
+		})
 	request := dagent.ModelRequest{Messages: []damessage.Message{damessage.Human(strings.Repeat("x", 1000))}}
 	_, err = middleware.WrapModelCall(context.Background(), request, func(_ context.Context, got dagent.ModelRequest) (dagent.ModelResponse, error) {
 		if got.Messages[0].TextContent() != request.Messages[0].TextContent() {

@@ -1,4 +1,5 @@
-package dago
+// Package daagentprotocol adapts the Agent Protocol HTTP API to background subagents.
+package daagentprotocol
 
 import (
 	"bytes"
@@ -11,28 +12,29 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/semistrict/dago"
 )
 
 const maxAgentProtocolResponse = 8 << 20
 
-// AgentProtocolOptions configures an Agent Protocol background-run client.
-type AgentProtocolOptions struct {
-	URL        string
+// Options configures an Agent Protocol background-run client.
+type Options struct {
 	APIKey     string
 	Headers    map[string]string
 	HTTPClient *http.Client
 }
 
-// AgentProtocolRunner launches and manages remote background agents over the
+// Runner launches and manages remote background agents over the
 // language-neutral Agent Protocol HTTP API.
-type AgentProtocolRunner struct {
+type Runner struct {
 	baseURL *url.URL
 	headers http.Header
 	client  *http.Client
 }
 
-func NewAgentProtocolRunner(options AgentProtocolOptions) (*AgentProtocolRunner, error) {
-	baseURL, err := url.Parse(strings.TrimSpace(options.URL))
+func New(rawURL string, options Options) (*Runner, error) {
+	baseURL, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" || (baseURL.Scheme != "http" && baseURL.Scheme != "https") {
 		return nil, fmt.Errorf("agent protocol: valid http(s) URL is required")
 	}
@@ -66,45 +68,45 @@ func NewAgentProtocolRunner(options AgentProtocolOptions) (*AgentProtocolRunner,
 	}
 	clientCopy := *client
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &AgentProtocolRunner{baseURL: baseURL, headers: headers, client: &clientCopy}, nil
+	return &Runner{baseURL: baseURL, headers: headers, client: &clientCopy}, nil
 }
 
-func (runner *AgentProtocolRunner) Start(ctx context.Context, graphID, description string) (AsyncRun, error) {
-	if strings.TrimSpace(graphID) == "" {
-		return AsyncRun{}, fmt.Errorf("agent protocol: graph id is required")
+func (runner *Runner) Start(ctx context.Context, request dago.AsyncStartRequest) (dago.AsyncRun, error) {
+	if strings.TrimSpace(request.GraphID) == "" {
+		return dago.AsyncRun{}, fmt.Errorf("agent protocol: graph id is required")
 	}
 	var thread struct {
 		ThreadID string `json:"thread_id"`
 	}
 	if err := runner.request(ctx, http.MethodPost, "/threads", map[string]any{}, &thread); err != nil {
-		return AsyncRun{}, fmt.Errorf("agent protocol: create thread: %w", err)
+		return dago.AsyncRun{}, fmt.Errorf("agent protocol: create thread: %w", err)
 	}
 	if thread.ThreadID == "" {
-		return AsyncRun{}, fmt.Errorf("agent protocol: create thread returned an empty thread id")
+		return dago.AsyncRun{}, fmt.Errorf("agent protocol: create thread returned an empty thread id")
 	}
-	run, err := runner.createRun(ctx, thread.ThreadID, graphID, description, false)
+	run, err := runner.createRun(ctx, thread.ThreadID, request.GraphID, request.Description, false)
 	if err != nil {
-		return AsyncRun{}, err
+		return dago.AsyncRun{}, err
 	}
 	run.ThreadID = thread.ThreadID
 	run.Status = "running"
 	return run, nil
 }
 
-func (runner *AgentProtocolRunner) Update(ctx context.Context, graphID, threadID, message string) (AsyncRun, error) {
-	if strings.TrimSpace(graphID) == "" || strings.TrimSpace(threadID) == "" {
-		return AsyncRun{}, fmt.Errorf("agent protocol: graph id and thread id are required")
+func (runner *Runner) Update(ctx context.Context, request dago.AsyncUpdateRequest) (dago.AsyncRun, error) {
+	if strings.TrimSpace(request.GraphID) == "" || strings.TrimSpace(request.ThreadID) == "" {
+		return dago.AsyncRun{}, fmt.Errorf("agent protocol: graph id and thread id are required")
 	}
-	run, err := runner.createRun(ctx, threadID, graphID, message, true)
+	run, err := runner.createRun(ctx, request.ThreadID, request.GraphID, request.Message, true)
 	if err != nil {
-		return AsyncRun{}, err
+		return dago.AsyncRun{}, err
 	}
-	run.ThreadID = threadID
+	run.ThreadID = request.ThreadID
 	run.Status = "running"
 	return run, nil
 }
 
-func (runner *AgentProtocolRunner) createRun(ctx context.Context, threadID, graphID, content string, interrupt bool) (AsyncRun, error) {
+func (runner *Runner) createRun(ctx context.Context, threadID, graphID, content string, interrupt bool) (dago.AsyncRun, error) {
 	payload := map[string]any{
 		"assistant_id": graphID,
 		"input":        map[string]any{"messages": []map[string]any{{"role": "user", "content": content}}},
@@ -119,32 +121,33 @@ func (runner *AgentProtocolRunner) createRun(ctx context.Context, threadID, grap
 	}
 	endpoint := "/threads/" + url.PathEscape(threadID) + "/runs"
 	if err := runner.request(ctx, http.MethodPost, endpoint, payload, &response); err != nil {
-		return AsyncRun{}, fmt.Errorf("agent protocol: create run: %w", err)
+		return dago.AsyncRun{}, fmt.Errorf("agent protocol: create run: %w", err)
 	}
 	if response.RunID == "" {
-		return AsyncRun{}, fmt.Errorf("agent protocol: create run returned an empty run id")
+		return dago.AsyncRun{}, fmt.Errorf("agent protocol: create run returned an empty run id")
 	}
-	return AsyncRun{RunID: response.RunID, Status: response.Status}, nil
+	return dago.AsyncRun{RunID: response.RunID, Status: response.Status}, nil
 }
 
-func (runner *AgentProtocolRunner) Check(ctx context.Context, threadID, runID string) (AsyncRun, error) {
-	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(runID) == "" {
-		return AsyncRun{}, fmt.Errorf("agent protocol: thread id and run id are required")
+func (runner *Runner) Check(ctx context.Context, request dago.AsyncCheckRequest) (dago.AsyncRun, error) {
+	if strings.TrimSpace(request.ThreadID) == "" || strings.TrimSpace(request.RunID) == "" {
+		return dago.AsyncRun{}, fmt.Errorf("agent protocol: thread id and run id are required")
 	}
 	var response struct {
 		Status string `json:"status"`
 		Error  any    `json:"error"`
 	}
-	base := "/threads/" + url.PathEscape(threadID)
-	if err := runner.request(ctx, http.MethodGet, base+"/runs/"+url.PathEscape(runID), nil, &response); err != nil {
-		return AsyncRun{}, fmt.Errorf("agent protocol: get run: %w", err)
+	base := "/threads/" + url.PathEscape(request.ThreadID)
+	if err := runner.request(ctx, http.MethodGet, base+"/runs/"+url.PathEscape(request.RunID), nil, &response); err != nil {
+		return dago.AsyncRun{}, fmt.Errorf("agent protocol: get run: %w", err)
 	}
-	result := AsyncRun{ThreadID: threadID, RunID: runID, Status: response.Status}
+	result := dago.AsyncRun{ThreadID: request.ThreadID, RunID: request.RunID, Status: response.Status}
 	if response.Status == "error" {
-		result.Error = stringifyProtocolValue(response.Error)
-		if result.Error == "" {
-			result.Error = "The async subagent encountered an error."
+		message := stringifyProtocolValue(response.Error)
+		if message == "" {
+			message = "The async subagent encountered an error."
 		}
+		result.Outcome = dago.AsyncFailure{Message: message}
 	}
 	if response.Status != "success" {
 		return result, nil
@@ -153,12 +156,12 @@ func (runner *AgentProtocolRunner) Check(ctx context.Context, threadID, runID st
 		Values map[string]any `json:"values"`
 	}
 	if err := runner.request(ctx, http.MethodGet, base, nil, &thread); err != nil {
-		result.Result = "(completed with no output messages)"
+		result.Outcome = dago.AsyncSuccess{}
 		return result, nil
 	}
 	messages, _ := thread.Values["messages"].([]any)
 	if len(messages) == 0 {
-		result.Result = "(completed with no output messages)"
+		result.Outcome = dago.AsyncSuccess{}
 		return result, nil
 	}
 	last := messages[len(messages)-1]
@@ -167,12 +170,9 @@ func (runner *AgentProtocolRunner) Check(ctx context.Context, threadID, runID st
 		if !exists {
 			content = ""
 		}
-		result.ResultValue = content
-		result.Result = stringifyProtocolValue(result.ResultValue)
-		result.HasResult = true
+		result.Outcome = dago.AsyncSuccess{Value: content}
 	} else {
-		result.Result = stringifyProtocolValue(last)
-		result.HasResult = true
+		result.Outcome = dago.AsyncSuccess{Value: last}
 	}
 	return result, nil
 }
@@ -191,18 +191,18 @@ func stringifyProtocolValue(value any) string {
 	return string(encoded)
 }
 
-func (runner *AgentProtocolRunner) Cancel(ctx context.Context, threadID, runID string) error {
-	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(runID) == "" {
+func (runner *Runner) Cancel(ctx context.Context, request dago.AsyncCancelRequest) error {
+	if strings.TrimSpace(request.ThreadID) == "" || strings.TrimSpace(request.RunID) == "" {
 		return fmt.Errorf("agent protocol: thread id and run id are required")
 	}
-	endpoint := "/threads/" + url.PathEscape(threadID) + "/runs/" + url.PathEscape(runID) + "/cancel?wait=0&action=interrupt"
+	endpoint := "/threads/" + url.PathEscape(request.ThreadID) + "/runs/" + url.PathEscape(request.RunID) + "/cancel?wait=0&action=interrupt"
 	if err := runner.request(ctx, http.MethodPost, endpoint, nil, nil); err != nil {
 		return fmt.Errorf("agent protocol: cancel run: %w", err)
 	}
 	return nil
 }
 
-func (runner *AgentProtocolRunner) request(ctx context.Context, method, endpoint string, payload any, destination any) error {
+func (runner *Runner) request(ctx context.Context, method, endpoint string, payload any, destination any) error {
 	var body io.Reader
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
@@ -246,4 +246,4 @@ func (runner *AgentProtocolRunner) request(ctx context.Context, method, endpoint
 	return nil
 }
 
-var _ AsyncSubagentRunner = (*AgentProtocolRunner)(nil)
+var _ dago.AsyncSubagentRunner = (*Runner)(nil)

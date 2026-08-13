@@ -30,7 +30,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Task-scoped structured output for declarative subagents | verified | per-task schema validation and precompiled-runnable rejection tests |
 | Summarization, offload, and compaction | verified | AND/OR/fraction threshold clauses, valid cutoffs, thread-aware offload, and state-update tests |
 | Skills and memory prompt injection | verified | safe YAML, deterministic discovery, warning, ordering, and prompt tests |
-| Provider and harness profiles | verified | built-in Anthropic and Nemotron harness overlays plus OpenAI/NVIDIA/OpenRouter construction defaults; active repair, retry, budget, policy, entity, follow-up, and final-answer contracts; additive registration and override tests |
+| Provider and harness profiles | verified | built-in Anthropic harness overlays; explicit Nemotron profile composition; explicit OpenAI/NVIDIA/OpenRouter construction-profile sets; active repair, retry, budget, policy, entity, follow-up, and final-answer contracts |
 | Token/update/task/interrupt/custom streaming | verified | graph, agent, and provider stream tests |
 | Agent-event and model-chunk iterators | verified | completion, terminal-error, and early-break closure tests while retaining explicit `Next`/`Close` |
 | API-key and subscription OAuth model access | verified | request, PKCE, refresh, persistence, and stream tests |
@@ -54,7 +54,8 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 - Provider credentials are explicit adapter inputs or a library-owned OAuth session;
   credentials from another application are never discovered or copied.
 - Python's in-process ASGI transport for remote subagents is not applicable in Go;
-  async subagents require an HTTP URL or a caller-supplied runner.
+  async subagents require a caller-supplied runner. The optional Agent Protocol
+  package constructs an HTTP-backed runner from URL and authentication options.
 - Python package-version inspection is not applied to Go provider adapters. Canonical
   dago messages already preserve tool-call and tool-result identity, so the Nemotron
   pre-serialization compatibility layer is an explicit no-op at the core boundary.

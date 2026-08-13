@@ -22,10 +22,11 @@ func testServer(t *testing.T, delay time.Duration) (*Server, *http.Client, strin
 	server, err := New(Options{Graphs: []GraphRegistration{{
 		ID: "agent", Description: "Test agent",
 		Factory: func(_ context.Context, runtime Runtime) (Graph, error) {
-			return dagent.New(dagent.Options{
-				Model: modeltest.NewPredictable(modeltest.PredictableOptions{ResponseDelay: delay}),
-				Saver: runtime.Saver, Store: runtime.Store,
-			})
+			return dagent.New(
+				modeltest.NewPredictable(modeltest.PredictableOptions{ResponseDelay: delay}), dagent.Options{
+
+					Saver: runtime.Saver, Store: runtime.Store,
+				}), nil
 		},
 	}}})
 	if err != nil {

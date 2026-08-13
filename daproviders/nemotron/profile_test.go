@@ -1,4 +1,4 @@
-package dago
+package nemotron
 
 import (
 	"context"
@@ -7,13 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
 )
 
-func TestNemotronProfilesRegisteredForSupportedModels(t *testing.T) {
+func TestProfilesCoverSupportedModels(t *testing.T) {
 	wantMiddleware := []string{
 		"NemotronProgressBudgetMiddleware",
 		"NemotronPolicyNudgeMiddleware",
@@ -28,11 +29,14 @@ func TestNemotronProfilesRegisteredForSupportedModels(t *testing.T) {
 		"EntityResolutionGuardMiddleware",
 		"FinalAnswerGuardMiddleware",
 	}
-	for _, spec := range nemotronModelSpecs {
-		profile, exists := LookupProfile(spec)
-		if !exists {
-			t.Errorf("profile %q is not registered", spec)
-			continue
+	profiles := Profiles()
+	if len(profiles) != len(nemotronModelSpecs) {
+		t.Fatalf("profiles = %d, want %d", len(profiles), len(nemotronModelSpecs))
+	}
+	for index, spec := range nemotronModelSpecs {
+		profile := profiles[index]
+		if profile.Name != spec {
+			t.Errorf("profile name = %q, want %q", profile.Name, spec)
 		}
 		if profile.SystemPromptSuffix == nil || !strings.Contains(*profile.SystemPromptSuffix, "<state_changes>") {
 			t.Errorf("profile %q prompt = %#v", spec, profile.SystemPromptSuffix)
@@ -50,7 +54,11 @@ func TestNemotronProfilesRegisteredForSupportedModels(t *testing.T) {
 	}
 }
 
-func TestNemotronProfileAutoResolvesPromptAndToolOverride(t *testing.T) {
+func TestProfileAppliesPromptAndToolOverride(t *testing.T) {
+	profile, exists := Profile("nvidia:nvidia/nemotron-3-ultra-550b-a55b")
+	if !exists {
+		t.Fatal("profile missing")
+	}
 	script := modeltest.New(damodel.Profile{Provider: "nvidia", Model: "nvidia/nemotron-3-ultra-550b-a55b"}, modeltest.Step{
 		Check: func(request damodel.Request) error {
 			if !strings.Contains(request.Messages[0].TextContent(), "<state_changes>") {
@@ -65,10 +73,8 @@ func TestNemotronProfileAutoResolvesPromptAndToolOverride(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled, err := New(Options{Model: script, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := dago.New(script, dago.Options{Profiles: []dago.Profile{profile}, DisableSubagents: true, DisableSummary: true})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("hello")}}); err != nil {
 		t.Fatal(err)
 	}

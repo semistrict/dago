@@ -28,13 +28,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	compiled, err := dago.New(dago.Options{Model: chat, Backend: workspace})
-	if err != nil {
-		log.Fatal(err)
-	}
+	compiled := dago.New(chat, dago.Options{Backend: workspace})
 	stream := compiled.Stream(context.Background(), dagent.Input{
 		Messages: []damessage.Message{damessage.Human("Summarize this workspace.")},
-	}, 32)
+	})
 	defer stream.Close()
 	for {
 		event, err := stream.Next(context.Background())

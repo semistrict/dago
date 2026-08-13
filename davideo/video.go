@@ -1,4 +1,5 @@
-package dago
+// Package davideo defines video extraction contracts and an optional FFmpeg adapter.
+package davideo
 
 import (
 	"bytes"
@@ -23,45 +24,45 @@ const (
 	DefaultVideoSamplingRate    = 0.5
 )
 
-// VideoWindow selects a contiguous source window and output sampling rate.
-type VideoWindow struct {
+// Window selects a contiguous source window and output sampling rate.
+type Window struct {
 	OffsetSeconds   float64
 	DurationSeconds float64
 	SamplingRate    float64
 }
 
-// VideoExtractor converts video bytes to interleaved timestamp and JPEG image
+// Extractor converts video bytes to interleaved timestamp and JPEG image
 // blocks. Implementations must never return the original video payload.
-type VideoExtractor interface {
-	Extract(context.Context, []byte, VideoWindow) ([]damessage.ContentBlock, error)
+type Extractor interface {
+	Extract(context.Context, []byte, Window) ([]damessage.ContentBlock, error)
 }
 
-// VideoExtractorFunc adapts a function to VideoExtractor.
-type VideoExtractorFunc func(context.Context, []byte, VideoWindow) ([]damessage.ContentBlock, error)
+// ExtractorFunc adapts a function to Extractor.
+type ExtractorFunc func(context.Context, []byte, Window) ([]damessage.ContentBlock, error)
 
-func (function VideoExtractorFunc) Extract(ctx context.Context, content []byte, window VideoWindow) ([]damessage.ContentBlock, error) {
+func (function ExtractorFunc) Extract(ctx context.Context, content []byte, window Window) ([]damessage.ContentBlock, error) {
 	return function(ctx, content, window)
 }
 
-// FFmpegVideoOptions configures the optional FFmpeg-backed extractor.
-type FFmpegVideoOptions struct {
+// FFmpegOptions configures the optional FFmpeg-backed extractor.
+type FFmpegOptions struct {
 	Executable      string
 	MaxFrames       int
 	MaxEmittedBytes int
 	DecodeTimeout   time.Duration
 }
 
-// FFmpegVideoExtractor samples a bounded JPEG stream from an ffmpeg executable.
+// FFmpegExtractor samples a bounded JPEG stream from an ffmpeg executable.
 // Constructing it does not require ffmpeg to be installed; a missing executable
 // is reported only when Extract is called.
-type FFmpegVideoExtractor struct {
+type FFmpegExtractor struct {
 	executable      string
 	maxFrames       int
 	maxEmittedBytes int
 	decodeTimeout   time.Duration
 }
 
-func NewFFmpegVideoExtractor(options FFmpegVideoOptions) *FFmpegVideoExtractor {
+func NewFFmpeg(options FFmpegOptions) *FFmpegExtractor {
 	if options.Executable == "" {
 		options.Executable = "ffmpeg"
 	}
@@ -74,13 +75,13 @@ func NewFFmpegVideoExtractor(options FFmpegVideoOptions) *FFmpegVideoExtractor {
 	if options.DecodeTimeout <= 0 {
 		options.DecodeTimeout = DefaultVideoDecodeTimeout
 	}
-	return &FFmpegVideoExtractor{
+	return &FFmpegExtractor{
 		executable: options.Executable, maxFrames: options.MaxFrames,
 		maxEmittedBytes: options.MaxEmittedBytes, decodeTimeout: options.DecodeTimeout,
 	}
 }
 
-func (extractor *FFmpegVideoExtractor) Extract(ctx context.Context, content []byte, window VideoWindow) ([]damessage.ContentBlock, error) {
+func (extractor *FFmpegExtractor) Extract(ctx context.Context, content []byte, window Window) ([]damessage.ContentBlock, error) {
 	if err := validateVideoWindow(window); err != nil {
 		return nil, err
 	}
@@ -157,7 +158,7 @@ func (extractor *FFmpegVideoExtractor) Extract(ctx context.Context, content []by
 	return blocks, nil
 }
 
-func validateVideoWindow(window VideoWindow) error {
+func validateVideoWindow(window Window) error {
 	if math.IsNaN(window.OffsetSeconds) || math.IsInf(window.OffsetSeconds, 0) || window.OffsetSeconds < 0 {
 		return fmt.Errorf("offset_seconds must be >= 0, got %v", window.OffsetSeconds)
 	}
@@ -230,5 +231,5 @@ func (buffer *boundedBuffer) Write(value []byte) (int, error) {
 
 func (buffer *boundedBuffer) Bytes() []byte { return buffer.buffer.Bytes() }
 
-var _ VideoExtractor = (*FFmpegVideoExtractor)(nil)
-var _ VideoExtractor = VideoExtractorFunc(nil)
+var _ Extractor = (*FFmpegExtractor)(nil)
+var _ Extractor = ExtractorFunc(nil)

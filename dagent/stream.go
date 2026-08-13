@@ -86,8 +86,10 @@ func EncodeChildEvent(event ChildEvent) (json.RawMessage, error) {
 	return encoded, nil
 }
 
+const defaultStreamBuffer = 32
+
 // Stream starts an invocation. Consumers that stop before io.EOF must call Close.
-func (agent *Agent) Stream(ctx context.Context, input Input, buffer int) *Stream {
+func (agent *Agent) Stream(ctx context.Context, input Input) *Stream {
 	if input.Config.ThreadID == "" {
 		input.Config.ThreadID = "default"
 	}
@@ -104,7 +106,7 @@ func (agent *Agent) Stream(ctx context.Context, input Input, buffer int) *Stream
 			Config: input.Config, State: values, Resume: input.Resume, Deps: input.Deps,
 			Configurable:    cloneConfigurable(input.Configurable),
 			SkipValueEvents: input.SkipValueEvents,
-		}, buffer),
+		}, defaultStreamBuffer),
 		ctx: ctx, private: agent.private, discardResultState: input.DiscardResultState,
 	}
 }

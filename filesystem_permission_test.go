@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/semistrict/dago/dabackend"
@@ -106,13 +105,11 @@ func TestFilesystemPermissionsRejectExecuteCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = FilesystemMiddleware(FilesystemOptions{
-		Backend:     shell,
-		Permissions: []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/**"}, Mode: PermissionAllow}},
+	requirePanicContaining(t, "cannot constrain execute", func() {
+		mustFilesystem(shell, Filesystem{
+			Permissions: []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/**"}, Mode: PermissionAllow}},
+		})
 	})
-	if err == nil || !strings.Contains(err.Error(), "cannot constrain execute") {
-		t.Fatalf("error = %v", err)
-	}
 }
 
 func TestFilesystemPermissionsAllowOnlyShellInaccessibleRoutes(t *testing.T) {
@@ -129,10 +126,8 @@ func TestFilesystemPermissionsAllowOnlyShellInaccessibleRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/memories/**"}, Mode: PermissionDeny}}
-	middleware, err := FilesystemMiddleware(FilesystemOptions{Backend: composite, Permissions: rules})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustFilesystem(composite, Filesystem{Permissions: rules})
+
 	foundExecute := false
 	for _, executable := range middleware.Tools {
 		foundExecute = foundExecute || executable.Definition().Name == "execute"
@@ -149,10 +144,9 @@ func TestFilesystemPermissionsAllowOnlyShellInaccessibleRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = FilesystemMiddleware(FilesystemOptions{Backend: accessible, Permissions: []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/work/**"}, Mode: PermissionDeny}}})
-	if err == nil || !strings.Contains(err.Error(), "cannot constrain execute") {
-		t.Fatalf("accessible route permissions error = %v", err)
-	}
+	requirePanicContaining(t, "cannot constrain execute", func() {
+		mustFilesystem(accessible, Filesystem{Permissions: []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/work/**"}, Mode: PermissionDeny}}})
+	})
 }
 
 func TestFilesystemBulkInterruptCannotBeBypassed(t *testing.T) {

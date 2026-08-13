@@ -324,14 +324,11 @@ func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
 	}
 	retrying := &retryingChat{inner: chat, attempts: modelMaxAttempts, backoff: modelRetryBackoff, verbose: cfg.Verbose}
 	state := &agentRunState{}
-	compiled, err := dagent.New(dagent.Options{
-		Name: "lazycue", Model: retrying, SystemPrompt: buildSystemPrompt(),
+	compiled := dagent.New(retrying, dagent.Options{
+		Name: "lazycue", SystemMessage: damessage.System(buildSystemPrompt()),
 		Tools: buildTools(cfg, state, logf), RecursionLimit: maxAgentTurns*2 + 3,
 		MaxConcurrency: 1,
 	})
-	if err != nil {
-		return nil, err
-	}
 	userPrompt := buildGenerateUserPrompt(cfg.Description)
 	if cfg.Mode == AgentModeFix {
 		userPrompt = buildFixUserPrompt(cfg.Description, cfg.PreviousSteps, cfg.PreviousError, cfg.CacheFilePath)

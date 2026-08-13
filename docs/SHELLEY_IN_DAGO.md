@@ -45,7 +45,7 @@ into assertion-friendly values, but they do not introduce an executable fallback
 
 | Upstream surface | Native owner | Required result |
 |---|---|---|
-| `loop` | `dago.DeepAgent` and `dagent.Agent` | `Loop` becomes a thin session facade; no model/tool state machine remains |
+| `loop` | `dagent.Agent` | `Loop` becomes a thin session facade; no model/tool state machine remains |
 | `llm.Message`, `Content`, `Request`, `Response` | `damessage.Message`, `damodel.Request`, `damodel.Response` | Upstream shapes become boundary facades and database codecs only |
 | `llm/ant`, `llm/gem`, `llm/oai` | dago OpenAI Responses provider | Every preserved provider case is explicitly assigned to its OpenAI Responses equivalent; removed vendor protocols have no executable facade |
 | `claudetool` | `datool.Tool` plus dago backends | Tool implementations receive dago runtime/state directly; no `llm.Tool` execution path in the binary |

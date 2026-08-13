@@ -1,4 +1,4 @@
-package dago
+package nemotron
 
 import (
 	"context"
@@ -40,9 +40,9 @@ var nemotronFilesystemTools = map[string]bool{
 	"delete": true, "glob": true, "grep": true,
 }
 
-// NemotronToolCallShim repairs common file-path arguments, expands its default
+// ToolCallShim repairs common file-path arguments, expands its default
 // read window, and gives otherwise empty ordinary tool results visible content.
-func NemotronToolCallShim() dagent.Middleware {
+func ToolCallShim() dagent.Middleware {
 	return dagent.Middleware{Name: "NemotronToolCallShim", WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
 		if nemotronFilePathTools[request.Call.Name] {
 			var arguments map[string]any
@@ -93,9 +93,9 @@ func toolResultContentEmpty(content []damessage.ContentBlock) bool {
 	return true
 }
 
-// NemotronReadContinuationNotice marks exactly-full read windows so the model
+// ReadContinuationNotice marks exactly-full read windows so the model
 // does not mistake pagination for end-of-file.
-func NemotronReadContinuationNotice() dagent.Middleware {
+func ReadContinuationNotice() dagent.Middleware {
 	return dagent.Middleware{Name: "ReadFileContinuationNoticeMiddleware", WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
 		response, err := next(ctx, request)
 		if err != nil || request.Call.Name != "read_file" {
@@ -167,9 +167,9 @@ func isNumberedReadRow(row string) bool {
 	return index > start && index < len(row) && (row[index] == '\t' || (index+1 < len(row) && row[index] == ' ' && row[index+1] == ' '))
 }
 
-// NemotronModelRateLimitRetry retries transient model throttling while honoring
+// ModelRateLimitRetry retries transient model throttling while honoring
 // cancellation. Delays correspond to retries after the initial attempt.
-func NemotronModelRateLimitRetry(delays ...time.Duration) dagent.Middleware {
+func ModelRateLimitRetry(delays ...time.Duration) dagent.Middleware {
 	if delays == nil {
 		delays = []time.Duration{4 * time.Second, 12 * time.Second}
 	}
@@ -212,9 +212,9 @@ func nemotronRateLimitError(err error) bool {
 	return strings.Contains(text, "rate limit") || strings.Contains(text, "rate-limit") || strings.Contains(text, "status 429")
 }
 
-// NemotronReasoningTagCleanup moves textual think blocks into provider-neutral
+// ReasoningTagCleanup moves textual think blocks into provider-neutral
 // reasoning content and keeps only visible text in the assistant answer.
-func NemotronReasoningTagCleanup() dagent.Middleware {
+func ReasoningTagCleanup() dagent.Middleware {
 	return dagent.Middleware{Name: "NemotronReasoningTagCleanupMiddleware", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		response, err := next(ctx, request)
 		if err != nil {
@@ -271,9 +271,9 @@ func hasReasoningBlock(content []damessage.ContentBlock) bool {
 	return false
 }
 
-// NemotronTextToolCallParser turns supported text and JSON call formats into
+// TextToolCallParser turns supported text and JSON call formats into
 // canonical tool calls, but only for tools visible on the current request.
-func NemotronTextToolCallParser() dagent.Middleware {
+func TextToolCallParser() dagent.Middleware {
 	return dagent.Middleware{Name: "NemotronTextToolCallParser", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		response, err := next(ctx, request)
 		if err != nil {
@@ -437,7 +437,7 @@ func nextNemotronToolID() string {
 }
 
 func nemotronFilesystemRetry() dagent.Middleware {
-	retry := dagent.ToolRetry("ToolRetryMiddleware", 2, 0, nil)
+	retry := dagent.ToolRetry(dagent.ToolRetryOptions{Name: "ToolRetryMiddleware", Attempts: 2})
 	return dagent.Middleware{Name: "ToolRetryMiddleware", WrapToolCall: func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
 		if !nemotronFilesystemTools[request.Call.Name] {
 			return next(ctx, request)

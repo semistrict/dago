@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
+	dago "github.com/semistrict/dago"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
 )
@@ -26,20 +26,20 @@ func newMockSubagentDB() *mockSubagentDB {
 	return &mockSubagentDB{conversations: map[string]string{}}
 }
 
-func (store *mockSubagentDB) GetOrCreateSubagentConversation(_ context.Context, slug, parentID, _ string) (string, string, error) {
-	key := parentID + ":" + slug
+func (store *mockSubagentDB) GetOrCreateSubagentConversation(_ context.Context, request dago.ConversationSubagentConversationRequest) (dago.ConversationSubagentConversation, error) {
+	key := request.ParentConversationID + ":" + request.Slug
 	if id, ok := store.conversations[key]; ok {
-		return id, slug, nil
+		return dago.ConversationSubagentConversation{ConversationID: id, Slug: request.Slug}, nil
 	}
-	id := "subagent-" + slug
+	id := "subagent-" + request.Slug
 	store.conversations[key] = id
-	return id, slug, nil
+	return dago.ConversationSubagentConversation{ConversationID: id, Slug: request.Slug}, nil
 }
 
 type mockSubagentRunner struct{ response string }
 
-func (runner *mockSubagentRunner) RunSubagent(context.Context, string, string, bool, time.Duration, string, string) (string, error) {
-	return runner.response, nil
+func (runner *mockSubagentRunner) RunSubagent(context.Context, dago.ConversationSubagentRun) (dago.ConversationSubagentReply, error) {
+	return dago.ConversationSubagentReply{Content: runner.response}, nil
 }
 
 func TestIsStrongModel(t *testing.T) {

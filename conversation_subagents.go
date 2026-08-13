@@ -13,12 +13,40 @@ import (
 
 // ConversationSubagentRunner executes a turn in a persistent child conversation.
 type ConversationSubagentRunner interface {
-	RunSubagent(context.Context, string, string, bool, time.Duration, string, string) (string, error)
+	RunSubagent(context.Context, ConversationSubagentRun) (ConversationSubagentReply, error)
 }
 
 // ConversationSubagentStore resolves a stable child conversation from its slug.
 type ConversationSubagentStore interface {
-	GetOrCreateSubagentConversation(context.Context, string, string, string) (string, string, error)
+	GetOrCreateSubagentConversation(context.Context, ConversationSubagentConversationRequest) (ConversationSubagentConversation, error)
+}
+
+// ConversationSubagentRun describes one turn in a persistent child conversation.
+type ConversationSubagentRun struct {
+	ConversationID string
+	Prompt         string
+	Wait           bool
+	Timeout        time.Duration
+	ModelID        string
+	Reasoning      string
+}
+
+// ConversationSubagentReply is the visible response from a child conversation.
+type ConversationSubagentReply struct {
+	Content string
+}
+
+// ConversationSubagentConversationRequest identifies the child conversation to create or reuse.
+type ConversationSubagentConversationRequest struct {
+	Slug                 string
+	ParentConversationID string
+	WorkingDirectory     string
+}
+
+// ConversationSubagentConversation identifies a created or reused child conversation.
+type ConversationSubagentConversation struct {
+	ConversationID string
+	Slug           string
 }
 
 // ConversationSubagentModel describes a model exposed to child conversations.
@@ -45,10 +73,7 @@ type ConversationSubagentDisplay struct {
 
 // ConversationSubagentOptions configures a persistent conversation subagent tool.
 type ConversationSubagentOptions struct {
-	Store                ConversationSubagentStore
-	Runner               ConversationSubagentRunner
 	ParentConversationID string
-	WorkingDirectory     func() string
 	ModelID              string
 	AvailableModels      []ConversationSubagentModel
 	ParentReasoning      string
@@ -59,8 +84,12 @@ type ConversationSubagentOptions struct {
 
 var defaultConversationSubagentReasoningLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
 
-// ConversationSubagentTool creates a tool that delegates work to named, persistent child conversations.
-func ConversationSubagentTool(options ConversationSubagentOptions) datool.Tool {
+// ConversationSubagentTool creates a tool that delegates work to named,
+// persistent child conversations.
+func ConversationSubagentTool(store ConversationSubagentStore, runner ConversationSubagentRunner, workingDirectory func() string, options ConversationSubagentOptions) datool.Tool {
+	if store == nil || runner == nil || workingDirectory == nil {
+		panic("conversation subagent store, runner, and working directory are required")
+	}
 	if len(options.ReasoningLevels) == 0 {
 		options.ReasoningLevels = append([]string(nil), defaultConversationSubagentReasoningLevels...)
 	}
@@ -88,13 +117,13 @@ func ConversationSubagentTool(options ConversationSubagentOptions) datool.Tool {
 	return datool.MustNew(
 		"subagent", conversationSubagentDescription(options),
 		func(ctx context.Context, input ConversationSubagentInput) (datool.Result, error) {
-			return executeConversationSubagent(ctx, options, input)
+			return executeConversationSubagent(ctx, store, runner, workingDirectory, options, input)
 		},
 		toolOptions...,
 	)
 }
 
-func executeConversationSubagent(ctx context.Context, options ConversationSubagentOptions, input ConversationSubagentInput) (datool.Result, error) {
+func executeConversationSubagent(ctx context.Context, store ConversationSubagentStore, runner ConversationSubagentRunner, workingDirectory func() string, options ConversationSubagentOptions, input ConversationSubagentInput) (datool.Result, error) {
 	if input.Slug == "" {
 		return datool.Result{}, fmt.Errorf("slug is required")
 	}
@@ -104,9 +133,6 @@ func executeConversationSubagent(ctx context.Context, options ConversationSubage
 	}
 	if input.Prompt == "" {
 		return datool.Result{}, fmt.Errorf("prompt is required")
-	}
-	if options.Store == nil || options.Runner == nil || options.WorkingDirectory == nil {
-		return datool.Result{}, fmt.Errorf("conversation subagent store, runner, and working directory are required")
 	}
 	timeout := options.DefaultTimeout
 	if input.TimeoutSeconds > 0 {
@@ -138,24 +164,28 @@ func executeConversationSubagent(ctx context.Context, options ConversationSubage
 		}
 		reasoning = input.Reasoning
 	}
-	conversationID, actualSlug, err := options.Store.GetOrCreateSubagentConversation(ctx, input.Slug, options.ParentConversationID, options.WorkingDirectory())
+	conversation, err := store.GetOrCreateSubagentConversation(ctx, ConversationSubagentConversationRequest{
+		Slug: input.Slug, ParentConversationID: options.ParentConversationID, WorkingDirectory: workingDirectory(),
+	})
 	if err != nil {
 		return datool.Result{}, fmt.Errorf("failed to get/create subagent conversation: %w", err)
 	}
-	response, err := options.Runner.RunSubagent(ctx, conversationID, input.Prompt, wait, timeout, modelID, reasoning)
+	reply, err := runner.RunSubagent(ctx, ConversationSubagentRun{
+		ConversationID: conversation.ConversationID, Prompt: input.Prompt, Wait: wait, Timeout: timeout, ModelID: modelID, Reasoning: reasoning,
+	})
 	if err != nil {
 		return datool.Result{}, fmt.Errorf("subagent error: %w", err)
 	}
 	slugNote := ""
-	if actualSlug != input.Slug {
-		slugNote = fmt.Sprintf(" (Note: slug was changed to '%s' for uniqueness. Use '%s' for future messages to this subagent.)", actualSlug, actualSlug)
+	if conversation.Slug != input.Slug {
+		slugNote = fmt.Sprintf(" (Note: slug was changed to '%s' for uniqueness. Use '%s' for future messages to this subagent.)", conversation.Slug, conversation.Slug)
 	}
-	display, err := json.Marshal(ConversationSubagentDisplay{Slug: actualSlug, ConversationID: conversationID})
+	display, err := json.Marshal(ConversationSubagentDisplay{Slug: conversation.Slug, ConversationID: conversation.ConversationID})
 	if err != nil {
 		return datool.Result{}, fmt.Errorf("encode subagent display: %w", err)
 	}
 	return datool.Result{
-		Content:  []damessage.ContentBlock{{Type: damessage.BlockText, Text: fmt.Sprintf("Subagent '%s' response:%s\n%s", actualSlug, slugNote, response)}},
+		Content:  []damessage.ContentBlock{{Type: damessage.BlockText, Text: fmt.Sprintf("Subagent '%s' response:%s\n%s", conversation.Slug, slugNote, reply.Content)}},
 		Artifact: display,
 	}, nil
 }

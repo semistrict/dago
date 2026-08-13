@@ -46,10 +46,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	compiled, err := dago.New(dago.Options{Model: chat})
-	if err != nil {
-		log.Fatal(err)
-	}
+	compiled := dago.New(chat, dago.Options{})
 	result, err := compiled.Invoke(context.Background(), dagent.Input{
 		Messages: []damessage.Message{damessage.Human("Introduce yourself.")},
 	})
@@ -65,10 +62,22 @@ thread and become durable when a checkpoint saver is configured. Pass an explici
 filesystem, store, composite, local-shell, or remote sandbox backend when the agent
 should operate elsewhere.
 
-Binary media is returned opaquely by default. Supplying `VideoExtractor` in
-`dago.Options` changes video `read_file` pagination to seconds and returns sampled
-JPEG frames. `NewFFmpegVideoExtractor` is the optional ready-made implementation;
-the FFmpeg executable remains an external deployment dependency.
+Agent-owned facilities use that same backend automatically. Configure them as values
+instead of constructing middleware with a duplicate backend argument:
+
+```go
+compiled := dago.New(chat, dago.Options{
+	Backend: workspace,
+	Skills: dago.Skills{Sources: []string{"/skills"}},
+	Memory: dago.Memory{Sources: []string{"/AGENTS.md"}},
+})
+```
+
+Binary media is returned opaquely by default. Supplying
+`dago.Options.Filesystem.VideoExtractor` changes video `read_file` pagination to
+seconds and returns sampled JPEG frames. `davideo.NewFFmpeg` is the optional
+ready-made implementation; the FFmpeg executable remains an external deployment
+dependency.
 
 Declarative subagents inherit the parent model and tools unless they override them.
 
@@ -120,11 +129,11 @@ available when the caller needs a completely custom graph. Human approval, inclu
 approval inside a subagent, requires a checkpoint saver so the exact pending tool call
 can resume without replaying completed sibling tools.
 
-Applicable built-in harness profiles resolve from the model's provider and identifier.
-They include Anthropic prompt overlays and the full Nemotron 3 Ultra repair, retry,
-progress-budget, tool-selection, entity-resolution, and answer-completeness stack.
-Provider construction defaults for OpenAI, NVIDIA, and OpenRouter can be layered with
-caller registrations through `ApplyProviderProfile`.
+Applicable built-in Anthropic harness profiles resolve from the model's provider and
+identifier. The full Nemotron 3 Ultra repair, retry, progress-budget, tool-selection,
+entity-resolution, and answer-completeness stack is available explicitly from
+`daproviders/nemotron`. Provider construction defaults for OpenAI, NVIDIA, and
+OpenRouter are available as an explicit `daproviders/profile.Profiles` value.
 
 ## OpenAI adapter
 
@@ -151,7 +160,7 @@ if err != nil {
 }
 defer saver.Close()
 
-compiled, err := dago.New(dago.Options{Model: chat, Saver: saver})
+compiled := dago.New(chat, dago.Options{Saver: saver})
 result, err := compiled.Invoke(ctx, dagent.Input{
 	Config: dacheckpoint.Config{ThreadID: "conversation-1"},
 	Messages: []damessage.Message{damessage.Human("Inspect the project.")},
@@ -179,12 +188,12 @@ is required for Studio state, history, replay, and thread operations to address 
 same durable data as agent runs:
 
 ```go
-func NewAgent(_ context.Context, runtime daserver.Runtime) (*dago.DeepAgent, error) {
-	return dago.New(dago.Options{
-		Model: chat,
+func NewAgent(_ context.Context, runtime daserver.Runtime) (*dagent.Agent, error) {
+	return dago.New(chat, dago.Options{
 		Saver: runtime.Saver,
 		Store: runtime.Store,
-	})
+		Deps:  runtime.Deps,
+	}), nil
 }
 ```
 
@@ -225,7 +234,7 @@ limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 
 | Package | Purpose |
 |---|---|
-| `dago` | Deep Agent constructor; filesystem and optional video extraction, inline/background subagent, summary, skill, memory, profile, and rubric middleware; Agent Protocol background client |
+| `dago` | Deep Agent constructor plus filesystem, subagent, summary, skill, memory, profile, and rubric middleware |
 | `dagent` | Provider-neutral model/tool graph, middleware lifecycle, approval, retry, todo, streaming, and checkpoint operations |
 | `damessage`, `damodel`, `datool`, `dastate` | Stable public contracts and reducers |
 | `damodel/modeltest` | Scripted and prompt-driven predictable model doubles for offline tests and examples |
@@ -238,6 +247,11 @@ limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 | `dacheckpoint/sqlite`, `dacheckpoint/postgres` | Python-schema-compatible durable savers |
 | `dastore`, `dastore/sqlite`, `dacache` | Namespaced data store and cache contracts and implementations |
 | `daproviders/openai` | Focused Responses API adapter and credential flows |
+| `daproviders/nemotron` | Opt-in Nemotron harness profiles and model-output repair middleware |
+| `daproviders/profile` | Explicit provider-construction profile sets and built-in defaults |
+| `davideo` | Video extraction contracts and optional bounded FFmpeg adapter |
+| `daagentprotocol` | Agent Protocol background-subagent client |
+| `daprofilecfg` | JSON/YAML-safe harness-profile configuration |
 | `daskill` | Agent Skills parsing, discovery, validation, and rendering contracts |
 | `daserver` | Embeddable LangGraph Agent Server protocol for LangSmith Studio and SDK clients |
 
@@ -260,8 +274,7 @@ if err != nil {
 }
 defer sandbox.Close()
 
-compiled, err := dago.New(dago.Options{
-	Model:   chat,
+compiled := dago.New(chat, dago.Options{
 	Backend: sandbox,
 })
 ```

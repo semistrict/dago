@@ -12,50 +12,33 @@ import (
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
-	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/dastore"
 	"github.com/semistrict/dago/datool"
 )
 
 // Options configures the complete local deep-agent stack.
 type Options struct {
-	Name                       string
-	ProfileNames               []string
-	Profiles                   []Profile
-	Model                      damodel.Chat
-	Tools                      []datool.Tool
-	SystemPrompt               string
-	SystemMessage              *damessage.Message
-	Middleware                 []dagent.Middleware
-	Backend                    dabackend.Backend
-	FilesystemTools            []string
-	FilesystemToolDescriptions map[string]string
-	MaxExecuteTimeout          int
-	ToolResultTokenLimit       *int
-	HumanMessageTokenLimit     *int
-	Permissions                []FilesystemPermission
-	VideoExtractor             VideoExtractor
-	MaxVideoBytes              int
-	VideoSamplingRate          float64
-	Subagents                  []Subagent
-	AsyncSubagents             []AsyncSubagent
-	AsyncSubagentPrompt        string
-	DisableSubagents           bool
-	Skills                     []string
-	SkillCatalog               []Skill
-	SkillActivation            func(Skill) string
-	Memory                     []string
-	MemoryContents             map[string]string
-	MemorySystemPrompt         *string
-	EnableTodo                 bool
-	DisableTodo                bool
-	DisableSummary             bool
-	Summarization              SummarizationOptions
-	InterruptOn                []dagent.ApprovalRule
-	PromptCacheRetention       string
-	StructuredOutput           *dagent.StructuredOutput
-	StateFields                map[string]dagent.StateField
-	Saver                      dacheckpoint.Saver
+	Name                 string
+	Profiles             []Profile
+	Tools                []datool.Tool
+	SystemMessage        damessage.Message
+	Middleware           []dagent.Middleware
+	Backend              dabackend.Backend
+	Filesystem           Filesystem
+	Subagents            []Subagent
+	AsyncSubagents       []AsyncSubagent
+	AsyncSubagentPrompt  string
+	DisableSubagents     bool
+	Skills               Skills
+	Memory               Memory
+	EnableTodo           bool
+	DisableSummary       bool
+	Summarization        Summarization
+	InterruptOn          []dagent.ApprovalRule
+	PromptCacheRetention string
+	StructuredOutput     *dagent.StructuredOutput
+	StateFields          map[string]dagent.StateField
+	Saver                dacheckpoint.Saver
 	// RetainThreadState keeps active thread state in memory while checkpoints
 	// remain durable. It requires one live owner per thread.
 	RetainThreadState bool
@@ -70,20 +53,21 @@ type Options struct {
 	Debug             bool
 }
 
-// DeepAgent is a compiled agent with the standard filesystem, subagent,
-// compaction, skill, memory, and optional planning layers selected by Options.
-type DeepAgent struct{ *dagent.Agent }
+// New constructs a deep agent. It panics when static construction options
+// violate an invariant; invocation and dependency failures remain errors on Agent methods.
+func New(model damodel.Chat, options Options) *dagent.Agent {
+	agent, err := newAgent(model, options)
+	if err != nil {
+		panic(err)
+	}
+	return agent
+}
 
-// New constructs a deep agent. A model is always explicit; no provider default or
-// hidden credential lookup occurs in the core package.
-func New(options Options) (*DeepAgent, error) {
-	if options.Model == nil {
-		return nil, fmt.Errorf("create deep agent: model is required")
+func newAgent(model damodel.Chat, options Options) (*dagent.Agent, error) {
+	if model == nil {
+		return nil, fmt.Errorf("create deep agent: model is nil")
 	}
-	if options.SystemPrompt != "" && options.SystemMessage != nil {
-		return nil, fmt.Errorf("create deep agent: system prompt and system message are mutually exclusive")
-	}
-	if options.SystemMessage != nil && options.SystemMessage.Role != damessage.RoleSystem {
+	if options.SystemMessage.Role != "" && options.SystemMessage.Role != damessage.RoleSystem {
 		return nil, fmt.Errorf("create deep agent: system message role must be system")
 	}
 	if options.Saver == nil && optionsNeedSaver(options) {
@@ -96,43 +80,37 @@ func New(options Options) (*DeepAgent, error) {
 		}
 		options.Backend = memory
 	}
-	profile, err := resolveProfiles(options.Model, options.ProfileNames, options.Profiles)
+	profile, err := resolveProfiles(model, options.Profiles)
 	if err != nil {
 		return nil, err
 	}
 	profileExclusionMatches := map[string]bool{}
 	inheritedTools := append([]datool.Tool(nil), options.Tools...)
-	if options.SystemMessage != nil {
+	if options.SystemMessage.Role != "" {
 		copy := options.SystemMessage.Clone()
 		profilePrompt := applyProfilePrompt(profile, "", "")
 		if profilePrompt != "" {
 			copy.Content = append(copy.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: "\n\n" + profilePrompt})
 		}
-		options.SystemMessage = &copy
+		options.SystemMessage = copy
 	} else {
-		options.SystemPrompt = applyProfilePrompt(profile, options.SystemPrompt, "")
+		prompt := applyProfilePrompt(profile, "", "")
+		if prompt != "" {
+			options.SystemMessage = damessage.System(prompt)
+		}
 	}
 	options.Tools = applyToolProfile(options.Tools, profile.ToolDescriptions, nil)
-	filesystem, err := FilesystemMiddleware(FilesystemOptions{
-		Backend: options.Backend, Permissions: options.Permissions, Tools: options.FilesystemTools,
-		ApprovalOverrides: options.InterruptOn, ToolDescriptions: options.FilesystemToolDescriptions,
-		MaxExecuteTimeout: options.MaxExecuteTimeout, ToolResultTokenLimit: options.ToolResultTokenLimit,
-		HumanMessageTokenLimit: options.HumanMessageTokenLimit, VideoExtractor: options.VideoExtractor,
-		MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
-	})
+	filesystem, err := newFilesystem(options.Backend, configuredFilesystem(options, nil), options.InterruptOn)
 	if err != nil {
 		return nil, err
 	}
 	filesystem.Tools = applyToolProfile(filesystem.Tools, profile.ToolDescriptions, nil)
 	core := []dagent.Middleware{}
-	if options.EnableTodo && !options.DisableTodo {
+	if options.EnableTodo {
 		core = append(core, dagent.TodoList())
 	}
-	if options.Skills != nil || options.SkillCatalog != nil {
-		middleware, err := SkillsMiddleware(SkillsOptions{
-			Backend: options.Backend, Sources: options.Skills,
-			Catalog: options.SkillCatalog, Activate: options.SkillActivation,
-		})
+	if options.Skills.Sources != nil || options.Skills.LabeledSources != nil || options.Skills.Catalog != nil {
+		middleware, err := newSkills(options.Backend, options.Skills)
 		if err != nil {
 			return nil, err
 		}
@@ -142,13 +120,13 @@ func New(options Options) (*DeepAgent, error) {
 
 	subagentPrivateState := map[string]bool{}
 	if !options.DisableSubagents {
-		subagents, err := buildDeclarativeSubagents(options, inheritedTools)
+		subagents, err := buildDeclarativeSubagents(model, options, inheritedTools)
 		if err != nil {
 			return nil, err
 		}
-		generalEnabled := profile.GeneralPurpose == nil || profile.GeneralPurpose.Enabled == nil || *profile.GeneralPurpose.Enabled
+		generalEnabled := profile.GeneralPurpose == nil || profile.GeneralPurpose.Mode != GeneralPurposeSubagentDisabled
 		if generalEnabled && !hasSubagent(subagents, "general-purpose") {
-			general, err := buildGeneralSubagent(options, filesystem, profile, profileExclusionMatches, nil)
+			general, err := buildGeneralSubagent(model, options, filesystem, profile, profileExclusionMatches, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -157,7 +135,7 @@ func New(options Options) (*DeepAgent, error) {
 				description = *profile.GeneralPurpose.Description
 			}
 			generalFactory := func(output *dagent.StructuredOutput) (Runnable, error) {
-				return buildGeneralSubagent(options, filesystem, profile, profileExclusionMatches, output)
+				return buildGeneralSubagent(model, options, filesystem, profile, profileExclusionMatches, output)
 			}
 			subagents = append([]Subagent{{
 				Name: "general-purpose", Description: description, Runnable: general,
@@ -173,47 +151,36 @@ func New(options Options) (*DeepAgent, error) {
 		}
 	}
 	if !options.DisableSummary {
-		summary := options.Summarization
-		if summary.Model == nil {
-			summary.Model = options.Model
-		}
-		if summary.Backend == nil {
-			summary.Backend = options.Backend
-		}
-		middleware, err := SummarizationMiddleware(summary)
+		summaryModel := options.Summarization.modelFor(model)
+		middleware, err := newSummarization(summaryModel, options.Backend, options.Summarization)
 		if err != nil {
 			return nil, err
 		}
 		core = append(core, middleware)
 	}
-	core = append(core, PatchToolCallsMiddleware())
+	core = append(core, PatchToolCalls())
 	if len(options.AsyncSubagents) > 0 {
-		middleware, err := AsyncSubagentMiddleware(AsyncSubagentOptions{Subagents: options.AsyncSubagents, SystemPrompt: options.AsyncSubagentPrompt})
-		if err != nil {
-			return nil, err
-		}
+		middleware := AsyncSubagentsWithOptions(AsyncSubagentsOptions{SystemPrompt: options.AsyncSubagentPrompt}, options.AsyncSubagents[0], options.AsyncSubagents[1:]...)
 		core = append(core, middleware)
 	}
 	tail := append([]dagent.Middleware(nil), profile.Middleware...)
-	tail = append(tail, dagent.PromptCaching("prompt_caching", options.PromptCacheRetention, func(request dagent.ModelRequest) string {
+	tail = append(tail, dagent.PromptCaching(options.PromptCacheRetention, func(request dagent.ModelRequest) string {
 		if request.Runtime.Config.ThreadID != "" {
 			return request.Runtime.Config.ThreadID
 		}
 		return request.Runtime.TaskID
 	}))
-	if options.Memory != nil || options.MemoryContents != nil {
-		sources := append([]string(nil), options.Memory...)
+	if options.Memory.Sources != nil || options.Memory.Contents != nil {
+		memory := options.Memory
+		sources := append([]string(nil), memory.Sources...)
 		if sources == nil {
-			for source := range options.MemoryContents {
+			for source := range memory.Contents {
 				sources = append(sources, source)
 			}
 			sort.Strings(sources)
 		}
-		middleware, err := MemoryMiddleware(MemoryOptions{
-			Backend: options.Backend, Sources: sources,
-			Contents: options.MemoryContents, SystemPrompt: options.MemorySystemPrompt,
-			AddCacheControl: true,
-		})
+		memory.Sources = sources
+		middleware, err := newMemory(options.Backend, memory, true)
 		if err != nil {
 			return nil, err
 		}
@@ -228,39 +195,24 @@ func New(options Options) (*DeepAgent, error) {
 		return nil, err
 	}
 	if len(profile.ExcludeTools) > 0 {
-		middleware = append(middleware, ToolExclusionMiddleware(profile.ExcludeTools))
+		middleware = append(middleware, ToolExclusion(profile.ExcludeTools))
 	}
 	for name, private := range privateStateFields(options.StateFields, middleware) {
 		if private {
 			subagentPrivateState[name] = true
 		}
 	}
-	compiled, err := dagent.New(dagent.Options{
-		Name: options.Name, Model: options.Model, Tools: options.Tools, SystemPrompt: options.SystemPrompt,
+	compiled := dagent.New(model, dagent.Options{
+		Name: options.Name, Tools: options.Tools,
 		SystemMessage: options.SystemMessage,
 		Middleware:    middleware, StateFields: options.StateFields, StructuredOutput: options.StructuredOutput,
 		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 		RetainThreadState: options.RetainThreadState,
 		RecursionLimit:    options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
-		Metadata:        mergeAgentMetadata(options.Metadata, options.Name), Tags: options.Tags, Debug: options.Debug,
+		Metadata:        options.Metadata, Tags: options.Tags, Debug: options.Debug,
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &DeepAgent{Agent: compiled}, nil
-}
-
-func mergeAgentMetadata(values map[string]json.RawMessage, name string) map[string]json.RawMessage {
-	result := map[string]json.RawMessage{"ls_integration": json.RawMessage(`"deepagents"`)}
-	for key, value := range values {
-		result[key] = append(json.RawMessage(nil), value...)
-	}
-	if name != "" {
-		encoded, _ := json.Marshal(name)
-		result["lc_agent_name"] = encoded
-	}
-	return result
+	return compiled, nil
 }
 
 func privateStateFields(base map[string]dagent.StateField, middleware []dagent.Middleware) map[string]bool {
@@ -281,7 +233,7 @@ func privateStateFields(base map[string]dagent.StateField, middleware []dagent.M
 	return result
 }
 
-func buildDeclarativeSubagents(options Options, inheritedTools []datool.Tool) ([]Subagent, error) {
+func buildDeclarativeSubagents(parentModel damodel.Chat, options Options, inheritedTools []datool.Tool) ([]Subagent, error) {
 	result := make([]Subagent, 0, len(options.Subagents))
 	for _, spec := range options.Subagents {
 		if spec.Runnable != nil {
@@ -293,56 +245,44 @@ func buildDeclarativeSubagents(options Options, inheritedTools []datool.Tool) ([
 		}
 		chat := spec.Model
 		if chat == nil {
-			chat = options.Model
+			chat = parentModel
 		}
-		profile, err := resolveProfiles(chat, nil, nil)
+		profile, err := resolveProfiles(chat, nil)
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q profile: %w", spec.Name, err)
 		}
 		permissions := spec.Permissions
 		if permissions == nil {
-			permissions = options.Permissions
+			permissions = options.Filesystem.Permissions
 		}
 		interruptOn := spec.InterruptOn
 		if interruptOn == nil {
 			interruptOn = options.InterruptOn
 		}
-		filesystem, err := FilesystemMiddleware(FilesystemOptions{
-			Backend: options.Backend, Permissions: permissions, Tools: options.FilesystemTools,
-			ApprovalOverrides: interruptOn, ToolDescriptions: options.FilesystemToolDescriptions,
-			MaxExecuteTimeout: options.MaxExecuteTimeout, ToolResultTokenLimit: options.ToolResultTokenLimit,
-			HumanMessageTokenLimit: options.HumanMessageTokenLimit, VideoExtractor: options.VideoExtractor,
-			MaxVideoBytes: options.MaxVideoBytes, VideoSamplingRate: options.VideoSamplingRate,
-		})
+		filesystemOptions := configuredFilesystem(options, permissions)
+		filesystem, err := newFilesystem(options.Backend, filesystemOptions, interruptOn)
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q filesystem: %w", spec.Name, err)
 		}
 		filesystem.Tools = applyToolProfile(filesystem.Tools, profile.ToolDescriptions, nil)
 		core := []dagent.Middleware{filesystem}
 		if !options.DisableSummary {
-			summary := options.Summarization
-			if summary.Model == nil {
-				summary.Model = chat
-			}
-			if summary.Backend == nil {
-				summary.Backend = options.Backend
-			}
-			compact, err := SummarizationMiddleware(summary)
+			compact, err := newSummarization(options.Summarization.modelFor(chat), options.Backend, options.Summarization)
 			if err != nil {
-				return nil, fmt.Errorf("subagent %q summary: %w", spec.Name, err)
+				return nil, fmt.Errorf("subagent %q summarization: %w", spec.Name, err)
 			}
 			core = append(core, compact)
 		}
-		core = append(core, PatchToolCallsMiddleware())
-		if len(spec.Skills) > 0 {
-			skills, err := SkillsMiddleware(SkillsOptions{Backend: options.Backend, Sources: spec.Skills})
+		core = append(core, PatchToolCalls())
+		if spec.Skills.Sources != nil || spec.Skills.LabeledSources != nil || spec.Skills.Catalog != nil {
+			skills, err := newSkills(options.Backend, spec.Skills)
 			if err != nil {
 				return nil, fmt.Errorf("subagent %q skills: %w", spec.Name, err)
 			}
 			core = append(core, skills)
 		}
 		tail := append([]dagent.Middleware(nil), profile.Middleware...)
-		tail = append(tail, dagent.PromptCaching("prompt_caching", options.PromptCacheRetention, func(request dagent.ModelRequest) string {
+		tail = append(tail, dagent.PromptCaching(options.PromptCacheRetention, func(request dagent.ModelRequest) string {
 			if request.Runtime.Config.ThreadID != "" {
 				return request.Runtime.Config.ThreadID
 			}
@@ -357,7 +297,7 @@ func buildDeclarativeSubagents(options Options, inheritedTools []datool.Tool) ([
 			return nil, fmt.Errorf("subagent %q middleware: %w", spec.Name, err)
 		}
 		if len(profile.ExcludeTools) > 0 {
-			middleware = append(middleware, ToolExclusionMiddleware(profile.ExcludeTools))
+			middleware = append(middleware, ToolExclusion(profile.ExcludeTools))
 		}
 		tools := spec.Tools
 		if tools == nil {
@@ -367,15 +307,15 @@ func buildDeclarativeSubagents(options Options, inheritedTools []datool.Tool) ([
 		name := spec.Name
 		prompt := applyProfilePrompt(profile, "", spec.SystemPrompt)
 		compile := func(output *dagent.StructuredOutput) (Runnable, error) {
-			return dagent.New(dagent.Options{
-				Name: name, Model: chat, Tools: tools,
-				SystemPrompt: prompt, Middleware: middleware,
+			return dagent.New(chat, dagent.Options{
+				Name: name, Tools: tools,
+				SystemMessage: damessage.System(prompt), Middleware: middleware,
 				StateFields: options.StateFields, StructuredOutput: output, Saver: options.Saver,
 				Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 				RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 				FailOnToolError: options.FailOnToolError,
-				Metadata:        mergeAgentMetadata(options.Metadata, name), Tags: options.Tags, Debug: options.Debug,
-			})
+				Metadata:        options.Metadata, Tags: options.Tags, Debug: options.Debug,
+			}), nil
 		}
 		compiled, err := compile(spec.StructuredOutput)
 		if err != nil {
@@ -390,7 +330,7 @@ func buildDeclarativeSubagents(options Options, inheritedTools []datool.Tool) ([
 }
 
 func optionsNeedSaver(options Options) bool {
-	if len(options.InterruptOn) > 0 || permissionsNeedSaver(options.Permissions) {
+	if len(options.InterruptOn) > 0 || permissionsNeedSaver(options.Filesystem.Permissions) {
 		return true
 	}
 	if options.DisableSubagents {
@@ -406,7 +346,7 @@ func optionsNeedSaver(options Options) bool {
 		}
 		permissions := spec.Permissions
 		if permissions == nil {
-			permissions = options.Permissions
+			permissions = options.Filesystem.Permissions
 		}
 		if len(interruptOn) > 0 || permissionsNeedSaver(permissions) {
 			return true
@@ -428,36 +368,26 @@ const defaultGeneralSubagentDescription = "General-purpose agent for researching
 
 const defaultGeneralSubagentPrompt = "In order to complete the objective that the user asks of you, you have access to a number of standard tools.\n\nThe calling agent only sees your final assistant message, not your intermediate work, tool results, or status tracking. Ensure your final response contains the complete answer."
 
-func buildGeneralSubagent(options Options, filesystem dagent.Middleware, profile Profile, exclusionMatches map[string]bool, structuredOutput *dagent.StructuredOutput) (*dagent.Agent, error) {
+func buildGeneralSubagent(model damodel.Chat, options Options, filesystem dagent.Middleware, profile Profile, exclusionMatches map[string]bool, structuredOutput *dagent.StructuredOutput) (*dagent.Agent, error) {
 	middleware := []dagent.Middleware{}
 	middleware = append(middleware, filesystem)
 	if !options.DisableSummary {
-		summary := options.Summarization
-		if summary.Model == nil {
-			summary.Model = options.Model
-		}
-		if summary.Backend == nil {
-			summary.Backend = options.Backend
-		}
-		compact, err := SummarizationMiddleware(summary)
+		compact, err := newSummarization(options.Summarization.modelFor(model), options.Backend, options.Summarization)
 		if err != nil {
 			return nil, err
 		}
 		middleware = append(middleware, compact)
 	}
-	middleware = append(middleware, PatchToolCallsMiddleware())
-	if options.Skills != nil || options.SkillCatalog != nil {
-		skills, err := SkillsMiddleware(SkillsOptions{
-			Backend: options.Backend, Sources: options.Skills,
-			Catalog: options.SkillCatalog, Activate: options.SkillActivation,
-		})
+	middleware = append(middleware, PatchToolCalls())
+	if options.Skills.Sources != nil || options.Skills.LabeledSources != nil || options.Skills.Catalog != nil {
+		skills, err := newSkills(options.Backend, options.Skills)
 		if err != nil {
 			return nil, err
 		}
 		middleware = append(middleware, skills)
 	}
 	middleware = append(middleware, profile.Middleware...)
-	middleware = append(middleware, dagent.PromptCaching("prompt_caching", options.PromptCacheRetention, func(request dagent.ModelRequest) string {
+	middleware = append(middleware, dagent.PromptCaching(options.PromptCacheRetention, func(request dagent.ModelRequest) string {
 		if request.Runtime.Config.ThreadID != "" {
 			return request.Runtime.Config.ThreadID
 		}
@@ -483,7 +413,7 @@ func buildGeneralSubagent(options Options, filesystem dagent.Middleware, profile
 	}
 	middleware = filtered
 	if len(profile.ExcludeTools) > 0 {
-		middleware = append(middleware, ToolExclusionMiddleware(profile.ExcludeTools))
+		middleware = append(middleware, ToolExclusion(profile.ExcludeTools))
 	}
 	prompt := applyProfilePrompt(profile, "", defaultGeneralSubagentPrompt)
 	if profile.GeneralPurpose != nil && profile.GeneralPurpose.SystemPrompt != nil {
@@ -495,15 +425,23 @@ func buildGeneralSubagent(options Options, filesystem dagent.Middleware, profile
 			prompt += "\n\n" + strings.TrimSpace(*profile.SystemPromptSuffix)
 		}
 	}
-	return dagent.New(dagent.Options{
-		Name: "general-purpose", Model: options.Model, Tools: options.Tools,
-		SystemPrompt: prompt, Middleware: middleware, StateFields: options.StateFields,
+	return dagent.New(model, dagent.Options{
+		Name: "general-purpose", Tools: options.Tools,
+		SystemMessage: damessage.System(prompt), Middleware: middleware, StateFields: options.StateFields,
 		StructuredOutput: structuredOutput,
 		Saver:            options.Saver, Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
-		Metadata:        mergeAgentMetadata(options.Metadata, "general-purpose"), Tags: options.Tags, Debug: options.Debug,
-	})
+		Metadata:        options.Metadata, Tags: options.Tags, Debug: options.Debug,
+	}), nil
+}
+
+func configuredFilesystem(options Options, permissions []FilesystemPermission) Filesystem {
+	configured := options.Filesystem
+	if permissions != nil {
+		configured.Permissions = permissions
+	}
+	return configured
 }
 
 // Custom middleware replaces an existing entry with the same name in place.
@@ -588,6 +526,3 @@ func filterProfileMiddleware(values []dagent.Middleware, profile Profile, matche
 	}
 	return result, nil
 }
-
-// State is an alias retained at the public boundary for custom middleware options.
-type State = dastate.Values

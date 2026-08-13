@@ -14,11 +14,8 @@ func TestEventsClosesOnEarlyBreak(t *testing.T) {
 	model := modeltest.New(damodel.Profile{}, modeltest.Step{
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	agent, err := New(Options{Model: model})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := agent.Stream(t.Context(), Input{Messages: []damessage.Message{damessage.Human("go")}}, 0)
+	agent := New(model, Options{})
+	stream := agent.Stream(t.Context(), Input{Messages: []damessage.Message{damessage.Human("go")}})
 	count := 0
 	for _, err := range stream.Events() {
 		if err != nil {

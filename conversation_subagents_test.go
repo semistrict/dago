@@ -18,11 +18,11 @@ type recordingConversationSubagentStore struct {
 	workingDir     string
 }
 
-func (s *recordingConversationSubagentStore) GetOrCreateSubagentConversation(_ context.Context, slug, parentID, workingDir string) (string, string, error) {
-	s.slug = slug
-	s.parentID = parentID
-	s.workingDir = workingDir
-	return s.conversationID, s.actualSlug, nil
+func (s *recordingConversationSubagentStore) GetOrCreateSubagentConversation(_ context.Context, request ConversationSubagentConversationRequest) (ConversationSubagentConversation, error) {
+	s.slug = request.Slug
+	s.parentID = request.ParentConversationID
+	s.workingDir = request.WorkingDirectory
+	return ConversationSubagentConversation{ConversationID: s.conversationID, Slug: s.actualSlug}, nil
 }
 
 type recordingConversationSubagentRunner struct {
@@ -34,25 +34,22 @@ type recordingConversationSubagentRunner struct {
 	reasoning      string
 }
 
-func (r *recordingConversationSubagentRunner) RunSubagent(_ context.Context, conversationID, prompt string, wait bool, timeout time.Duration, model, reasoning string) (string, error) {
-	r.conversationID = conversationID
-	r.prompt = prompt
-	r.wait = wait
-	r.timeout = timeout
-	r.model = model
-	r.reasoning = reasoning
-	return "finished", nil
+func (r *recordingConversationSubagentRunner) RunSubagent(_ context.Context, request ConversationSubagentRun) (ConversationSubagentReply, error) {
+	r.conversationID = request.ConversationID
+	r.prompt = request.Prompt
+	r.wait = request.Wait
+	r.timeout = request.Timeout
+	r.model = request.ModelID
+	r.reasoning = request.Reasoning
+	return ConversationSubagentReply{Content: "finished"}, nil
 }
 
 func TestConversationSubagentToolDispatchesPersistentConversation(t *testing.T) {
 	store := &recordingConversationSubagentStore{conversationID: "child-1", actualSlug: "research-2"}
 	runner := &recordingConversationSubagentRunner{}
 	wait := false
-	subagentTool := ConversationSubagentTool(ConversationSubagentOptions{
-		Store:                store,
-		Runner:               runner,
+	subagentTool := ConversationSubagentTool(store, runner, func() string { return "/workspace" }, ConversationSubagentOptions{
 		ParentConversationID: "parent-1",
-		WorkingDirectory:     func() string { return "/workspace" },
 		ModelID:              "default-model",
 		ParentReasoning:      "high",
 		AvailableModels: []ConversationSubagentModel{
@@ -98,11 +95,8 @@ func TestConversationSubagentToolDispatchesPersistentConversation(t *testing.T) 
 func TestConversationSubagentToolDefaultsAndContract(t *testing.T) {
 	store := &recordingConversationSubagentStore{conversationID: "child-1", actualSlug: "worker"}
 	runner := &recordingConversationSubagentRunner{}
-	subagentTool := ConversationSubagentTool(ConversationSubagentOptions{
-		Store:                store,
-		Runner:               runner,
+	subagentTool := ConversationSubagentTool(store, runner, func() string { return "/workspace" }, ConversationSubagentOptions{
 		ParentConversationID: "parent-1",
-		WorkingDirectory:     func() string { return "/workspace" },
 		ModelID:              "default-model",
 		ParentReasoning:      "medium",
 		AvailableModels:      []ConversationSubagentModel{{ID: "default-model", DisplayName: "Default Model"}},
@@ -131,11 +125,7 @@ func TestConversationSubagentToolDefaultsAndContract(t *testing.T) {
 func TestConversationSubagentToolCapsLargeTimeoutWithoutOverflow(t *testing.T) {
 	store := &recordingConversationSubagentStore{conversationID: "child-1", actualSlug: "worker"}
 	runner := &recordingConversationSubagentRunner{}
-	subagentTool := ConversationSubagentTool(ConversationSubagentOptions{
-		Store:            store,
-		Runner:           runner,
-		WorkingDirectory: func() string { return "/workspace" },
-	})
+	subagentTool := ConversationSubagentTool(store, runner, func() string { return "/workspace" }, ConversationSubagentOptions{})
 	_, err := subagentTool.Execute(context.Background(), json.RawMessage(`{"slug":"worker","prompt":"work","timeout_seconds":9223372036}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -159,12 +149,13 @@ func TestConversationSubagentToolRejectsInvalidOptions(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			subagentTool := ConversationSubagentTool(ConversationSubagentOptions{
-				Store:            &recordingConversationSubagentStore{},
-				Runner:           &recordingConversationSubagentRunner{},
-				WorkingDirectory: func() string { return "/workspace" },
-				AvailableModels:  []ConversationSubagentModel{{ID: "known"}},
-			})
+			subagentTool := ConversationSubagentTool(
+				&recordingConversationSubagentStore{},
+				&recordingConversationSubagentRunner{},
+				func() string { return "/workspace" },
+				ConversationSubagentOptions{
+					AvailableModels: []ConversationSubagentModel{{ID: "known"}},
+				})
 			_, err := subagentTool.Execute(context.Background(), json.RawMessage(test.input), datool.Runtime{})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)

@@ -8,13 +8,19 @@ import (
 )
 
 func TestAggregateUsageIncludesNestedCalls(t *testing.T) {
-	direct := Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5, CostUSD: 0.2, InputDetails: map[string]int{"cached": 1}, Provider: "openai", Model: "gpt"}
-	nested := PurposedUsage{Purpose: "summary", Usage: Usage{InputTokens: 4, OutputTokens: 1, TotalTokens: 5, CostUSD: 0.3, InputDetails: map[string]int{"cached": 2}, Provider: "openai", Model: "gpt"}}
+	start := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	middle := start.Add(time.Second)
+	finish := start.Add(2 * time.Second)
+	direct := Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5, CostUSD: 0.2, InputDetails: map[string]int{"cached": 1}, Provider: "openai", Model: "gpt", StartedAt: middle, FinishedAt: finish}
+	nested := PurposedUsage{Purpose: "summary", Usage: Usage{InputTokens: 4, OutputTokens: 1, TotalTokens: 5, CostUSD: 0.3, InputDetails: map[string]int{"cached": 2}, Provider: "openai", Model: "gpt", StartedAt: start, FinishedAt: middle}}
 	messages := []Message{{Role: RoleAssistant, Usage: &direct, OtherUsage: []PurposedUsage{nested}}}
 
 	got := AggregateUsage(messages)
 	if got.InputTokens != 7 || got.OutputTokens != 3 || got.TotalTokens != 10 || got.CostUSD != 0.5 || got.InputDetails["cached"] != 3 {
 		t.Fatalf("AggregateUsage() = %#v", got)
+	}
+	if !got.StartedAt.Equal(start) || !got.FinishedAt.Equal(finish) {
+		t.Fatalf("AggregateUsage() timestamps = %s–%s", got.StartedAt, got.FinishedAt)
 	}
 	got.InputDetails["cached"] = 99
 	if direct.InputDetails["cached"] != 1 || nested.InputDetails["cached"] != 2 {

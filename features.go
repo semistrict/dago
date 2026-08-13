@@ -36,7 +36,7 @@ type Runnable interface {
 // the parent stream. Runnable remains sufficient for invoke-only integrations.
 type StreamingRunnable interface {
 	Runnable
-	Stream(context.Context, dagent.Input, int) *dagent.Stream
+	Stream(context.Context, dagent.Input) *dagent.Stream
 }
 
 type Subagent struct {
@@ -48,7 +48,7 @@ type Subagent struct {
 	Tools            []datool.Tool
 	Middleware       []dagent.Middleware
 	InterruptOn      []dagent.ApprovalRule
-	Skills           []string
+	Skills           Skills
 	Permissions      []FilesystemPermission
 	StructuredOutput *dagent.StructuredOutput
 	InheritedState   []string
@@ -74,10 +74,10 @@ type taskResponseFormatDescriptor struct {
 	ToolMessageContent string                    `json:"tool_message_content,omitempty"`
 }
 
-// PatchToolCallsMiddleware repairs assistant tool calls that have no matching
+// PatchToolCalls repairs assistant tool calls that have no matching
 // result before a resumed agent run. Interrupted turns can otherwise leave model
 // history that providers reject because a requested tool was never answered.
-func PatchToolCallsMiddleware() dagent.Middleware {
+func PatchToolCalls() dagent.Middleware {
 	return dagent.Middleware{
 		Name: "patch_tool_calls", SerializedName: "PatchToolCallsMiddleware",
 		BeforeAgent: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
@@ -210,19 +210,25 @@ func toolCallHistoryNeedsRepair(messages []damessage.Message) bool {
 	return len(pending) > 0
 }
 
-// SubagentMiddleware adds the task tool. Each invocation receives only its task
-// message and a distinct thread identity, preventing parent and sibling state leaks.
-func SubagentMiddleware(subagents []Subagent) (dagent.Middleware, error) {
-	return SubagentMiddlewareWithOptions(SubagentMiddlewareOptions{Subagents: subagents})
-}
-
-type SubagentMiddlewareOptions struct {
-	Subagents    []Subagent
+// SubagentsOptions configures private state inherited by child agents.
+type SubagentsOptions struct {
 	PrivateState []string
 }
 
-func SubagentMiddlewareWithOptions(options SubagentMiddlewareOptions) (dagent.Middleware, error) {
-	return subagentMiddleware(options.Subagents, stringSet(options.PrivateState))
+// Subagents adds the task tool. Each invocation receives only its task message
+// and a distinct thread identity, preventing parent and sibling state leaks.
+func Subagents(first Subagent, rest ...Subagent) dagent.Middleware {
+	return SubagentsWithOptions(SubagentsOptions{}, first, rest...)
+}
+
+// SubagentsWithOptions adds the task tool with explicit private-state rules.
+func SubagentsWithOptions(options SubagentsOptions, first Subagent, rest ...Subagent) dagent.Middleware {
+	values := append([]Subagent{first}, rest...)
+	middleware, err := subagentMiddleware(values, stringSet(options.PrivateState))
+	if err != nil {
+		panic(err)
+	}
+	return middleware
 }
 
 func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dagent.Middleware, error) {
@@ -526,7 +532,7 @@ func invokeSubagent(ctx context.Context, selected Subagent, invocation dagent.In
 	if err := emit(started); err != nil {
 		return dagent.Result{}, err
 	}
-	stream := streaming.Stream(ctx, invocation, 16)
+	stream := streaming.Stream(ctx, invocation)
 	for event, err := range stream.Events() {
 		if err != nil {
 			failed := base
@@ -564,26 +570,41 @@ func invokeSubagent(ctx context.Context, selected Subagent, invocation dagent.In
 	return result, nil
 }
 
-type SummarizationOptions struct {
-	Model   damodel.Chat
-	Backend dabackend.Backend
+// Summarization configures the agent-owned conversation compactor. New binds
+// its model and backend and compiles the corresponding middleware.
+type Summarization struct {
+	// Model overrides the agent model for summary generation. Nil reuses the
+	// agent model.
+	Model damodel.Chat
 	// TriggerClauses are ORed together; every non-zero threshold within one
 	// clause must match. This represents Deep Agents' list-of-trigger-clauses
 	// contract without Python tuple/dict unions.
-	TriggerClauses            []SummarizationTriggerClause
-	TriggerTokens             int
-	TriggerMessages           int
-	KeepMessages              int
-	KeepTokens                int
-	KeepFraction              float64
-	HistoryRoot               string
-	MediaRoot                 string
-	OverflowClipTokens        int
-	LargeToolResultsRoot      string
-	SummaryPrompt             string
-	ArgumentTruncation        *ArgumentTruncationOptions
-	DisableArgumentTruncation bool
-	triggerClauses            []SummarizationTriggerClause
+	TriggerClauses       []SummarizationTriggerClause
+	KeepMessages         int
+	KeepTokens           int
+	KeepFraction         float64
+	HistoryRoot          string
+	MediaRoot            string
+	OverflowClipTokens   int
+	LargeToolResultsRoot string
+	SummaryPrompt        string
+	// Nil selects profile-aware defaults. An empty value disables argument
+	// truncation; a populated value supplies a custom policy.
+	ArgumentTruncation *ArgumentTruncationOptions
+}
+
+type summarizationRuntime struct {
+	Summarization
+	triggerClauses []SummarizationTriggerClause
+	model          damodel.Chat
+	backend        dabackend.Backend
+}
+
+func (options Summarization) modelFor(agentModel damodel.Chat) damodel.Chat {
+	if options.Model != nil {
+		return options.Model
+	}
+	return agentModel
 }
 
 type SummarizationTriggerClause struct {
@@ -606,11 +627,15 @@ type ArgumentTruncationOptions struct {
 
 const summarizationEventKey = "_summarization_event"
 
-// SummarizationMiddleware performs deterministic thresholding while preserving
-// the raw message log. A private event records the summary and absolute cutoff;
-// model calls reconstruct the compacted view from that event.
-func SummarizationMiddleware(options SummarizationOptions) (dagent.Middleware, error) {
-	options, err := normalizeSummarizationOptions(options)
+// Summarization performs deterministic thresholding while preserving the raw
+// message log. A private event records the summary and absolute cutoff; model
+// calls reconstruct the compacted view from that event. It panics when static
+// options violate an invariant.
+func newSummarization(model damodel.Chat, backend dabackend.Backend, config Summarization) (dagent.Middleware, error) {
+	if backend == nil {
+		return dagent.Middleware{}, fmt.Errorf("summarization backend is nil")
+	}
+	options, err := normalizeSummarization(model, backend, config)
 	if err != nil {
 		return dagent.Middleware{}, err
 	}
@@ -661,12 +686,16 @@ func SummarizationMiddleware(options SummarizationOptions) (dagent.Middleware, e
 	return middleware, nil
 }
 
-func normalizeSummarizationOptions(options SummarizationOptions) (SummarizationOptions, error) {
-	if options.Model == nil {
-		return SummarizationOptions{}, fmt.Errorf("summarization model is required")
+func normalizeSummarization(model damodel.Chat, backend dabackend.Backend, config Summarization) (summarizationRuntime, error) {
+	if model == nil {
+		return summarizationRuntime{}, fmt.Errorf("summarization model is nil")
 	}
-	profileWindow := options.Model.Profile().ContextWindow
-	if len(options.TriggerClauses) == 0 && options.TriggerTokens <= 0 && options.TriggerMessages <= 0 {
+	if backend == nil {
+		return summarizationRuntime{}, fmt.Errorf("summarization backend is nil")
+	}
+	options := summarizationRuntime{Summarization: config, model: model, backend: backend}
+	profileWindow := model.Profile().ContextWindow
+	if len(options.TriggerClauses) == 0 {
 		if profileWindow > 0 {
 			options.TriggerClauses = []SummarizationTriggerClause{{Fraction: 0.85}}
 		} else {
@@ -674,13 +703,10 @@ func normalizeSummarizationOptions(options SummarizationOptions) (SummarizationO
 		}
 	}
 	clauses := append([]SummarizationTriggerClause(nil), options.TriggerClauses...)
-	if options.TriggerTokens > 0 || options.TriggerMessages > 0 {
-		clauses = append(clauses, SummarizationTriggerClause{Tokens: options.TriggerTokens, Messages: options.TriggerMessages})
-	}
 	for index := range clauses {
 		clause, clauseErr := normalizeSummarizationClause(clauses[index], profileWindow)
 		if clauseErr != nil {
-			return SummarizationOptions{}, fmt.Errorf("summarization trigger clause %d: %w", index, clauseErr)
+			return summarizationRuntime{}, fmt.Errorf("summarization trigger clause %d: %w", index, clauseErr)
 		}
 		clauses[index] = clause
 	}
@@ -694,36 +720,38 @@ func normalizeSummarizationOptions(options SummarizationOptions) (SummarizationO
 	}
 	if options.KeepFraction != 0 {
 		if options.KeepFraction <= 0 || options.KeepFraction > 1 || profileWindow <= 0 {
-			return SummarizationOptions{}, fmt.Errorf("summarization keep fraction requires a model context window and a value in (0, 1]")
+			return summarizationRuntime{}, fmt.Errorf("summarization keep fraction requires a model context window and a value in (0, 1]")
 		}
 		if options.KeepMessages > 0 || options.KeepTokens > 0 {
-			return SummarizationOptions{}, fmt.Errorf("summarization keep policy must select messages, tokens, or fraction")
+			return summarizationRuntime{}, fmt.Errorf("summarization keep policy must select messages, tokens, or fraction")
 		}
 		options.KeepTokens = max(int(float64(profileWindow)*options.KeepFraction), 1)
 	}
 	if options.HistoryRoot == "" {
-		options.HistoryRoot = dabackend.ArtifactPath(options.Backend, "conversation_history")
+		options.HistoryRoot = dabackend.ArtifactPath(options.backend, "conversation_history")
 	}
 	if options.MediaRoot == "" {
-		options.MediaRoot = dabackend.ArtifactPath(options.Backend, "conversation_history/media")
+		options.MediaRoot = dabackend.ArtifactPath(options.backend, "conversation_history/media")
 	}
 	if options.OverflowClipTokens <= 0 {
 		options.OverflowClipTokens = 5_000
 	}
 	if options.LargeToolResultsRoot == "" {
-		options.LargeToolResultsRoot = dabackend.ArtifactPath(options.Backend, "large_tool_results")
+		options.LargeToolResultsRoot = dabackend.ArtifactPath(options.backend, "large_tool_results")
 	}
 	if options.SummaryPrompt == "" {
 		options.SummaryPrompt = "Summarize the earlier conversation faithfully. Preserve decisions, constraints, unresolved tasks, file paths, errors, and important tool results."
 	}
-	if options.ArgumentTruncation == nil && !options.DisableArgumentTruncation {
+	if options.ArgumentTruncation == nil {
 		if profileWindow > 0 {
 			options.ArgumentTruncation = &ArgumentTruncationOptions{TriggerFraction: 0.85, KeepFraction: 0.10}
 		} else {
 			options.ArgumentTruncation = &ArgumentTruncationOptions{TriggerMessages: 20, KeepMessages: 20}
 		}
 	}
-	if options.ArgumentTruncation != nil {
+	if options.ArgumentTruncation != nil && *options.ArgumentTruncation == (ArgumentTruncationOptions{}) {
+		options.ArgumentTruncation = nil
+	} else if options.ArgumentTruncation != nil {
 		settings := *options.ArgumentTruncation
 		if settings.MaxLength <= 0 {
 			settings.MaxLength = 2_000
@@ -735,20 +763,20 @@ func normalizeSummarizationOptions(options SummarizationOptions) (SummarizationO
 			settings.TruncationText = "...(argument truncated)"
 		}
 		if settings.TriggerTokens <= 0 && settings.TriggerMessages <= 0 && settings.TriggerFraction == 0 {
-			return SummarizationOptions{}, fmt.Errorf("argument truncation requires a trigger threshold")
+			return summarizationRuntime{}, fmt.Errorf("argument truncation requires a trigger threshold")
 		}
 		if settings.TriggerFraction != 0 {
 			if settings.TriggerFraction <= 0 || settings.TriggerFraction > 1 || profileWindow <= 0 || settings.TriggerTokens > 0 || settings.TriggerMessages > 0 {
-				return SummarizationOptions{}, fmt.Errorf("argument truncation trigger fraction requires a model context window, a value in (0, 1], and no other trigger")
+				return summarizationRuntime{}, fmt.Errorf("argument truncation trigger fraction requires a model context window, a value in (0, 1], and no other trigger")
 			}
 			settings.TriggerTokens = max(int(float64(profileWindow)*settings.TriggerFraction), 1)
 		}
 		if settings.KeepTokens <= 0 && settings.KeepMessages <= 0 && settings.KeepFraction == 0 {
-			return SummarizationOptions{}, fmt.Errorf("argument truncation requires a keep policy")
+			return summarizationRuntime{}, fmt.Errorf("argument truncation requires a keep policy")
 		}
 		if settings.KeepFraction != 0 {
 			if settings.KeepFraction <= 0 || settings.KeepFraction > 1 || profileWindow <= 0 || settings.KeepTokens > 0 || settings.KeepMessages > 0 {
-				return SummarizationOptions{}, fmt.Errorf("argument truncation keep fraction requires a model context window, a value in (0, 1], and no other keep policy")
+				return summarizationRuntime{}, fmt.Errorf("argument truncation keep fraction requires a model context window, a value in (0, 1], and no other keep policy")
 			}
 			settings.KeepTokens = max(int(float64(profileWindow)*settings.KeepFraction), 1)
 		}
@@ -886,7 +914,7 @@ func truncatedToolArguments(messages []damessage.Message, settings *ArgumentTrun
 	return result, true
 }
 
-func offloadSummaryMedia(ctx context.Context, messages []damessage.Message, options SummarizationOptions) []damessage.Message {
+func offloadSummaryMedia(ctx context.Context, messages []damessage.Message, options summarizationRuntime) []damessage.Message {
 	result := cloneMessageSlice(messages)
 	paths := map[string]string{}
 	for messageIndex := range result {
@@ -917,7 +945,7 @@ func offloadSummaryMedia(ctx context.Context, messages []damessage.Message, opti
 					}
 				}
 				mediaPath = fmt.Sprintf("%s/%s%s", strings.TrimSuffix(options.MediaRoot, "/"), key, extension)
-				uploads := options.Backend.Upload(ctx, []dabackend.Upload{{Path: mediaPath, Content: data}})
+				uploads := options.backend.Upload(ctx, []dabackend.Upload{{Path: mediaPath, Content: data}})
 				if len(uploads) != 1 || uploads[0].Error != "" {
 					*block = damessage.ContentBlock{Type: damessage.BlockText, Text: "<media error=\"failed_to_offload\" />"}
 					continue
@@ -990,8 +1018,8 @@ func buildSummaryMessage(summaryText string, offload historyOffloadResult) dames
 	return summary
 }
 
-func summarizeForModel(ctx context.Context, messages []damessage.Message, previousEvent any, runtime dagent.Runtime, reader dabackend.StateReader, options SummarizationOptions, overflow bool) (summarizedModelView, error) {
-	cutoff := summaryCutoff(messages, options)
+func summarizeForModel(ctx context.Context, messages []damessage.Message, previousEvent any, runtime dagent.Runtime, reader dabackend.StateReader, options summarizationRuntime, overflow bool) (summarizedModelView, error) {
+	cutoff := summaryCutoff(messages, options.Summarization)
 	if cutoff <= 0 {
 		return summarizedModelView{}, nil
 	}
@@ -1000,26 +1028,22 @@ func summarizeForModel(ctx context.Context, messages []damessage.Message, previo
 	update := dastate.Values{}
 	boundCtx := ctx
 	var bindErr error
-	if options.Backend != nil {
-		boundCtx, bindErr = dabackend.BindRuntime(ctx, options.Backend, reader, backendRuntime(runtime))
-		if bindErr == nil {
-			older = offloadSummaryMedia(boundCtx, older, options)
-			if overflow {
-				clipped := clipOverflowToolTail(boundCtx, messages, recent, options)
-				updateClippedMessages(update, recent, clipped)
-				recent = clipped
-			}
+	boundCtx, bindErr = dabackend.BindRuntime(ctx, options.backend, reader, backendRuntime(runtime))
+	if bindErr == nil {
+		older = offloadSummaryMedia(boundCtx, older, options)
+		if overflow {
+			clipped := clipOverflowToolTail(boundCtx, messages, recent, options)
+			updateClippedMessages(update, recent, clipped)
+			recent = clipped
 		}
 	}
 	offloadChannel := make(chan historyOffloadResult, 1)
-	if options.Backend == nil {
-		offloadChannel <- historyOffloadResult{}
-	} else if bindErr != nil {
+	if bindErr != nil {
 		offloadChannel <- historyOffloadResult{Err: fmt.Errorf("bind conversation history backend: %w", bindErr)}
 	} else {
 		go func() { offloadChannel <- offloadConversationHistoryBound(boundCtx, options, runtime, older) }()
 	}
-	response, err := options.Model.Invoke(ctx, damodel.Request{Messages: []damessage.Message{damessage.System(options.SummaryPrompt), damessage.Human(renderHistory(older))}})
+	response, err := options.model.Invoke(ctx, damodel.Request{Messages: []damessage.Message{damessage.System(options.SummaryPrompt), damessage.Human(renderHistory(older))}})
 	offload := <-offloadChannel
 	if err != nil {
 		return summarizedModelView{}, err
@@ -1027,8 +1051,8 @@ func summarizeForModel(ctx context.Context, messages []damessage.Message, previo
 	for key, value := range offload.Updates {
 		update[key] = value
 	}
-	if options.Backend != nil && bindErr == nil {
-		for key, value := range dabackend.RuntimeUpdates(boundCtx, options.Backend) {
+	if bindErr == nil {
+		for key, value := range dabackend.RuntimeUpdates(boundCtx, options.backend) {
 			update[key] = value
 		}
 	}
@@ -1039,17 +1063,27 @@ func summarizeForModel(ctx context.Context, messages []damessage.Message, previo
 }
 
 type SummarizationToolOptions struct {
-	Summarization SummarizationOptions
+	Summarization Summarization
 	// SystemPrompt optionally nudges the model to use compact_conversation.
-	// Nil registers the tool without changing the system prompt.
-	SystemPrompt *string
+	SystemPrompt string
 }
 
-// SummarizationToolMiddleware exposes opt-in manual conversation compaction.
-// It shares the private event format used by SummarizationMiddleware but never
-// compacts in the background.
-func SummarizationToolMiddleware(toolOptions SummarizationToolOptions) (dagent.Middleware, error) {
-	options, err := normalizeSummarizationOptions(toolOptions.Summarization)
+// SummarizationTool exposes opt-in manual conversation compaction. It shares
+// the private event format used by Summarization but never compacts in the
+// background. It panics when static options violate an invariant.
+func SummarizationTool(model damodel.Chat, backend dabackend.Backend, toolOptions SummarizationToolOptions) dagent.Middleware {
+	middleware, err := newSummarizationTool(toolOptions.Summarization.modelFor(model), backend, toolOptions)
+	if err != nil {
+		panic(err)
+	}
+	return middleware
+}
+
+func newSummarizationTool(model damodel.Chat, backend dabackend.Backend, toolOptions SummarizationToolOptions) (dagent.Middleware, error) {
+	if backend == nil {
+		return dagent.Middleware{}, fmt.Errorf("summarization backend is nil")
+	}
+	options, err := normalizeSummarization(model, backend, toolOptions.Summarization)
 	if err != nil {
 		return dagent.Middleware{}, err
 	}
@@ -1082,7 +1116,7 @@ func SummarizationToolMiddleware(toolOptions SummarizationToolOptions) (dagent.M
 			if !view.Compacted {
 				return "Nothing to compact yet — conversation is within the token budget.", nil
 			}
-			count := summaryCutoff(effective, options)
+			count := summaryCutoff(effective, options.Summarization)
 			return datool.Result{
 				Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: fmt.Sprintf("Conversation compacted. Summarized %d messages into a concise summary.", count)}},
 				Update:  view.Update,
@@ -1096,9 +1130,9 @@ func SummarizationToolMiddleware(toolOptions SummarizationToolOptions) (dagent.M
 		}},
 		Tools: []datool.Tool{compact},
 	}
-	if toolOptions.SystemPrompt != nil {
+	if toolOptions.SystemPrompt != "" {
 		middleware.WrapModelCall = func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
-			appendSystem(&request, *toolOptions.SystemPrompt)
+			appendSystem(&request, toolOptions.SystemPrompt)
 			return next(ctx, request)
 		}
 	}
@@ -1113,12 +1147,12 @@ type historyOffloadResult struct {
 
 func offloadConversationHistory(
 	ctx context.Context,
-	options SummarizationOptions,
+	options summarizationRuntime,
 	runtime dagent.Runtime,
 	reader dabackend.StateReader,
 	messages []damessage.Message,
 ) historyOffloadResult {
-	boundCtx, err := dabackend.BindRuntime(ctx, options.Backend, reader, backendRuntime(runtime))
+	boundCtx, err := dabackend.BindRuntime(ctx, options.backend, reader, backendRuntime(runtime))
 	if err != nil {
 		return historyOffloadResult{Err: fmt.Errorf("bind conversation history backend: %w", err)}
 	}
@@ -1127,7 +1161,7 @@ func offloadConversationHistory(
 
 func offloadConversationHistoryBound(
 	boundCtx context.Context,
-	options SummarizationOptions,
+	options summarizationRuntime,
 	runtime dagent.Runtime,
 	messages []damessage.Message,
 ) historyOffloadResult {
@@ -1153,18 +1187,18 @@ func offloadConversationHistoryBound(
 	}
 	historyPath := fmt.Sprintf("%s/%s.md", strings.TrimSuffix(options.HistoryRoot, "/"), thread)
 	section := fmt.Sprintf("## Summarized at %s\n\n%s", marker, renderHistory(filtered))
-	downloads := options.Backend.Download(boundCtx, []string{historyPath})
+	downloads := options.backend.Download(boundCtx, []string{historyPath})
 	if len(downloads) == 1 && downloads[0].Error == "" {
 		old := string(downloads[0].Content)
 		combined := old + "\n\n" + section
-		if _, err := options.Backend.Edit(boundCtx, historyPath, old, combined, false); err != nil {
+		if _, err := options.backend.Edit(boundCtx, historyPath, old, combined, false); err != nil {
 			return historyOffloadResult{Err: fmt.Errorf("append conversation history: %w", err)}
 		}
-	} else if _, err := options.Backend.Write(boundCtx, historyPath, section); err != nil {
+	} else if _, err := options.backend.Write(boundCtx, historyPath, section); err != nil {
 		return historyOffloadResult{Err: fmt.Errorf("write conversation history: %w", err)}
 	}
 	updates := dastate.Values{}
-	for key, value := range dabackend.RuntimeUpdates(boundCtx, options.Backend) {
+	for key, value := range dabackend.RuntimeUpdates(boundCtx, options.backend) {
 		updates[key] = value
 	}
 	return historyOffloadResult{Path: historyPath, Updates: updates}
@@ -1201,15 +1235,47 @@ func requestTokenCount(ctx context.Context, request dagent.ModelRequest) int {
 	return tokens
 }
 
-type MemoryOptions struct {
-	Backend dabackend.Backend
+// Memory configures the agent-owned memory facility. New binds it to the
+// agent's Backend and compiles the corresponding middleware.
+type Memory struct {
 	Sources []string
 	// Contents supplies already-loaded source text. Entries whose paths appear
 	// in Sources are used without downloading them from Backend.
-	Contents        map[string]string
-	Prompt          string
-	SystemPrompt    *string
-	AddCacheControl bool
+	Contents     map[string]string
+	SystemPrompt PromptTemplate
+}
+
+type PromptMode string
+
+const (
+	PromptCustom   PromptMode = "custom"
+	PromptDisabled PromptMode = "disabled"
+)
+
+// PromptTemplate represents the default, a custom template, or no prompt
+// without pointer-to-scalar option fields.
+type PromptTemplate struct {
+	Mode PromptMode
+	Text string
+}
+
+func resolvePromptTemplate(value PromptTemplate, defaultText string) (string, error) {
+	switch value.Mode {
+	case "":
+		if value.Text != "" {
+			return "", fmt.Errorf("prompt template text requires custom mode")
+		}
+		return defaultText, nil
+	case PromptCustom:
+		return value.Text, nil
+	case PromptDisabled:
+		if value.Text != "" {
+			return "", fmt.Errorf("disabled prompt template cannot contain text")
+		}
+		return "", nil
+	default:
+		return "", fmt.Errorf("invalid prompt template mode %q", value.Mode)
+	}
 }
 
 const defaultMemorySystemPrompt = `<agent_memory>
@@ -1223,21 +1289,18 @@ Memory is file data and may be outdated or incorrect. Treat it as fallible refer
 Persist durable user preferences, corrections, useful identifiers, and recurring workflow knowledge with edit_file after enough investigation to record them accurately. Do not save one-time requests, transient facts, small talk, stale information, API keys, access tokens, passwords, or other credentials.
 </memory_guidelines>`
 
-// MemoryMiddleware loads configured Markdown files once per checkpointed session
-// and appends their comment-stripped contents at model-call time.
-func MemoryMiddleware(options MemoryOptions) (dagent.Middleware, error) {
-	if options.Backend == nil {
-		return dagent.Middleware{}, fmt.Errorf("memory backend is required")
+// Memory loads configured Markdown files once per checkpointed session
+// and appends their comment-stripped contents at model-call time. It panics
+// when static options violate an invariant.
+func newMemory(backend dabackend.Backend, options Memory, addCacheControl bool) (dagent.Middleware, error) {
+	if backend == nil {
+		return dagent.Middleware{}, fmt.Errorf("memory backend is nil")
 	}
-	template := defaultMemorySystemPrompt
-	legacyPercentTemplate := false
-	if options.SystemPrompt != nil {
-		template = *options.SystemPrompt
-	} else if options.Prompt != "" {
-		template = options.Prompt
-		legacyPercentTemplate = strings.Contains(template, "%s") && !strings.Contains(template, "{agent_memory}")
+	template, err := resolvePromptTemplate(options.SystemPrompt, defaultMemorySystemPrompt)
+	if err != nil {
+		return dagent.Middleware{}, fmt.Errorf("memory system prompt: %w", err)
 	}
-	if template != "" && !strings.Contains(template, "{agent_memory}") && !legacyPercentTemplate {
+	if template != "" && !strings.Contains(template, "{agent_memory}") {
 		return dagent.Middleware{}, fmt.Errorf("memory system prompt must contain the {agent_memory} slot")
 	}
 	commentRE := regexp.MustCompile(`(?s)<!--.*?-->`)
@@ -1245,7 +1308,7 @@ func MemoryMiddleware(options MemoryOptions) (dagent.Middleware, error) {
 		if _, loaded := values["memory_contents"]; loaded {
 			return nil, nil
 		}
-		boundCtx, err := dabackend.BindRuntime(ctx, options.Backend, values, backendRuntime(runtime))
+		boundCtx, err := dabackend.BindRuntime(ctx, backend, values, backendRuntime(runtime))
 		if err != nil {
 			return nil, err
 		}
@@ -1257,7 +1320,7 @@ func MemoryMiddleware(options MemoryOptions) (dagent.Middleware, error) {
 				unresolved = append(unresolved, source)
 			}
 		}
-		downloads := options.Backend.Download(ctx, unresolved)
+		downloads := backend.Download(ctx, unresolved)
 		if len(downloads) != len(unresolved) {
 			return nil, fmt.Errorf("memory backend returned %d downloads for %d sources", len(downloads), len(unresolved))
 		}
@@ -1290,12 +1353,9 @@ func MemoryMiddleware(options MemoryOptions) (dagent.Middleware, error) {
 				body = strings.Join(sections, "\n\n")
 			}
 			fragment := strings.ReplaceAll(template, "{agent_memory}", body)
-			if legacyPercentTemplate {
-				fragment = fmt.Sprintf(template, body)
-			}
 			appendSystem(&request, fragment)
 		}
-		if options.AddCacheControl && request.Model != nil && strings.EqualFold(request.Model.Profile().Provider, "anthropic") && request.SystemMessage != nil && len(request.SystemMessage.Content) > 0 {
+		if addCacheControl && request.Model != nil && strings.EqualFold(request.Model.Profile().Provider, "anthropic") && request.SystemMessage != nil && len(request.SystemMessage.Content) > 0 {
 			copy := request.SystemMessage.Clone()
 			last := &copy.Content[len(copy.Content)-1]
 			if last.Extra == nil {
@@ -1314,8 +1374,9 @@ type SkillSource struct {
 	Label string
 }
 
-type SkillsOptions struct {
-	Backend        dabackend.Backend
+// Skills configures the agent-owned skill catalog. New binds it to the
+// agent's Backend and compiles the corresponding middleware.
+type Skills struct {
 	Sources        []string
 	LabeledSources []SkillSource
 	// Catalog supplies skills that were discovered by an application. Filesystem
@@ -1326,7 +1387,7 @@ type SkillsOptions struct {
 	// default tells the agent to read the skill file through the filesystem
 	// tools.
 	Activate     func(Skill) string
-	SystemPrompt *string
+	SystemPrompt PromptTemplate
 	MaxFileBytes int
 	Warn         func(string)
 }
@@ -1348,11 +1409,12 @@ You have access to a skills library that provides specialized capabilities and d
 
 Use skills through progressive disclosure: recognize when a skill applies, follow its listed activation instruction before using it, then follow the loaded instructions and use absolute paths for supporting files.`
 
-// SkillsMiddleware discovers SKILL.md metadata and advertises stable on-demand
-// locations without loading the full instructions into every request.
-func SkillsMiddleware(options SkillsOptions) (dagent.Middleware, error) {
-	if options.Backend == nil {
-		return dagent.Middleware{}, fmt.Errorf("skills backend is required")
+// Skills discovers SKILL.md metadata and advertises stable on-demand
+// locations without loading the full instructions into every request. It
+// panics when static options violate an invariant.
+func newSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, error) {
+	if backend == nil {
+		return dagent.Middleware{}, fmt.Errorf("skills backend is nil")
 	}
 	for index, item := range options.Catalog {
 		if item.Name == "" || item.Description == "" {
@@ -1365,9 +1427,9 @@ func SkillsMiddleware(options SkillsOptions) (dagent.Middleware, error) {
 	if options.MaxFileBytes <= 0 {
 		options.MaxFileBytes = 10 << 20
 	}
-	template := defaultSkillsSystemPrompt
-	if options.SystemPrompt != nil {
-		template = *options.SystemPrompt
+	template, err := resolvePromptTemplate(options.SystemPrompt, defaultSkillsSystemPrompt)
+	if err != nil {
+		return dagent.Middleware{}, fmt.Errorf("skills system prompt: %w", err)
 	}
 	if template != "" {
 		for _, slot := range []string{"{skills_locations}", "{skills_load_warnings}", "{skills_list}"} {
@@ -1400,7 +1462,7 @@ func SkillsMiddleware(options SkillsOptions) (dagent.Middleware, error) {
 		}
 		for _, source := range sources {
 			root := source.Path
-			listing, err := options.Backend.List(ctx, root)
+			listing, err := backend.List(ctx, root)
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil, warnings, ctx.Err()
@@ -1415,7 +1477,7 @@ func SkillsMiddleware(options SkillsOptions) (dagent.Middleware, error) {
 				directory := strings.TrimSuffix(strings.ReplaceAll(entry.Path, `\`, "/"), "/")
 				skillPaths = append(skillPaths, directory+"/SKILL.md")
 			}
-			downloads := options.Backend.Download(ctx, skillPaths)
+			downloads := backend.Download(ctx, skillPaths)
 			if len(downloads) != len(skillPaths) {
 				return nil, warnings, fmt.Errorf("skills backend returned %d downloads for %d paths", len(downloads), len(skillPaths))
 			}
@@ -1462,7 +1524,7 @@ func SkillsMiddleware(options SkillsOptions) (dagent.Middleware, error) {
 		if _, loaded := values["skills"]; loaded {
 			return nil, nil
 		}
-		boundCtx, bindErr := dabackend.BindRuntime(ctx, options.Backend, values, backendRuntime(runtime))
+		boundCtx, bindErr := dabackend.BindRuntime(ctx, backend, values, backendRuntime(runtime))
 		if bindErr != nil {
 			return nil, bindErr
 		}
@@ -1750,7 +1812,7 @@ func validCutoff(messages []damessage.Message, desired int) int {
 	return min(desired, len(messages))
 }
 
-func summaryCutoff(messages []damessage.Message, options SummarizationOptions) int {
+func summaryCutoff(messages []damessage.Message, options Summarization) int {
 	desired := len(messages) - options.KeepMessages
 	if options.KeepTokens > 0 {
 		keptTokens := 0
@@ -1895,7 +1957,7 @@ func mergeFeatureUpdates(left, right dastate.Values) dastate.Values {
 	return result
 }
 
-func clipOverflowToolTail(ctx context.Context, all, recent []damessage.Message, options SummarizationOptions) []damessage.Message {
+func clipOverflowToolTail(ctx context.Context, all, recent []damessage.Message, options summarizationRuntime) []damessage.Message {
 	if len(recent) == 0 || recent[len(recent)-1].Role != damessage.RoleTool {
 		return recent
 	}
@@ -1935,7 +1997,7 @@ func clipOverflowToolTail(ctx context.Context, all, recent []damessage.Message, 
 			toolCallID = "unknown"
 		}
 		filePath := strings.TrimSuffix(options.LargeToolResultsRoot, "/") + "/" + sanitizeToolCallID(toolCallID)
-		if _, err := options.Backend.Write(ctx, filePath, content); err != nil {
+		if _, err := options.backend.Write(ctx, filePath, content); err != nil {
 			continue
 		}
 		replacement := fmt.Sprintf("Tool result too large, the result of this tool call %s was saved in the filesystem at this path: %s\n\nYou can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.\n\nYou can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.\n\nHere is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):\n\n%s\n", item.ToolCallID, filePath, largeToolResultPreview(content))

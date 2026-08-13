@@ -24,10 +24,8 @@ var emptyObjectSchema = json.RawMessage(`{"type":"object"}`)
 
 func compileAgent(t *testing.T, chat damodel.Chat, tools []datool.Tool, saver dacheckpoint.Saver, middleware ...dagent.Middleware) *dagent.Agent {
 	t.Helper()
-	compiled, err := dagent.New(dagent.Options{Model: chat, Tools: tools, Saver: saver, Middleware: middleware, FailOnToolError: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := dagent.New(chat, dagent.Options{Tools: tools, Saver: saver, Middleware: middleware, FailOnToolError: true})
+
 	return compiled
 }
 
@@ -170,14 +168,24 @@ func TestFindTool(t *testing.T) {
 	duplicate := namedTool("same", func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
 		return datool.TextResult("ok"), nil
 	})
-	if _, err := dagent.New(dagent.Options{Model: modeltest.New(damodel.Profile{}), Tools: []datool.Tool{duplicate, duplicate}}); !errors.Is(err, dagent.ErrDuplicateTool) {
-		t.Fatalf("duplicate tool error = %v", err)
-	}
+	func() {
+		defer func() {
+			if value := recover(); !errors.Is(asError(value), dagent.ErrDuplicateTool) {
+				t.Fatalf("duplicate tool panic = %v", value)
+			}
+		}()
+		dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{Tools: []datool.Tool{duplicate, duplicate}})
+	}()
 	unknown := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{toolCall("x", "missing")}}}})
 	_, err := compileAgent(t, unknown, nil, nil).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}})
 	if !errors.Is(err, dagent.ErrUnknownTool) {
 		t.Fatalf("unknown tool error = %v", err)
 	}
+}
+
+func asError(value any) error {
+	err, _ := value.(error)
+	return err
 }
 
 func TestToolCallInfoFromContext(t *testing.T) {
@@ -190,10 +198,7 @@ func TestToolCallInfoFromContext(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{toolCall("call-17", "inspect")}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := dagent.New(dagent.Options{Model: script, Tools: []datool.Tool{inspect}, Deps: "trusted", Saver: dacheckpoint.NewMemorySaver()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := dagent.New(script, dagent.Options{Tools: []datool.Tool{inspect}, Deps: "trusted", Saver: dacheckpoint.NewMemorySaver()})
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "runtime"}, Messages: []damessage.Message{damessage.Human("inspect")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -246,10 +251,7 @@ func TestNewToolUseContext(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{toolCall("ctx-call", "inspect")}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := dagent.New(dagent.Options{Model: script, Tools: []datool.Tool{inspect}, Deps: map[string]string{"scope": "conversation"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := dagent.New(script, dagent.Options{Tools: []datool.Tool{inspect}, Deps: map[string]string{"scope": "conversation"}})
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "ctx-thread"}, Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"extra": "value"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -397,18 +399,14 @@ func TestDepthAdditional(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "inner", Name: "task", Arguments: json.RawMessage(`{"description":"deep work","subagent_type":"deep"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child done")}},
 	)
-	child, err := dago.New(dago.Options{Model: childModel, Subagents: []dago.Subagent{{Name: "deep", Description: "Deep worker", Runnable: grandchild}}, DisableSummary: true, DisableTodo: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	child := dago.New(childModel, dago.Options{Subagents: []dago.Subagent{{Name: "deep", Description: "Deep worker", Runnable: grandchild}}, DisableSummary: true})
+
 	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "outer", Name: "task", Arguments: json.RawMessage(`{"description":"child work","subagent_type":"child"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent done")}},
 	)
-	parent, err := dago.New(dago.Options{Model: parentModel, Subagents: []dago.Subagent{{Name: "child", Description: "Child worker", Runnable: child}}, DisableSummary: true, DisableTodo: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	parent := dago.New(parentModel, dago.Options{Subagents: []dago.Subagent{{Name: "child", Description: "Child worker", Runnable: child}}, DisableSummary: true})
+
 	result, err := parent.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("delegate twice")}})
 	if err != nil {
 		t.Fatal(err)

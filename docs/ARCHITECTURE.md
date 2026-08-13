@@ -9,7 +9,16 @@ examples.
 
 Core contracts contain no provider SDK types. Database drivers live in concrete
 subpackages. The graph runtime remains internal until it has a separately reviewed
-public use case; public consumers use `dagent.Agent` or `dago.DeepAgent`.
+public use case; public consumers use `dagent.Agent`.
+
+Public construction follows one rule: a constructor exists only when it establishes
+an invariant or compiles configuration into behavior. Passive configuration is an
+exported value. Agent-owned facilities such as `Filesystem`, `Skills`, `Memory`, and
+`Summarization` are nested on `dago.Options`; `dago.New` binds them to the agent model
+and backend. Mandatory static dependencies are positional constructor parameters,
+option zero values select useful defaults, and static programmer mistakes panic.
+Errors are reserved for external configuration, model or tool input, I/O, remote
+operations, and runtime execution where the caller can make a meaningful decision.
 
 Public additions require intended-behavior tests, cancellation semantics for any
 blocking operation, a stable JSON representation for persisted or streamed data,

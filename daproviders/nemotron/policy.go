@@ -1,4 +1,4 @@
-package dago
+package nemotron
 
 import (
 	"context"
@@ -68,7 +68,7 @@ var (
 	nemotronExactPhrase       = regexp.MustCompile(`(?i)\b(reply|respond|return|answer) +with +exactly *:? *["']?([^"'.?!\n]{1,80})`)
 	nemotronExactOnly         = regexp.MustCompile(`(?i)\b(reply|respond|return|answer) +with +([A-Za-z0-9_\-\[\]{}]+) +only\b`)
 	nemotronVersionLiteral    = regexp.MustCompile(`\bv[0-9]+(\.[0-9]+)+[-._A-Za-z0-9]*\b`)
-	nemotronToolToken         = regexp.MustCompile(`[A-Z]?[a-z]+|[A-Z]+|[0-9]+`)
+	nemotronToolToken         = regexp.MustCompile(`[A-Z]?[a-z]+|[A-Z]+|[[:digit:]]+`)
 )
 
 var nemotronMutationVerbs = map[string]bool{
@@ -100,16 +100,16 @@ type nemotronToolResult struct {
 	Value any
 }
 
-// NemotronProgressBudgetOptions bounds one active user turn.
-type NemotronProgressBudgetOptions struct {
+// ProgressBudgetOptions bounds one active user turn.
+type ProgressBudgetOptions struct {
 	MaxModelCalls        int
 	MaxToolResults       int
 	MaxRepeatedToolCalls int
 }
 
-// NemotronProgressBudget stops runaway loops before another model call and
+// ProgressBudget stops runaway loops before another model call and
 // returns a compact answer grounded in results already gathered this turn.
-func NemotronProgressBudget(options NemotronProgressBudgetOptions) dagent.Middleware {
+func ProgressBudget(options ProgressBudgetOptions) dagent.Middleware {
 	if options.MaxModelCalls <= 0 {
 		options.MaxModelCalls = 16
 	}
@@ -501,6 +501,23 @@ func stringSliceState(values dastate.Values, key string) []string {
 
 func cloneStringSliceValue(value any) any {
 	return append([]string(nil), stringsFromState(value)...)
+}
+
+func stringsFromState(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return values
+	case []any:
+		result := make([]string, 0, len(values))
+		for _, item := range values {
+			if text, ok := item.(string); ok {
+				result = append(result, text)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
 }
 
 func nemotronIdentityClone(value any) any { return value }

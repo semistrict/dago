@@ -940,7 +940,7 @@ func testSubagentDone_StaleQueuedNotificationDroppedAfterSyncDelivery(t *testing
 	// Parent (still mid-turn) polls the subagent with wait=true and gets the
 	// response synchronously via the tool result.
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(ctx, f.subagentID, "echo: foo", true, 10*time.Second, "predictable", "")
+	res, err := runSubagent(runner, ctx, f.subagentID, "echo: foo", true, 10*time.Second, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=true): %v", err)
 	}
@@ -990,7 +990,7 @@ func testSubagentDone_StaleQueuedNotificationDroppedOnWaitFalseSend(t *testing.T
 	f.subagentMgr.SetAgentWorking(true)
 
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(context.Background(), f.subagentID, "do the next thing", false, time.Minute, "predictable", "")
+	res, err := runSubagent(runner, context.Background(), f.subagentID, "do the next thing", false, time.Minute, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=false): %v", err)
 	}
@@ -1034,7 +1034,7 @@ func testSubagentDone_StaleQueuedNotificationDroppedOnWaitTrueReprompt(t *testin
 	}()
 
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(context.Background(), f.subagentID, "echo: foo", true, 10*time.Second, "predictable", "")
+	res, err := runSubagent(runner, context.Background(), f.subagentID, "echo: foo", true, 10*time.Second, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=true): %v", err)
 	}
@@ -1070,7 +1070,7 @@ func testSubagentDone_RepromptThenTimeoutStillDropsStale(t *testing.T) {
 	// outlives the 1s deadline, so waitForResponse returns a progress summary
 	// without ever reaching the delivery path.
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(context.Background(), f.subagentID, "delay: 4", true, time.Second, "predictable", "")
+	res, err := runSubagent(runner, context.Background(), f.subagentID, "delay: 4", true, time.Second, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=true, timeout): %v", err)
 	}
@@ -1108,7 +1108,7 @@ func testSubagentDone_NotificationEnqueuedMidWaitDroppedAtDelivery(t *testing.T)
 	done := make(chan result, 1)
 	runner := NewSubagentRunner(f.server)
 	go func() {
-		res, err := runner.RunSubagent(context.Background(), f.subagentID, "delay: 1", true, 10*time.Second, "predictable", "")
+		res, err := runSubagent(runner, context.Background(), f.subagentID, "delay: 1", true, 10*time.Second, "predictable", "")
 		done <- result{res, err}
 	}()
 
@@ -1179,7 +1179,7 @@ func testSubagentDone_TimeoutDoesNotDropQueuedNotification(t *testing.T) {
 	defer f.subagentMgr.SetAgentWorking(false)
 
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(context.Background(), f.subagentID, "echo: foo", true, 700*time.Millisecond, "predictable", "")
+	res, err := runSubagent(runner, context.Background(), f.subagentID, "echo: foo", true, 700*time.Millisecond, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=true, timeout): %v", err)
 	}
@@ -1212,7 +1212,7 @@ func testSubagentDone_StragglerNotifierSkipsAfterSyncDelivery(t *testing.T) {
 	// synchronously. This marks the response's sequence id as delivered and
 	// scrubs the (empty) queue.
 	runner := NewSubagentRunner(f.server)
-	res, err := runner.RunSubagent(ctx, f.subagentID, "echo: foo", true, 10*time.Second, "predictable", "")
+	res, err := runSubagent(runner, ctx, f.subagentID, "echo: foo", true, 10*time.Second, "predictable", "")
 	if err != nil {
 		t.Fatalf("RunSubagent(wait=true): %v", err)
 	}
@@ -1255,7 +1255,7 @@ func testSubagentDone_StragglerNotifierSkipsAfterWaitFalseSupersede(t *testing.T
 	// Parent sends the subagent new work (wait=false). This records the
 	// supersession watermark for the existing response and scrubs the queue.
 	runner := NewSubagentRunner(f.server)
-	if _, err := runner.RunSubagent(ctx, f.subagentID, "delay: 5", false, 0, "predictable", ""); err != nil {
+	if _, err := runSubagent(runner, ctx, f.subagentID, "delay: 5", false, 0, "predictable", ""); err != nil {
 		t.Fatalf("RunSubagent(wait=false): %v", err)
 	}
 

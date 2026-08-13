@@ -16,29 +16,37 @@ import (
 	"github.com/semistrict/dago/datool"
 )
 
+// ToolRetryOptions configures whole-tool execution retries.
+type ToolRetryOptions struct {
+	Name      string
+	Attempts  int
+	Backoff   time.Duration
+	Retryable func(error) bool
+}
+
 // ToolRetry returns middleware that retries whole tool executions. Attempts includes
 // the initial call. Context cancellation and deadline errors are never retried.
-func ToolRetry(name string, attempts int, backoff time.Duration, retryable func(error) bool) Middleware {
-	if name == "" {
-		name = "tool_retry"
+func ToolRetry(options ToolRetryOptions) Middleware {
+	if options.Name == "" {
+		options.Name = "tool_retry"
 	}
-	if attempts <= 0 {
-		attempts = 1
+	if options.Attempts <= 0 {
+		options.Attempts = 1
 	}
-	return Middleware{Name: name, WrapToolCall: func(ctx context.Context, request ToolCallRequest, next ToolHandler) (ToolCallResponse, error) {
+	return Middleware{Name: options.Name, WrapToolCall: func(ctx context.Context, request ToolCallRequest, next ToolHandler) (ToolCallResponse, error) {
 		var last error
-		for attempt := 0; attempt < attempts; attempt++ {
+		for attempt := 0; attempt < options.Attempts; attempt++ {
 			response, err := next(ctx, request)
 			if err == nil {
 				return response, nil
 			}
 			last = err
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-				(retryable != nil && !retryable(err)) || attempt+1 >= attempts {
+				(options.Retryable != nil && !options.Retryable(err)) || attempt+1 >= options.Attempts {
 				break
 			}
-			if backoff > 0 {
-				timer := time.NewTimer(backoff)
+			if options.Backoff > 0 {
+				timer := time.NewTimer(options.Backoff)
 				select {
 				case <-timer.C:
 				case <-ctx.Done():
@@ -290,10 +298,11 @@ func ValidateApprovalRules(rules []ApprovalRule) error {
 // HumanApproval pauses before any matching tool executes and supports approve,
 // edit, reject, and respond decisions, including several pending calls in one interrupt.
 func HumanApproval(rules []ApprovalRule) Middleware {
+	if err := ValidateApprovalRules(rules); err != nil {
+		panic(err)
+	}
+	rules = append([]ApprovalRule(nil), rules...)
 	return Middleware{Name: "human_approval", SerializedName: "HumanInTheLoopMiddleware", BeforeTools: func(_ context.Context, request ToolBatchRequest) (ToolBatchResponse, error) {
-		if err := ValidateApprovalRules(rules); err != nil {
-			return ToolBatchResponse{}, err
-		}
 		var pending []ApprovalRequest
 		gated := map[string]bool{}
 		matchedRules := map[string]ApprovalRule{}
@@ -398,11 +407,8 @@ func JumpUpdate(destination string) dastate.Values {
 // PromptCaching adds a cache hint only when the selected model advertises prompt
 // caching. Anthropic requests also receive the provider's explicit cache
 // breakpoints on the final system content block and final tool definition.
-func PromptCaching(name, retention string, key func(ModelRequest) string) Middleware {
-	if name == "" {
-		name = "prompt_caching"
-	}
-	return Middleware{Name: name, WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
+func PromptCaching(retention string, key func(ModelRequest) string) Middleware {
+	return Middleware{Name: "prompt_caching", WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
 		if request.Model.Profile().SupportsPromptCaching {
 			cacheKey := ""
 			if key != nil {

@@ -15,6 +15,15 @@ import (
 	"github.com/semistrict/dago/dastate"
 )
 
+func mustMemory(backend dabackend.Backend, options Memory, addCacheControl ...bool) dagent.Middleware {
+	cacheControl := len(addCacheControl) > 0 && addCacheControl[0]
+	middleware, err := newMemory(backend, options, cacheControl)
+	if err != nil {
+		panic(err)
+	}
+	return middleware
+}
+
 type recordingDownloadBackend struct {
 	dabackend.Backend
 	calls   int
@@ -40,13 +49,12 @@ func TestMemoryLoadsOnceInOneBatchAndFormatsSourcesInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	recording := &recordingDownloadBackend{Backend: memory}
-	middleware, err := MemoryMiddleware(MemoryOptions{
-		Backend: recording,
-		Sources: []string{"/base/AGENTS.md", "/missing/AGENTS.md", "/project/AGENTS.md"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustMemory(
+		recording, Memory{
+
+			Sources: []string{"/base/AGENTS.md", "/missing/AGENTS.md", "/project/AGENTS.md"},
+		})
+
 	update, err := middleware.BeforeAgent(context.Background(), dastate.Values{}, dagent.Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -71,10 +79,8 @@ func TestMemoryLoadsOnceInOneBatchAndFormatsSourcesInOrder(t *testing.T) {
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
-	compiled, err := dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{middleware}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{
 		Messages: []damessage.Message{damessage.Human("go")},
 		State:    dastate.Values{"memory_contents": contents},
@@ -94,13 +100,12 @@ func TestMemoryPreloadedContentsArePortableAndSurviveCheckpointDecode(t *testing
 		t.Fatal(err)
 	}
 	recording := &recordingDownloadBackend{Backend: memory}
-	middleware, err := MemoryMiddleware(MemoryOptions{
-		Backend: recording, Sources: []string{"/embedded/AGENTS.md", "/disk/AGENTS.md"},
-		Contents: map[string]string{"/embedded/AGENTS.md": "embedded"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustMemory(
+		recording, Memory{
+			Sources:  []string{"/embedded/AGENTS.md", "/disk/AGENTS.md"},
+			Contents: map[string]string{"/embedded/AGENTS.md": "embedded"},
+		})
+
 	update, err := middleware.BeforeAgent(context.Background(), dastate.Values{}, dagent.Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -124,10 +129,8 @@ func TestMemoryPreloadedContentsArePortableAndSurviveCheckpointDecode(t *testing
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
-	compiled, err := dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{middleware}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{
 		Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"memory_contents": restored},
 	}); err != nil {
@@ -140,10 +143,8 @@ func TestMemoryMissingIsEmptyAndOtherDownloadErrorsFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := MemoryMiddleware(MemoryOptions{Backend: memory, Sources: []string{"/missing"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustMemory(memory, Memory{Sources: []string{"/missing"}})
+
 	update, err := middleware.BeforeAgent(context.Background(), dastate.Values{}, dagent.Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -153,10 +154,8 @@ func TestMemoryMissingIsEmptyAndOtherDownloadErrorsFail(t *testing.T) {
 	}
 
 	denied := &recordingDownloadBackend{Backend: memory, results: []dabackend.DownloadResult{{Path: "/locked", Error: "permission_denied"}}}
-	middleware, err = MemoryMiddleware(MemoryOptions{Backend: denied, Sources: []string{"/locked"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware = mustMemory(denied, Memory{Sources: []string{"/locked"}})
+
 	if _, err := middleware.BeforeAgent(context.Background(), dastate.Values{}, dagent.Runtime{}); err == nil || !strings.Contains(err.Error(), "permission_denied") {
 		t.Fatalf("error = %v", err)
 	}
@@ -168,15 +167,12 @@ func TestMemoryPromptCanBeCustomizedOrDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	invalid := "memory without a slot"
-	if _, err := MemoryMiddleware(MemoryOptions{Backend: memory, SystemPrompt: &invalid}); err == nil {
-		t.Fatal("expected missing agent_memory slot to fail")
-	}
+	requirePanicContaining(t, "{agent_memory}", func() {
+		mustMemory(memory, Memory{SystemPrompt: PromptTemplate{Mode: PromptCustom, Text: invalid}})
+	})
 
-	disabled := ""
-	middleware, err := MemoryMiddleware(MemoryOptions{Backend: memory, SystemPrompt: &disabled})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustMemory(memory, Memory{SystemPrompt: PromptTemplate{Mode: PromptDisabled}})
+
 	_, err = middleware.WrapModelCall(context.Background(), dagent.ModelRequest{
 		Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"memory_contents": map[string]string{}},
 	}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
@@ -195,11 +191,8 @@ func TestMemoryAddsProviderCacheHintToLastSystemBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	disabled := ""
-	middleware, err := MemoryMiddleware(MemoryOptions{Backend: memory, SystemPrompt: &disabled, AddCacheControl: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustMemory(memory, Memory{SystemPrompt: PromptTemplate{Mode: PromptDisabled}}, true)
+
 	provider := modeltest.New(damodel.Profile{Provider: "anthropic"})
 	system := damessage.System("static")
 	_, err = middleware.WrapModelCall(context.Background(), dagent.ModelRequest{Model: provider, SystemMessage: &system}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {

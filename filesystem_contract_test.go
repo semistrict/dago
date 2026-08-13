@@ -68,10 +68,8 @@ func TestFilesystemToolSchemasDescribeEveryArgument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := FilesystemMiddleware(FilesystemOptions{Backend: memory})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustFilesystem(memory, Filesystem{})
+
 	want := map[string][]string{
 		"ls": {"path"}, "read_file": {"file_path", "offset", "limit"},
 		"write_file": {"file_path", "content"},
@@ -112,19 +110,19 @@ func TestFilesystemToolsNormalizePathsAndRejectAmbiguousHostSyntax(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file")
+	read := filesystemTool(t, memory, Filesystem{}, "read_file")
 	if _, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"C:\\Users\\test.txt"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "Windows absolute") {
 		t.Fatalf("Windows path error = %v", err)
 	}
-	edit := filesystemTool(t, FilesystemOptions{Backend: memory}, "edit_file")
+	edit := filesystemTool(t, memory, Filesystem{}, "edit_file")
 	if _, err := edit.Execute(context.Background(), json.RawMessage(`{"file_path":"./question/..","old_string":"a","new_string":"b"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
 		t.Fatalf("traversal path error = %v", err)
 	}
-	glob := filesystemTool(t, FilesystemOptions{Backend: memory}, "glob")
+	glob := filesystemTool(t, memory, Filesystem{}, "glob")
 	if _, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"../*.txt"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
 		t.Fatalf("traversal glob error = %v", err)
 	}
-	write := filesystemTool(t, FilesystemOptions{Backend: memory}, "write_file")
+	write := filesystemTool(t, memory, Filesystem{}, "write_file")
 	if _, err := write.Execute(context.Background(), json.RawMessage(`{"file_path":"notes/today.txt","content":"hello"}`), datool.Runtime{}); err != nil {
 		t.Fatal(err)
 	}
@@ -139,13 +137,12 @@ func TestFilesystemDescriptionsRespectVisibilityAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := FilesystemMiddleware(FilesystemOptions{
-		Backend: memory, Tools: []string{"read_file", "grep"},
-		ToolDescriptions: map[string]string{"read_file": "custom read"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustFilesystem(
+		memory, Filesystem{
+			Tools:            []string{"read_file", "grep"},
+			ToolDescriptions: map[string]string{"read_file": "custom read"},
+		})
+
 	definitions := map[string]datool.Definition{}
 	for _, executable := range middleware.Tools {
 		definition := executable.Definition()
@@ -167,7 +164,7 @@ func TestReadFileDistinguishesZeroWindowFromEmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file")
+	read := filesystemTool(t, memory, Filesystem{}, "read_file")
 	zero, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/full.txt","limit":0}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +188,7 @@ func TestReadFilePaginationAndNegativeOffset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := filesystemTool(t, FilesystemOptions{Backend: memory}, "read_file")
+	read := filesystemTool(t, memory, Filesystem{}, "read_file")
 	page, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/lines.txt","limit":2}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +221,7 @@ func TestExecuteReportsExitStatusAndCaptureTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execute := filesystemTool(t, FilesystemOptions{Backend: shell}, "execute")
+	execute := filesystemTool(t, shell, Filesystem{}, "execute")
 	result, err := execute.Execute(context.Background(), json.RawMessage(`{"command":"printf 123456; exit 3","timeout":1}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +233,7 @@ func TestExecuteReportsExitStatusAndCaptureTruncation(t *testing.T) {
 	if string(result.Artifact) != `{"exit_code":3}` {
 		t.Fatalf("execute artifact = %s", result.Artifact)
 	}
-	capped := filesystemTool(t, FilesystemOptions{Backend: shell, MaxExecuteTimeout: 1}, "execute")
+	capped := filesystemTool(t, shell, Filesystem{MaxExecuteTimeout: time.Second}, "execute")
 	if _, err := capped.Execute(context.Background(), json.RawMessage(`{"command":"true","timeout":2}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "exceeds maximum 1") {
 		t.Fatalf("execute timeout error = %v", err)
 	}
@@ -248,7 +245,7 @@ func TestExecuteArtifactOmitsUnknownExitCodeAndTruncation(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandbox := &recordingConfigurableSandbox{Backend: memory, unknown: true}
-	execute := filesystemTool(t, FilesystemOptions{Backend: sandbox}, "execute")
+	execute := filesystemTool(t, sandbox, Filesystem{}, "execute")
 	result, err := execute.Execute(context.Background(), json.RawMessage(`{"command":"true"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -263,10 +260,10 @@ func TestFilesystemNonEmptyToolAllowlistRequiresReadFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := FilesystemMiddleware(FilesystemOptions{Backend: memory, Tools: []string{"write_file"}}); err == nil || !strings.Contains(err.Error(), "read_file must be included") {
+	if _, err := newFilesystem(memory, Filesystem{Tools: []string{"write_file"}}, nil); err == nil || !strings.Contains(err.Error(), "read_file must be included") {
 		t.Fatalf("allowlist error = %v", err)
 	}
-	if _, err := FilesystemMiddleware(FilesystemOptions{Backend: memory, Tools: []string{}}); err != nil {
+	if _, err := newFilesystem(memory, Filesystem{Tools: []string{}}, nil); err != nil {
 		t.Fatalf("empty disabled tool set: %v", err)
 	}
 }
@@ -277,7 +274,7 @@ func TestGrepSupportsConfiguredAndPerCallUncappedSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	recording := &recordingGrepBackend{Backend: memory}
-	grep := filesystemTool(t, FilesystemOptions{Backend: recording, GrepUncapped: true}, "grep")
+	grep := filesystemTool(t, recording, Filesystem{GrepUncapped: true}, "grep")
 	for _, arguments := range []string{
 		`{"pattern":"hit"}`,
 		`{"pattern":"hit","max_count":5}`,
@@ -307,7 +304,7 @@ func TestGrepPreservesPartialMatchesWithBoundedError(t *testing.T) {
 		Error:   strings.Repeat("failure", 2_000),
 		Matches: []dabackend.GrepMatch{{Path: "/partial.txt", Line: 7, Text: "hit"}},
 	}}
-	grep := filesystemTool(t, FilesystemOptions{Backend: recording}, "grep")
+	grep := filesystemTool(t, recording, Filesystem{}, "grep")
 	result, err := grep.Execute(context.Background(), json.RawMessage(`{"pattern":"hit","output_mode":"content"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -324,7 +321,7 @@ func TestExecuteDistinguishesOmittedAndZeroTimeouts(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandbox := &recordingConfigurableSandbox{Backend: memory}
-	execute := filesystemTool(t, FilesystemOptions{Backend: sandbox}, "execute")
+	execute := filesystemTool(t, sandbox, Filesystem{}, "execute")
 	for _, arguments := range []string{`{"command":"true"}`, `{"command":"true","timeout":0}`, `{"command":"true","timeout":3}`} {
 		if _, err := execute.Execute(context.Background(), json.RawMessage(arguments), datool.Runtime{}); err != nil {
 			t.Fatal(err)
@@ -358,10 +355,8 @@ func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := FilesystemMiddleware(FilesystemOptions{Backend: composite})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustFilesystem(composite, Filesystem{})
+
 	system := damessage.System("base prompt")
 	_, err = middleware.WrapModelCall(context.Background(), dagent.ModelRequest{SystemMessage: &system, Tools: middleware.Tools}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
 		text := request.SystemMessage.TextContent()
@@ -391,10 +386,8 @@ func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := FilesystemMiddleware(FilesystemOptions{Backend: composite, LargeResultBytes: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
+	middleware := mustFilesystem(composite, Filesystem{ToolResultLimit: ContentLimit{Unit: ContentBytes, Amount: 10}})
+
 	response, err := middleware.WrapToolCall(context.Background(), dagent.ToolCallRequest{
 		Call: damessage.ToolCall{ID: "evict", Name: "custom"},
 	}, func(context.Context, dagent.ToolCallRequest) (dagent.ToolCallResponse, error) {
@@ -417,12 +410,10 @@ func TestToolResultOffloadConfinesArtifactAndPreservesMedia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := FilesystemMiddleware(FilesystemOptions{
-		Backend: memory, ArtifactsRoot: "/artifacts/large_tool_results", LargeResultBytes: 10,
+	middleware := mustFilesystem(memory, Filesystem{
+		ArtifactsRoot:   "/artifacts/large_tool_results",
+		ToolResultLimit: ContentLimit{Unit: ContentBytes, Amount: 10},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	image := damessage.ContentBlock{Type: damessage.BlockImage, MIMEType: "image/png", Data: []byte("image")}
 	response, err := middleware.WrapToolCall(context.Background(), dagent.ToolCallRequest{
 		Call: damessage.ToolCall{ID: `../outside\result`, Name: "custom"},
@@ -514,12 +505,12 @@ func TestFilesystemSearchResultsUseStableModelFacingShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ls := filesystemTool(t, FilesystemOptions{Backend: memory}, "ls")
+	ls := filesystemTool(t, memory, Filesystem{}, "ls")
 	listing, err := ls.Execute(context.Background(), json.RawMessage(`{"path":"/"}`), datool.Runtime{})
 	if err != nil || listing.Content[0].Text != "No files found" {
 		t.Fatalf("empty listing = %#v, %v", listing, err)
 	}
-	glob := filesystemTool(t, FilesystemOptions{Backend: memory}, "glob")
+	glob := filesystemTool(t, memory, Filesystem{}, "glob")
 	matches, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.go"}`), datool.Runtime{})
 	if err != nil || matches.Content[0].Text != "No files found" {
 		t.Fatalf("empty glob = %#v, %v", matches, err)
@@ -533,8 +524,8 @@ func TestFilesystemGlobBoundsUnresponsiveBackends(t *testing.T) {
 	}
 	release := make(chan struct{})
 	defer close(release)
-	glob := filesystemTool(t, FilesystemOptions{
-		Backend: blockingGlobBackend{Backend: memory, release: release}, GlobTimeout: 10 * time.Millisecond,
+	glob := filesystemTool(t, blockingGlobBackend{Backend: memory, release: release}, Filesystem{
+		GlobTimeout: 10 * time.Millisecond,
 	}, "glob")
 	for index := 0; index < 4; index++ {
 		_, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), datool.Runtime{})
@@ -554,8 +545,8 @@ func TestFilesystemGlobPreservesBackendTimeoutErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := errors.New("backend RPC timeout")
-	glob := filesystemTool(t, FilesystemOptions{
-		Backend: blockingGlobBackend{Backend: memory, err: want}, GlobTimeout: time.Second,
+	glob := filesystemTool(t, blockingGlobBackend{Backend: memory, err: want}, Filesystem{
+		GlobTimeout: time.Second,
 	}, "glob")
 	_, err = glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), datool.Runtime{})
 	if !errors.Is(err, want) || strings.Contains(err.Error(), "glob timed out after") {

@@ -1,4 +1,4 @@
-package dago
+package nemotron
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 )
 
 func TestNemotronToolCallShimRepairsArgumentsAndEmptyResult(t *testing.T) {
-	middleware := NemotronToolCallShim()
+	middleware := ToolCallShim()
 	request := dagent.ToolCallRequest{Call: damessage.ToolCall{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"/big.txt"}`)}}
 	var captured dagent.ToolCallRequest
 	response, err := middleware.WrapToolCall(context.Background(), request, func(_ context.Context, request dagent.ToolCallRequest) (dagent.ToolCallResponse, error) {
@@ -41,7 +41,7 @@ func TestNemotronToolCallShimRepairsArgumentsAndEmptyResult(t *testing.T) {
 }
 
 func TestNemotronToolCallShimPreservesExplicitPathAndCommandResult(t *testing.T) {
-	middleware := NemotronToolCallShim()
+	middleware := ToolCallShim()
 	request := dagent.ToolCallRequest{Call: damessage.ToolCall{ID: "call-1", Name: "delete", Arguments: json.RawMessage(`{"path":"/wrong","file_path":"/right"}`)}}
 	response, err := middleware.WrapToolCall(context.Background(), request, func(_ context.Context, request dagent.ToolCallRequest) (dagent.ToolCallResponse, error) {
 		if strings.Contains(string(request.Call.Arguments), `"file_path":"/wrong"`) {
@@ -58,7 +58,7 @@ func TestNemotronToolCallShimPreservesExplicitPathAndCommandResult(t *testing.T)
 }
 
 func TestNemotronReadContinuationNotice(t *testing.T) {
-	middleware := NemotronReadContinuationNotice()
+	middleware := ReadContinuationNotice()
 	request := dagent.ToolCallRequest{Call: damessage.ToolCall{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/x","offset":9,"limit":3}`)}}
 	response, err := middleware.WrapToolCall(context.Background(), request, func(context.Context, dagent.ToolCallRequest) (dagent.ToolCallResponse, error) {
 		return dagent.ToolCallResponse{Result: datool.TextResult("1  alpha\n2  beta\n3  gamma")}, nil
@@ -81,7 +81,7 @@ func TestNemotronReadContinuationNoticeIgnoresWrappedRows(t *testing.T) {
 			t.Errorf("isNumberedReadRow(%q) = %v, want %v", input, got, want)
 		}
 	}
-	middleware := NemotronReadContinuationNotice()
+	middleware := ReadContinuationNotice()
 	request := dagent.ToolCallRequest{Call: damessage.ToolCall{Name: "read_file", Arguments: json.RawMessage(`{"limit":2}`)}}
 	response, err := middleware.WrapToolCall(context.Background(), request, func(context.Context, dagent.ToolCallRequest) (dagent.ToolCallResponse, error) {
 		return dagent.ToolCallResponse{Result: datool.TextResult("  1  first\n1.1  second\n1.2  third")}, nil
@@ -95,7 +95,7 @@ func TestNemotronReadContinuationNoticeIgnoresWrappedRows(t *testing.T) {
 }
 
 func TestNemotronModelRateLimitRetry(t *testing.T) {
-	middleware := NemotronModelRateLimitRetry(0)
+	middleware := ModelRateLimitRetry(0)
 	calls := 0
 	response, err := middleware.WrapModelCall(context.Background(), dagent.ModelRequest{}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
 		calls++
@@ -120,7 +120,7 @@ func TestNemotronModelRateLimitRetry(t *testing.T) {
 
 func TestNemotronModelRateLimitRetryWithFakeTime(t *testing.T) {
 	modeltest.TestWithFakeTime(t, func(t *testing.T) {
-		middleware := NemotronModelRateLimitRetry(time.Hour)
+		middleware := ModelRateLimitRetry(time.Hour)
 		calls := 0
 		started := time.Now()
 		_, err := middleware.WrapModelCall(t.Context(), dagent.ModelRequest{}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
@@ -137,7 +137,7 @@ func TestNemotronModelRateLimitRetryWithFakeTime(t *testing.T) {
 }
 
 func TestNemotronModelRateLimitRetryHonorsCancellation(t *testing.T) {
-	middleware := NemotronModelRateLimitRetry(time.Hour)
+	middleware := ModelRateLimitRetry(time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := middleware.WrapModelCall(ctx, dagent.ModelRequest{}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
@@ -149,7 +149,7 @@ func TestNemotronModelRateLimitRetryHonorsCancellation(t *testing.T) {
 }
 
 func TestNemotronReasoningTagCleanup(t *testing.T) {
-	middleware := NemotronReasoningTagCleanup()
+	middleware := ReasoningTagCleanup()
 	response, err := middleware.WrapModelCall(context.Background(), dagent.ModelRequest{}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
 		return dagent.ModelResponse{Messages: []damessage.Message{damessage.Assistant("<think>hidden reasoning</think>\nVisible answer")}}, nil
 	})

@@ -11,6 +11,7 @@ import (
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
+	providerprofile "github.com/semistrict/dago/daproviders/profile"
 )
 
 func TestBuiltinAnthropicHarnessProfiles(t *testing.T) {
@@ -24,8 +25,8 @@ func TestBuiltinAnthropicHarnessProfiles(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.model, func(t *testing.T) {
-			profile, exists := LookupProfile("anthropic:" + test.model)
-			if !exists || profile.Kind != ProfileHarness || profile.SystemPromptSuffix == nil {
+			profile, exists := builtinHarnessProfile("anthropic", test.model)
+			if !exists || profile.SystemPromptSuffix == nil {
 				t.Fatalf("profile = %#v, exists = %v", profile, exists)
 			}
 			suffix := *profile.SystemPromptSuffix
@@ -52,10 +53,8 @@ func TestBuiltinHarnessProfileResolvesFromModel(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled, err := New(Options{Model: script, SystemPrompt: "user instructions", DisableSubagents: true, DisableSummary: true, DisableTodo: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{SystemMessage: damessage.System("user instructions"), DisableSubagents: true, DisableSummary: true})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -77,21 +76,20 @@ func TestBuiltinEngineeringProfileAddsPlanningAndBehavior(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled, err := New(Options{Model: script, DisableSubagents: true, DisableSummary: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{DisableSubagents: true, DisableSummary: true})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestBuiltinProviderProfiles(t *testing.T) {
-	openAI, err := ApplyProviderProfile("openai:any-model", nil, true)
+	profiles := providerprofile.Builtin()
+	openAI, err := profiles.ApplyWithPreInit("openai:any-model", nil)
 	if err != nil || openAI["use_responses_api"] != true {
 		t.Fatalf("OpenAI options = %#v, error = %v", openAI, err)
 	}
-	nvidia, err := ApplyProviderProfile("nvidia:any-model", nil, true)
+	nvidia, err := profiles.ApplyWithPreInit("nvidia:any-model", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +103,7 @@ func TestBuiltinOpenRouterDefaultsRespectEnvironment(t *testing.T) {
 	t.Setenv("OPENROUTER_APP_URL", "")
 	t.Setenv("OPENROUTER_APP_TITLE", "custom")
 	t.Setenv("DEEPAGENTS_OPENROUTER_ALLOW_AZURE", " yes ")
-	options, err := ApplyProviderProfile("openrouter:any-model", nil, true)
+	options, err := providerprofile.Builtin().ApplyWithPreInit("openrouter:any-model", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,13 +125,13 @@ func TestBuiltinOpenRouterDefaultsWithoutEnvironment(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	options, err := ApplyProviderProfile("openrouter:any-model", nil, true)
+	options, err := providerprofile.Builtin().ApplyWithPreInit("openrouter:any-model", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]any{
-		"app_url":             openRouterAppURL,
-		"app_title":           openRouterAppTitle,
+		"app_url":             "https://github.com/langchain-ai/deepagents",
+		"app_title":           "Deep Agents",
 		"openrouter_provider": map[string]any{"ignore": []string{"azure"}},
 	}
 	if !reflect.DeepEqual(options, want) {
@@ -142,16 +140,16 @@ func TestBuiltinOpenRouterDefaultsWithoutEnvironment(t *testing.T) {
 }
 
 func TestBuiltinOpenRouterDefaultsAreIsolated(t *testing.T) {
-	t.Setenv("OPENROUTER_APP_URL", openRouterAppURL)
-	t.Setenv("OPENROUTER_APP_TITLE", openRouterAppTitle)
+	t.Setenv("OPENROUTER_APP_URL", "https://github.com/langchain-ai/deepagents")
+	t.Setenv("OPENROUTER_APP_TITLE", "Deep Agents")
 	t.Setenv("DEEPAGENTS_OPENROUTER_ALLOW_AZURE", "false")
-	first, err := ApplyProviderProfile("openrouter:model", nil, true)
+	first, err := providerprofile.Builtin().ApplyWithPreInit("openrouter:model", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider := first["openrouter_provider"].(map[string]any)
 	provider["ignore"] = []string{"changed"}
-	second, err := ApplyProviderProfile("openrouter:model", nil, true)
+	second, err := providerprofile.Builtin().ApplyWithPreInit("openrouter:model", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

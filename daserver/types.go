@@ -16,9 +16,9 @@ import (
 )
 
 // Graph is the execution and durable-state surface required by Agent Server.
-// *dagent.Agent and *dago.DeepAgent satisfy this interface.
+// *dagent.Agent satisfies this interface.
 type Graph interface {
-	Stream(context.Context, dagent.Input, int) *dagent.Stream
+	Stream(context.Context, dagent.Input) *dagent.Stream
 	State(context.Context, dacheckpoint.Config) (dagent.Snapshot, error)
 	UpdateState(context.Context, dacheckpoint.Config, dastate.Values) (dagent.Snapshot, error)
 	History(context.Context, dacheckpoint.Config, dacheckpoint.ListOptions) ([]dacheckpoint.Tuple, error)
@@ -30,10 +30,10 @@ type Graph interface {
 // to a graph factory. Factories must use Saver for thread state so Studio state,
 // history, interrupts, and replay address the same checkpoints as runs.
 type Runtime struct {
-	Saver   dacheckpoint.Saver
-	Store   dastore.Store
-	Config  map[string]any
-	Context any
+	Saver  dacheckpoint.Saver
+	Store  dastore.Store
+	Config map[string]any
+	Deps   any
 }
 
 // Factory constructs a graph for one assistant configuration.
@@ -92,7 +92,7 @@ type Options struct {
 	Graphs         []GraphRegistration
 	Saver          dacheckpoint.Saver
 	Store          dastore.Store
-	Context        any
+	Deps           any
 	StatePath      string
 	QueueWorkers   int
 	AllowedOrigins []string

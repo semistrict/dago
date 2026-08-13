@@ -22,6 +22,7 @@ import (
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/davideo"
 )
 
 type FilesystemOperation string
@@ -37,8 +38,6 @@ const (
 	PermissionAllow     PermissionMode = "allow"
 	PermissionDeny      PermissionMode = "deny"
 	PermissionInterrupt PermissionMode = "interrupt"
-	// PermissionAsk is retained as a compatibility spelling for interrupt.
-	PermissionAsk PermissionMode = "ask"
 )
 
 // FilesystemPermission is evaluated in declaration order; the first matching rule
@@ -49,36 +48,52 @@ type FilesystemPermission struct {
 	Mode       PermissionMode
 }
 
-type FilesystemOptions struct {
-	Backend           dabackend.Backend
-	Permissions       []FilesystemPermission
-	ApprovalOverrides []dagent.ApprovalRule
-	Tools             []string
-	ToolDescriptions  map[string]string
-	ReadLimit         int
-	GrepLimit         int
+// ContentLimitUnit selects how a content limit is measured.
+type ContentLimitUnit string
+
+const (
+	ContentTokens ContentLimitUnit = "tokens"
+	ContentBytes  ContentLimitUnit = "bytes"
+)
+
+// ContentLimit is a single token-or-byte limit. The zero value selects the
+// documented default; Amount -1 disables the limit.
+type ContentLimit struct {
+	Unit   ContentLimitUnit
+	Amount int
+}
+
+// Filesystem configures the agent-owned filesystem facility. New binds it to
+// the agent's Backend and compiles the corresponding middleware.
+type Filesystem struct {
+	Permissions      []FilesystemPermission
+	Tools            []string
+	ToolDescriptions map[string]string
+	ReadLimit        int
+	GrepLimit        int
 	// GrepUncapped disables the configured default match cap. Individual grep
 	// calls can also request this behavior with an explicit JSON null max_count.
 	GrepUncapped      bool
 	GlobTimeout       time.Duration
-	MaxExecuteTimeout int
-	// ToolResultTokenLimit follows the upstream four-characters-per-token
-	// eviction budget. Nil selects 20,000 tokens; zero disables tool-result
-	// eviction. LargeResultBytes remains available as a mutually exclusive
-	// byte-precise compatibility override.
-	ToolResultTokenLimit *int
-	// HumanMessageTokenLimit follows the same convention. Nil selects 50,000
-	// tokens and zero disables human-message eviction.
-	HumanMessageTokenLimit  *int
-	LargeResultBytes        int
+	MaxExecuteTimeout time.Duration
+	ToolResultLimit   ContentLimit
+	// HumanMessageTokenLimit uses zero for its documented default and -1 to
+	// disable the limit. Positive values select an explicit token limit.
+	HumanMessageTokenLimit  int
 	ArtifactsRoot           string
 	ConversationHistoryRoot string
-	VideoExtractor          VideoExtractor
+	VideoExtractor          davideo.Extractor
 	MaxVideoBytes           int
 	VideoSamplingRate       float64
-	toolResultLimit         int
-	toolResultBytes         bool
-	humanMessageLimit       int
+}
+
+type filesystemRuntime struct {
+	Filesystem
+	toolResultLimit   int
+	toolResultBytes   bool
+	humanMessageLimit int
+	backend           dabackend.Backend
+	approvalOverrides []dagent.ApprovalRule
 }
 
 const charactersPerToken = 4
@@ -187,10 +202,14 @@ func describeFilesystemTools(values []datool.Tool, custom map[string]string) []d
 	return applyToolProfile(values, descriptions, nil)
 }
 
-// FilesystemMiddleware constructs the standard file tools and permission boundary.
-func FilesystemMiddleware(options FilesystemOptions) (dagent.Middleware, error) {
-	if options.Backend == nil {
-		return dagent.Middleware{}, fmt.Errorf("filesystem backend is required")
+func newFilesystem(backend dabackend.Backend, config Filesystem, approvalOverrides []dagent.ApprovalRule) (dagent.Middleware, error) {
+	if backend == nil {
+		return dagent.Middleware{}, fmt.Errorf("filesystem backend is nil")
+	}
+	options := filesystemRuntime{
+		Filesystem:        config,
+		backend:           backend,
+		approvalOverrides: append([]dagent.ApprovalRule(nil), approvalOverrides...),
 	}
 	if options.ReadLimit <= 0 {
 		options.ReadLimit = 100
@@ -205,51 +224,38 @@ func FilesystemMiddleware(options FilesystemOptions) (dagent.Middleware, error) 
 		options.GlobTimeout = 10 * time.Second
 	}
 	if options.MaxExecuteTimeout <= 0 {
-		options.MaxExecuteTimeout = 3600
+		options.MaxExecuteTimeout = time.Hour
 	}
-	if options.LargeResultBytes < 0 {
-		return dagent.Middleware{}, fmt.Errorf("large result byte limit cannot be negative")
+	limit, bytes, err := normalizeContentLimit("tool result", options.ToolResultLimit, 20_000)
+	if err != nil {
+		return dagent.Middleware{}, err
 	}
-	if options.ToolResultTokenLimit != nil && options.LargeResultBytes > 0 {
-		return dagent.Middleware{}, fmt.Errorf("tool result token limit and large result byte limit are mutually exclusive")
-	}
-	if options.ToolResultTokenLimit != nil {
-		limit, err := tokenCharacterLimit("tool result", *options.ToolResultTokenLimit)
-		if err != nil {
-			return dagent.Middleware{}, err
-		}
-		options.toolResultLimit = limit
-	} else if options.LargeResultBytes > 0 {
-		options.toolResultLimit = options.LargeResultBytes
-		options.toolResultBytes = true
-	} else {
-		options.toolResultLimit = charactersPerToken * 20_000
-	}
+	options.toolResultLimit = limit
+	options.toolResultBytes = bytes
 	humanTokens := 50_000
-	if options.HumanMessageTokenLimit != nil {
-		humanTokens = *options.HumanMessageTokenLimit
+	if options.HumanMessageTokenLimit != 0 {
+		humanTokens = disabledLimitValue(options.HumanMessageTokenLimit)
 	}
-	var err error
 	options.humanMessageLimit, err = tokenCharacterLimit("human message", humanTokens)
 	if err != nil {
 		return dagent.Middleware{}, err
 	}
 	if options.ArtifactsRoot == "" {
-		options.ArtifactsRoot = dabackend.ArtifactPath(options.Backend, "large_tool_results")
+		options.ArtifactsRoot = dabackend.ArtifactPath(options.backend, "large_tool_results")
 	}
 	if options.ConversationHistoryRoot == "" {
-		options.ConversationHistoryRoot = dabackend.ArtifactPath(options.Backend, "conversation_history")
+		options.ConversationHistoryRoot = dabackend.ArtifactPath(options.backend, "conversation_history")
 	}
 	if options.MaxVideoBytes <= 0 {
-		options.MaxVideoBytes = DefaultMaxVideoInputBytes
+		options.MaxVideoBytes = davideo.DefaultMaxVideoInputBytes
 	}
 	if options.VideoSamplingRate <= 0 {
-		options.VideoSamplingRate = DefaultVideoSamplingRate
+		options.VideoSamplingRate = davideo.DefaultVideoSamplingRate
 	}
 	if err := validatePermissions(options.Permissions); err != nil {
 		return dagent.Middleware{}, err
 	}
-	if err := dagent.ValidateApprovalRules(options.ApprovalOverrides); err != nil {
+	if err := dagent.ValidateApprovalRules(options.approvalOverrides); err != nil {
 		return dagent.Middleware{}, err
 	}
 	available := makeFilesystemTools(options)
@@ -273,14 +279,14 @@ func FilesystemMiddleware(options FilesystemOptions) (dagent.Middleware, error) 
 			}
 			return dagent.Middleware{}, fmt.Errorf("unknown filesystem tool %q", name)
 		}
-		if name == "execute" && len(options.Permissions) > 0 && !permissionsScopedToInaccessibleRoutes(options.Backend, options.Permissions) {
+		if name == "execute" && len(options.Permissions) > 0 && !permissionsScopedToInaccessibleRoutes(options.backend, options.Permissions) {
 			return dagent.Middleware{}, fmt.Errorf("filesystem permissions cannot constrain execute; configure an isolated sandbox or omit execute")
 		}
 		selected = append(selected, executable)
 	}
 	selected = describeFilesystemTools(selected, options.ToolDescriptions)
 	middleware := dagent.Middleware{Name: "filesystem", SerializedName: "FilesystemMiddleware", Tools: selected}
-	if fields := dabackend.RuntimeStateFields(options.Backend); len(fields) > 0 {
+	if fields := dabackend.RuntimeStateFields(options.backend); len(fields) > 0 {
 		middleware.Fields = make(map[string]dagent.StateField, len(fields))
 		for _, field := range fields {
 			if _, duplicate := middleware.Fields[field.Key]; duplicate {
@@ -293,10 +299,42 @@ func FilesystemMiddleware(options FilesystemOptions) (dagent.Middleware, error) 
 			}
 		}
 	}
-	middleware.BeforeTools = filesystemApprovalHook(options.Backend, options.Permissions, options.ApprovalOverrides)
+	middleware.BeforeTools = filesystemApprovalHook(options.backend, options.Permissions, options.approvalOverrides)
 	middleware.WrapToolCall = filesystemPermissionWrapper(options)
 	middleware.WrapModelCall = filesystemModelWrapper(options)
 	return middleware, nil
+}
+
+func disabledLimitValue(value int) int {
+	if value == -1 {
+		return 0
+	}
+	return value
+}
+
+func normalizeContentLimit(subject string, limit ContentLimit, defaultTokens int) (amount int, bytes bool, err error) {
+	if limit == (ContentLimit{}) {
+		amount, err = tokenCharacterLimit(subject, defaultTokens)
+		return amount, false, err
+	}
+	if limit.Amount == -1 {
+		if limit.Unit != "" && limit.Unit != ContentTokens && limit.Unit != ContentBytes {
+			return 0, false, fmt.Errorf("%s limit has invalid unit %q", subject, limit.Unit)
+		}
+		return 0, limit.Unit == ContentBytes, nil
+	}
+	if limit.Amount <= 0 {
+		return 0, false, fmt.Errorf("%s limit amount must be positive or -1", subject)
+	}
+	switch limit.Unit {
+	case "", ContentTokens:
+		amount, err = tokenCharacterLimit(subject, limit.Amount)
+		return amount, false, err
+	case ContentBytes:
+		return limit.Amount, true, nil
+	default:
+		return 0, false, fmt.Errorf("%s limit has invalid unit %q", subject, limit.Unit)
+	}
 }
 
 func tokenCharacterLimit(subject string, tokens int) (int, error) {
@@ -332,7 +370,7 @@ func permissionsScopedToInaccessibleRoutes(value dabackend.Backend, rules []File
 	return true
 }
 
-func filesystemModelWrapper(options FilesystemOptions) dagent.ModelWrapper {
+func filesystemModelWrapper(options filesystemRuntime) dagent.ModelWrapper {
 	return func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		visible := map[string]bool{}
 		for _, executable := range request.Tools {
@@ -360,7 +398,7 @@ func filesystemModelWrapper(options FilesystemOptions) dagent.ModelWrapper {
 		}
 		request.Tools = applyToolProfile(request.Tools, descriptions, nil)
 		if visible["execute"] {
-			if routePrompt := filesystemRoutePrompt(options.Backend); routePrompt != "" {
+			if routePrompt := filesystemRoutePrompt(options.backend); routePrompt != "" {
 				if request.SystemMessage == nil {
 					system := damessage.System(routePrompt)
 					request.SystemMessage = &system
@@ -380,7 +418,7 @@ func filesystemModelWrapper(options FilesystemOptions) dagent.ModelWrapper {
 		if err != nil || len(update) == 0 {
 			return response, err
 		}
-		if runtimeUpdates := dabackend.RuntimeUpdates(boundCtx, options.Backend); len(runtimeUpdates) > 0 {
+		if runtimeUpdates := dabackend.RuntimeUpdates(boundCtx, options.backend); len(runtimeUpdates) > 0 {
 			for key, value := range runtimeUpdates {
 				if existing, exists := update[key]; exists {
 					merged, mergeErr := mergeFilesystemModelUpdate(existing, value)
@@ -497,7 +535,7 @@ func filesystemMediaPath(block damessage.ContentBlock) string {
 	return "the requested file"
 }
 
-func evictHumanMessages(ctx context.Context, options FilesystemOptions, request dagent.ModelRequest) (dagent.ModelRequest, dastate.Values, context.Context, error) {
+func evictHumanMessages(ctx context.Context, options filesystemRuntime, request dagent.ModelRequest) (dagent.ModelRequest, dastate.Values, context.Context, error) {
 	if options.humanMessageLimit == 0 {
 		return request, nil, ctx, nil
 	}
@@ -522,7 +560,7 @@ func evictHumanMessages(ctx context.Context, options FilesystemOptions, request 
 	boundCtx := ctx
 	if newEviction {
 		var err error
-		boundCtx, err = dabackend.BindRuntime(ctx, options.Backend, request.State, backendRuntime(request.Runtime))
+		boundCtx, err = dabackend.BindRuntime(ctx, options.backend, request.State, backendRuntime(request.Runtime))
 		if err != nil {
 			return dagent.ModelRequest{}, nil, ctx, fmt.Errorf("bind human message eviction backend: %w", err)
 		}
@@ -532,7 +570,7 @@ func evictHumanMessages(ctx context.Context, options FilesystemOptions, request 
 		}
 		filePath := path.Join(options.ConversationHistoryRoot, identifier+".md")
 		lastIndex := len(processed.Messages) - 1
-		if _, writeErr := options.Backend.Write(boundCtx, filePath, messageText(processed.Messages[lastIndex])); writeErr == nil {
+		if _, writeErr := options.backend.Write(boundCtx, filePath, messageText(processed.Messages[lastIndex])); writeErr == nil {
 			tagged := processed.Messages[lastIndex].Clone()
 			if tagged.Metadata == nil {
 				tagged.Metadata = map[string]json.RawMessage{}
@@ -717,7 +755,7 @@ func validatePermissions(rules []FilesystemPermission) error {
 		if rule.Mode == "" {
 			rule.Mode = PermissionAllow
 		}
-		if rule.Mode != PermissionAllow && rule.Mode != PermissionDeny && rule.Mode != PermissionInterrupt && rule.Mode != PermissionAsk {
+		if rule.Mode != PermissionAllow && rule.Mode != PermissionDeny && rule.Mode != PermissionInterrupt {
 			return fmt.Errorf("filesystem permission %d has invalid mode %q", ruleIndex, rule.Mode)
 		}
 		for _, operation := range rule.Operations {
@@ -808,7 +846,7 @@ type filesystemExecuteInput struct {
 	Timeout *int   `json:"timeout,omitempty"`
 }
 
-func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
+func makeFilesystemTools(options filesystemRuntime) map[string]datool.Tool {
 	values := map[string]datool.Tool{}
 	globSlots := make(chan struct{}, 4)
 	values["ls"] = datool.MustNew("ls", FilesystemListDescription, func(ctx context.Context, input filesystemListInput) (string, error) {
@@ -817,7 +855,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 			return "", err
 		}
 		input.Path = validatedPath
-		result, err := options.Backend.List(ctx, input.Path)
+		result, err := options.backend.List(ctx, input.Path)
 		if err != nil {
 			return "", err
 		}
@@ -855,13 +893,13 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 		}
 		var result dabackend.ReadResult
 		if video {
-			if bounded, ok := options.Backend.(dabackend.BoundedBinaryReader); ok {
+			if bounded, ok := options.backend.(dabackend.BoundedBinaryReader); ok {
 				result, err = bounded.ReadBinary(ctx, input.FilePath, int64(options.MaxVideoBytes))
 			} else {
-				result, err = options.Backend.Read(ctx, input.FilePath, input.Offset, limit)
+				result, err = options.backend.Read(ctx, input.FilePath, input.Offset, limit)
 			}
 		} else {
-			result, err = options.Backend.Read(ctx, input.FilePath, input.Offset, limit)
+			result, err = options.backend.Read(ctx, input.FilePath, input.Offset, limit)
 		}
 		if err != nil {
 			if video && errors.Is(err, dabackend.ErrPayloadTooLarge) {
@@ -879,7 +917,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 			if video {
 				return videoResult(ctx, options, input.FilePath, result.Data, input.Offset, limit)
 			}
-			return mediaResult(ctx, options.Backend, input.FilePath, result.Data)
+			return mediaResult(ctx, options.backend, input.FilePath, result.Data)
 		}
 		if strings.TrimSpace(result.Data.Content) == "" {
 			return "System reminder: File exists but has empty contents", nil
@@ -906,7 +944,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 			return "", err
 		}
 		input.FilePath = validatedPath
-		result, err := options.Backend.Write(ctx, input.FilePath, input.Content)
+		result, err := options.backend.Write(ctx, input.FilePath, input.Content)
 		if err != nil {
 			return "", err
 		}
@@ -918,7 +956,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 			return "", err
 		}
 		input.FilePath = validatedPath
-		result, err := options.Backend.Edit(ctx, input.FilePath, input.Old, input.New, input.All)
+		result, err := options.backend.Edit(ctx, input.FilePath, input.Old, input.New, input.All)
 		if err != nil {
 			return "", err
 		}
@@ -930,7 +968,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 			return "", err
 		}
 		input.FilePath = validatedPath
-		result, err := options.Backend.Delete(ctx, input.FilePath)
+		result, err := options.backend.Delete(ctx, input.FilePath)
 		if err != nil {
 			return "", err
 		}
@@ -962,7 +1000,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 		response := make(chan globResponse, 1)
 		go func() {
 			defer func() { <-globSlots }()
-			result, err := options.Backend.Glob(workerCtx, input.Pattern, validatedPath)
+			result, err := options.backend.Glob(workerCtx, input.Pattern, validatedPath)
 			response <- globResponse{result: result, err: err}
 		}()
 		timer := time.NewTimer(options.GlobTimeout)
@@ -1025,7 +1063,7 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 				grepOptions.Uncapped = false
 			}
 		}
-		result, err := options.Backend.Grep(ctx, input.Pattern, grepOptions)
+		result, err := options.backend.Grep(ctx, input.Pattern, grepOptions)
 		if err != nil {
 			return datool.Result{}, err
 		}
@@ -1050,10 +1088,10 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 		}(),
 		"description": "Optional cap on matches across all files. Leave unset to use the configured default; use null for no cap.",
 	}))
-	if sandbox, ok := dabackend.SandboxOf(options.Backend); ok {
+	if sandbox, ok := dabackend.SandboxOf(options.backend); ok {
 		values["execute"] = datool.MustNew("execute", filesystemExecuteDescription(true, true), func(ctx context.Context, input filesystemExecuteInput) (datool.Result, error) {
-			if input.Timeout != nil && *input.Timeout > options.MaxExecuteTimeout {
-				return datool.Result{}, fmt.Errorf("execute timeout %d exceeds maximum %d", *input.Timeout, options.MaxExecuteTimeout)
+			if input.Timeout != nil && time.Duration(*input.Timeout)*time.Second > options.MaxExecuteTimeout {
+				return datool.Result{}, fmt.Errorf("execute timeout %d exceeds maximum %d", *input.Timeout, int(options.MaxExecuteTimeout/time.Second))
 			}
 			var timeout *time.Duration
 			if input.Timeout != nil {
@@ -1081,17 +1119,17 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 			}
 			return datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: text}}, Artifact: artifact}, nil
 		}, datool.WithPropertySchema("timeout", map[string]any{
-			"anyOf":       []any{map[string]any{"type": "integer", "minimum": 0, "maximum": options.MaxExecuteTimeout}, map[string]any{"type": "null"}},
+			"anyOf":       []any{map[string]any{"type": "integer", "minimum": 0, "maximum": int(options.MaxExecuteTimeout / time.Second)}, map[string]any{"type": "null"}},
 			"default":     nil,
-			"description": fmt.Sprintf("Optional timeout in seconds, capped at %d. Omit it to use the backend default; zero disables the command timeout when supported.", options.MaxExecuteTimeout),
+			"description": fmt.Sprintf("Optional timeout in seconds, capped at %d. Omit it to use the backend default; zero disables the command timeout when supported.", int(options.MaxExecuteTimeout/time.Second)),
 		}))
 	}
 	return values
 }
 
-func filesystemPermissionWrapper(options FilesystemOptions) dagent.ToolWrapper {
+func filesystemPermissionWrapper(options filesystemRuntime) dagent.ToolWrapper {
 	return func(ctx context.Context, request dagent.ToolCallRequest, next dagent.ToolHandler) (dagent.ToolCallResponse, error) {
-		boundCtx, err := dabackend.BindRuntime(ctx, options.Backend, request.State, backendRuntime(request.Runtime))
+		boundCtx, err := dabackend.BindRuntime(ctx, options.backend, request.State, backendRuntime(request.Runtime))
 		if err != nil {
 			return dagent.ToolCallResponse{}, err
 		}
@@ -1100,7 +1138,7 @@ func filesystemPermissionWrapper(options FilesystemOptions) dagent.ToolWrapper {
 		if known {
 			target := filesystemCallPath(request.Call)
 			if request.Call.Name == "delete" {
-				hasDescendants := deleteTargetMayHaveDescendants(ctx, options.Backend, target, len(options.Permissions) > 0)
+				hasDescendants := deleteTargetMayHaveDescendants(ctx, options.backend, target, len(options.Permissions) > 0)
 				if patterns := findDeletePatterns(options.Permissions, target, hasDescendants, PermissionDeny); len(patterns) > 0 {
 					return dagent.ToolCallResponse{}, fmt.Errorf("permission denied for %s on %s by %s", operation, target, strings.Join(patterns, ", "))
 				}
@@ -1137,7 +1175,7 @@ func filesystemPermissionWrapper(options FilesystemOptions) dagent.ToolWrapper {
 					artifactName = "unknown"
 				}
 				artifactPath := path.Join(options.ArtifactsRoot, artifactName)
-				if _, writeErr := options.Backend.Write(ctx, artifactPath, combined); writeErr == nil {
+				if _, writeErr := options.backend.Write(ctx, artifactPath, combined); writeErr == nil {
 					preview := previewText(combined, 2000)
 					blocks := make([]damessage.ContentBlock, 0, len(response.Result.Content)+1)
 					blocks = append(blocks, damessage.ContentBlock{Type: damessage.BlockText, Text: fmt.Sprintf("Result saved to %s. Preview:\n%s", artifactPath, preview)})
@@ -1150,7 +1188,7 @@ func filesystemPermissionWrapper(options FilesystemOptions) dagent.ToolWrapper {
 				}
 			}
 		}
-		updates := dabackend.RuntimeUpdates(ctx, options.Backend)
+		updates := dabackend.RuntimeUpdates(ctx, options.backend)
 		if len(updates) > 0 && response.Result.Update == nil {
 			response.Result.Update = map[string]any{}
 		}
@@ -1570,9 +1608,6 @@ func normalizedMode(mode PermissionMode) PermissionMode {
 	if mode == "" {
 		return PermissionAllow
 	}
-	if mode == PermissionAsk {
-		return PermissionInterrupt
-	}
 	return mode
 }
 
@@ -1723,15 +1758,15 @@ func binaryFileBytes(ctx context.Context, value dabackend.Backend, filePath stri
 	return raw, nil
 }
 
-func videoResult(ctx context.Context, options FilesystemOptions, filePath string, data *dabackend.FileData, offset, limit int) (datool.Result, error) {
-	raw, err := base64.StdEncoding.Strict().DecodeString(data.Content)
+func videoResult(ctx context.Context, options filesystemRuntime, filePath string, data *dabackend.FileData, offset, limit int) (datool.Result, error) {
+	raw, err := binaryFileBytes(ctx, options.backend, filePath, data)
 	if err != nil {
 		return datool.Result{}, fmt.Errorf("binary content for %s is not valid base64: %w", filePath, err)
 	}
 	if len(raw) > options.MaxVideoBytes {
 		return datool.Result{}, fmt.Errorf("error reading video %s: video payload exceeds maximum input size of %d bytes", filePath, options.MaxVideoBytes)
 	}
-	window := VideoWindow{OffsetSeconds: float64(max(0, offset)), DurationSeconds: float64(limit), SamplingRate: options.VideoSamplingRate}
+	window := davideo.Window{OffsetSeconds: float64(max(0, offset)), DurationSeconds: float64(limit), SamplingRate: options.VideoSamplingRate}
 	blocks, err := options.VideoExtractor.Extract(ctx, raw, window)
 	if err != nil {
 		return datool.Result{}, fmt.Errorf("error reading video %s: %w\n%s", filePath, err, videoWindowHeader(filePath, window))
@@ -1765,7 +1800,7 @@ func videoResult(ctx context.Context, options FilesystemOptions, filePath string
 	return datool.Result{Content: content}, nil
 }
 
-func videoWindowHeader(filePath string, window VideoWindow) string {
+func videoWindowHeader(filePath string, window davideo.Window) string {
 	end := window.OffsetSeconds + window.DurationSeconds
 	if window.OffsetSeconds <= 0 {
 		return fmt.Sprintf("Reading first %gs of %s at %g fps.", window.DurationSeconds, filePath, window.SamplingRate)

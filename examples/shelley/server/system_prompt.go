@@ -671,7 +671,7 @@ func collectSystemData(workingDir string, skipSkills, trustWorkspace bool) (*Sys
 }
 
 // collectSkills is retained for the standalone prompt compatibility contract.
-// Production conversations install dago's SkillsMiddleware instead.
+// Production conversations install dago's Skills middleware instead.
 func collectSkills(workingDir, gitRoot string) string {
 	values := skills.ListAll(workingDir, gitRoot)
 	return skills.RenderPromptXML(values)

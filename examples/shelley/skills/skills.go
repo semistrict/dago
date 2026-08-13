@@ -62,7 +62,7 @@ func validateName(name string) error {
 }
 
 // RenderPromptXML is retained for the standalone prompt compatibility API.
-// Production conversations use dago's SkillsMiddleware directly.
+// Production conversations use dago's Skills middleware directly.
 func RenderPromptXML(skills []Skill) string {
 	return dskill.RenderXML(skills, func(item dskill.Skill) string { return "shelley skill cat " + item.Name })
 }

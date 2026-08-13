@@ -1,8 +1,10 @@
-package dago
+// Package nemotron provides harness profiles and middleware for NVIDIA Nemotron models.
+package nemotron
 
 import (
 	"context"
 
+	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dagent"
 )
 
@@ -96,31 +98,42 @@ the new task. Also call compact_conversation before reading or summarizing a
 large new file after a long conversation.
 </context_compaction>`
 
-func init() {
+// Profiles returns explicit harness profiles for supported model identifiers.
+func Profiles() []dago.Profile {
 	middleware := nemotronProfileMiddleware()
+	profiles := make([]dago.Profile, 0, len(nemotronModelSpecs))
 	for _, name := range nemotronModelSpecs {
 		suffix := nemotronSystemPrompt
-		if err := RegisterProfile(Profile{
-			Name: name, Kind: ProfileHarness, SystemPromptSuffix: &suffix,
+		profiles = append(profiles, dago.Profile{
+			Name: name, SystemPromptSuffix: &suffix,
 			ToolDescriptions: map[string]string{"read_file": nemotronReadFileDescription},
 			Middleware:       middleware,
-		}); err != nil {
-			panic(err)
+		})
+	}
+	return profiles
+}
+
+// Profile returns the harness profile for a supported model identifier.
+func Profile(modelSpec string) (dago.Profile, bool) {
+	for _, profile := range Profiles() {
+		if profile.Name == modelSpec {
+			return profile, true
 		}
 	}
+	return dago.Profile{}, false
 }
 
 func nemotronProfileMiddleware() []dagent.Middleware {
 	return []dagent.Middleware{
-		NemotronProgressBudget(NemotronProgressBudgetOptions{}),
+		ProgressBudget(ProgressBudgetOptions{}),
 		nemotronPolicyNudgeMiddleware(),
-		NemotronToolCallShim(),
-		NemotronReadContinuationNotice(),
+		ToolCallShim(),
+		ReadContinuationNotice(),
 		nemotronFilesystemRetry(),
-		NemotronModelRateLimitRetry(),
+		ModelRateLimitRetry(),
 		nemotronCanonicalMessageCompatibility(),
-		NemotronReasoningTagCleanup(),
-		NemotronTextToolCallParser(),
+		ReasoningTagCleanup(),
+		TextToolCallParser(),
 		nemotronFollowupDiscipline(),
 		nemotronEntityResolutionGuard(),
 		nemotronFinalAnswerGuard(),

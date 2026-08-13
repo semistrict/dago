@@ -87,7 +87,7 @@ func (server *Server) executeRun(runID string) {
 	log.append("metadata", map[string]any{"run_id": runID, "attempt": 1})
 	modes := requestedModes(request.StreamMode)
 	valuesPublished := false
-	stream := graph.Stream(runContext, input, 32)
+	stream := graph.Stream(runContext, input)
 	defer stream.Close()
 	for {
 		event, nextErr := stream.Next(runContext)

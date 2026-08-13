@@ -1,4 +1,4 @@
-package dago
+package nemotron
 
 import (
 	"context"
@@ -35,10 +35,8 @@ func TestNemotronEntityGuardKeepsCurrentBranchBound(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("The current incident affects checkout-web.")}},
 	)
-	compiled, err := dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{nemotronEntityResolutionGuard()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{nemotronEntityResolutionGuard()}})
+
 	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: history})
 	if err != nil {
 		t.Fatal(err)

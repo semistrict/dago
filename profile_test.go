@@ -15,18 +15,12 @@ import (
 	"github.com/semistrict/dago/datool"
 )
 
-func TestProfileRegistrationMergeToolOverrideAndExclusion(t *testing.T) {
-	name := "test-profile-registration"
-	if err := RegisterProfile(Profile{
-		Name: name, Kind: ProfileHarness, SystemPrompt: "profile prompt",
+func TestExplicitProfilesMergeToolOverrideAndExclusion(t *testing.T) {
+	profile := MergeProfiles(Profile{
+		Name: "test-explicit-profile", SystemPrompt: "profile prompt",
 		ToolDescriptions: map[string]string{"kept": "overridden description"},
 		ExcludeTools:     []string{"removed"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := RegisterProfile(Profile{Name: name, Kind: ProfileHarness, SystemPromptSuffix: new("later suffix")}); err != nil {
-		t.Fatal(err)
-	}
+	}, Profile{SystemPromptSuffix: new("later suffix")})
 	kept := datool.Func{Spec: datool.Definition{Name: "kept", Description: "old", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
 		return datool.TextResult("ok"), nil
 	}}
@@ -53,23 +47,15 @@ func TestProfileRegistrationMergeToolOverrideAndExclusion(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled, err := New(Options{Model: script, ProfileNames: []string{name}, Tools: []datool.Tool{kept, removed}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Profiles: []Profile{profile}, Tools: []datool.Tool{kept, removed}, DisableSubagents: true, DisableSummary: true})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
-	}
-	if _, ok := LookupProfile(name); !ok || len(RegisteredProfiles()) == 0 {
-		t.Fatal("registered profile was not discoverable")
 	}
 }
 
 func TestProfileToolExclusionOnlyFiltersTheModelBoundary(t *testing.T) {
-	name := "test-profile-late-tool-exclusion"
-	if err := RegisterProfile(Profile{Name: name, Kind: ProfileHarness, ExcludeTools: []string{"hidden"}}); err != nil {
-		t.Fatal(err)
-	}
+	profile := Profile{Name: "test-profile-late-tool-exclusion", ExcludeTools: []string{"hidden"}}
 	executions := 0
 	hidden := datool.Func{Spec: datool.Definition{Name: "hidden", Description: "hidden", InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
 		executions++
@@ -91,13 +77,12 @@ func TestProfileToolExclusionOnlyFiltersTheModelBoundary(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := New(Options{
-		Model: script, Tools: []datool.Tool{hidden}, ProfileNames: []string{name},
-		DisableSubagents: true, DisableSummary: true, DisableTodo: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(
+		script, Options{
+			Tools: []datool.Tool{hidden}, Profiles: []Profile{profile},
+			DisableSubagents: true, DisableSummary: true,
+		})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,10 +92,9 @@ func TestProfileToolExclusionOnlyFiltersTheModelBoundary(t *testing.T) {
 }
 
 func TestProfileCannotExcludeRequiredFilesystem(t *testing.T) {
-	_, err := New(Options{Model: modeltest.New(damodel.Profile{}), Profiles: []Profile{{Name: "bad", Kind: ProfileHarness, ExcludeMiddleware: []string{"filesystem"}}}})
-	if err == nil || !strings.Contains(err.Error(), "required middleware") {
-		t.Fatalf("error = %v", err)
-	}
+	requirePanicContaining(t, "required middleware", func() {
+		New(modeltest.New(damodel.Profile{}), Options{Profiles: []Profile{{Name: "bad", ExcludeMiddleware: []string{"filesystem"}}}})
+	})
 }
 
 func TestProfileUsesCanonicalSerializedMiddlewareNames(t *testing.T) {
@@ -119,17 +103,16 @@ func TestProfileUsesCanonicalSerializedMiddlewareNames(t *testing.T) {
 		called = true
 		return nil, nil
 	}}
-	compiled, err := New(Options{
-		Model: modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}}),
-		Profiles: []Profile{{
-			Name: "canonical-middleware-name", Kind: ProfileHarness,
-			ExcludeMiddleware: []string{"SummarizationMiddleware"},
-		}},
-		Middleware: []dagent.Middleware{replacement}, DisableSubagents: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(
+		modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}}), Options{
+
+			Profiles: []Profile{{
+				Name:              "canonical-middleware-name",
+				ExcludeMiddleware: []string{"SummarizationMiddleware"},
+			}},
+			Middleware: []dagent.Middleware{replacement}, DisableSubagents: true,
+		})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -138,56 +121,52 @@ func TestProfileUsesCanonicalSerializedMiddlewareNames(t *testing.T) {
 	}
 }
 
-func TestProfileRejectsCanonicalRequiredMiddlewareNames(t *testing.T) {
-	for _, name := range []string{"FilesystemMiddleware", "SubAgentMiddleware"} {
-		_, err := New(Options{Model: modeltest.New(damodel.Profile{}), Profiles: []Profile{{
-			Name: "required-" + name, Kind: ProfileHarness, ExcludeMiddleware: []string{name},
-		}}})
-		if err == nil || !strings.Contains(err.Error(), "required middleware") {
-			t.Fatalf("exclusion %q error = %v", name, err)
-		}
+func TestProfileRejectsRequiredMiddlewareNames(t *testing.T) {
+	for _, name := range []string{"filesystem", "subagents"} {
+		requirePanicContaining(t, "required middleware", func() {
+			New(modeltest.New(damodel.Profile{}), Options{Profiles: []Profile{{
+				Name: "required-" + name, ExcludeMiddleware: []string{name},
+			}}})
+		})
 	}
 }
 
-func TestProfileRegistrationRejectsMalformedKeys(t *testing.T) {
+func TestExplicitProfileRejectsMalformedNames(t *testing.T) {
 	for _, name := range []string{"", " provider", "provider ", "provider:", ":model", "provider: model", "a:b:c"} {
-		if err := RegisterProfile(Profile{Name: name, Kind: ProfileHarness}); err == nil {
-			t.Fatalf("profile name %q should fail", name)
+		if name == "" {
+			continue
 		}
+		requirePanicContaining(t, "profile", func() {
+			New(modeltest.New(damodel.Profile{}), Options{Profiles: []Profile{{Name: name}}})
+		})
 	}
 }
 
 func TestProfileCannotExcludeRequiredSubagentsOrUnknownMiddleware(t *testing.T) {
 	for _, excluded := range []string{"subagents", "TypoMiddleware"} {
-		_, err := New(Options{
-			Model:    modeltest.New(damodel.Profile{}),
-			Profiles: []Profile{{Name: "bad-" + excluded, Kind: ProfileHarness, ExcludeMiddleware: []string{excluded}}},
+		requirePanicContaining(t, "middleware", func() {
+			New(modeltest.New(damodel.Profile{}), Options{
+				Profiles: []Profile{{Name: "bad-" + excluded, ExcludeMiddleware: []string{excluded}}},
+			})
 		})
-		if err == nil {
-			t.Fatalf("exclusion %q should fail", excluded)
-		}
 	}
-	if err := RegisterProfile(Profile{Name: "private-exclusion", Kind: ProfileHarness, ExcludeMiddleware: []string{"_private"}}); err == nil {
-		t.Fatal("private middleware exclusion should fail")
-	}
+	requirePanicContaining(t, "middleware", func() {
+		New(modeltest.New(damodel.Profile{}), Options{Profiles: []Profile{{Name: "private-exclusion", ExcludeMiddleware: []string{"_private"}}}})
+	})
 }
 
-func TestProfilesResolveFromModelAndMergeProviderWithExactModel(t *testing.T) {
+func TestExplicitProfilesMergeProviderWithExactModel(t *testing.T) {
 	provider := "profile-auto-provider"
 	modelID := "profile-auto-model"
-	if err := RegisterProfile(Profile{
-		Name: provider, Kind: ProfileHarness,
+	providerProfile := Profile{
+		Name:             provider,
 		BaseSystemPrompt: new("provider base"), SystemPromptSuffix: new("provider suffix"),
 		ExcludeTools: []string{"glob"},
-	}); err != nil {
-		t.Fatal(err)
 	}
-	if err := RegisterProfile(Profile{
-		Name: provider + ":" + modelID, Kind: ProfileHarness,
+	modelProfile := Profile{
+		Name:               provider + ":" + modelID,
 		SystemPromptSuffix: new("model suffix"), ExcludeTools: []string{"grep"},
-		GeneralPurpose: &GeneralPurposeSubagentProfile{Enabled: new(false)},
-	}); err != nil {
-		t.Fatal(err)
+		GeneralPurpose: &GeneralPurposeSubagentProfile{Mode: GeneralPurposeSubagentDisabled},
 	}
 	script := modeltest.New(damodel.Profile{Provider: provider, Model: modelID}, modeltest.Step{Check: func(request damodel.Request) error {
 		prompt := request.Messages[0].TextContent()
@@ -202,10 +181,8 @@ func TestProfilesResolveFromModelAndMergeProviderWithExactModel(t *testing.T) {
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
-	compiled, err := New(Options{Model: script, SystemPrompt: "user prompt", DisableSummary: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{SystemMessage: damessage.System("user prompt"), Profiles: []Profile{providerProfile, modelProfile}, DisableSummary: true})
+
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}

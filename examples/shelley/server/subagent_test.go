@@ -1,13 +1,28 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	dago "github.com/semistrict/dago"
 	"github.com/semistrict/dago/examples/shelley/db/generated"
 	"github.com/semistrict/dago/examples/shelley/llm"
 )
+
+func runSubagent(runner *SubagentRunner, ctx context.Context, conversationID, prompt string, wait bool, timeout time.Duration, modelID, reasoning string) (string, error) {
+	reply, err := runner.RunSubagent(ctx, dago.ConversationSubagentRun{
+		ConversationID: conversationID,
+		Prompt:         prompt,
+		Wait:           wait,
+		Timeout:        timeout,
+		ModelID:        modelID,
+		Reasoning:      reasoning,
+	})
+	return reply.Content, err
+}
 
 func TestBuildConversationSummary(t *testing.T) {
 	t.Parallel()

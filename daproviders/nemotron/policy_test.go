@@ -1,4 +1,4 @@
-package dago
+package nemotron
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 )
 
 func TestNemotronProgressBudgetStopsRepeatedCallLoop(t *testing.T) {
-	middleware := NemotronProgressBudget(NemotronProgressBudgetOptions{MaxModelCalls: 99, MaxToolResults: 99, MaxRepeatedToolCalls: 3})
+	middleware := ProgressBudget(ProgressBudgetOptions{MaxModelCalls: 99, MaxToolResults: 99, MaxRepeatedToolCalls: 3})
 	messages := []damessage.Message{damessage.Human("Read it.")}
 	for index := 0; index < 3; index++ {
 		call := damessage.ToolCall{ID: string(rune('a' + index)), Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/x"}`)}
@@ -41,7 +41,7 @@ func TestNemotronProgressBudgetStopsRepeatedCallLoop(t *testing.T) {
 }
 
 func TestNemotronProgressBudgetAllowsNonconsecutiveCalls(t *testing.T) {
-	middleware := NemotronProgressBudget(NemotronProgressBudgetOptions{MaxModelCalls: 99, MaxToolResults: 99, MaxRepeatedToolCalls: 3})
+	middleware := ProgressBudget(ProgressBudgetOptions{MaxModelCalls: 99, MaxToolResults: 99, MaxRepeatedToolCalls: 3})
 	messages := []damessage.Message{damessage.Human("Inspect.")}
 	for index, name := range []string{"read_file", "grep", "read_file", "grep", "read_file"} {
 		call := damessage.ToolCall{ID: string(rune('a' + index)), Name: name, Arguments: json.RawMessage(`{"path":"/x"}`)}
@@ -60,7 +60,7 @@ func TestNemotronProgressBudgetAllowsNonconsecutiveCalls(t *testing.T) {
 }
 
 func TestNemotronProgressBudgetCountsOnlyActiveTurn(t *testing.T) {
-	middleware := NemotronProgressBudget(NemotronProgressBudgetOptions{MaxModelCalls: 2, MaxToolResults: 99, MaxRepeatedToolCalls: 99})
+	middleware := ProgressBudget(ProgressBudgetOptions{MaxModelCalls: 2, MaxToolResults: 99, MaxRepeatedToolCalls: 99})
 	messages := []damessage.Message{
 		damessage.Human("Old task"), damessage.Assistant("one"), damessage.Assistant("two"),
 		damessage.Human("New task"), damessage.Assistant("one"),
@@ -202,10 +202,8 @@ func TestNemotronFollowupDisciplineReentersOnce(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("Which delivery channel should receive the weekly report?")}},
 	)
-	compiled, err := dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{nemotronFollowupDiscipline()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{nemotronFollowupDiscipline()}})
+
 	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("Send me a weekly report every Monday at 9am")}})
 	if err != nil {
 		t.Fatal(err)
@@ -254,10 +252,8 @@ func TestNemotronFinalGuardPreservesMutationLiteral(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("Posted Release v2.0 to #deployments.")}},
 	)
-	compiled, err := dagent.New(dagent.Options{Model: script, Middleware: []dagent.Middleware{nemotronFinalAnswerGuard()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{nemotronFinalAnswerGuard()}})
+
 	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: history})
 	if err != nil {
 		t.Fatal(err)

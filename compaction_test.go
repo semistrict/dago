@@ -36,8 +36,8 @@ func TestCompactConversationKeepsToolExchangeIntact(t *testing.T) {
 		Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: " checkpoint "}}, Usage: usage}},
 	})
 	formatted := 0
-	result, err := CompactConversation(t.Context(), messages, ConversationCompactionOptions{
-		Model: model, KeepTokens: 25, SystemPrompt: "system", Prompt: "Summarize", Instructions: "retain paths",
+	result, err := CompactConversation(t.Context(), model, messages, ConversationCompactionOptions{
+		KeepTokens: 25, SystemPrompt: "system", Prompt: "Summarize", Instructions: "retain paths",
 		Reasoning: &damodel.Reasoning{Effort: "off"},
 		FormatHistory: func(older []damessage.Message) (string, error) {
 			formatted = len(older)
@@ -60,7 +60,7 @@ func TestCompactConversationKeepsToolExchangeIntact(t *testing.T) {
 
 func TestCompactConversationSkipsModelWhenHistoryFits(t *testing.T) {
 	model := modeltest.New(damodel.Profile{})
-	result, err := CompactConversation(t.Context(), []damessage.Message{damessage.Human("hello")}, ConversationCompactionOptions{Model: model, KeepTokens: 100})
+	result, err := CompactConversation(t.Context(), model, []damessage.Message{damessage.Human("hello")}, ConversationCompactionOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,8 +83,8 @@ func TestCompactConversationHonorsApplicationRecordBoundaries(t *testing.T) {
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("summary")}})
-	result, err := CompactConversation(t.Context(), messages, ConversationCompactionOptions{
-		Model: model, KeepTokens: 25, ValidCutoffs: []int{0, 3, 5},
+	result, err := CompactConversation(t.Context(), model, messages, ConversationCompactionOptions{
+		KeepTokens: 25, ValidCutoffs: []int{0, 3, 5},
 		FormatHistory: func(older []damessage.Message) (string, error) {
 			return fmt.Sprintf("%d records", len(older)), nil
 		},

@@ -33,10 +33,7 @@ func TestInvocationDepsAreDistinctAcrossConcurrentCalls(t *testing.T) {
 		seen <- value
 		return nil, nil
 	}}
-	agent, err := New(Options{Model: depsCheckingChat{}, Deps: "compiled", Middleware: []Middleware{middleware}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	agent := New(depsCheckingChat{}, Options{Deps: "compiled", Middleware: []Middleware{middleware}})
 	var wait sync.WaitGroup
 	errors := make(chan error, 2)
 	for _, value := range []string{"alpha", "beta"} {
@@ -68,10 +65,7 @@ func TestInvocationDepsAreResuppliedWhenResuming(t *testing.T) {
 		seen = append(seen, value)
 		return nil, nil
 	}}
-	agent, err := New(Options{Model: depsCheckingChat{}, Deps: "compiled", Middleware: []Middleware{middleware}, Saver: saver})
-	if err != nil {
-		t.Fatal(err)
-	}
+	agent := New(depsCheckingChat{}, Options{Deps: "compiled", Middleware: []Middleware{middleware}, Saver: saver})
 	config := dacheckpoint.Config{ThreadID: "context-resume"}
 	if _, err := agent.Invoke(t.Context(), Input{Config: config, Messages: []damessage.Message{damessage.Human("first")}, Deps: "first"}); err != nil {
 		t.Fatal(err)

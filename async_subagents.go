@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -21,35 +20,65 @@ type AsyncRun struct {
 	ThreadID string
 	RunID    string
 	Status   string
-	Result   string
-	// ResultValue preserves structured final message content when a runner can
-	// return it. Result remains the convenient text representation.
-	ResultValue any
-	// HasResult distinguishes an empty final message from a completed thread
-	// with no output messages.
-	HasResult bool
-	Error     string
+	Outcome  AsyncOutcome
+}
+
+// AsyncOutcome is the closed result union for a terminal async run.
+type AsyncOutcome interface{ asyncOutcome() }
+
+// AsyncSuccess carries a successful final value. A nil Value means the run
+// completed without an output message; an empty string is an explicit result.
+type AsyncSuccess struct{ Value any }
+
+func (AsyncSuccess) asyncOutcome() {}
+
+// AsyncFailure carries a provider-neutral failure message.
+type AsyncFailure struct{ Message string }
+
+func (AsyncFailure) asyncOutcome() {}
+
+// AsyncStartRequest identifies the remote graph and initial task.
+type AsyncStartRequest struct {
+	GraphID     string
+	Description string
+}
+
+// AsyncCheckRequest identifies one background run to inspect.
+type AsyncCheckRequest struct {
+	ThreadID string
+	RunID    string
+}
+
+// AsyncUpdateRequest starts a replacement run on an existing thread.
+type AsyncUpdateRequest struct {
+	GraphID  string
+	ThreadID string
+	Message  string
+}
+
+// AsyncCancelRequest identifies one background run to cancel.
+type AsyncCancelRequest struct {
+	ThreadID string
+	RunID    string
 }
 
 // AsyncSubagentRunner adapts a hosted or local background-agent service.
 type AsyncSubagentRunner interface {
-	Start(context.Context, string, string) (AsyncRun, error)
-	Check(context.Context, string, string) (AsyncRun, error)
-	Update(context.Context, string, string, string) (AsyncRun, error)
-	Cancel(context.Context, string, string) error
+	Start(context.Context, AsyncStartRequest) (AsyncRun, error)
+	Check(context.Context, AsyncCheckRequest) (AsyncRun, error)
+	Update(context.Context, AsyncUpdateRequest) (AsyncRun, error)
+	Cancel(context.Context, AsyncCancelRequest) error
 }
 
+// AsyncSubagent binds a model-visible agent type to an explicit runner.
 type AsyncSubagent struct {
 	Name        string
 	Description string
 	GraphID     string
-	URL         string
-	APIKey      string
-	Headers     map[string]string
-	HTTPClient  *http.Client
 	Runner      AsyncSubagentRunner
 }
 
+// AsyncTask is the durable provider-neutral state tracked for one background run.
 type AsyncTask struct {
 	TaskID        string `json:"task_id"`
 	AgentName     string `json:"agent_name"`
@@ -61,32 +90,41 @@ type AsyncTask struct {
 	LastUpdatedAt string `json:"last_updated_at"`
 }
 
-type AsyncSubagentOptions struct {
-	Subagents    []AsyncSubagent
+// AsyncSubagentsOptions configures background-agent middleware.
+type AsyncSubagentsOptions struct {
 	SystemPrompt string
 	Now          func() time.Time
 }
 
-// AsyncSubagentMiddleware adds tools for starting and managing durable
-// background-agent tasks.
-func AsyncSubagentMiddleware(options AsyncSubagentOptions) (dagent.Middleware, error) {
-	if len(options.Subagents) == 0 {
+// AsyncSubagents adds tools for starting and managing durable background tasks.
+func AsyncSubagents(first AsyncSubagent, rest ...AsyncSubagent) dagent.Middleware {
+	return AsyncSubagentsWithOptions(AsyncSubagentsOptions{}, first, rest...)
+}
+
+// AsyncSubagentsWithOptions adds background-task tools with explicit options.
+func AsyncSubagentsWithOptions(options AsyncSubagentsOptions, first AsyncSubagent, rest ...AsyncSubagent) dagent.Middleware {
+	values := append([]AsyncSubagent{first}, rest...)
+	middleware, err := newAsyncSubagents(options, values)
+	if err != nil {
+		panic(err)
+	}
+	return middleware
+}
+
+func newAsyncSubagents(options AsyncSubagentsOptions, subagents []AsyncSubagent) (dagent.Middleware, error) {
+	if len(subagents) == 0 {
 		return dagent.Middleware{}, fmt.Errorf("at least one async subagent is required")
 	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	byName := make(map[string]AsyncSubagent, len(options.Subagents))
-	for _, value := range options.Subagents {
+	byName := make(map[string]AsyncSubagent, len(subagents))
+	for _, value := range subagents {
 		if strings.TrimSpace(value.Name) == "" || strings.TrimSpace(value.Description) == "" || strings.TrimSpace(value.GraphID) == "" {
 			return dagent.Middleware{}, fmt.Errorf("async subagent name, description, and graph id are required")
 		}
 		if value.Runner == nil {
-			runner, err := NewAgentProtocolRunner(AgentProtocolOptions{URL: value.URL, APIKey: value.APIKey, Headers: value.Headers, HTTPClient: value.HTTPClient})
-			if err != nil {
-				return dagent.Middleware{}, fmt.Errorf("async subagent %q: %w", value.Name, err)
-			}
-			value.Runner = runner
+			return dagent.Middleware{}, fmt.Errorf("async subagent %q runner is required", value.Name)
 		}
 		if _, exists := byName[value.Name]; exists {
 			return dagent.Middleware{}, fmt.Errorf("duplicate async subagent %q", value.Name)
@@ -153,7 +191,7 @@ Available async agent types:
 			}
 			return "Unknown async subagent type `" + input.Type + "`. Available types: " + strings.Join(quoted, ", "), nil
 		}
-		run, err := spec.Runner.Start(ctx, spec.GraphID, input.Description)
+		run, err := spec.Runner.Start(ctx, AsyncStartRequest{GraphID: spec.GraphID, Description: input.Description})
 		if err != nil {
 			return "Failed to launch async subagent '" + input.Type + "': " + err.Error(), nil
 		}
@@ -177,7 +215,7 @@ func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) datoo
 		if !exists {
 			return "No async subagent configuration found for tracked agent: " + task.AgentName, nil
 		}
-		run, err := spec.Runner.Check(ctx, task.ThreadID, task.RunID)
+		run, err := spec.Runner.Check(ctx, AsyncCheckRequest{ThreadID: task.ThreadID, RunID: task.RunID})
 		if err != nil {
 			return "Failed to get run status: " + err.Error(), nil
 		}
@@ -189,27 +227,18 @@ func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) datoo
 		task.LastCheckedAt = stamp
 		payload := map[string]any{"status": task.Status, "thread_id": task.ThreadID}
 		if task.Status == "success" {
-			var resultValue any
-			switch {
-			case run.HasResult:
-				resultValue = run.ResultValue
-				if resultValue == nil && run.Result != "" {
-					resultValue = run.Result
-				}
-			case run.ResultValue != nil:
-				resultValue = run.ResultValue
-			case run.Result != "":
-				resultValue = run.Result
-			default:
-				run.Result = "(completed with no output messages)"
-				resultValue = run.Result
+			success, ok := run.Outcome.(AsyncSuccess)
+			if !ok || success.Value == nil {
+				payload["result"] = "(completed with no output messages)"
+			} else {
+				payload["result"] = success.Value
 			}
-			payload["result"] = resultValue
 		} else if task.Status == "error" {
-			if run.Error == "" {
-				run.Error = "The async subagent encountered an error."
+			failure, ok := run.Outcome.(AsyncFailure)
+			if !ok || failure.Message == "" {
+				failure.Message = "The async subagent encountered an error."
 			}
-			payload["error"] = run.Error
+			payload["error"] = failure.Message
 		}
 		encoded, _ := json.Marshal(payload)
 		return asyncTaskResult(string(encoded), task), nil
@@ -231,7 +260,7 @@ func asyncUpdateTool(byName map[string]AsyncSubagent, now func() time.Time) dato
 		if !exists {
 			return "No async subagent configuration found for tracked agent: " + task.AgentName, nil
 		}
-		run, err := spec.Runner.Update(ctx, spec.GraphID, task.ThreadID, input.Message)
+		run, err := spec.Runner.Update(ctx, AsyncUpdateRequest{GraphID: spec.GraphID, ThreadID: task.ThreadID, Message: input.Message})
 		if err != nil {
 			return "Failed to update async subagent: " + err.Error(), nil
 		}
@@ -256,7 +285,7 @@ func asyncCancelTool(byName map[string]AsyncSubagent, now func() time.Time) dato
 		if !exists {
 			return "No async subagent configuration found for tracked agent: " + task.AgentName, nil
 		}
-		if err := spec.Runner.Cancel(ctx, task.ThreadID, task.RunID); err != nil {
+		if err := spec.Runner.Cancel(ctx, AsyncCancelRequest{ThreadID: task.ThreadID, RunID: task.RunID}); err != nil {
 			return "Failed to cancel run: " + err.Error(), nil
 		}
 		stamp := asyncTimestamp(now())
@@ -291,7 +320,7 @@ func asyncListTool(byName map[string]AsyncSubagent, now func() time.Time) datool
 		for _, id := range ids {
 			task := tasks[id]
 			if spec, exists := byName[task.AgentName]; exists && !asyncTerminalStatus(task.Status) {
-				if run, err := spec.Runner.Check(ctx, task.ThreadID, task.RunID); err == nil {
+				if run, err := spec.Runner.Check(ctx, AsyncCheckRequest{ThreadID: task.ThreadID, RunID: task.RunID}); err == nil {
 					if run.Status != "" && run.Status != task.Status {
 						task.Status, task.LastUpdatedAt = run.Status, stamp
 					}

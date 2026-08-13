@@ -460,8 +460,7 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	}
 	var olderMsgs []llm.Message
 	distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	compacted, err := dago.CompactConversation(distillCtx, nativeMessages, dago.ConversationCompactionOptions{
-		Model:        chat,
+	compacted, err := dago.CompactConversation(distillCtx, chat, nativeMessages, dago.ConversationCompactionOptions{
 		KeepTokens:   keepRecentTokens,
 		ValidCutoffs: validCutoffs,
 		SystemPrompt: piSummarizationSystemPrompt,

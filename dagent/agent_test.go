@@ -25,6 +25,10 @@ import (
 
 var objectSchema = json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}`)
 
+func TestNewPanicsOnNilModel(t *testing.T) {
+	requirePanicContaining(t, "model is nil", func() { New(nil, Options{}) })
+}
+
 type retryReporterError struct{}
 
 func (retryReporterError) Error() string { return "transient model failure" }
@@ -71,10 +75,8 @@ func TestAgentRunsTextToolLoop(t *testing.T) {
 			Response: damodel.Response{Message: damessage.Assistant("It is sunny.")},
 		},
 	)
-	compiled, err := New(Options{Model: script, Tools: []datool.Tool{weather}, SystemPrompt: "Be helpful"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Tools: []datool.Tool{weather}, SystemMessage: damessage.System("Be helpful")})
+
 	result, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("weather?")}})
 	if err != nil {
 		t.Fatal(err)
@@ -103,12 +105,9 @@ func TestRetainedThreadStateSendsSystemMessageSeparately(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled, err := New(Options{
-		Model: script, SystemPrompt: "Be concise", Saver: dacheckpoint.NewMemorySaver(), RetainThreadState: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(
+		script, Options{SystemMessage: damessage.System("Be concise"), Saver: dacheckpoint.NewMemorySaver(), RetainThreadState: true})
+
 	result, err := compiled.Invoke(context.Background(), Input{
 		Config: dacheckpoint.Config{ThreadID: "retained-system"}, Messages: []damessage.Message{damessage.Human("hello")},
 	})
@@ -134,10 +133,8 @@ func TestToolParentHandoffIsCommittedAndReturned(t *testing.T) {
 		Role:      damessage.RoleAssistant,
 		ToolCalls: []damessage.ToolCall{{ID: "call-transfer", Name: "transfer", Arguments: json.RawMessage(`{}`)}},
 	}}})
-	compiled, err := New(Options{Model: script, Tools: []datool.Tool{transfer}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Tools: []datool.Tool{transfer}})
+
 	result, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("transfer")}})
 	if err != nil {
 		t.Fatal(err)
@@ -189,10 +186,8 @@ func TestUnknownToolReturnsRecoverableToolMessage(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("recovered")}},
 	)
-	compiled, err := New(Options{Model: script, Tools: []datool.Tool{known}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Tools: []datool.Tool{known}})
+
 	result, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
 		t.Fatal(err)
@@ -206,11 +201,9 @@ func TestUnknownToolCanRemainFatal(t *testing.T) {
 	script := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{
 		Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "missing-1", Name: "missing", Arguments: json.RawMessage(`{}`)}},
 	}}})
-	compiled, err := New(Options{Model: script, FailOnToolError: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}})
+	compiled := New(script, Options{FailOnToolError: true})
+
+	_, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}})
 	if !errors.Is(err, ErrUnknownTool) {
 		t.Fatalf("error = %v", err)
 	}
@@ -222,10 +215,8 @@ func TestAgentMessageIDsAreAssignedAndStableAcrossCheckpoints(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("first")}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("second")}},
 	)
-	compiled, err := New(Options{Model: script, Saver: saver})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Saver: saver})
+
 	config := dacheckpoint.Config{ThreadID: "stable-message-ids"}
 	first, err := compiled.Invoke(context.Background(), Input{Config: config, Messages: []damessage.Message{damessage.Human("one")}})
 	if err != nil {
@@ -269,11 +260,9 @@ func TestPrivateStateIsAvailableInternallyButHiddenFromResultsAndStreams(t *test
 			return next(ctx, request)
 		},
 	}
-	compiled, err := New(Options{Model: modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}}), Middleware: []Middleware{middleware}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := compiled.Stream(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}}, 16)
+	compiled := New(modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}}), Options{Middleware: []Middleware{middleware}})
+
+	stream := compiled.Stream(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}})
 	defer stream.Close()
 	for {
 		event, err := stream.Next(context.Background())
@@ -323,10 +312,8 @@ func TestAgentCancelClearsPendingToolsAndPreservesState(t *testing.T) {
 		}, Response: damodel.Response{Message: damessage.Assistant("resumed")}},
 	)
 	saver := dacheckpoint.NewMemorySaver()
-	compiled, err := New(Options{Model: script, Tools: []datool.Tool{blocking}, Saver: saver, MaxConcurrency: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Tools: []datool.Tool{blocking}, Saver: saver, MaxConcurrency: 1})
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -390,10 +377,8 @@ func TestMiddlewareLifecycleAndWrapperNesting(t *testing.T) {
 		}
 	}
 	script := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}})
-	compiled, err := New(Options{Model: script, Middleware: []Middleware{middleware("a"), middleware("b")}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Middleware: []Middleware{middleware("a"), middleware("b")}})
+
 	if _, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("hi")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -437,10 +422,8 @@ func TestAfterAgentCanJumpBackToModel(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("Created issue 42.")}},
 	)
-	compiled, err := New(Options{Model: script, Middleware: []Middleware{middleware}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Middleware: []Middleware{middleware}})
+
 	result, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("Create the issue.")}})
 	if err != nil {
 		t.Fatal(err)
@@ -458,11 +441,9 @@ func TestAfterAgentRejectsUnknownJumpDestination(t *testing.T) {
 		return JumpUpdate("tools"), nil
 	}}
 	script := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}})
-	compiled, err := New(Options{Model: script, Middleware: []Middleware{middleware}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}})
+	compiled := New(script, Options{Middleware: []Middleware{middleware}})
+
+	_, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}})
 	if err == nil || !strings.Contains(err.Error(), "jump destination") {
 		t.Fatalf("error = %v", err)
 	}
@@ -494,10 +475,8 @@ func TestToolWrapperNestingAndErrorMessage(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("recovered")}},
 	)
-	compiled, err := New(Options{Model: script, Tools: []datool.Tool{failing}, Middleware: []Middleware{wrap("a"), wrap("b")}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Tools: []datool.Tool{failing}, Middleware: []Middleware{wrap("a"), wrap("b")}})
+
 	if _, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -524,10 +503,7 @@ func TestInvalidToolArgumentsRemainRecoverable(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("recovered")}},
 	)
-	compiled, err := New(Options{Model: script, Tools: []datool.Tool{weather}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Tools: []datool.Tool{weather}})
 	result, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
 		t.Fatal(err)
@@ -547,10 +523,8 @@ func TestStructuredOutputProviderAndToolStrategies(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done"), Structured: json.RawMessage(`{"value":"yes"}`)},
 	})
-	providerAgent, err := New(Options{Model: provider, StructuredOutput: &StructuredOutput{Strategy: StructuredAuto, Name: "answer", Description: "Answer", Schema: objectSchema}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	providerAgent := New(provider, Options{StructuredOutput: &StructuredOutput{Strategy: StructuredAuto, Name: "answer", Description: "Answer", Schema: objectSchema}})
+
 	providerResult, err := providerAgent.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("answer")}})
 	if err != nil || string(providerResult.Structured) != `{"value":"yes"}` {
 		t.Fatalf("provider result = %s, %v", providerResult.Structured, err)
@@ -565,10 +539,8 @@ func TestStructuredOutputProviderAndToolStrategies(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "structured", Name: "answer", Arguments: json.RawMessage(`{"value":"tool"}`)}}}},
 	})
-	toolAgent, err := New(Options{Model: toolModel, StructuredOutput: &StructuredOutput{Strategy: StructuredTool, Name: "answer", Description: "Answer", Schema: objectSchema}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	toolAgent := New(toolModel, Options{StructuredOutput: &StructuredOutput{Strategy: StructuredTool, Name: "answer", Description: "Answer", Schema: objectSchema}})
+
 	toolResult, err := toolAgent.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("answer")}})
 	if err != nil || string(toolResult.Structured) != `{"value":"tool"}` || len(toolResult.Messages) != 3 {
 		t.Fatalf("tool result = %#v, %v", toolResult, err)
@@ -588,12 +560,10 @@ func TestStructuredOutputValidatesSchemaAndRetriesWhenConfigured(t *testing.T) {
 			Response: damodel.Response{Message: damessage.Assistant("second"), Structured: json.RawMessage(`{"value":"fixed"}`)},
 		},
 	)
-	compiled, err := New(Options{Model: script, StructuredOutput: &StructuredOutput{
+	compiled := New(script, Options{StructuredOutput: &StructuredOutput{
 		Strategy: StructuredProvider, Name: "answer", Description: "Answer", Schema: objectSchema, HandleErrors: true,
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	result, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("answer")}})
 	if err != nil || string(result.Structured) != `{"value":"fixed"}` {
 		t.Fatalf("result = %#v, error = %v", result, err)
@@ -602,12 +572,10 @@ func TestStructuredOutputValidatesSchemaAndRetriesWhenConfigured(t *testing.T) {
 	invalid := modeltest.New(damodel.Profile{StructuredOutput: true}, modeltest.Step{
 		Response: damodel.Response{Message: damessage.Assistant("bad"), Structured: json.RawMessage(`{"value":7}`)},
 	})
-	strict, err := New(Options{Model: invalid, StructuredOutput: &StructuredOutput{
+	strict := New(invalid, Options{StructuredOutput: &StructuredOutput{
 		Strategy: StructuredProvider, Name: "answer", Description: "Answer", Schema: objectSchema,
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	_, err = strict.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("answer")}})
 	if !errors.Is(err, ErrStructuredValidation) {
 		t.Fatalf("error = %v", err)
@@ -615,13 +583,12 @@ func TestStructuredOutputValidatesSchemaAndRetriesWhenConfigured(t *testing.T) {
 }
 
 func TestStructuredOutputRejectsRemoteSchemaReferences(t *testing.T) {
-	_, err := New(Options{Model: modeltest.New(damodel.Profile{}), StructuredOutput: &StructuredOutput{
-		Strategy: StructuredProvider, Name: "answer", Description: "Answer",
-		Schema: json.RawMessage(`{"$ref":"https://example.invalid/schema.json"}`),
-	}})
-	if err == nil || !strings.Contains(err.Error(), "external JSON Schema") {
-		t.Fatalf("error = %v", err)
-	}
+	requirePanicContaining(t, "external JSON Schema", func() {
+		New(modeltest.New(damodel.Profile{}), Options{StructuredOutput: &StructuredOutput{
+			Strategy: StructuredProvider, Name: "answer", Description: "Answer",
+			Schema: json.RawMessage(`{"$ref":"https://example.invalid/schema.json"}`),
+		}})
+	})
 }
 
 func TestAgentStreamEmitsModelTokensAndReconstructsResponse(t *testing.T) {
@@ -630,18 +597,11 @@ func TestAgentStreamEmitsModelTokensAndReconstructsResponse(t *testing.T) {
 		{MessageDelta: damessage.Assistant("lo")},
 		{MessageDelta: damessage.Message{Role: damessage.RoleAssistant, Usage: &damessage.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}, Done: true},
 	}})
-	compiled, err := New(Options{Model: script})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := compiled.Stream(context.Background(), Input{Messages: []damessage.Message{damessage.Human("hi")}}, 1)
-	defer stream.Close()
+	compiled := New(script, Options{})
+
+	stream := compiled.Stream(context.Background(), Input{Messages: []damessage.Message{damessage.Human("hi")}})
 	var tokens []damodel.Chunk
-	for {
-		event, nextErr := stream.Next(context.Background())
-		if errors.Is(nextErr, io.EOF) {
-			break
-		}
+	for event, nextErr := range stream.Events() {
 		if nextErr != nil {
 			t.Fatal(nextErr)
 		}
@@ -662,15 +622,13 @@ func TestAgentStreamEmitsModelTokensAndReconstructsResponse(t *testing.T) {
 }
 
 func TestAgentReportsRetryableModelError(t *testing.T) {
-	compiled, err := New(Options{Model: modeltest.New(damodel.Profile{}, modeltest.Step{Error: retryReporterError{}})})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(modeltest.New(damodel.Profile{}, modeltest.Step{Error: retryReporterError{}}), Options{})
+
 	var observed []damodel.RetryEvent
 	ctx := damodel.WithRetryObserver(context.Background(), func(_ context.Context, event damodel.RetryEvent) {
 		observed = append(observed, event)
 	})
-	_, err = compiled.Invoke(ctx, Input{Messages: []damessage.Message{damessage.Human("go")}})
+	_, err := compiled.Invoke(ctx, Input{Messages: []damessage.Message{damessage.Human("go")}})
 	if err == nil {
 		t.Fatal("expected model error")
 	}
@@ -689,10 +647,8 @@ func TestPromptCachingOnlyTargetsCapableModels(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled, err := New(Options{Model: script, Middleware: []Middleware{PromptCaching("", "24h", func(ModelRequest) string { return "thread-key" })}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Middleware: []Middleware{PromptCaching("24h", func(ModelRequest) string { return "thread-key" })}})
+
 	if _, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +668,7 @@ func TestPromptCachingAddsAnthropicBreakpointsWithoutMutatingInputs(t *testing.T
 		{Type: damessage.BlockText, Text: "second", Extra: map[string]json.RawMessage{"existing": json.RawMessage(`true`)}},
 	}}
 	chat := modeltest.New(damodel.Profile{Provider: "Anthropic", SupportsPromptCaching: true})
-	middleware := PromptCaching("", "24h", nil)
+	middleware := PromptCaching("24h", nil)
 	_, err := middleware.WrapModelCall(context.Background(), ModelRequest{
 		Model: chat, SystemMessage: &system, Tools: []datool.Tool{firstTool, secondTool},
 	}, func(_ context.Context, request ModelRequest) (ModelResponse, error) {
@@ -749,7 +705,7 @@ func TestPromptCachingAddsAnthropicBreakpointsWithoutMutatingInputs(t *testing.T
 func TestPromptCachingUsesOneHourAnthropicTTL(t *testing.T) {
 	system := damessage.System("system")
 	chat := modeltest.New(damodel.Profile{Provider: "anthropic", SupportsPromptCaching: true})
-	middleware := PromptCaching("", "1h", nil)
+	middleware := PromptCaching("1h", nil)
 	_, err := middleware.WrapModelCall(context.Background(), ModelRequest{Model: chat, SystemMessage: &system}, func(_ context.Context, request ModelRequest) (ModelResponse, error) {
 		want := `{"ttl":"1h","type":"ephemeral"}`
 		if got := string(request.SystemMessage.Content[0].Extra["cache_control"]); got != want {
@@ -772,16 +728,14 @@ func TestModelWrapperControlsProviderReasoning(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled, err := New(Options{Model: script, Middleware: []Middleware{{
+	compiled := New(script, Options{Middleware: []Middleware{{
 		Name: "reasoning",
 		WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
 			request.Reasoning = &damodel.Reasoning{Effort: "high", Summary: "auto"}
 			return next(ctx, request)
 		},
 	}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	if _, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -793,10 +747,8 @@ func TestCheckpointHistoryReplayForkAndDelete(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("one")}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("fork")}},
 	)
-	compiled, err := New(Options{Model: script, Saver: saver})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Saver: saver})
+
 	result, err := compiled.Invoke(context.Background(), Input{Config: dacheckpoint.Config{ThreadID: "source"}, Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
 		t.Fatal(err)
@@ -828,17 +780,26 @@ func TestCheckpointHistoryReplayForkAndDelete(t *testing.T) {
 func TestAgentRejectsDuplicateContractsAndTools(t *testing.T) {
 	script := modeltest.New(damodel.Profile{})
 	duplicate := datool.Func{Spec: datool.Definition{Name: "same", Description: "same", InputSchema: json.RawMessage(`{"type":"object"}`)}}
-	_, err := New(Options{Model: script, Tools: []datool.Tool{duplicate, duplicate}})
-	if !errors.Is(err, ErrDuplicateTool) {
-		t.Fatalf("duplicate tool error = %v", err)
-	}
-	_, err = New(Options{Model: script, Middleware: []Middleware{
-		{Name: "a", Fields: map[string]StateField{"field": {Kind: FieldLast, Contract: "one", Clone: identityClone}}},
-		{Name: "b", Fields: map[string]StateField{"field": {Kind: FieldLast, Contract: "two", Clone: identityClone}}},
-	}})
-	if err == nil {
-		t.Fatal("expected incompatible field error")
-	}
+	requirePanicContaining(t, ErrDuplicateTool.Error(), func() {
+		New(script, Options{Tools: []datool.Tool{duplicate, duplicate}})
+	})
+	requirePanicContaining(t, "incompatible", func() {
+		New(script, Options{Middleware: []Middleware{
+			{Name: "a", Fields: map[string]StateField{"field": {Kind: FieldLast, Contract: "one", Clone: identityClone}}},
+			{Name: "b", Fields: map[string]StateField{"field": {Kind: FieldLast, Contract: "two", Clone: identityClone}}},
+		}})
+	})
+}
+
+func requirePanicContaining(t *testing.T, substring string, fn func()) {
+	t.Helper()
+	defer func() {
+		value := recover()
+		if value == nil || !strings.Contains(fmt.Sprint(value), substring) {
+			t.Fatalf("panic = %v, want substring %q", value, substring)
+		}
+	}()
+	fn()
 }
 
 func TestHumanApprovalPausesBeforeAnyToolAndResumesAllDecisions(t *testing.T) {
@@ -865,14 +826,13 @@ func TestHumanApprovalPausesBeforeAnyToolAndResumesAllDecisions(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := New(Options{
-		Model: script, Tools: []datool.Tool{action("danger_a"), action("danger_b")},
-		Middleware: []Middleware{HumanApproval([]ApprovalRule{{Pattern: "danger_*", Description: "dangerous"}})},
-		Saver:      dacheckpoint.NewMemorySaver(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(
+		script, Options{
+			Tools:      []datool.Tool{action("danger_a"), action("danger_b")},
+			Middleware: []Middleware{HumanApproval([]ApprovalRule{{Pattern: "danger_*", Description: "dangerous"}})},
+			Saver:      dacheckpoint.NewMemorySaver(),
+		})
+
 	config := dacheckpoint.Config{ThreadID: "approval"}
 	paused, err := compiled.Invoke(context.Background(), Input{Config: config, Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
@@ -912,13 +872,12 @@ func TestHumanApprovalRespondsWithoutExecutingTool(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := New(Options{
-		Model: script, Tools: []datool.Tool{ask}, Saver: dacheckpoint.NewMemorySaver(),
-		Middleware: []Middleware{HumanApproval([]ApprovalRule{{Pattern: "ask_user", AllowedDecisions: []ApprovalDecision{ApprovalRespond}}})},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(
+		script, Options{
+			Tools: []datool.Tool{ask}, Saver: dacheckpoint.NewMemorySaver(),
+			Middleware: []Middleware{HumanApproval([]ApprovalRule{{Pattern: "ask_user", AllowedDecisions: []ApprovalDecision{ApprovalRespond}}})},
+		})
+
 	config := dacheckpoint.Config{ThreadID: "approval-respond"}
 	paused, err := compiled.Invoke(context.Background(), Input{Config: config, Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
@@ -951,13 +910,12 @@ func TestHumanApprovalConditionalRuleCanAutoApprove(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "conditional-call", Name: "conditional", Arguments: json.RawMessage(`{}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := New(Options{
-		Model: script, Tools: []datool.Tool{action},
-		Middleware: []Middleware{HumanApproval([]ApprovalRule{{Pattern: "conditional", When: func(ToolCallRequest) bool { return false }}})},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(
+		script, Options{
+			Tools:      []datool.Tool{action},
+			Middleware: []Middleware{HumanApproval([]ApprovalRule{{Pattern: "conditional", When: func(ToolCallRequest) bool { return false }}})},
+		})
+
 	result, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
 		t.Fatal(err)
@@ -997,10 +955,8 @@ func TestToolInterruptCheckpointsCompletedSiblingBeforeResume(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := New(Options{Model: script, Tools: []datool.Tool{interrupting, sibling}, Saver: dacheckpoint.NewMemorySaver()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Tools: []datool.Tool{interrupting, sibling}, Saver: dacheckpoint.NewMemorySaver()})
+
 	config := dacheckpoint.Config{ThreadID: "tool-interrupt-sibling"}
 	paused, err := compiled.Invoke(context.Background(), Input{Config: config, Messages: []damessage.Message{damessage.Human("go")}})
 	if err != nil {
@@ -1038,12 +994,10 @@ func TestToolRetryAndTodoMiddleware(t *testing.T) {
 		}, Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "f", Name: "flaky", Arguments: json.RawMessage(`{}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := New(Options{Model: script, Tools: []datool.Tool{flaky}, Middleware: []Middleware{
-		ToolRetry("retry", 3, time.Nanosecond, nil), TodoList(),
+	compiled := New(script, Options{Tools: []datool.Tool{flaky}, Middleware: []Middleware{
+		ToolRetry(ToolRetryOptions{Name: "retry", Attempts: 3, Backoff: time.Nanosecond}), TodoList(),
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	if _, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1054,7 +1008,7 @@ func TestToolRetryAndTodoMiddleware(t *testing.T) {
 
 func TestToolRetryBackoffWithFakeTime(t *testing.T) {
 	modeltest.TestWithFakeTime(t, func(t *testing.T) {
-		middleware := ToolRetry("retry", 2, time.Hour, nil)
+		middleware := ToolRetry(ToolRetryOptions{Name: "retry", Attempts: 2, Backoff: time.Hour})
 		calls := 0
 		started := time.Now()
 		_, err := middleware.WrapToolCall(t.Context(), ToolCallRequest{}, func(context.Context, ToolCallRequest) (ToolCallResponse, error) {
@@ -1077,10 +1031,8 @@ func TestAgentRestartsFromSQLiteDeltaMessages(t *testing.T) {
 	}
 	defer saver.Close()
 	firstModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("first")}})
-	first, err := New(Options{Model: firstModel, Saver: saver})
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := New(firstModel, Options{Saver: saver})
+
 	config := dacheckpoint.Config{ThreadID: "sqlite-agent"}
 	if _, err := first.Invoke(context.Background(), Input{Config: config, Messages: []damessage.Message{damessage.Human("one")}}); err != nil {
 		t.Fatal(err)
@@ -1091,10 +1043,8 @@ func TestAgentRestartsFromSQLiteDeltaMessages(t *testing.T) {
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("second")}})
-	second, err := New(Options{Model: secondModel, Saver: saver})
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := New(secondModel, Options{Saver: saver})
+
 	result, err := second.Invoke(context.Background(), Input{Config: config, Messages: []damessage.Message{damessage.Human("two")}})
 	if err != nil {
 		t.Fatal(err)
@@ -1144,10 +1094,8 @@ func TestTodoListRejectsParallelReplacementAndRetriesModel(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("recovered")}},
 	)
-	compiled, err := New(Options{Model: script, Middleware: []Middleware{TodoList()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	compiled := New(script, Options{Middleware: []Middleware{TodoList()}})
+
 	result, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("plan")}})
 	if err != nil {
 		t.Fatal(err)
@@ -1175,10 +1123,8 @@ func TestTodoListStateRestartsFromSQLite(t *testing.T) {
 		}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("saved")}},
 	)
-	first, err := New(Options{Model: firstModel, Middleware: []Middleware{TodoList()}, Saver: saver})
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := New(firstModel, Options{Middleware: []Middleware{TodoList()}, Saver: saver})
+
 	config := dacheckpoint.Config{ThreadID: "todo-portable"}
 	if _, err := first.Invoke(context.Background(), Input{Config: config, Messages: []damessage.Message{damessage.Human("plan")}}); err != nil {
 		t.Fatal(err)
@@ -1191,10 +1137,8 @@ func TestTodoListStateRestartsFromSQLite(t *testing.T) {
 		}
 		return next(ctx, request)
 	}}
-	second, err := New(Options{Model: secondModel, Middleware: []Middleware{TodoList(), observer}, Saver: saver})
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := New(secondModel, Options{Middleware: []Middleware{TodoList(), observer}, Saver: saver})
+
 	if _, err := second.Invoke(context.Background(), Input{Config: config, Messages: []damessage.Message{damessage.Human("continue")}}); err != nil {
 		t.Fatal(err)
 	}

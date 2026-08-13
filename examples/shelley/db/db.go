@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	dago "github.com/semistrict/dago"
 	"github.com/semistrict/dago/dacheckpoint"
 	checkpointsqlite "github.com/semistrict/dago/dacheckpoint/sqlite"
 	"github.com/semistrict/dago/examples/shelley/db/generated"
@@ -1983,14 +1984,17 @@ type SubagentDBAdapter struct {
 
 // GetOrCreateSubagentConversation implements claudetool.SubagentDB.
 // Returns the conversation ID and the actual slug used (may differ if a suffix was added).
-func (a *SubagentDBAdapter) GetOrCreateSubagentConversation(ctx context.Context, slug, parentID, cwd string) (string, string, error) {
+func (a *SubagentDBAdapter) GetOrCreateSubagentConversation(ctx context.Context, request dago.ConversationSubagentConversationRequest) (dago.ConversationSubagentConversation, error) {
+	slug := request.Slug
+	parentID := request.ParentConversationID
+	cwd := request.WorkingDirectory
 	// Try to find existing with exact slug
 	existing, err := a.DB.GetConversationBySlugAndParent(ctx, slug, parentID)
 	if err != nil {
-		return "", "", err
+		return dago.ConversationSubagentConversation{}, err
 	}
 	if existing != nil {
-		return existing.ConversationID, *existing.Slug, nil
+		return dago.ConversationSubagentConversation{ConversationID: existing.ConversationID, Slug: *existing.Slug}, nil
 	}
 
 	// Try to create new, handling unique constraint violations by appending numbers
@@ -1999,7 +2003,7 @@ func (a *SubagentDBAdapter) GetOrCreateSubagentConversation(ctx context.Context,
 	for attempt := 0; attempt < 100; attempt++ {
 		conv, err := a.DB.CreateSubagentConversation(ctx, actualSlug, parentID, &cwd)
 		if err == nil {
-			return conv.ConversationID, actualSlug, nil
+			return dago.ConversationSubagentConversation{ConversationID: conv.ConversationID, Slug: actualSlug}, nil
 		}
 
 		// Check if this is a unique constraint violation
@@ -2012,10 +2016,10 @@ func (a *SubagentDBAdapter) GetOrCreateSubagentConversation(ctx context.Context,
 		}
 
 		// Some other error occurred
-		return "", "", err
+		return dago.ConversationSubagentConversation{}, err
 	}
 
-	return "", "", fmt.Errorf("failed to create unique subagent slug after 100 attempts")
+	return dago.ConversationSubagentConversation{}, fmt.Errorf("failed to create unique subagent slug after 100 attempts")
 }
 
 // GetModels returns all models from the database
