@@ -139,7 +139,15 @@ OpenRouter are available as an explicit `daproviders/profile.Profiles` value.
 
 The focused Responses API adapter supports text and multimodal messages, tool calls,
 parallel tool calls, JSON Schema structured output, token streaming, usage, prompt
-caching metadata, API keys, and an explicit subscription OAuth session.
+caching metadata, API keys, and an explicit subscription OAuth session. Standard
+OpenAI endpoints use persistent Responses WebSocket connections by default and send
+incremental input on compatible successive turns. Set `ResponsesWebSocket` to
+`new(false)` to force HTTP; compatible custom `BaseURL` endpoints can opt in with
+`new(true)`. Standard endpoints also enable remote server-side compaction by default:
+at 90% of `ContextWindow` (or 200,000 tokens when it is unknown), the adapter sends a
+compaction-trigger Responses request, preserves its encrypted state, and resumes the
+turn. Set `ServerCompaction` to `new(false)` to disable it or set
+`CompactionThreshold` to override the trigger point.
 
 ```go
 chat, err := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), openai.Options{

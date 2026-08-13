@@ -50,6 +50,17 @@ Run the complete root checks from the repository root:
 make check
 ```
 
+The gated live Responses WebSocket test reads an existing subscription OAuth
+JSON file and calls the real API. It verifies warmup, streaming, tool calls,
+incremental continuation, remote compaction and state replay, unrelated-history
+reset, cancellation, and reconnect:
+
+```sh
+DAGO_OPENAI_OAUTH_FILE=/path/to/auth.json make test-openai-live
+```
+
+Set `DAGO_OPENAI_LIVE_MODEL` to override the default live model.
+
 This checks formatting, generated-fixture drift, configured upstream revisions, vet,
 the deterministic suite, and race tests.
 

@@ -14,9 +14,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/datool"
@@ -134,6 +136,212 @@ func TestProfileReportsReasoningLevelsAndDefault(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSocketDefaultsAndOverrides(t *testing.T) {
+	standard, err := NewAPIKey("secret", Options{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if standard.websockets == nil {
+		t.Fatal("standard API client did not enable websocket transport")
+	}
+	if standard.options.ServerCompaction == nil || !*standard.options.ServerCompaction || standard.options.CompactionThreshold != defaultServerCompactionThreshold {
+		t.Fatalf("standard compaction options = enabled %#v, threshold %d", standard.options.ServerCompaction, standard.options.CompactionThreshold)
+	}
+	knownWindow, err := NewAPIKey("secret", Options{Model: "m", ContextWindow: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if knownWindow.options.CompactionThreshold != 900 {
+		t.Fatalf("derived compaction threshold = %d, want 900", knownWindow.options.CompactionThreshold)
+	}
+	clampedWindow, err := NewAPIKey("secret", Options{Model: "m", ContextWindow: 1000, CompactionThreshold: 950})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clampedWindow.options.CompactionThreshold != 900 {
+		t.Fatalf("clamped compaction threshold = %d, want 900", clampedWindow.options.CompactionThreshold)
+	}
+	httpOnly, err := NewAPIKey("secret", Options{Model: "m", ResponsesWebSocket: new(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpOnly.websockets != nil {
+		t.Fatal("explicit websocket disable was ignored")
+	}
+	custom, err := NewAPIKey("secret", Options{Model: "m", BaseURL: "https://provider.example/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if custom.websockets != nil {
+		t.Fatal("custom endpoint enabled websocket transport without an explicit capability")
+	}
+	if custom.options.ServerCompaction == nil || *custom.options.ServerCompaction {
+		t.Fatal("custom endpoint enabled server compaction without an explicit capability")
+	}
+	customCompaction, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: "https://provider.example/v1", CompactionThreshold: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if customCompaction.options.ServerCompaction == nil || !*customCompaction.options.ServerCompaction || customCompaction.options.CompactionThreshold != 100 {
+		t.Fatalf("custom compaction opt-in = enabled %#v, threshold %d", customCompaction.options.ServerCompaction, customCompaction.options.CompactionThreshold)
+	}
+	disabled := false
+	customDisabled, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: "https://provider.example/v1", ServerCompaction: &disabled, CompactionThreshold: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if customDisabled.options.ServerCompaction == nil || *customDisabled.options.ServerCompaction {
+		t.Fatal("explicit server compaction disable was ignored")
+	}
+	if _, err := NewAPIKey("secret", Options{Model: "m", CompactionThreshold: -1}); err == nil {
+		t.Fatal("negative compaction threshold was accepted")
+	}
+	customWebSocket, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: "https://provider.example/v1", ResponsesWebSocket: new(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if customWebSocket.websockets == nil {
+		t.Fatal("custom endpoint websocket opt-in was ignored")
+	}
+}
+
+func TestResponsesRemoteCompactionV2TriggerRetentionAndReplay(t *testing.T) {
+	requests := make(chan map[string]any, 3)
+	serverErrors := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := websocket.Accept(writer, request, nil)
+		if err != nil {
+			serverErrors <- err
+			return
+		}
+		defer connection.CloseNow()
+		for turn := range 3 {
+			_, data, err := connection.Read(request.Context())
+			if err != nil {
+				serverErrors <- err
+				return
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(data, &payload); err != nil {
+				serverErrors <- err
+				return
+			}
+			requests <- payload
+			events := []string{`{"type":"response.completed","response":{"id":"resp-setup","status":"completed","output":[{"type":"message","id":"msg-setup","role":"assistant","content":[{"type":"output_text","text":"ready"}]}]}}`}
+			if turn == 1 {
+				events = []string{
+					`{"type":"response.output_item.done","item":{"type":"compaction","id":"cmp_1","encrypted_content":"opaque-state"}}`,
+					`{"type":"response.completed","response":{"id":"compact-1","status":"completed","output":[]}}`,
+				}
+			} else if turn == 2 {
+				events = []string{`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"continued"}]}]}}`}
+			}
+			for _, event := range events {
+				if err := connection.Write(request.Context(), websocket.MessageText, []byte(event)); err != nil {
+					serverErrors <- err
+					return
+				}
+			}
+		}
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(),
+		ResponsesWebSocket: new(true), ServerCompaction: new(true), CompactionThreshold: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := damessage.Human("set up the conversation")
+	firstResponse, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{setup}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.options.CompactionThreshold = 1
+	newInput := damessage.Human("remember this context")
+	response, err := client.Invoke(context.Background(), damodel.Request{
+		Messages: []damessage.Message{setup, firstResponse.Message, newInput},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message.TextContent() != "continued" || len(response.Message.Content) != 2 {
+		t.Fatalf("response = %#v", response.Message)
+	}
+	compaction := response.Message.Content[0]
+	if compaction.Type != damessage.BlockNonStandard || compaction.ID != "cmp_1" {
+		t.Fatalf("compaction block = %#v", compaction)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(compaction.NonStandard, &state); err != nil || state["type"] != "compaction" || state["encrypted_content"] != "opaque-state" {
+		t.Fatalf("compaction state = %#v, error = %v", state, err)
+	}
+	replayed, err := inputItems(response.Message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replayed) != 2 {
+		t.Fatalf("replayed output = %#v", replayed)
+	}
+	setupRequest := <-requests
+	compactionRequest := <-requests
+	resumeRequest := <-requests
+	if _, exists := setupRequest["previous_response_id"]; exists {
+		t.Fatalf("setup request unexpectedly chained a response: %#v", setupRequest)
+	}
+	compactionInput := compactionRequest["input"].([]any)
+	if compactionRequest["previous_response_id"] != "resp-setup" || len(compactionInput) != 2 || compactionInput[1].(map[string]any)["type"] != "compaction_trigger" {
+		t.Fatalf("incremental compaction request = %#v", compactionRequest)
+	}
+	resumeInput := resumeRequest["input"].([]any)
+	if len(resumeInput) != 3 || resumeInput[0].(map[string]any)["role"] != "user" || resumeInput[1].(map[string]any)["role"] != "user" || resumeInput[2].(map[string]any)["type"] != "compaction" {
+		t.Fatalf("post-compaction input = %#v", resumeInput)
+	}
+	if _, exists := resumeRequest["previous_response_id"]; exists {
+		t.Fatalf("post-compaction request incorrectly chained old response: %#v", resumeRequest)
+	}
+	select {
+	case err := <-serverErrors:
+		t.Fatal(err)
+	default:
+	}
+}
+
+func TestRemoteCompactionRetentionKeepsNewestUserMessagesWithinBudget(t *testing.T) {
+	message := func(role, text string) map[string]any {
+		return map[string]any{
+			"type": "message", "role": role,
+			"content": []any{map[string]any{"type": "input_text", "text": text}},
+		}
+	}
+	input := []any{
+		message("user", "old-old"),
+		message("developer", "discard developer context"),
+		message("assistant", "discard final answer"),
+		message("user", "middle12"),
+		message("user", "new!"),
+	}
+	retained := retainedCompactionInputWithBudget(input, 2)
+	if len(retained) != 2 {
+		t.Fatalf("retained = %#v", retained)
+	}
+	textAt := func(item any) string {
+		return item.(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	}
+	if got := textAt(retained[0]); got != "midd" {
+		t.Fatalf("truncated boundary message = %q, want %q", got, "midd")
+	}
+	if got := textAt(retained[1]); got != "new!" {
+		t.Fatalf("newest message = %q, want %q", got, "new!")
+	}
+}
+
 func TestErrorReportsNativeRetryMetadataAndRetryAfter(t *testing.T) {
 	response := &http.Response{
 		StatusCode: http.StatusTooManyRequests,
@@ -154,6 +362,11 @@ func TestErrorReportsNativeRetryMetadataAndRetryAfter(t *testing.T) {
 	clientErr := (&Error{Status: http.StatusForbidden}).RetryEvent(1, 0)
 	if clientErr.Retryable {
 		t.Fatalf("client error marked retryable: %#v", clientErr)
+	}
+	continuationErr := apiErrorValue(&apiError{Code: "previous_response_not_found", Message: "expired"}, http.StatusBadRequest)
+	var continuationReporter damodel.RetryReporter
+	if !errors.As(continuationErr, &continuationReporter) || !continuationReporter.RetryEvent(1, 0).Retryable {
+		t.Fatalf("continuation error is not retryable: %v", continuationErr)
 	}
 }
 
@@ -493,6 +706,274 @@ func TestStreamYieldsTextToolCallUsageAndDone(t *testing.T) {
 	}
 	if _, err := stream.Next(context.Background()); !errors.Is(err, io.EOF) {
 		t.Fatalf("terminal error = %v", err)
+	}
+}
+
+func TestResponsesWebSocketReusesConnectionWithIncrementalInput(t *testing.T) {
+	requests := make(chan map[string]any, 3)
+	headers := make(chan http.Header, 1)
+	serverErrors := make(chan error, 1)
+	var connections atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connections.Add(1)
+		connection, err := websocket.Accept(writer, request, nil)
+		if err != nil {
+			serverErrors <- err
+			return
+		}
+		defer connection.CloseNow()
+		headers <- request.Header.Clone()
+		for turn := range 3 {
+			messageType, data, err := connection.Read(request.Context())
+			if err != nil {
+				serverErrors <- err
+				return
+			}
+			if messageType != websocket.MessageText {
+				serverErrors <- fmt.Errorf("message type = %v", messageType)
+				return
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(data, &payload); err != nil {
+				serverErrors <- err
+				return
+			}
+			requests <- payload
+			var event string
+			switch turn {
+			case 0:
+				event = `{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[{"type":"function_call","id":"item-1","call_id":"call-1","name":"lookup","arguments":"{\"q\":\"go\"}"}]}}`
+			case 1:
+				event = `{"type":"response.completed","response":{"id":"resp-2","status":"completed","output":[{"type":"message","id":"msg-2","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}`
+			default:
+				event = `{"type":"response.completed","response":{"id":"resp-3","status":"completed","output":[{"type":"message","id":"msg-3","role":"assistant","content":[{"type":"output_text","text":"fresh"}]}]}}`
+			}
+			if err := connection.Write(request.Context(), websocket.MessageText, []byte(event)); err != nil {
+				serverErrors <- err
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := damessage.Human("hello")
+	first, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{human}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Message.ToolCalls) != 1 || first.Message.ToolCalls[0].ID != "call-1" {
+		t.Fatalf("first response = %#v", first)
+	}
+	second, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{
+		human, first.Message, damessage.Tool("call-1", "result"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Message.TextContent() != "done" {
+		t.Fatalf("second response = %#v", second)
+	}
+	third, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("unrelated")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Message.TextContent() != "fresh" {
+		t.Fatalf("third response = %#v", third)
+	}
+
+	firstRequest := <-requests
+	secondRequest := <-requests
+	thirdRequest := <-requests
+	if firstRequest["type"] != "response.create" {
+		t.Fatalf("first request type = %#v", firstRequest["type"])
+	}
+	if _, exists := firstRequest["stream"]; exists {
+		t.Fatalf("websocket request includes stream: %#v", firstRequest)
+	}
+	if _, exists := firstRequest["previous_response_id"]; exists {
+		t.Fatalf("first request previous response = %#v", firstRequest["previous_response_id"])
+	}
+	firstInput, _ := firstRequest["input"].([]any)
+	if len(firstInput) != 1 {
+		t.Fatalf("first input = %#v", firstRequest["input"])
+	}
+	if secondRequest["previous_response_id"] != "resp-1" {
+		t.Fatalf("second request previous response = %#v", secondRequest["previous_response_id"])
+	}
+	secondInput, _ := secondRequest["input"].([]any)
+	if len(secondInput) != 1 || secondInput[0].(map[string]any)["type"] != "function_call_output" {
+		t.Fatalf("second input = %#v", secondRequest["input"])
+	}
+	if _, exists := thirdRequest["previous_response_id"]; exists {
+		t.Fatalf("unrelated history reused previous response: %#v", thirdRequest)
+	}
+	thirdInput, _ := thirdRequest["input"].([]any)
+	if len(thirdInput) != 1 || thirdInput[0].(map[string]any)["role"] != "user" {
+		t.Fatalf("third input = %#v", thirdRequest["input"])
+	}
+	if connections.Load() != 1 {
+		t.Fatalf("connections = %d", connections.Load())
+	}
+	header := <-headers
+	if header.Get("Authorization") != "Bearer secret" || header.Get("OpenAI-Beta") != responsesWebSocketBeta {
+		t.Fatalf("websocket headers = %#v", header)
+	}
+	select {
+	case err := <-serverErrors:
+		t.Fatal(err)
+	default:
+	}
+}
+
+func TestResponsesWebSocketReadCancellationClosesConnection(t *testing.T) {
+	requestReceived := make(chan struct{})
+	connectionClosed := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := websocket.Accept(writer, request, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		if _, _, err := connection.Read(request.Context()); err != nil {
+			return
+		}
+		close(requestReceived)
+		_, _, _ = connection.Read(context.Background())
+		close(connectionClosed)
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-requestReceived
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := stream.Next(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Next error = %v", err)
+	}
+	select {
+	case <-connectionClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("websocket connection remained open after cancellation")
+	}
+}
+
+func TestResponsesWebSocketPrewarmChainsFirstGeneratedTurn(t *testing.T) {
+	requests := make(chan map[string]any, 2)
+	serverErrors := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := websocket.Accept(writer, request, nil)
+		if err != nil {
+			serverErrors <- err
+			return
+		}
+		defer connection.CloseNow()
+		for turn := range 2 {
+			_, data, err := connection.Read(request.Context())
+			if err != nil {
+				serverErrors <- err
+				return
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(data, &payload); err != nil {
+				serverErrors <- err
+				return
+			}
+			requests <- payload
+			event := `{"type":"response.completed","response":{"id":"warm-1","status":"completed","output":[]}}`
+			if turn == 1 {
+				event = `{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ready"}]}]}}`
+			}
+			if err := connection.Write(request.Context(), websocket.MessageText, []byte(event)); err != nil {
+				serverErrors <- err
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Prewarm(context.Background(), damodel.Request{SystemMessage: new(damessage.System("be concise"))}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Invoke(context.Background(), damodel.Request{
+		SystemMessage: new(damessage.System("be concise")),
+		Messages:      []damessage.Message{damessage.Human("hello")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message.TextContent() != "ready" {
+		t.Fatalf("response = %#v", response)
+	}
+	warmup := <-requests
+	generated := <-requests
+	if warmup["generate"] != false {
+		t.Fatalf("warmup generate = %#v", warmup["generate"])
+	}
+	if input, _ := warmup["input"].([]any); len(input) != 0 {
+		t.Fatalf("warmup input = %#v", warmup["input"])
+	}
+	if generated["previous_response_id"] != "warm-1" {
+		t.Fatalf("generated previous response = %#v", generated["previous_response_id"])
+	}
+	if _, exists := generated["generate"]; exists {
+		t.Fatalf("generated request includes generate: %#v", generated)
+	}
+	select {
+	case err := <-serverErrors:
+		t.Fatal(err)
+	default:
+	}
+}
+
+func TestResponsesWebSocketHandshakeFailureFallsBackToHTTP(t *testing.T) {
+	methods := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		methods <- request.Method
+		if request.Method == http.MethodGet {
+			http.Error(writer, "websocket unavailable", http.StatusNotFound)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-http\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"http\"}]}]}}\n\n")
+	}))
+	defer server.Close()
+	client, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message.TextContent() != "http" {
+		t.Fatalf("response = %#v", response)
+	}
+	if first, second := <-methods, <-methods; first != http.MethodGet || second != http.MethodPost {
+		t.Fatalf("methods = %q, %q", first, second)
+	}
+	if client.websockets.enabled() {
+		t.Fatal("websocket transport remained enabled after handshake failure")
 	}
 }
 

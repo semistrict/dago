@@ -1,4 +1,4 @@
-.PHONY: check checkpoint-interop coverage drift fmt fmt-check generate test test-race tinygo vet
+.PHONY: check checkpoint-interop coverage drift fmt fmt-check generate test test-openai-live test-race tinygo vet
 
 check: fmt-check drift vet test test-race
 
@@ -20,6 +20,10 @@ vet:
 
 test:
 	go test ./...
+
+test-openai-live:
+	@test -n "$$DAGO_OPENAI_OAUTH_FILE" || (echo "DAGO_OPENAI_OAUTH_FILE must point to an existing OAuth JSON file"; exit 1)
+	DAGO_OPENAI_LIVE=1 go test ./daproviders/openai -run '^TestLiveResponses.*OAuthEndToEnd$$' -count=1 -v
 
 test-race:
 	go test -race ./...

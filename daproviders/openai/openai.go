@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	defaultAPIBaseURL      = "https://api.openai.com/v1"
-	responseOutputStateKey = "openai.responses.output_item"
+	defaultAPIBaseURL                = "https://api.openai.com/v1"
+	defaultServerCompactionThreshold = 200000
+	responseOutputStateKey           = "openai.responses.output_item"
 )
 
 var ErrIncompleteStream = errors.New("openai: response stream ended before completion")
@@ -59,6 +60,21 @@ type Options struct {
 	DefaultReasoning *damodel.Reasoning
 	// Store controls server-side response retention when explicitly set.
 	Store *bool
+	// ResponsesWebSocket controls persistent WebSocket transport for streamed
+	// Responses API calls. Nil enables it for the standard API endpoints and
+	// leaves custom BaseURL values on HTTP. Set it explicitly to override that
+	// default. Compatible successive calls send only new input items.
+	ResponsesWebSocket *bool
+	// ServerCompaction controls Responses API server-side compaction. Nil enables
+	// it for standard API endpoints and subscription clients, while leaving other
+	// custom BaseURL values unchanged. Set it explicitly to override that default.
+	ServerCompaction *bool
+	// CompactionThreshold is the approximate rendered-token threshold that sends
+	// a remote compaction trigger before inference. Zero derives 90% of
+	// ContextWindow, or 200,000 when ContextWindow is unknown. Positive overrides
+	// are clamped to 90% of a known ContextWindow and also opt custom endpoints in
+	// unless ServerCompaction is explicitly false.
+	CompactionThreshold int
 	// WebSearch enables the provider-hosted web search tool. Provider-hosted
 	// calls are returned as content blocks and are never dispatched through the
 	// local dago tool executor.
@@ -75,15 +91,13 @@ type Client struct {
 	credentials  CredentialSource
 	boundTools   []datool.Definition
 	subscription bool
+	websockets   *responsesWebSocketPool
 }
 
 // NewAPIKey creates a model authenticated with an API key.
 func NewAPIKey(apiKey string, options Options) (*Client, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, fmt.Errorf("openai: API key is required")
-	}
-	if options.BaseURL == "" {
-		options.BaseURL = defaultAPIBaseURL
 	}
 	return newClient(staticCredentials{Credentials{AccessToken: apiKey}}, options)
 }
@@ -100,6 +114,12 @@ func NewSubscription(source CredentialSource, options Options) (*Client, error) 
 		// Kept split so repository-facing text does not couple the package to a
 		// product-specific route name.
 		options.BaseURL = "https://chatgpt.com/backend-api/" + "co" + "dex"
+		if options.ResponsesWebSocket == nil {
+			options.ResponsesWebSocket = new(true)
+		}
+	}
+	if options.ServerCompaction == nil {
+		options.ServerCompaction = new(true)
 	}
 	store := false
 	options.Store = &store
@@ -118,6 +138,10 @@ func newClient(source CredentialSource, options Options) (*Client, error) {
 	if strings.TrimSpace(options.Model) == "" {
 		return nil, fmt.Errorf("openai: model is required")
 	}
+	if options.CompactionThreshold < 0 {
+		return nil, fmt.Errorf("openai: compaction threshold must not be negative")
+	}
+	standardEndpoint := options.BaseURL == "" || strings.TrimRight(options.BaseURL, "/") == defaultAPIBaseURL
 	if options.BaseURL == "" {
 		options.BaseURL = defaultAPIBaseURL
 	}
@@ -138,7 +162,35 @@ func newClient(source CredentialSource, options Options) (*Client, error) {
 	} else {
 		options.RetryBackoff = append([]time.Duration(nil), options.RetryBackoff...)
 	}
-	return &Client{options: options, credentials: source}, nil
+	client := &Client{options: options, credentials: source}
+	websocketEnabled := standardEndpoint
+	if options.ResponsesWebSocket != nil {
+		websocketEnabled = *options.ResponsesWebSocket
+	}
+	if websocketEnabled {
+		client.websockets = &responsesWebSocketPool{}
+	}
+	serverCompactionEnabled := standardEndpoint || options.CompactionThreshold > 0
+	if options.ServerCompaction != nil {
+		serverCompactionEnabled = *options.ServerCompaction
+	}
+	options.ServerCompaction = new(serverCompactionEnabled)
+	if serverCompactionEnabled {
+		maximum := 0
+		if options.ContextWindow > 0 {
+			maximum = max(1, options.ContextWindow*9/10)
+		}
+		if options.CompactionThreshold == 0 {
+			options.CompactionThreshold = defaultServerCompactionThreshold
+			if maximum > 0 {
+				options.CompactionThreshold = maximum
+			}
+		} else if maximum > 0 {
+			options.CompactionThreshold = min(options.CompactionThreshold, maximum)
+		}
+	}
+	client.options = options
+	return client, nil
 }
 
 // BindTools returns an independent client with the supplied tool definitions.
@@ -173,9 +225,39 @@ func (client *Client) CountTokens(_ context.Context, messages []damessage.Messag
 	return damessage.ApproximateTokens(messages), nil
 }
 
+// Prewarm prepares the persistent Responses WebSocket with the request's
+// instructions, tools, and input without generating model output. The next
+// compatible call continues from the warmed response state.
+func (client *Client) Prewarm(ctx context.Context, request damodel.Request) error {
+	payload, err := client.requestPayload(request, true)
+	if err != nil {
+		return err
+	}
+	if client.websockets == nil || !client.websockets.enabled() {
+		return fmt.Errorf("openai: websocket prewarm requires websocket transport")
+	}
+	generate := false
+	stream, err := client.streamWebSocketRequest(ctx, payload, &generate)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	completed := false
+	for chunk, nextErr := range stream.Chunks() {
+		if nextErr != nil {
+			return nextErr
+		}
+		completed = completed || chunk.Done
+	}
+	if !completed {
+		return ErrIncompleteStream
+	}
+	return nil
+}
+
 func (client *Client) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
-	if client.subscription {
-		return client.invokeSubscription(ctx, request)
+	if client.subscription || client.websockets != nil {
+		return client.invokeStream(ctx, request)
 	}
 	body, err := client.requestBody(request, false)
 	if err != nil {
@@ -218,7 +300,7 @@ func (client *Client) Invoke(ctx context.Context, request damodel.Request) (damo
 	}
 }
 
-func (client *Client) invokeSubscription(ctx context.Context, request damodel.Request) (damodel.Response, error) {
+func (client *Client) invokeStream(ctx context.Context, request damodel.Request) (damodel.Response, error) {
 	stream, err := client.Stream(ctx, request)
 	if err != nil {
 		return damodel.Response{}, err
@@ -316,9 +398,41 @@ func mergeChunk(response *damodel.Response, chunk damodel.Chunk) {
 }
 
 func (client *Client) Stream(ctx context.Context, request damodel.Request) (damodel.Stream, error) {
-	body, err := client.requestBody(request, true)
+	payload, err := client.requestPayload(request, true)
 	if err != nil {
 		return nil, err
+	}
+	var compaction json.RawMessage
+	if client.shouldCompact(payload) {
+		payload.Input, compaction, err = client.compactInput(ctx, payload)
+		if err != nil {
+			return nil, err
+		}
+	}
+	stream, err := client.streamPayload(ctx, payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(compaction) > 0 {
+		stream = newCompactionStateStream(ctx, stream, compaction)
+	}
+	return stream, nil
+}
+
+func (client *Client) streamPayload(ctx context.Context, payload responsesRequest) (damodel.Stream, error) {
+	if client.websockets != nil && client.websockets.enabled() {
+		stream, websocketErr := client.streamWebSocket(ctx, payload)
+		if websocketErr == nil {
+			return stream, nil
+		}
+		if ctx.Err() != nil {
+			return nil, websocketErr
+		}
+		client.websockets.disable()
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("openai: encode request: %w", err)
 	}
 	for attempt := 0; ; attempt++ {
 		response, err := client.do(ctx, body)
@@ -350,7 +464,7 @@ func (client *Client) canRetry(ctx context.Context, attempt int, err error) bool
 	}
 	var providerErr *Error
 	if errors.As(err, &providerErr) {
-		return providerErr.Status == http.StatusTooManyRequests || providerErr.Status >= 500
+		return providerErr.retryableError()
 	}
 	return true
 }
@@ -474,11 +588,19 @@ type responseFormat struct {
 }
 
 func (client *Client) requestBody(request damodel.Request, stream bool) ([]byte, error) {
+	payload, err := client.requestPayload(request, stream)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(payload)
+}
+
+func (client *Client) requestPayload(request damodel.Request, stream bool) (responsesRequest, error) {
 	input := make([]any, 0, len(request.Messages)*2)
 	var instructions []string
 	if request.SystemMessage != nil {
 		if request.SystemMessage.Role != damessage.RoleSystem {
-			return nil, fmt.Errorf("system message has role %q", request.SystemMessage.Role)
+			return responsesRequest{}, fmt.Errorf("system message has role %q", request.SystemMessage.Role)
 		}
 		if text := strings.TrimSpace(request.SystemMessage.TextContent()); text != "" {
 			instructions = append(instructions, text)
@@ -493,7 +615,7 @@ func (client *Client) requestBody(request damodel.Request, stream bool) ([]byte,
 		}
 		converted, err := inputItems(item)
 		if err != nil {
-			return nil, err
+			return responsesRequest{}, err
 		}
 		input = append(input, converted...)
 	}
@@ -504,7 +626,7 @@ func (client *Client) requestBody(request damodel.Request, stream bool) ([]byte,
 	tools := make([]responseTool, 0, len(definitions))
 	for _, definition := range definitions {
 		if err := definition.Validate(); err != nil {
-			return nil, err
+			return responsesRequest{}, err
 		}
 		tools = append(tools, responseTool{Type: "function", Name: definition.Name, Description: definition.Description, Parameters: definition.InputSchema, Strict: definition.Strict})
 	}
@@ -539,7 +661,7 @@ func (client *Client) requestBody(request damodel.Request, stream bool) ([]byte,
 		for key, raw := range request.Metadata {
 			var value any
 			if err := json.Unmarshal(raw, &value); err != nil {
-				return nil, fmt.Errorf("openai: metadata %q: %w", key, err)
+				return responsesRequest{}, fmt.Errorf("openai: metadata %q: %w", key, err)
 			}
 			payload.Metadata[key] = value
 		}
@@ -551,7 +673,7 @@ func (client *Client) requestBody(request damodel.Request, stream bool) ([]byte,
 		case "tool", "function":
 			payload.ToolChoice = map[string]any{"type": "function", "name": request.ToolChoice.Name}
 		default:
-			return nil, fmt.Errorf("openai: unsupported tool choice %q", request.ToolChoice.Mode)
+			return responsesRequest{}, fmt.Errorf("openai: unsupported tool choice %q", request.ToolChoice.Mode)
 		}
 	}
 	if request.ResponseFormat != nil {
@@ -560,7 +682,7 @@ func (client *Client) requestBody(request damodel.Request, stream bool) ([]byte,
 			Schema: request.ResponseFormat.Schema, Strict: request.ResponseFormat.Strict,
 		}}
 	}
-	return json.Marshal(payload)
+	return payload, nil
 }
 
 const reasoningStateKey = "openai.responses.reasoning"
@@ -684,6 +806,22 @@ func inputItems(value damessage.Message) ([]any, error) {
 				return nil, fmt.Errorf("openai: server tool state id %q does not match block id %q", replay.ID, block.ID)
 			}
 			items = append(items, append(json.RawMessage(nil), raw...))
+		case damessage.BlockNonStandard:
+			if value.Role != damessage.RoleAssistant {
+				return nil, fmt.Errorf("openai: non-standard content is only supported in assistant messages")
+			}
+			var replay struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(block.NonStandard, &replay); err != nil {
+				return nil, fmt.Errorf("openai: decode non-standard state: %w", err)
+			}
+			switch replay.Type {
+			case "compaction", "compaction_summary", "context_compaction":
+				items = append(items, append(json.RawMessage(nil), block.NonStandard...))
+			default:
+				return nil, fmt.Errorf("openai: unsupported non-standard state %q", replay.Type)
+			}
 		default:
 			return nil, fmt.Errorf("openai: unsupported content block %q", block.Type)
 		}
@@ -831,6 +969,13 @@ func normalizeResponse(payload responsesResponse, format *damodel.ResponseFormat
 				extra[responseOutputStateKey] = append(json.RawMessage(nil), output.raw...)
 			}
 			result.Content = append(result.Content, damessage.ContentBlock{Type: damessage.BlockServerTool, ID: output.ID, Name: "web_search", Extra: extra})
+		case "compaction", "compaction_summary", "context_compaction":
+			if len(output.raw) > 0 {
+				result.Content = append(result.Content, damessage.ContentBlock{
+					Type: damessage.BlockNonStandard, ID: output.ID,
+					NonStandard: append(json.RawMessage(nil), output.raw...),
+				})
+			}
 		}
 	}
 	finishReason := damodel.FinishReasonStop
@@ -911,6 +1056,7 @@ type Error struct {
 	Model      string
 	URL        string
 	RetryAfter time.Duration
+	retryable  bool
 }
 
 func (err *Error) Error() string {
@@ -925,10 +1071,14 @@ func (err *Error) RetryEvent(attempt int, delay time.Duration) damodel.RetryEven
 		delay = err.RetryAfter
 	}
 	return damodel.RetryEvent{
-		Attempt: attempt, Delay: delay, Retryable: err.Status == http.StatusTooManyRequests || err.Status >= 500,
+		Attempt: attempt, Delay: delay, Retryable: err.retryableError(),
 		Err: err.Message, Status: err.Status,
 		Provider: err.Provider, Model: err.Model,
 	}
+}
+
+func (err *Error) retryableError() bool {
+	return err.retryable || err.Status == http.StatusTooManyRequests || err.Status >= 500
 }
 
 func responseError(response *http.Response) error {
@@ -969,7 +1119,10 @@ func parseRetryAfter(value string, now time.Time) time.Duration {
 }
 
 func apiErrorValue(value *apiError, status int) error {
-	err := &Error{Status: status, Code: value.Code, Type: value.Type, Message: value.Message}
+	err := &Error{
+		Status: status, Code: value.Code, Type: value.Type, Message: value.Message,
+		retryable: value.Code == "previous_response_not_found" || value.Code == "websocket_connection_limit_reached",
+	}
 	if value.Code == "context_length_exceeded" || value.Code == "context_window_exceeded" {
 		return errors.Join(damodel.ErrContextOverflow, err)
 	}
@@ -977,17 +1130,19 @@ func apiErrorValue(value *apiError, status int) error {
 }
 
 type responseStream struct {
-	ctx              context.Context
-	body             io.ReadCloser
-	scanner          *bufio.Scanner
-	queued           []damodel.Chunk
-	calls            map[string]responseOutput
-	done             bool
-	data             []string
-	emittedText      strings.Builder
-	emittedCalls     map[string]struct{}
-	emittedReasoning map[string]string
-	emittedServer    map[string]struct{}
+	ctx               context.Context
+	body              io.ReadCloser
+	scanner           *bufio.Scanner
+	queued            []damodel.Chunk
+	calls             map[string]responseOutput
+	done              bool
+	data              []string
+	emittedText       strings.Builder
+	emittedCalls      map[string]struct{}
+	emittedReasoning  map[string]string
+	emittedServer     map[string]struct{}
+	emittedCompaction bool
+	completed         *responsesResponse
 }
 
 func newResponseStream(ctx context.Context, body io.ReadCloser) *responseStream {
@@ -1072,6 +1227,7 @@ func (stream *responseStream) event(data []byte) (damodel.Chunk, bool, error) {
 		Arguments   json.RawMessage   `json:"arguments"`
 		Response    responsesResponse `json:"response"`
 		Error       *apiError         `json:"error"`
+		Status      int               `json:"status"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return damodel.Chunk{}, false, fmt.Errorf("openai: decode stream event: %w", err)
@@ -1116,6 +1272,13 @@ func (stream *responseStream) event(data []byte) (damodel.Chunk, bool, error) {
 				Extra: extra,
 			}}}}, true, nil
 		}
+		if isCompactionType(envelope.Item.Type) && len(envelope.Item.raw) > 0 {
+			stream.emittedCompaction = true
+			return damodel.Chunk{MessageDelta: damessage.Message{Role: damessage.RoleAssistant, Content: []damessage.ContentBlock{{
+				Type: damessage.BlockNonStandard, ID: envelope.Item.ID,
+				NonStandard: append(json.RawMessage(nil), envelope.Item.raw...),
+			}}}}, true, nil
+		}
 	case "response.function_call_arguments.delta":
 		call := stream.calls[envelope.ItemID]
 		call.Arguments = append(call.Arguments, envelope.Delta...)
@@ -1134,6 +1297,7 @@ func (stream *responseStream) event(data []byte) (damodel.Chunk, bool, error) {
 		return damodel.Chunk{MessageDelta: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: call.CallID, Name: call.Name, Arguments: arguments}}}}, true, nil
 	case "response.completed":
 		stream.done = true
+		stream.completed = &envelope.Response
 		return stream.completedChunk(envelope.Response)
 	case "response.failed", "error":
 		if envelope.Error == nil {
@@ -1142,7 +1306,7 @@ func (stream *responseStream) event(data []byte) (damodel.Chunk, bool, error) {
 		if envelope.Error == nil {
 			return damodel.Chunk{}, false, fmt.Errorf("openai: response stream failed")
 		}
-		return damodel.Chunk{}, false, apiErrorValue(envelope.Error, http.StatusOK)
+		return damodel.Chunk{}, false, apiErrorValue(envelope.Error, envelope.Status)
 	}
 	return damodel.Chunk{}, false, nil
 }
@@ -1173,6 +1337,14 @@ func (stream *responseStream) completedChunk(payload responsesResponse) (damodel
 			if _, emitted := stream.emittedServer[block.ID]; !emitted {
 				delta.Content = append(delta.Content, block)
 			}
+		case damessage.BlockNonStandard:
+			var item struct {
+				Type string `json:"type"`
+			}
+			if stream.emittedCompaction && json.Unmarshal(block.NonStandard, &item) == nil && isCompactionType(item.Type) {
+				continue
+			}
+			delta.Content = append(delta.Content, block)
 		default:
 			delta.Content = append(delta.Content, block)
 		}

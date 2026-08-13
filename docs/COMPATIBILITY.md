@@ -33,7 +33,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Provider and harness profiles | verified | built-in Anthropic harness overlays; explicit Nemotron profile composition; explicit OpenAI/NVIDIA/OpenRouter construction-profile sets; active repair, retry, budget, policy, entity, follow-up, and final-answer contracts |
 | Token/update/task/interrupt/custom streaming | verified | graph, agent, and provider stream tests |
 | Agent-event and model-chunk iterators | verified | completion, terminal-error, and early-break closure tests while retaining explicit `Next`/`Close` |
-| API-key and subscription OAuth model access | verified | request, PKCE, refresh, persistence, and stream tests |
+| API-key and subscription OAuth model access | verified | request, PKCE, refresh, persistence, HTTP streaming, default Responses WebSocket transport, incremental continuation, remote V2 compaction trigger/state replay, and cancellation tests |
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
 | Asynchronous hosted-subagent lifecycle and durable task state | verified | provider-neutral runner and five management-tool tests |
 | Remote Agent Protocol background client | verified | thread/run create, status/result, interrupting update, cancellation, auth, path escaping, and redirect-boundary tests |

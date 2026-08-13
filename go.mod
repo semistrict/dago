@@ -3,6 +3,7 @@ module github.com/semistrict/dago
 go 1.26.0
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/langchain-ai/langsmith-go v0.25.4
 	github.com/moby/moby/api v1.55.0
