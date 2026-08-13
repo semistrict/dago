@@ -20,6 +20,7 @@ import (
 	"github.com/semistrict/dago/dagoal"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 	"github.com/semistrict/dago/daworkspace"
 )
 
@@ -193,6 +194,7 @@ type runnerOptions struct {
 	Shell          bool
 	AutoReview     bool
 	ReviewModel    string
+	Tools          []datool.Tool
 }
 
 func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
@@ -244,6 +246,7 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 	goalOptions := dagoal.Options{}
 	agent := dago.New(model, dago.Options{
 		Name: "dacode", SystemMessage: system, Backend: backend,
+		Tools:      options.Tools,
 		Filesystem: filesystem, Skills: dago.Skills{Sources: skillSources}, Memory: memory,
 		EnableTodo: true, Middleware: []dagent.Middleware{dagoal.Middleware(goalOptions)},
 		InterruptOn: interruptOn, Saver: saver, RetainThreadState: true,

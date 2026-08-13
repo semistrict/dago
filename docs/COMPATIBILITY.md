@@ -41,7 +41,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
 | Asynchronous hosted-subagent lifecycle and durable task state | verified | provider-neutral runner and five management-tool tests |
 | Remote Agent Protocol background client | verified | thread/run create, status/result, interrupting update, cancellation, auth, path escaping, and redirect-boundary tests |
-| Agent Client Protocol v1 server | verified | initialize/new/prompt/cancel/close lifecycle; content conversion; text, reasoning, tool, progress, and plan projection; approve/reject permission resume; stop reasons; and transport tests in `daacp` |
+| Agent Client Protocol v1 server | verified | initialize/auth/new/load/config/prompt/cancel/close lifecycle; replay-marked durable transcripts; image, audio, and embedded content conversion; text, reasoning, tool, progress, and plan projection; approve/reject permission resume; per-session stdio/HTTP/SSE MCP discovery and invocation; stop reasons; and transport tests in `daacp` and `dacode` |
 | LangSmith Studio / Agent Server development API | verified | info and schema discovery; assistant, thread, run, checkpoint state/history/update/fork, store, cancellation, replayable SSE, CORS, generated-wrapper, and config tests |
 | Video processing | verified | pluggable extractor contract plus optional bounded FFmpeg adapter; video-window, frame, truncation, fallback, and failure tests |
 | Executable upstream conformance provenance | verified | generator validates pinned source paths and test selectors; generated-contract tests strictly decode, validate, mutate, and round-trip every fixture |

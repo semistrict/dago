@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dagoal"
@@ -429,17 +432,51 @@ func TestParseCLIACP(t *testing.T) {
 	}
 }
 
+func TestParseCLIACPCommand(t *testing.T) {
+	options, err := parseCLI([]string{"acp", "--cwd", "/work", "--yolo"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.acp || options.workingDir != "/work" || !options.yolo {
+		t.Fatalf("options = %#v", options)
+	}
+}
+
 func TestRunACPServesProtocolOnStandardIO(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	root := t.TempDir()
 	stateDirectory := t.TempDir()
+	seeded, seedCloser, err := newRunner(runnerOptions{
+		Authentication: modelAuthentication{apiKey: "test-key"}, Model: defaultModel,
+		WorkingDir: root, StateDir: stateDirectory,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = seeded.(*dagoRunner).agent.UpdateState(t.Context(), dacheckpoint.Config{ThreadID: "persisted"}, dastate.Values{
+		dagent.MessagesKey: []damessage.Message{damessage.Human("saved prompt"), damessage.Assistant("saved response")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seedCloser.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "t3-session", Version: "1"}, nil)
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
+		if request.Header.Get("Authorization") != "Bearer session-token" {
+			t.Errorf("Authorization = %q", request.Header.Get("Authorization"))
+		}
+		return mcpServer
+	}, &mcp.StreamableHTTPOptions{JSONResponse: true}))
+	defer httpServer.Close()
 	clientToServerReader, clientToServerWriter := io.Pipe()
 	serverToClientReader, serverToClientWriter := io.Pipe()
 	var stderr bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
 		done <- Run(t.Context(), []string{
-			"--acp", "--cwd", root, "--state-dir", stateDirectory,
+			"acp", "--cwd", root, "--state-dir", stateDirectory,
 		}, clientToServerReader, serverToClientWriter, &stderr)
 	}()
 	connection := acp.NewClientSideConnection(discardACPClient{}, clientToServerWriter, serverToClientReader)
@@ -451,11 +488,36 @@ func TestRunACPServesProtocolOnStandardIO(t *testing.T) {
 	if initialized.AgentInfo == nil || initialized.AgentInfo.Name != "dacode" || initialized.ProtocolVersion != acp.ProtocolVersionNumber {
 		t.Fatalf("initialize = %#v", initialized)
 	}
-	created, err := connection.NewSession(t.Context(), acp.NewSessionRequest{Cwd: root, McpServers: []acp.McpServer{}})
+	if !initialized.AgentCapabilities.LoadSession || !initialized.AgentCapabilities.McpCapabilities.Http || !initialized.AgentCapabilities.PromptCapabilities.Image || len(initialized.AuthMethods) != 1 {
+		t.Fatalf("capabilities = %#v, auth = %#v", initialized.AgentCapabilities, initialized.AuthMethods)
+	}
+	if _, err := connection.Authenticate(t.Context(), acp.AuthenticateRequest{MethodId: "cursor_login"}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := connection.NewSession(t.Context(), acp.NewSessionRequest{Cwd: root, McpServers: []acp.McpServer{{Http: &acp.McpServerHttpInline{
+		Name: "t3-session", Url: httpServer.URL, Headers: []acp.HttpHeader{{Name: "Authorization", Value: "Bearer session-token"}},
+	}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	configured, err := connection.SetSessionConfigOption(t.Context(), acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{
+		SessionId: created.SessionId, ConfigId: "model", Value: acp.SessionConfigValueId(defaultModel),
+	}})
+	if err != nil || len(configured.ConfigOptions) != 1 {
+		t.Fatalf("set config = %#v, %v", configured, err)
+	}
 	if _, err := connection.CloseSession(t.Context(), acp.CloseSessionRequest{SessionId: created.SessionId}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := connection.LoadSession(t.Context(), acp.LoadSessionRequest{
+		SessionId: "persisted", Cwd: root, McpServers: []acp.McpServer{{Http: &acp.McpServerHttpInline{
+			Name: "t3-session", Url: httpServer.URL, Headers: []acp.HttpHeader{{Name: "Authorization", Value: "Bearer session-token"}},
+		}}},
+	})
+	if err != nil || len(loaded.ConfigOptions) != 1 {
+		t.Fatalf("load = %#v, %v", loaded, err)
+	}
+	if _, err := connection.CloseSession(t.Context(), acp.CloseSessionRequest{SessionId: "persisted"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := clientToServerWriter.Close(); err != nil {

@@ -37,11 +37,14 @@ type protocolAgent struct {
 
 type session struct {
 	cwd    string
+	runner Runner
+	closer io.Closer
 	active *activeTurn
 }
 
 type activeTurn struct {
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func newProtocolAgent(ctx context.Context, runner Runner, options Options) *protocolAgent {
@@ -60,6 +63,10 @@ func (agent *protocolAgent) Initialize(_ context.Context, _ acp.InitializeReques
 	return acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		AgentCapabilities: acp.AgentCapabilities{
+			LoadSession: agent.options.LoadSession,
+			McpCapabilities: acp.McpCapabilities{
+				Http: agent.options.SessionFactory != nil, Sse: agent.options.SessionFactory != nil,
+			},
 			PromptCapabilities: acp.PromptCapabilities{
 				Image: agent.options.ImagePrompts, Audio: agent.options.AudioPrompts,
 				EmbeddedContext: agent.options.EmbeddedContext,
@@ -69,11 +76,11 @@ func (agent *protocolAgent) Initialize(_ context.Context, _ acp.InitializeReques
 			},
 		},
 		AgentInfo:   &acp.Implementation{Name: agent.options.Name, Version: agent.options.Version},
-		AuthMethods: []acp.AuthMethod{},
+		AuthMethods: append([]acp.AuthMethod(nil), agent.options.AuthMethods...),
 	}, nil
 }
 
-func (agent *protocolAgent) NewSession(_ context.Context, request acp.NewSessionRequest) (acp.NewSessionResponse, error) {
+func (agent *protocolAgent) NewSession(ctx context.Context, request acp.NewSessionRequest) (acp.NewSessionResponse, error) {
 	if !filepath.IsAbs(request.Cwd) {
 		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{"cwd": "must be absolute"})
 	}
@@ -85,17 +92,69 @@ func (agent *protocolAgent) NewSession(_ context.Context, request acp.NewSession
 	if len(request.AdditionalDirectories) > 0 {
 		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{"additionalDirectories": "additional workspace roots are not supported"})
 	}
-	if len(request.McpServers) > 0 {
+	if len(request.McpServers) > 0 && agent.options.SessionFactory == nil {
 		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{"mcpServers": "MCP-over-ACP is not supported"})
 	}
 	id, err := sessionID()
 	if err != nil {
 		return acp.NewSessionResponse{}, fmt.Errorf("create session id: %w", err)
 	}
+	runner, closer, err := agent.makeRunner(ctx, SessionConfig{
+		ID: id, CWD: request.Cwd, AdditionalDirectories: request.AdditionalDirectories,
+		MCPServers: request.McpServers,
+	})
+	if err != nil {
+		return acp.NewSessionResponse{}, fmt.Errorf("create ACP session runner: %w", err)
+	}
 	agent.mu.Lock()
-	agent.sessions[id] = &session{cwd: request.Cwd}
+	agent.sessions[id] = &session{cwd: request.Cwd, runner: runner, closer: closer}
 	agent.mu.Unlock()
-	return acp.NewSessionResponse{SessionId: acp.SessionId(id)}, nil
+	return acp.NewSessionResponse{
+		SessionId: acp.SessionId(id), ConfigOptions: append([]acp.SessionConfigOption(nil), agent.options.ConfigOptions...),
+	}, nil
+}
+
+func (agent *protocolAgent) LoadSession(ctx context.Context, request acp.LoadSessionRequest) (acp.LoadSessionResponse, error) {
+	if !agent.options.LoadSession {
+		return acp.LoadSessionResponse{}, acp.NewMethodNotFound(acp.AgentMethodSessionLoad)
+	}
+	if err := validateSessionRoots(request.Cwd, request.AdditionalDirectories); err != nil {
+		return acp.LoadSessionResponse{}, err
+	}
+	id := string(request.SessionId)
+	runner, closer, err := agent.makeRunner(ctx, SessionConfig{
+		ID: id, CWD: request.Cwd, AdditionalDirectories: request.AdditionalDirectories,
+		MCPServers: request.McpServers,
+	})
+	if err != nil {
+		return acp.LoadSessionResponse{}, fmt.Errorf("load ACP session runner: %w", err)
+	}
+	loader, ok := runner.(SessionLoader)
+	if !ok {
+		if closer != nil {
+			_ = closer.Close()
+		}
+		return acp.LoadSessionResponse{}, fmt.Errorf("load ACP session: runner does not support durable transcripts")
+	}
+	messages, err := loader.LoadSession(ctx, id)
+	if err != nil {
+		if closer != nil {
+			_ = closer.Close()
+		}
+		return acp.LoadSessionResponse{}, err
+	}
+	agent.mu.Lock()
+	previous := agent.sessions[id]
+	agent.sessions[id] = &session{cwd: request.Cwd, runner: runner, closer: closer}
+	agent.mu.Unlock()
+	if previous != nil {
+		agent.closeSessionResources(previous)
+	}
+	if err := agent.replayMessages(ctx, request.SessionId, messages); err != nil {
+		agent.removeSession(id)
+		return acp.LoadSessionResponse{}, err
+	}
+	return acp.LoadSessionResponse{ConfigOptions: append([]acp.SessionConfigOption(nil), agent.options.ConfigOptions...)}, nil
 }
 
 func (agent *protocolAgent) Prompt(requestContext context.Context, request acp.PromptRequest) (acp.PromptResponse, error) {
@@ -125,11 +184,11 @@ func (agent *protocolAgent) Prompt(requestContext context.Context, request acp.P
 	}
 	projector := newProjector(connection, request.SessionId)
 	for {
-		stream := agent.runner.Stream(turnContext, input)
+		stream := snapshot.runner.Stream(turnContext, input)
 		result, streamErr := projector.consume(turnContext, stream)
 		if streamErr != nil {
 			if errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) || turnContext.Err() != nil {
-				agent.cleanupCancelled(input)
+				agent.cleanupCancelled(snapshot.runner, input)
 				return acp.PromptResponse{StopReason: acp.StopReasonCancelled, UserMessageId: request.MessageId}, nil
 			}
 			return acp.PromptResponse{}, fmt.Errorf("run ACP prompt: %w", streamErr)
@@ -142,7 +201,7 @@ func (agent *protocolAgent) Prompt(requestContext context.Context, request acp.P
 		resume, permissionErr := projector.requestApprovals(turnContext, result.Interrupts)
 		if permissionErr != nil {
 			if errors.Is(permissionErr, errPermissionCancelled) || errors.Is(permissionErr, context.Canceled) {
-				agent.cleanupCancelled(input)
+				agent.cleanupCancelled(snapshot.runner, input)
 				return acp.PromptResponse{StopReason: acp.StopReasonCancelled, UserMessageId: request.MessageId}, nil
 			}
 			return acp.PromptResponse{}, permissionErr
@@ -157,7 +216,7 @@ func (agent *protocolAgent) Cancel(_ context.Context, request acp.CancelNotifica
 	return nil
 }
 
-func (agent *protocolAgent) CloseSession(_ context.Context, request acp.CloseSessionRequest) (acp.CloseSessionResponse, error) {
+func (agent *protocolAgent) CloseSession(ctx context.Context, request acp.CloseSessionRequest) (acp.CloseSessionResponse, error) {
 	agent.mu.Lock()
 	current, ok := agent.sessions[string(request.SessionId)]
 	var active *activeTurn
@@ -171,12 +230,33 @@ func (agent *protocolAgent) CloseSession(_ context.Context, request acp.CloseSes
 	}
 	if active != nil {
 		active.cancel()
+		select {
+		case <-active.done:
+		case <-ctx.Done():
+			go func() {
+				<-active.done
+				agent.closeSessionResources(current)
+			}()
+			return acp.CloseSessionResponse{}, context.Cause(ctx)
+		}
 	}
+	agent.closeSessionResources(current)
 	return acp.CloseSessionResponse{}, nil
 }
 
-func (*protocolAgent) Authenticate(context.Context, acp.AuthenticateRequest) (acp.AuthenticateResponse, error) {
-	return acp.AuthenticateResponse{}, acp.NewMethodNotFound(acp.AgentMethodAuthenticate)
+func (agent *protocolAgent) Authenticate(_ context.Context, request acp.AuthenticateRequest) (acp.AuthenticateResponse, error) {
+	for _, method := range agent.options.AuthMethods {
+		if method.Agent != nil && method.Agent.Id == request.MethodId {
+			return acp.AuthenticateResponse{}, nil
+		}
+		if method.EnvVar != nil && method.EnvVar.Id == request.MethodId {
+			return acp.AuthenticateResponse{}, nil
+		}
+		if method.Terminal != nil && method.Terminal.Id == request.MethodId {
+			return acp.AuthenticateResponse{}, nil
+		}
+	}
+	return acp.AuthenticateResponse{}, acp.NewInvalidParams(map[string]any{"methodId": "unknown authentication method"})
 }
 
 func (*protocolAgent) Logout(context.Context, acp.LogoutRequest) (acp.LogoutResponse, error) {
@@ -191,8 +271,21 @@ func (*protocolAgent) ResumeSession(context.Context, acp.ResumeSessionRequest) (
 	return acp.ResumeSessionResponse{}, acp.NewMethodNotFound(acp.AgentMethodSessionResume)
 }
 
-func (*protocolAgent) SetSessionConfigOption(context.Context, acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
-	return acp.SetSessionConfigOptionResponse{}, acp.NewMethodNotFound(acp.AgentMethodSessionSetConfigOption)
+func (agent *protocolAgent) SetSessionConfigOption(_ context.Context, request acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
+	var id string
+	if request.ValueId != nil {
+		id = string(request.ValueId.SessionId)
+	}
+	if request.Boolean != nil {
+		id = string(request.Boolean.SessionId)
+	}
+	agent.mu.Lock()
+	_, ok := agent.sessions[id]
+	agent.mu.Unlock()
+	if !ok {
+		return acp.SetSessionConfigOptionResponse{}, acp.NewInvalidParams(map[string]any{"sessionId": "unknown session"})
+	}
+	return acp.SetSessionConfigOptionResponse{ConfigOptions: append([]acp.SessionConfigOption(nil), agent.options.ConfigOptions...)}, nil
 }
 
 func (*protocolAgent) SetSessionMode(context.Context, acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
@@ -208,10 +301,10 @@ func (agent *protocolAgent) beginTurn(requestContext context.Context, id string)
 	}
 	turnContext, cancel := context.WithCancel(requestContext)
 	stopRoot := context.AfterFunc(agent.root, cancel)
-	active := &activeTurn{cancel: cancel}
+	active := &activeTurn{cancel: cancel, done: make(chan struct{})}
 	previous := current.active
 	current.active = active
-	snapshot := session{cwd: current.cwd}
+	snapshot := session{cwd: current.cwd, runner: current.runner}
 	agent.mu.Unlock()
 	if previous != nil {
 		previous.cancel()
@@ -224,6 +317,7 @@ func (agent *protocolAgent) beginTurn(requestContext context.Context, id string)
 			current.active = nil
 		}
 		agent.mu.Unlock()
+		close(active.done)
 	}
 	return snapshot, turnContext, finish, nil
 }
@@ -253,21 +347,112 @@ func (agent *protocolAgent) cancelSession(id string) {
 func (agent *protocolAgent) cancelAll() {
 	agent.mu.Lock()
 	active := make([]*activeTurn, 0, len(agent.sessions))
+	sessions := make([]*session, 0, len(agent.sessions))
 	for _, current := range agent.sessions {
+		sessions = append(sessions, current)
 		if current.active != nil {
 			active = append(active, current.active)
 		}
 	}
+	agent.sessions = map[string]*session{}
 	agent.mu.Unlock()
 	for _, turn := range active {
 		turn.cancel()
 	}
+	waitContext, cancel := context.WithTimeout(context.Background(), cancelCleanupTimeout)
+	defer cancel()
+	for _, turn := range active {
+		select {
+		case <-turn.done:
+		case <-waitContext.Done():
+		}
+	}
+	for _, current := range sessions {
+		agent.closeSessionResources(current)
+	}
 }
 
-func (agent *protocolAgent) cleanupCancelled(input dagent.Input) {
+func (agent *protocolAgent) cleanupCancelled(runner Runner, input dagent.Input) {
 	ctx, cancel := context.WithTimeout(context.Background(), cancelCleanupTimeout)
 	defer cancel()
-	_, _ = agent.runner.Cancel(ctx, dagent.Input{Config: input.Config, Configurable: input.Configurable})
+	_, _ = runner.Cancel(ctx, dagent.Input{Config: input.Config, Configurable: input.Configurable})
+}
+
+func (agent *protocolAgent) makeRunner(ctx context.Context, config SessionConfig) (Runner, io.Closer, error) {
+	if agent.options.SessionFactory == nil {
+		return agent.runner, nil, nil
+	}
+	return agent.options.SessionFactory(ctx, config)
+}
+
+func validateSessionRoots(cwd string, additional []string) error {
+	if !filepath.IsAbs(cwd) {
+		return acp.NewInvalidParams(map[string]any{"cwd": "must be absolute"})
+	}
+	for _, directory := range additional {
+		if !filepath.IsAbs(directory) {
+			return acp.NewInvalidParams(map[string]any{"additionalDirectories": "all entries must be absolute"})
+		}
+	}
+	if len(additional) > 0 {
+		return acp.NewInvalidParams(map[string]any{"additionalDirectories": "additional workspace roots are not supported"})
+	}
+	return nil
+}
+
+func (agent *protocolAgent) removeSession(id string) {
+	agent.mu.Lock()
+	current := agent.sessions[id]
+	delete(agent.sessions, id)
+	agent.mu.Unlock()
+	agent.closeSessionResources(current)
+}
+
+func (agent *protocolAgent) closeSessionResources(current *session) {
+	if current == nil {
+		return
+	}
+	if current.active != nil {
+		current.active.cancel()
+	}
+	if current.closer != nil {
+		_ = current.closer.Close()
+	}
+}
+
+func (agent *protocolAgent) replayMessages(ctx context.Context, id acp.SessionId, messages []damessage.Message) error {
+	connection, err := agent.waitForConnection(ctx)
+	if err != nil {
+		return err
+	}
+	for _, message := range messages {
+		if message.Role != damessage.RoleHuman && message.Role != damessage.RoleAssistant {
+			continue
+		}
+		for _, block := range message.Content {
+			var content acp.ContentBlock
+			switch block.Type {
+			case damessage.BlockText:
+				content = acp.TextBlock(block.Text)
+			case damessage.BlockImage:
+				content = acp.ImageBlock(base64.StdEncoding.EncodeToString(block.Data), block.MIMEType)
+			case damessage.BlockAudio:
+				content = acp.AudioBlock(base64.StdEncoding.EncodeToString(block.Data), block.MIMEType)
+			default:
+				continue
+			}
+			update := acp.UpdateAgentMessage(content)
+			if message.Role == damessage.RoleHuman {
+				update = acp.UpdateUserMessage(content)
+			}
+			if err := connection.SessionUpdate(ctx, acp.SessionNotification{
+				Meta: map[string]any{"isReplay": true}, SessionId: id, Update: update,
+			}); err != nil {
+				return fmt.Errorf("replay ACP session: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 func (agent *protocolAgent) promptMessage(blocks []acp.ContentBlock) (damessage.Message, error) {

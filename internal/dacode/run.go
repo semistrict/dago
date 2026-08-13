@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	acp "github.com/coder/acp-go-sdk"
 	"github.com/semistrict/dago/daacp"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
@@ -35,6 +36,44 @@ type cliOptions struct {
 	acp            bool
 	serveXtermJS   bool
 	xtermJSAddress string
+}
+
+type acpDagoRunner struct{ runner *dagoRunner }
+
+func (runner *acpDagoRunner) Stream(ctx context.Context, input dagent.Input) *dagent.Stream {
+	return runner.runner.agent.Stream(ctx, input)
+}
+
+func (runner *acpDagoRunner) Cancel(ctx context.Context, input dagent.Input) (dagent.Result, error) {
+	return runner.runner.agent.Cancel(ctx, input)
+}
+
+func (runner *acpDagoRunner) LoadSession(ctx context.Context, id string) ([]damessage.Message, error) {
+	return runner.runner.LoadSession(ctx, id)
+}
+
+type sessionClosers struct{ closers []io.Closer }
+
+func (closers *sessionClosers) Close() error {
+	var result error
+	for _, closer := range closers.closers {
+		if closer == nil {
+			continue
+		}
+		if err := closer.Close(); err != nil && result == nil {
+			result = err
+		}
+	}
+	return result
+}
+
+func modelConfigOptions(model string) []acp.SessionConfigOption {
+	category := acp.SessionConfigOptionCategoryModel
+	values := acp.SessionConfigSelectOptionsUngrouped{{Name: model, Value: acp.SessionConfigValueId(model)}}
+	return []acp.SessionConfigOption{{Select: &acp.SessionConfigOptionSelect{
+		Id: "model", Name: "Model", Category: &category, CurrentValue: acp.SessionConfigValueId(model),
+		Options: acp.SessionConfigSelectOptions{Ungrouped: &values},
+	}}}
 }
 
 func Run(ctx context.Context, arguments []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -99,6 +138,37 @@ func Run(ctx context.Context, arguments []string, stdin io.Reader, stdout, stder
 	}
 
 	nonInteractive := options.nonInteractive != ""
+	if options.acp {
+		factory := func(factoryContext context.Context, config daacp.SessionConfig) (daacp.Runner, io.Closer, error) {
+			tools, mcpCloser, connectErr := connectMCPServers(factoryContext, config.MCPServers)
+			if connectErr != nil {
+				return nil, nil, connectErr
+			}
+			runner, runnerCloser, runnerErr := newACPSessionRunner(runnerOptions{
+				Authentication: authentication, BaseURL: os.Getenv("OPENAI_BASE_URL"), Model: options.model,
+				WorkingDir: config.CWD, StateDir: options.stateDir, ReviewTools: !options.yolo,
+				Shell: true, AutoReview: false, ReviewModel: options.approvalModel, Tools: tools,
+			})
+			if runnerErr != nil {
+				_ = mcpCloser.Close()
+				return nil, nil, runnerErr
+			}
+			compiled, ok := runner.(*dagoRunner)
+			if !ok {
+				_ = runnerCloser.Close()
+				_ = mcpCloser.Close()
+				return nil, nil, fmt.Errorf("start ACP session: unsupported runner %T", runner)
+			}
+			return &acpDagoRunner{runner: compiled}, &sessionClosers{closers: []io.Closer{runnerCloser, mcpCloser}}, nil
+		}
+		server := daacp.New(nil, daacp.Options{
+			Name: "dacode", Version: buildVersion(), ImagePrompts: true, AudioPrompts: true,
+			EmbeddedContext: true, SessionFactory: factory, LoadSession: true,
+			AuthMethods:   []acp.AuthMethod{{Agent: &acp.AuthMethodAgent{Id: "cursor_login", Name: "Use configured credentials"}}},
+			ConfigOptions: modelConfigOptions(options.model),
+		})
+		return server.Serve(ctx, stdin, stdout)
+	}
 	runner, closer, err := newRunner(runnerOptions{
 		Authentication: authentication, BaseURL: os.Getenv("OPENAI_BASE_URL"), Model: options.model,
 		WorkingDir: workingDir, StateDir: options.stateDir,
@@ -109,14 +179,6 @@ func Run(ctx context.Context, arguments []string, stdin io.Reader, stdout, stder
 		return err
 	}
 	defer closer.Close()
-	if options.acp {
-		compiled, ok := runner.(*dagoRunner)
-		if !ok {
-			return fmt.Errorf("start ACP server: unsupported runner %T", runner)
-		}
-		server := daacp.New(compiled.agent, daacp.Options{Name: "dacode", Version: buildVersion()})
-		return server.Serve(ctx, stdin, stdout)
-	}
 
 	threadID := options.resume
 	if threadID == "" {
@@ -152,10 +214,20 @@ func Run(ctx context.Context, arguments []string, stdin io.Reader, stdout, stder
 	return err
 }
 
+func newACPSessionRunner(options runnerOptions) (runner agentRunner, closer io.Closer, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			runner, closer, err = nil, nil, fmt.Errorf("compile ACP session runner: %v", recovered)
+		}
+	}()
+	return newRunner(options)
+}
+
 func parseCLI(arguments []string, output io.Writer) (cliOptions, error) {
 	options := cliOptions{workingDir: ".", autoApprove: true, xtermJSAddress: defaultXtermJSAddress}
 	resumeCommand := len(arguments) > 0 && arguments[0] == "resume"
-	if resumeCommand {
+	acpCommand := len(arguments) > 0 && arguments[0] == "acp"
+	if resumeCommand || acpCommand {
 		arguments = arguments[1:]
 	}
 	var manualReview bool
@@ -188,6 +260,9 @@ func parseCLI(arguments []string, output io.Writer) (cliOptions, error) {
 	flags.Usage = func() { printUsage(output) }
 	if err := flags.Parse(arguments); err != nil {
 		return cliOptions{}, err
+	}
+	if acpCommand {
+		options.acp = true
 	}
 	if resumeCommand && flags.NArg() > 1 {
 		return cliOptions{}, fmt.Errorf("resume accepts at most one session ID")
@@ -240,6 +315,7 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "Usage:")
 	fmt.Fprintln(output, "  dacode [OPTIONS]                 Start an interactive thread")
 	fmt.Fprintln(output, "  dacode resume [ID] [OPTIONS]     Browse or resume previous sessions")
+	fmt.Fprintln(output, "  dacode acp [OPTIONS]             Serve ACP over standard I/O")
 	fmt.Fprintln(output, "  dacode -n 'Summarize README.md' Run one task and exit")
 	fmt.Fprintln(output)
 	fmt.Fprintln(output, "Options:")

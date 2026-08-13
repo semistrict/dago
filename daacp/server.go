@@ -10,6 +10,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
 )
 
 const (
@@ -24,6 +25,26 @@ type Runner interface {
 	Cancel(context.Context, dagent.Input) (dagent.Result, error)
 }
 
+// SessionConfig describes one ACP session before its execution target is built.
+// A factory can use the working directory and MCP declarations to construct an
+// isolated runner with exactly the tools available to that client session.
+type SessionConfig struct {
+	ID                    string
+	CWD                   string
+	AdditionalDirectories []string
+	MCPServers            []acp.McpServer
+}
+
+// SessionFactory constructs a session-scoped runner. The returned closer owns
+// any resources opened for that session, including MCP connections.
+type SessionFactory func(context.Context, SessionConfig) (Runner, io.Closer, error)
+
+// SessionLoader is optionally implemented by a session-scoped runner that can
+// reconstruct the durable transcript for session/load without executing work.
+type SessionLoader interface {
+	LoadSession(context.Context, string) ([]damessage.Message, error)
+}
+
 // Options configures the ACP agent identity and optional prompt content.
 type Options struct {
 	Name            string
@@ -31,6 +52,10 @@ type Options struct {
 	ImagePrompts    bool
 	AudioPrompts    bool
 	EmbeddedContext bool
+	AuthMethods     []acp.AuthMethod
+	ConfigOptions   []acp.SessionConfigOption
+	SessionFactory  SessionFactory
+	LoadSession     bool
 	Configurable    map[string]any
 	Logger          *slog.Logger
 }
@@ -45,8 +70,8 @@ type Server struct {
 // New constructs an ACP server. It panics when runner is nil because a server
 // without an execution target can never serve a prompt.
 func New(runner Runner, options Options) *Server {
-	if runner == nil {
-		panic("ACP server: runner is required")
+	if runner == nil && options.SessionFactory == nil {
+		panic("ACP server: runner or session factory is required")
 	}
 	if options.Name == "" {
 		options.Name = "dago"
@@ -55,6 +80,8 @@ func New(runner Runner, options Options) *Server {
 		options.Version = "development"
 	}
 	options.Configurable = cloneConfigurable(options.Configurable)
+	options.AuthMethods = append([]acp.AuthMethod(nil), options.AuthMethods...)
+	options.ConfigOptions = append([]acp.SessionConfigOption(nil), options.ConfigOptions...)
 	return &Server{runner: runner, options: options}
 }
 

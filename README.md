@@ -58,9 +58,11 @@ blocked. `/goal show`, `/goal pause`, `/goal resume`, `/goal clear`, and
 `/goal budget <tokens|clear>` control the persisted goal. Active goals resume
 automatically when the thread becomes idle; one-shot mode follows the same lifecycle.
 
-Use `--acp` to serve the coding agent to an ACP-compatible editor over standard
-input and output. The editor owns the session and permission prompts in this mode;
-`--yolo` remains available to bypass mutating-tool approval gates.
+Use `dacode acp` (or `--acp`) to serve the coding agent to an ACP-compatible editor
+over standard input and output. The editor owns the session and permission prompts
+in this mode; `--yolo` remains available to bypass mutating-tool approval gates.
+Each editor session gets its own workspace runner and any declared stdio, HTTP, or
+SSE MCP servers. HTTP headers are forwarded for per-session MCP authentication.
 
 `--serve-xtermjs` serves the same PTY-backed TUI on a loopback-only web address
 and prints its URL. Use `--xtermjs-address HOST:PORT` to select a specific
@@ -309,12 +311,15 @@ if err := server.Serve(ctx, os.Stdin, os.Stdout); err != nil {
 }
 ```
 
-The adapter supports ACP v1 session creation, prompts, cancellation, close, streamed
-text and reasoning, tool status and progress, plans, and approve/reject permission
-requests. The session working directory is available to tools as
-`daacp.ConfigurableCWD`; construct the agent's backend for that same workspace before
-serving it. Session loading/listing, additional roots, client filesystem/terminal
-delegation, and MCP transport are not advertised.
+The adapter supports ACP v1 session creation and durable loading with replay-marked
+history, prompts, cancellation, close, authentication handshakes, session
+configuration negotiation, streamed text and reasoning, tool status and progress,
+plans, and approve/reject permission requests. A session factory can construct an
+isolated runner from the requested working directory and MCP declarations; stdio,
+HTTP, and SSE MCP transports are supported by `dacode`. The session working
+directory is also available to tools as `daacp.ConfigurableCWD`. Additional roots,
+client filesystem/terminal delegation, and ACP-routed MCP transport are not
+advertised.
 
 ## LangSmith Studio
 
