@@ -81,16 +81,8 @@ func (agent *protocolAgent) Initialize(_ context.Context, _ acp.InitializeReques
 }
 
 func (agent *protocolAgent) NewSession(ctx context.Context, request acp.NewSessionRequest) (acp.NewSessionResponse, error) {
-	if !filepath.IsAbs(request.Cwd) {
-		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{"cwd": "must be absolute"})
-	}
-	for _, directory := range request.AdditionalDirectories {
-		if !filepath.IsAbs(directory) {
-			return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{"additionalDirectories": "all entries must be absolute"})
-		}
-	}
-	if len(request.AdditionalDirectories) > 0 {
-		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{"additionalDirectories": "additional workspace roots are not supported"})
+	if err := validateSessionRoots(request.Cwd, request.AdditionalDirectories); err != nil {
+		return acp.NewSessionResponse{}, err
 	}
 	if len(request.McpServers) > 0 && agent.options.SessionFactory == nil {
 		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{"mcpServers": "MCP-over-ACP is not supported"})
@@ -285,6 +277,9 @@ func (agent *protocolAgent) SetSessionConfigOption(_ context.Context, request ac
 	if !ok {
 		return acp.SetSessionConfigOptionResponse{}, acp.NewInvalidParams(map[string]any{"sessionId": "unknown session"})
 	}
+	if err := validateConfigOption(agent.options.ConfigOptions, request); err != nil {
+		return acp.SetSessionConfigOptionResponse{}, err
+	}
 	return acp.SetSessionConfigOptionResponse{ConfigOptions: append([]acp.SessionConfigOption(nil), agent.options.ConfigOptions...)}, nil
 }
 
@@ -398,6 +393,38 @@ func validateSessionRoots(cwd string, additional []string) error {
 		return acp.NewInvalidParams(map[string]any{"additionalDirectories": "additional workspace roots are not supported"})
 	}
 	return nil
+}
+
+func validateConfigOption(options []acp.SessionConfigOption, request acp.SetSessionConfigOptionRequest) error {
+	if request.ValueId != nil {
+		for _, option := range options {
+			if option.Select == nil || option.Select.Id != request.ValueId.ConfigId {
+				continue
+			}
+			if option.Select.CurrentValue != request.ValueId.Value {
+				return acp.NewInvalidParams(map[string]any{
+					"configId": string(request.ValueId.ConfigId), "value": "is not supported by this agent process",
+				})
+			}
+			return nil
+		}
+		return acp.NewInvalidParams(map[string]any{"configId": "unknown select option"})
+	}
+	if request.Boolean != nil {
+		for _, option := range options {
+			if option.Boolean == nil || option.Boolean.Id != request.Boolean.ConfigId {
+				continue
+			}
+			if option.Boolean.CurrentValue != request.Boolean.Value {
+				return acp.NewInvalidParams(map[string]any{
+					"configId": string(request.Boolean.ConfigId), "value": "is not supported by this agent process",
+				})
+			}
+			return nil
+		}
+		return acp.NewInvalidParams(map[string]any{"configId": "unknown boolean option"})
+	}
+	return acp.NewInvalidParams(map[string]any{"configOption": "request omitted a value"})
 }
 
 func (agent *protocolAgent) removeSession(id string) {

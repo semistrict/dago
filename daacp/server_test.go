@@ -210,7 +210,13 @@ func TestServerSupportsT3SessionSetupAndDurableLoad(t *testing.T) {
 	factory := func(_ context.Context, config SessionConfig) (Runner, io.Closer, error) {
 		configs = append(configs, config)
 		return &loadableTestRunner{Runner: base, messages: []damessage.Message{
-			damessage.Human("previous prompt"), damessage.Assistant("previous response"),
+			damessage.Human("previous prompt"), damessage.System("not replayed"), damessage.Tool("call-1", "not replayed"),
+			{Role: damessage.RoleAssistant, Content: []damessage.ContentBlock{
+				{Type: damessage.BlockText, Text: "previous response"},
+				{Type: damessage.BlockImage, Data: []byte("image"), MIMEType: "image/png"},
+				{Type: damessage.BlockAudio, Data: []byte("audio"), MIMEType: "audio/wav"},
+				{Type: damessage.BlockFile, Text: "not replayed"},
+			}},
 		}}, closerFunc(func() error { closed.Add(1); return nil }), nil
 	}
 	category := acp.SessionConfigOptionCategoryModel
@@ -256,6 +262,14 @@ func TestServerSupportsT3SessionSetupAndDurableLoad(t *testing.T) {
 	if err != nil || len(configured.ConfigOptions) != 1 {
 		t.Fatalf("set config = %#v, %v", configured, err)
 	}
+	for _, request := range []acp.SetSessionConfigOptionRequest{
+		{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: created.SessionId, ConfigId: "unknown", Value: "test-model"}},
+		{ValueId: &acp.SetSessionConfigOptionValueId{SessionId: created.SessionId, ConfigId: "model", Value: "unadvertised-model"}},
+	} {
+		if _, err := connection.SetSessionConfigOption(t.Context(), request); err == nil {
+			t.Errorf("invalid config request %#v was accepted", request)
+		}
+	}
 	if _, err := connection.CloseSession(t.Context(), acp.CloseSessionRequest{SessionId: created.SessionId}); err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +289,7 @@ func TestServerSupportsT3SessionSetupAndDurableLoad(t *testing.T) {
 		t.Fatalf("loaded = %#v, configs = %#v", loaded, configs)
 	}
 	_, updates := client.snapshot()
-	if len(updates) != 2 || updates[0].Meta["isReplay"] != true || updates[0].Update.UserMessageChunk == nil || updates[1].Update.AgentMessageChunk == nil {
+	if len(updates) != 4 || updates[0].Meta["isReplay"] != true || updates[0].Update.UserMessageChunk == nil || updates[1].Update.AgentMessageChunk == nil || updates[2].Update.AgentMessageChunk == nil || updates[2].Update.AgentMessageChunk.Content.Image == nil || updates[3].Update.AgentMessageChunk == nil || updates[3].Update.AgentMessageChunk.Content.Audio == nil {
 		t.Fatalf("replay updates = %#v", updates)
 	}
 	if _, err := connection.CloseSession(t.Context(), acp.CloseSessionRequest{SessionId: "persisted"}); err != nil {

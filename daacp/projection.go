@@ -345,6 +345,8 @@ func toolKind(name string) acp.ToolKind {
 		return acp.ToolKindDelete
 	case strings.Contains(name, "move"), strings.Contains(name, "rename"):
 		return acp.ToolKindMove
+	case strings.Contains(name, "think"), strings.Contains(name, "plan"), strings.Contains(name, "todo"):
+		return acp.ToolKindThink
 	case strings.Contains(name, "write"), strings.Contains(name, "edit"), strings.Contains(name, "patch"):
 		return acp.ToolKindEdit
 	case strings.Contains(name, "read"), strings.Contains(name, "list"):
@@ -355,8 +357,6 @@ func toolKind(name string) acp.ToolKind {
 		return acp.ToolKindFetch
 	case strings.Contains(name, "shell"), strings.Contains(name, "exec"), strings.Contains(name, "terminal"), strings.Contains(name, "command"):
 		return acp.ToolKindExecute
-	case strings.Contains(name, "think"), strings.Contains(name, "plan"), strings.Contains(name, "todo"):
-		return acp.ToolKindThink
 	default:
 		return acp.ToolKindOther
 	}
