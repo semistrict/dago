@@ -15,42 +15,42 @@ export type WebGPUProgressReport = {
   text: string;
 };
 
-type DagoContentBlock = {
+type dagoContentBlock = {
   type: string;
   text?: string;
 };
 
-type DagoToolCall = {
+type dagoToolCall = {
   id: string;
   name: string;
   arguments: unknown;
 };
 
-type DagoMessage = {
+type dagoMessage = {
   role: "human" | "assistant" | "system" | "tool" | "remove";
-  content?: DagoContentBlock[];
-  tool_calls?: DagoToolCall[];
+  content?: dagoContentBlock[];
+  tool_calls?: dagoToolCall[];
   tool_call_id?: string;
 };
 
-type DagoTool = {
+type dagoTool = {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
 };
 
-type DagoModelRequest = {
-  messages: DagoMessage[];
-  system_message?: DagoMessage;
-  tools?: DagoTool[];
+type dagoModelRequest = {
+  messages: dagoMessage[];
+  system_message?: dagoMessage;
+  tools?: dagoTool[];
   stop?: string[];
 };
 
-type DagoModelResponse = {
+type dagoModelResponse = {
   message: {
     role: "assistant";
     content?: Array<{ type: "text"; text: string }>;
-    tool_calls?: DagoToolCall[];
+    tool_calls?: dagoToolCall[];
   };
 };
 
@@ -73,14 +73,14 @@ type QwenTool = {
   };
 };
 
-function messageText(message: DagoMessage): string {
+function messageText(message: dagoMessage): string {
   return (message.content || [])
     .filter((block) => block.type === "text")
     .map((block) => block.text || "")
     .join("");
 }
 
-export function toQwenMessages(request: DagoModelRequest): QwenMessage[] {
+export function toQwenMessages(request: dagoModelRequest): QwenMessage[] {
   const source = request.system_message
     ? [request.system_message, ...(request.messages || [])]
     : request.messages || [];
@@ -119,7 +119,7 @@ export function toQwenMessages(request: DagoModelRequest): QwenMessage[] {
 }
 
 export function toQwenTools(
-  tools: DagoTool[] | undefined,
+  tools: dagoTool[] | undefined,
 ): QwenTool[] | undefined {
   if (!tools?.length) return undefined;
   return tools.map((tool) => ({
@@ -145,8 +145,8 @@ function stripThinking(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 }
 
-export function fromQwenText(text: string): DagoModelResponse {
-  const toolCalls: DagoToolCall[] = [];
+export function fromQwenText(text: string): dagoModelResponse {
+  const toolCalls: dagoToolCall[] = [];
   const toolCallPattern =
     /<tool_call>\s*<function=([^>\n]+)>([\s\S]*?)<\/function>\s*<\/tool_call>/g;
   for (const match of text.matchAll(toolCallPattern)) {
@@ -164,7 +164,7 @@ export function fromQwenText(text: string): DagoModelResponse {
   }
 
   const content = stripThinking(text.replace(toolCallPattern, ""));
-  const response: DagoModelResponse = { message: { role: "assistant" } };
+  const response: dagoModelResponse = { message: { role: "assistant" } };
   if (content) response.message.content = [{ type: "text", text: content }];
   if (toolCalls.length) response.message.tool_calls = toolCalls;
   return response;
@@ -263,7 +263,7 @@ export async function invokeWebGPUModel(encoded: string): Promise<string> {
   const activeProcessor = processor;
   let stage = "request decoding";
   try {
-    const request = JSON.parse(encoded) as DagoModelRequest;
+    const request = JSON.parse(encoded) as dagoModelRequest;
     stage = "prompt construction";
     const prompt = activeProcessor.apply_chat_template(
       toQwenMessages(request),

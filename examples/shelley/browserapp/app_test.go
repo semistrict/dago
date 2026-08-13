@@ -14,7 +14,7 @@ import (
 	"github.com/semistrict/dago/dacheckpoint"
 )
 
-func TestBrowserAppRunsDagoTurnAndPublishesOrderedMessages(t *testing.T) {
+func TestBrowserAppRunsdagoTurnAndPublishesOrderedMessages(t *testing.T) {
 	app, err := New()
 	if err != nil {
 		t.Fatal(err)
