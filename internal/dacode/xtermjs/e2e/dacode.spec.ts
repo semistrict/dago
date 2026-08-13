@@ -309,12 +309,55 @@ test("shows unrestricted mode when requested", async ({ page }) => {
   expect(text).not.toContain("auto review");
 });
 
+test("opens the startup session picker and resumes the selected session", async ({ page }) => {
+  const url = process.env.PLAYWRIGHT_RESUME_URL;
+  expect(url).toBeTruthy();
+  await page.goto(url!);
+  await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
+  await expect.poll(() => terminalText(page)).toContain("Previous sessions");
+
+  const picker = await terminalText(page);
+  expect(picker).toContain("Newer browser task");
+  expect(picker).toContain("Older browser task");
+  expect(picker).toContain("DIRECTORY");
+  expect(picker).toContain("~/browser-fixture");
+  expect(picker.indexOf("Newer browser task")).toBeLessThan(picker.indexOf("Older browser task"));
+
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("Older browser answer");
+  await expect.poll(() => terminalText(page)).toContain("Ready to code");
+  expect(await terminalText(page)).not.toContain("Previous sessions");
+});
+
+test("quits the startup resume screen with q", async ({ page }) => {
+  const url = process.env.PLAYWRIGHT_RESUME_URL;
+  expect(url).toBeTruthy();
+  await page.goto(url!);
+  await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
+  await expect.poll(() => terminalText(page)).toContain("Previous sessions");
+
+  await page.keyboard.press("q");
+  await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "closed");
+  await expect(page.getByRole("status")).toHaveText("Session ended");
+});
+
+test("resumes a known session directly from the subcommand", async ({ page }) => {
+  const url = process.env.PLAYWRIGHT_DIRECT_RESUME_URL;
+  expect(url).toBeTruthy();
+  await openTerminal(page, url);
+  const text = await terminalText(page);
+  expect(text).toContain("Newer browser task");
+  expect(text).toContain("Newer browser answer");
+  expect(text).not.toContain("Previous sessions");
+});
+
 test("accepts keyboard input and renders local slash-command output", async ({ page }) => {
   await openTerminal(page);
 
   await page.keyboard.type("/help");
   await page.keyboard.press("Enter");
-  await expect.poll(() => terminalText(page)).toContain("Commands: /help  /clear  /new  /model  /quit");
+  await expect.poll(() => terminalText(page)).toContain("Commands: /help  /clear  /new  /threads  /model  /quit");
 
   await page.keyboard.type("/model");
   await page.keyboard.press("Enter");

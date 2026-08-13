@@ -1,9 +1,9 @@
 import type { FullConfig } from "@playwright/test";
 import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -46,17 +46,42 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
   }
   const slowAPIURL = `http://127.0.0.1:${slowAddress.port}`;
 
+  const seedBinary = path.join(temporary, "sessionseed");
+  const seedBuild = spawnSync("go", ["build", "-o", seedBinary, "./internal/dacode/xtermjs/testdata/sessionseed"], {
+    cwd: root,
+    encoding: "utf8"
+  });
+  if (seedBuild.status !== 0) {
+    await rm(temporary, { force: true, recursive: true });
+    throw new Error(`failed to build session fixture helper:\n${seedBuild.stderr}`);
+  }
+  for (const name of ["resume", "direct-resume"]) {
+    const stateDirectory = path.join(temporary, `state-${name}`);
+    await mkdir(stateDirectory, { recursive: true });
+    const seed = spawnSync(seedBinary, [path.join(stateDirectory, "threads.db"), path.join(homedir(), "browser-fixture")], {
+      encoding: "utf8"
+    });
+    if (seed.status !== 0) {
+      await rm(temporary, { force: true, recursive: true });
+      throw new Error(`failed to seed ${name} sessions:\n${seed.stderr}`);
+    }
+  }
+
   const servers = [
     startServer(binary, temporary, "default", slowAPIURL),
     startServer(binary, temporary, "manual", slowAPIURL, ["--manual-review"]),
-    startServer(binary, temporary, "yolo", slowAPIURL, ["--yolo"])
+    startServer(binary, temporary, "yolo", slowAPIURL, ["--yolo"]),
+    startServer(binary, temporary, "resume", slowAPIURL, ["resume"]),
+    startServer(binary, temporary, "direct-resume", slowAPIURL, ["resume", "playwright-newer"])
   ];
 
   try {
-    const [baseURL, manualURL, yoloURL] = await Promise.all(servers.map(serverURL));
+    const [baseURL, manualURL, yoloURL, resumeURL, directResumeURL] = await Promise.all(servers.map(serverURL));
     process.env.PLAYWRIGHT_TEST_BASE_URL = baseURL;
     process.env.PLAYWRIGHT_MANUAL_URL = manualURL;
     process.env.PLAYWRIGHT_YOLO_URL = yoloURL;
+    process.env.PLAYWRIGHT_RESUME_URL = resumeURL;
+    process.env.PLAYWRIGHT_DIRECT_RESUME_URL = directResumeURL;
   } catch (error) {
     for (const server of servers) server.kill("SIGTERM");
     slowAPI.closeAllConnections();
@@ -80,9 +105,12 @@ function startServer(
   baseURL: string,
   extraArguments: string[] = []
 ) {
+  const command = extraArguments[0] === "resume" ? ["resume"] : [];
+  const options = command.length > 0 ? extraArguments.slice(1) : extraArguments;
   return spawn(
     binary,
     [
+      ...command,
       "--serve-xtermjs",
       "--xtermjs-address",
       "127.0.0.1:0",
@@ -90,7 +118,7 @@ function startServer(
       path.join(temporary, `state-${name}`),
       "--cwd",
       root,
-      ...extraArguments
+      ...options
     ],
     {
       cwd: root,

@@ -11,12 +11,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/daproviders/openai"
+	"github.com/semistrict/dago/dastate"
 )
 
 type fakeEventStream struct {
@@ -47,12 +52,15 @@ func (stream *fakeEventStream) Result(context.Context) (dagent.Result, error) {
 func (*fakeEventStream) Close() error { return nil }
 
 type fakeRunner struct {
-	streams       []eventStream
-	inputs        []dagent.Input
-	reviewRequest approvalReviewRequest
-	reviewResult  approvalReviewResult
-	reviewErr     error
-	cancelled     []string
+	streams         []eventStream
+	inputs          []dagent.Input
+	reviewRequest   approvalReviewRequest
+	reviewResult    approvalReviewResult
+	reviewErr       error
+	cancelled       []string
+	sessions        []sessionInfo
+	sessionMessages map[string][]damessage.Message
+	sessionErr      error
 }
 
 func (runner *fakeRunner) Start(_ context.Context, input dagent.Input) eventStream {
@@ -73,6 +81,17 @@ func (runner *fakeRunner) Cancel(_ context.Context, threadID string) error {
 func (runner *fakeRunner) Review(_ context.Context, request approvalReviewRequest) (approvalReviewResult, error) {
 	runner.reviewRequest = request
 	return runner.reviewResult, runner.reviewErr
+}
+
+func (runner *fakeRunner) ListSessions(context.Context) ([]sessionInfo, error) {
+	return append([]sessionInfo(nil), runner.sessions...), runner.sessionErr
+}
+
+func (runner *fakeRunner) LoadSession(_ context.Context, threadID string) ([]damessage.Message, error) {
+	if runner.sessionErr != nil {
+		return nil, runner.sessionErr
+	}
+	return append([]damessage.Message(nil), runner.sessionMessages[threadID]...), nil
 }
 
 func TestAuthenticationPrefersExplicitAPIKey(t *testing.T) {
@@ -292,6 +311,37 @@ func TestParseCLIXtermJSServer(t *testing.T) {
 	}
 	if !options.serveXtermJS || options.xtermJSAddress != "localhost:1234" {
 		t.Fatalf("options = %#v", options)
+	}
+}
+
+func TestParseCLIResumeCommand(t *testing.T) {
+	tests := []struct {
+		name       string
+		arguments  []string
+		wantPicker bool
+		wantID     string
+		wantCWD    string
+	}{
+		{name: "picker", arguments: []string{"resume"}, wantPicker: true, wantCWD: "."},
+		{name: "known session", arguments: []string{"resume", "session-1"}, wantID: "session-1", wantCWD: "."},
+		{name: "options", arguments: []string{"resume", "--cwd", "/work", "session-2"}, wantID: "session-2", wantCWD: "/work"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options, err := parseCLI(test.arguments, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if options.resumePicker != test.wantPicker || options.resume != test.wantID || options.workingDir != test.wantCWD {
+				t.Fatalf("options = %#v", options)
+			}
+		})
+	}
+}
+
+func TestParseCLIResumeCommandRejectsMultipleIDs(t *testing.T) {
+	if _, err := parseCLI([]string{"resume", "one", "two"}, io.Discard); err == nil {
+		t.Fatal("multiple resume IDs were accepted")
 	}
 }
 
@@ -552,6 +602,171 @@ func TestTUIControlJInsertsComposerNewline(t *testing.T) {
 	}
 	if model.composer.Height() != 2 {
 		t.Fatalf("composer height = %d, want 2", model.composer.Height())
+	}
+}
+
+func TestTUIListsAndSelectsPreviousSessions(t *testing.T) {
+	runner := &fakeRunner{
+		sessions: []sessionInfo{
+			{ThreadID: "session-one", Preview: "First task", UpdatedAt: time.Now().Add(-time.Hour), MessageCount: 2},
+			{ThreadID: "session-two", Preview: "Second task", UpdatedAt: time.Now().Add(-2 * time.Hour), MessageCount: 3},
+		},
+		sessionMessages: map[string][]damessage.Message{
+			"session-two": {damessage.Human("Second task"), damessage.Assistant("Second answer")},
+		},
+	}
+	model := newTUIModel(t.Context(), runner, "/work", "main-model", "new-session", false, true, "")
+	model.resize(90, 24)
+	command, handled := model.slashCommand("/threads")
+	if !handled || command == nil {
+		t.Fatal("/threads did not start session listing")
+	}
+	model.Update(command())
+	view := model.View()
+	for _, expected := range []string{"Previous sessions", "First task", "Second task", "Enter resume"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("session picker missing %q:\n%s", expected, view)
+		}
+	}
+	model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("selecting a session did not start loading it")
+	}
+	model.Update(command())
+	if model.threadID != "session-two" || model.sessionPicker != nil {
+		t.Fatalf("selected thread = %q, picker = %#v", model.threadID, model.sessionPicker)
+	}
+	if len(model.items) != 2 || model.items[0].kind != itemUser || model.items[0].text != "Second task" ||
+		model.items[1].kind != itemAssistant || model.items[1].text != "Second answer" {
+		t.Fatalf("restored transcript = %#v", model.items)
+	}
+}
+
+func TestTUISessionPickerCanBeCancelled(t *testing.T) {
+	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "main-model", "new-session", false, true, "")
+	model.resize(80, 20)
+	command, _ := model.slashCommand("/threads")
+	model.Update(command())
+	if !strings.Contains(model.View(), "No previous sessions yet") {
+		t.Fatalf("empty session picker not rendered:\n%s", model.View())
+	}
+	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if model.sessionPicker != nil {
+		t.Fatal("escape did not close the session picker")
+	}
+}
+
+func TestTUIStartupSessionPickerCancellationQuits(t *testing.T) {
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyEsc},
+		{Type: tea.KeyRunes, Runes: []rune{'q'}},
+	} {
+		model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "main-model", "new-session", false, true, "")
+		model.sessionPicker = &sessionPickerState{startup: true}
+		command, handled := model.handleKey(key)
+		if !handled || command == nil {
+			t.Fatalf("startup picker cancellation with %q did not quit", key.String())
+		}
+		message := command()
+		if _, ok := message.(tea.QuitMsg); !ok {
+			t.Fatalf("startup picker cancellation with %q returned %T", key.String(), message)
+		}
+	}
+}
+
+func TestTUIDirectResumeRestoresTranscriptBeforeInitialPrompt(t *testing.T) {
+	runner := &fakeRunner{streams: []eventStream{&fakeEventStream{}}}
+	model := newTUIModel(t.Context(), runner, "/work", "main-model", "session-1", false, true, "Follow up")
+	model.sessionPicker = &sessionPickerState{startup: true, resuming: true}
+	_, command := model.Update(sessionLoadedMsg{
+		session: sessionInfo{ThreadID: "session-1"},
+		messages: []damessage.Message{
+			damessage.Human("Original task"), damessage.Assistant("Original answer"),
+		},
+	})
+	if command == nil || len(runner.inputs) != 1 {
+		t.Fatalf("command = %v, inputs = %d", command, len(runner.inputs))
+	}
+	if len(model.items) != 3 || model.items[0].text != "Original task" || model.items[1].text != "Original answer" || model.items[2].text != "Follow up" {
+		t.Fatalf("transcript = %#v", model.items)
+	}
+	if got := runner.inputs[0].Messages[0].TextContent(); got != "Follow up" {
+		t.Fatalf("initial prompt = %q", got)
+	}
+}
+
+func TestRunnerListsAndLoadsPersistedSessions(t *testing.T) {
+	runner, closer, err := newRunner(runnerOptions{
+		Authentication: modelAuthentication{apiKey: "test-key"},
+		Model:          defaultModel,
+		WorkingDir:     t.TempDir(),
+		StateDir:       t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+	actual := runner.(*dagoRunner)
+	for _, item := range []struct {
+		id, prompt, answer string
+	}{
+		{id: "older-session", prompt: "Older task", answer: "Older answer"},
+		{id: "newer-session", prompt: "Newer task", answer: "Newer answer"},
+	} {
+		_, err := actual.agent.UpdateState(t.Context(), dacheckpoint.Config{ThreadID: item.id}, dastate.Values{
+			dagent.MessagesKey:         []damessage.Message{damessage.Human(item.prompt), damessage.Assistant(item.answer)},
+			sessionWorkingDirectoryKey: "/work/" + item.id,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sessions, err := runner.ListSessions(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 || sessions[0].ThreadID != "newer-session" || sessions[0].Preview != "Newer task" || sessions[0].Directory != "/work/newer-session" || sessions[0].MessageCount != 2 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	messages, err := runner.LoadSession(t.Context(), "older-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0].TextContent() != "Older task" || messages[1].TextContent() != "Older answer" {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestRunnerPersistsSessionWorkingDirectory(t *testing.T) {
+	saver := dacheckpoint.NewMemorySaver()
+	agent := dagent.New(modeltest.New(damodel.Profile{NativeStreaming: true}, modeltest.Step{
+		Chunks: []damodel.Chunk{{MessageDelta: damessage.Assistant("done")}},
+	}), dagent.Options{Saver: saver, StateFields: sessionStateFields()})
+	runner := &dagoRunner{agent: agent, workingDir: "/workspace/project"}
+	stream := runner.Start(t.Context(), dagent.Input{
+		Config:   dacheckpoint.Config{ThreadID: "directory-session"},
+		Messages: []damessage.Message{damessage.Human("work")},
+	})
+	defer stream.Close()
+	for {
+		_, err := stream.Next(t.Context())
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := stream.Result(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	tuple, err := saver.GetTuple(t.Context(), dacheckpoint.Config{ThreadID: "directory-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tuple == nil || tuple.Checkpoint.ChannelValues[sessionWorkingDirectoryKey] != "/workspace/project" {
+		t.Fatalf("checkpoint = %#v", tuple)
 	}
 }
 

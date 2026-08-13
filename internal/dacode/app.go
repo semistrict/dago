@@ -108,6 +108,7 @@ type tuiModel struct {
 	running          bool
 	cancelling       bool
 	approval         *approvalState
+	sessionPicker    *sessionPickerState
 	status           string
 	totalTokens      int
 }
@@ -142,7 +143,12 @@ func newTUIModel(ctx context.Context, runner agentRunner, workingDir, modelName,
 
 func (model *tuiModel) Init() tea.Cmd {
 	commands := []tea.Cmd{textarea.Blink, model.spinner.Tick}
-	if strings.TrimSpace(model.initial) != "" {
+	if model.sessionPicker != nil && model.sessionPicker.loading {
+		commands = append(commands, listSessions(model.ctx, model.runner))
+	} else if model.sessionPicker != nil && model.sessionPicker.resuming && len(model.sessionPicker.sessions) > 0 {
+		commands = append(commands, loadSession(model.ctx, model.runner, model.sessionPicker.sessions[0]))
+	}
+	if model.sessionPicker == nil && strings.TrimSpace(model.initial) != "" {
 		commands = append(commands, func() tea.Msg { return initialPromptMsg(model.initial) })
 	}
 	return tea.Batch(commands...)
@@ -184,6 +190,11 @@ func (model *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return model, nil
 	case reviewDoneMsg:
 		return model.finishReview(typed)
+	case sessionsLoadedMsg:
+		model.finishSessionList(typed)
+		return model, nil
+	case sessionLoadedMsg:
+		return model, model.finishSessionLoad(typed)
 	case tea.MouseMsg:
 		var command tea.Cmd
 		model.viewport, command = model.viewport.Update(typed)
@@ -207,6 +218,9 @@ func (model *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (model *tuiModel) handleKey(message tea.KeyMsg) (tea.Cmd, bool) {
+	if model.sessionPicker != nil {
+		return model.handleSessionKey(message)
+	}
 	switch message.String() {
 	case "ctrl+c":
 		if model.running && !model.cancelling {
@@ -270,7 +284,7 @@ func (model *tuiModel) slashCommand(prompt string) (tea.Cmd, bool) {
 	}
 	switch command {
 	case "help":
-		model.appendItem(transcriptItem{kind: itemNotice, text: "Commands: /help  /clear  /new  /model  /quit"})
+		model.appendItem(transcriptItem{kind: itemNotice, text: "Commands: /help  /clear  /new  /threads  /model  /quit"})
 		model.refreshTranscript()
 		return nil, true
 	case "clear":
@@ -292,6 +306,9 @@ func (model *tuiModel) slashCommand(prompt string) (tea.Cmd, bool) {
 		}
 		model.refreshTranscript()
 		return nil, true
+	case "threads", "resume":
+		model.sessionPicker = &sessionPickerState{loading: true}
+		return listSessions(model.ctx, model.runner), true
 	case "model":
 		model.appendItem(transcriptItem{kind: itemNotice, text: "Model: openai:" + model.modelName})
 		model.refreshTranscript()
@@ -677,6 +694,9 @@ func (model *tuiModel) refreshSpinner() {
 func (model *tuiModel) View() string {
 	if !model.ready {
 		return "Starting dacode…"
+	}
+	if model.sessionPicker != nil {
+		return model.renderSessionPicker()
 	}
 	input := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).BorderForeground(colorPrimary).

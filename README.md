@@ -47,7 +47,10 @@ reviewer model by default. Review failures return to a user decision.
 for every gated action, and `--yolo` bypasses review.
 
 Use `-n 'task'` for one-shot operation, `-r ID` to resume a durable thread, and
-`--cwd PATH` to select the workspace.
+`--cwd PATH` to select the workspace. Run `dacode resume` to choose a session
+before opening the TUI, or `dacode resume ID` to resume a known session. Inside
+the TUI, `/threads` opens the same picker. Selected sessions restore their
+transcripts before continuing.
 
 `--serve-xtermjs` serves the same PTY-backed TUI on a loopback-only web address
 and prints its URL. Use `--xtermjs-address HOST:PORT` to select a specific

@@ -3,12 +3,14 @@ package dacode
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dabackend"
@@ -16,10 +18,13 @@ import (
 	checkpointsqlite "github.com/semistrict/dago/dacheckpoint/sqlite"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/daworkspace"
 )
 
 const defaultModel = "gpt-5.6-terra"
+
+const sessionWorkingDirectoryKey = "__dacode_working_directory"
 
 const workspaceGuidancePrompt = `<workspace_instructions>
 {agent_memory}
@@ -39,20 +44,126 @@ type agentRunner interface {
 	Start(context.Context, dagent.Input) eventStream
 	Cancel(context.Context, string) error
 	Review(context.Context, approvalReviewRequest) (approvalReviewResult, error)
+	ListSessions(context.Context) ([]sessionInfo, error)
+	LoadSession(context.Context, string) ([]damessage.Message, error)
 }
 
 type dagoRunner struct {
-	agent    *dagent.Agent
-	reviewer *dagent.Agent
+	agent      *dagent.Agent
+	reviewer   *dagent.Agent
+	saver      *checkpointsqlite.Saver
+	database   *sql.DB
+	workingDir string
 }
 
 func (runner *dagoRunner) Start(ctx context.Context, input dagent.Input) eventStream {
+	state := input.State.Clone()
+	if state == nil {
+		state = dastate.Values{}
+	}
+	state[sessionWorkingDirectoryKey] = runner.workingDir
+	input.State = state
 	return runner.agent.Stream(ctx, input)
 }
 
 func (runner *dagoRunner) Cancel(ctx context.Context, threadID string) error {
 	_, err := runner.agent.Cancel(ctx, dagent.Input{Config: dacheckpoint.Config{ThreadID: threadID}})
 	return err
+}
+
+func (runner *dagoRunner) ListSessions(ctx context.Context) ([]sessionInfo, error) {
+	rows, err := runner.database.QueryContext(ctx, `
+SELECT thread_id, MAX(checkpoint_id)
+FROM checkpoints
+WHERE checkpoint_ns = ''
+GROUP BY thread_id
+ORDER BY MAX(checkpoint_id) DESC
+LIMIT 50`)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	type sessionRow struct {
+		threadID, checkpointID string
+	}
+	var latest []sessionRow
+	for rows.Next() {
+		var row sessionRow
+		if err := rows.Scan(&row.threadID, &row.checkpointID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read session: %w", err)
+		}
+		latest = append(latest, row)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close session list: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+
+	sessions := make([]sessionInfo, 0, len(latest))
+	for _, row := range latest {
+		tuple, err := runner.saver.GetTuple(ctx, dacheckpoint.Config{
+			ThreadID: row.threadID, CheckpointID: row.checkpointID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("read session %q: %w", row.threadID, err)
+		}
+		messages, err := runner.LoadSession(ctx, row.threadID)
+		if err != nil {
+			return nil, err
+		}
+		item := sessionInfo{ThreadID: row.threadID, MessageCount: len(messages)}
+		if tuple != nil {
+			item.UpdatedAt, _ = time.Parse(time.RFC3339Nano, tuple.Checkpoint.Timestamp)
+			item.Directory, _ = tuple.Checkpoint.ChannelValues[sessionWorkingDirectoryKey].(string)
+		}
+		for _, message := range messages {
+			if message.Role == damessage.RoleHuman && strings.TrimSpace(message.TextContent()) != "" {
+				item.Preview = strings.TrimSpace(message.TextContent())
+				break
+			}
+		}
+		sessions = append(sessions, item)
+	}
+	return sessions, nil
+}
+
+func (runner *dagoRunner) LoadSession(ctx context.Context, threadID string) ([]damessage.Message, error) {
+	snapshot, err := runner.agent.State(ctx, dacheckpoint.Config{ThreadID: threadID})
+	if err != nil {
+		return nil, fmt.Errorf("load session %q: %w", threadID, err)
+	}
+	if snapshot.Config.ThreadID == "" {
+		return nil, fmt.Errorf("session %q was not found", threadID)
+	}
+	return decodeSessionMessages(snapshot.State[dagent.MessagesKey])
+}
+
+func decodeSessionMessages(value any) ([]damessage.Message, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if messages, ok := value.([]damessage.Message); ok {
+		result := make([]damessage.Message, len(messages))
+		for index := range messages {
+			result[index] = messages[index].Clone()
+		}
+		return result, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("session messages have type %T", value)
+	}
+	result := make([]damessage.Message, len(items))
+	for index, item := range items {
+		message, ok := item.(damessage.Message)
+		if !ok {
+			return nil, fmt.Errorf("session message %d has type %T", index, item)
+		}
+		result[index] = message.Clone()
+	}
+	return result, nil
 }
 
 type runnerOptions struct {
@@ -89,8 +200,14 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 	if err := os.MkdirAll(options.StateDir, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create state directory: %w", err)
 	}
-	saver, err := checkpointsqlite.Open(filepath.Join(options.StateDir, "threads.db"))
+	database, err := sql.Open("sqlite", filepath.Join(options.StateDir, "threads.db"))
 	if err != nil {
+		return nil, nil, fmt.Errorf("open session database: %w", err)
+	}
+	database.SetMaxOpenConns(1)
+	saver := checkpointsqlite.New(database, nil)
+	if err := saver.Setup(context.Background()); err != nil {
+		_ = database.Close()
 		return nil, nil, err
 	}
 
@@ -111,22 +228,32 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 		Name: "dacode", SystemMessage: system, Backend: backend,
 		Filesystem: filesystem, Skills: dago.Skills{Sources: skillSources}, Memory: memory,
 		EnableTodo: true, InterruptOn: interruptOn, Saver: saver, RetainThreadState: true,
+		StateFields: sessionStateFields(),
 	})
-	runner := &dagoRunner{agent: agent}
+	runner := &dagoRunner{agent: agent, saver: saver, database: database, workingDir: options.WorkingDir}
 	if options.AutoReview {
 		reviewModel, reviewErr := options.Authentication.newModel(options.ReviewModel, options.BaseURL)
 		if reviewErr != nil {
-			_ = saver.Close()
+			_ = database.Close()
 			return nil, nil, reviewErr
 		}
 		readOnly, reviewErr := dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: options.WorkingDir})
 		if reviewErr != nil {
-			_ = saver.Close()
+			_ = database.Close()
 			return nil, nil, fmt.Errorf("open review workspace: %w", reviewErr)
 		}
 		runner.reviewer = newApprovalReviewer(reviewModel, readOnly)
 	}
-	return runner, saver, nil
+	return runner, database, nil
+}
+
+func sessionStateFields() map[string]dagent.StateField {
+	return map[string]dagent.StateField{
+		sessionWorkingDirectoryKey: dagent.Field(dagent.FieldSpec[string]{
+			Kind: dagent.FieldLast, Contract: "dacode.session-working-directory.v1", Private: true,
+			Clone: func(value string) string { return value },
+		}),
+	}
 }
 
 func mutatingToolApprovalRules() []dagent.ApprovalRule {

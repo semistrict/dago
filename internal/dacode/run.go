@@ -22,6 +22,7 @@ type cliOptions struct {
 	message        string
 	nonInteractive string
 	resume         string
+	resumePicker   bool
 	workingDir     string
 	stateDir       string
 	yolo           bool
@@ -53,6 +54,12 @@ func Run(ctx context.Context, arguments []string, stdin io.Reader, stdout, stder
 	}
 	if options.message != "" && options.nonInteractive != "" {
 		return fmt.Errorf("--message and --non-interactive cannot be used together")
+	}
+	if options.resumePicker && options.nonInteractive != "" {
+		return fmt.Errorf("the resume picker cannot be used with --non-interactive")
+	}
+	if options.resumePicker && options.message != "" {
+		return fmt.Errorf("the resume picker cannot be used with --message")
 	}
 	workingDir, err := filepath.Abs(options.workingDir)
 	if err != nil {
@@ -112,6 +119,13 @@ func Run(ctx context.Context, arguments []string, stdin io.Reader, stdout, stder
 	}
 
 	model := newTUIModel(ctx, runner, workingDir, options.model, threadID, options.yolo, options.autoApprove, options.message)
+	if options.resumePicker {
+		model.sessionPicker = &sessionPickerState{loading: true, startup: true}
+	} else if options.resume != "" {
+		model.sessionPicker = &sessionPickerState{
+			sessions: []sessionInfo{{ThreadID: options.resume}}, resuming: true, startup: true,
+		}
+	}
 	program := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),
@@ -129,6 +143,10 @@ func Run(ctx context.Context, arguments []string, stdin io.Reader, stdout, stder
 
 func parseCLI(arguments []string, output io.Writer) (cliOptions, error) {
 	options := cliOptions{workingDir: ".", autoApprove: true, xtermJSAddress: defaultXtermJSAddress}
+	resumeCommand := len(arguments) > 0 && arguments[0] == "resume"
+	if resumeCommand {
+		arguments = arguments[1:]
+	}
 	var manualReview bool
 	flags := flag.NewFlagSet("dacode", flag.ContinueOnError)
 	flags.SetOutput(output)
@@ -159,8 +177,19 @@ func parseCLI(arguments []string, output io.Writer) (cliOptions, error) {
 	if err := flags.Parse(arguments); err != nil {
 		return cliOptions{}, err
 	}
-	if flags.NArg() != 0 {
+	if resumeCommand && flags.NArg() > 1 {
+		return cliOptions{}, fmt.Errorf("resume accepts at most one session ID")
+	}
+	if resumeCommand && flags.NArg() == 1 {
+		if options.resume != "" {
+			return cliOptions{}, fmt.Errorf("session ID was provided twice")
+		}
+		options.resume = flags.Arg(0)
+	} else if !resumeCommand && flags.NArg() != 0 {
 		return cliOptions{}, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if resumeCommand && options.resume == "" {
+		options.resumePicker = true
 	}
 	if options.quiet && options.nonInteractive == "" {
 		return cliOptions{}, fmt.Errorf("--quiet requires --non-interactive")
@@ -179,6 +208,7 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output)
 	fmt.Fprintln(output, "Usage:")
 	fmt.Fprintln(output, "  dacode [OPTIONS]                 Start an interactive thread")
+	fmt.Fprintln(output, "  dacode resume [ID] [OPTIONS]     Browse or resume previous sessions")
 	fmt.Fprintln(output, "  dacode -n 'Summarize README.md' Run one task and exit")
 	fmt.Fprintln(output)
 	fmt.Fprintln(output, "Options:")
