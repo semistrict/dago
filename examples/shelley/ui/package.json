@@ -21,8 +21,8 @@
     "test:e2e:debug": "pnpm run build && playwright test --debug"
   },
   "dependencies": {
+    "@semistrict/dawasm-browser": "file:../../../dawasm/browser",
     "@excalidraw/excalidraw": "0.18.1",
-    "@huggingface/transformers": "4.2.0",
     "@pierre/diffs": "1.1.20",
     "@primeuix/themes": "^2.0.3",
     "@xterm/addon-fit": "0.12.0-beta.213",
@@ -30,10 +30,8 @@
     "@xterm/xterm": "6.1.0-beta.213",
     "ansi_up": "^6.0.6",
     "dompurify": "^3.4.13",
-    "fflate": "^0.8.3",
     "idb": "^8.0.3",
     "jszip": "^3.10.1",
-    "just-bash": "^3.2.0",
     "marked": "^17.0.3",
     "monaco-editor": "^0.44.0",
     "monaco-vim": "^0.4.4",

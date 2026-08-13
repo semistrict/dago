@@ -1,3 +1,4 @@
+// Qwen WebGPU inference support for browser-hosted Go agents.
 import {
   AutoProcessor,
   InterruptableStoppingCriteria,
@@ -117,7 +118,9 @@ export function toQwenMessages(request: DagoModelRequest): QwenMessage[] {
   return result;
 }
 
-export function toQwenTools(tools: DagoTool[] | undefined): QwenTool[] | undefined {
+export function toQwenTools(
+  tools: DagoTool[] | undefined,
+): QwenTool[] | undefined {
   if (!tools?.length) return undefined;
   return tools.map((tool) => ({
     type: "function",
@@ -148,7 +151,8 @@ export function fromQwenText(text: string): DagoModelResponse {
     /<tool_call>\s*<function=([^>\n]+)>([\s\S]*?)<\/function>\s*<\/tool_call>/g;
   for (const match of text.matchAll(toolCallPattern)) {
     const parameters: Record<string, unknown> = {};
-    const parameterPattern = /<parameter=([^>\n]+)>\s*([\s\S]*?)\s*<\/parameter>/g;
+    const parameterPattern =
+      /<parameter=([^>\n]+)>\s*([\s\S]*?)\s*<\/parameter>/g;
     for (const parameter of match[2].matchAll(parameterPattern)) {
       parameters[parameter[1].trim()] = parseParameter(parameter[2]);
     }
@@ -207,7 +211,9 @@ function progressReport(info: ProgressInfo): WebGPUProgressReport | null {
 type LoadedModel = Awaited<
   ReturnType<typeof Qwen3_5ForCausalLM.from_pretrained>
 >;
-type LoadedProcessor = Awaited<ReturnType<typeof AutoProcessor.from_pretrained>>;
+type LoadedProcessor = Awaited<
+  ReturnType<typeof AutoProcessor.from_pretrained>
+>;
 
 let model: LoadedModel | null = null;
 let processor: LoadedProcessor | null = null;
@@ -259,11 +265,14 @@ export async function invokeWebGPUModel(encoded: string): Promise<string> {
   try {
     const request = JSON.parse(encoded) as DagoModelRequest;
     stage = "prompt construction";
-    const prompt = activeProcessor.apply_chat_template(toQwenMessages(request), {
-      add_generation_prompt: true,
-      tokenize: false,
-      tools: toQwenTools(request.tools),
-    });
+    const prompt = activeProcessor.apply_chat_template(
+      toQwenMessages(request),
+      {
+        add_generation_prompt: true,
+        tokenize: false,
+        tools: toQwenTools(request.tools),
+      },
+    );
     stage = "tokenization";
     const inputs = await activeProcessor(prompt);
     const criteria = new InterruptableStoppingCriteria();
@@ -273,7 +282,7 @@ export async function invokeWebGPUModel(encoded: string): Promise<string> {
       stage = "generation";
       outputs = (await activeModel.generate({
         ...inputs,
-        max_new_tokens: 256,
+        max_new_tokens: 1024,
         do_sample: false,
         stopping_criteria: criteria,
       })) as Tensor;
@@ -286,10 +295,15 @@ export async function invokeWebGPUModel(encoded: string): Promise<string> {
       [0, outputs.dims[0]],
       [promptLength, outputs.dims[1]],
     );
-    const completion = activeProcessor.tokenizer!.batch_decode(completionTokens, {
-      skip_special_tokens: true,
-    })[0];
-    return JSON.stringify(fromQwenText(truncateAtStop(completion, request.stop)));
+    const completion = activeProcessor.tokenizer!.batch_decode(
+      completionTokens,
+      {
+        skip_special_tokens: true,
+      },
+    )[0];
+    return JSON.stringify(
+      fromQwenText(truncateAtStop(completion, request.stop)),
+    );
   } catch (error) {
     console.error(`Qwen3.5 ${stage} failed`, error);
     throw new Error(`Qwen3.5 ${stage} failed: ${webGPUErrorMessage(error)}`);

@@ -2,47 +2,36 @@ package browserapp
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dawasm/justbash"
 )
 
 const defaultBrowserShellTimeout = 120 * time.Second
 
-// ShellRequest is the portable boundary between the Go agent and a browser
-// shell implementation. Files contains the complete virtual workspace before
-// execution; the response returns the complete workspace after execution.
-type ShellRequest struct {
-	Command             string                        `json:"command"`
-	Cwd                 string                        `json:"cwd"`
-	TimeoutMilliseconds int64                         `json:"timeout_milliseconds"`
-	Files               map[string]dabackend.FileData `json:"files"`
+// ShellRequest, ShellResponse, and ShellExecutor retain the application API
+// while sharing the reusable WASM shell boundary.
+type ShellRequest = justbash.Request
+type ShellResponse = justbash.Response
+type ShellExecutor = justbash.Executor
+
+// Workspace is the browser application's filesystem contract. Browser WASM
+// supplies a bridge backed by the File System Access API and IndexedDB; native
+// tests use the bounded in-memory implementation below.
+type Workspace interface {
+	dabackend.Backend
+	CreateDirectory(context.Context, string) error
 }
 
-// ShellResponse is returned by the browser shell implementation.
-type ShellResponse struct {
-	Stdout    string                        `json:"stdout"`
-	Stderr    string                        `json:"stderr"`
-	ExitCode  int                           `json:"exit_code"`
-	Truncated bool                          `json:"truncated,omitempty"`
-	Files     map[string]dabackend.FileData `json:"files"`
-}
-
-// ShellExecutor runs a command without granting access to the host process or
-// host filesystem. The WASM entrypoint supplies an implementation backed by
-// just-bash in the dedicated browser worker.
-type ShellExecutor func(context.Context, ShellRequest) (ShellResponse, error)
-
-// browserWorkspace serializes file operations with shell executions. This
-// prevents a parallel file tool from being lost when a shell result replaces
-// the just-bash workspace snapshot.
 type browserWorkspace struct {
-	mu     sync.Mutex
-	memory *dabackend.Memory
+	mu          sync.Mutex
+	memory      *dabackend.Memory
+	directories map[string]bool
 }
 
 func newBrowserWorkspace(files map[string]dabackend.FileData) (*browserWorkspace, error) {
@@ -50,13 +39,30 @@ func newBrowserWorkspace(files map[string]dabackend.FileData) (*browserWorkspace
 	if err != nil {
 		return nil, err
 	}
-	return &browserWorkspace{memory: memory}, nil
+	return &browserWorkspace{memory: memory, directories: browserDirectories(files)}, nil
 }
 
 func (workspace *browserWorkspace) List(ctx context.Context, path string) (dabackend.ListResult, error) {
 	workspace.mu.Lock()
 	defer workspace.mu.Unlock()
-	return workspace.memory.List(ctx, path)
+	result, err := workspace.memory.List(ctx, path)
+	if err != nil {
+		return result, err
+	}
+	prefix := strings.TrimSuffix(path, "/") + "/"
+	seen := make(map[string]bool, len(result.Entries))
+	for _, entry := range result.Entries {
+		seen[strings.TrimSuffix(entry.Path, "/")] = true
+	}
+	for directory := range workspace.directories {
+		relative := strings.TrimPrefix(directory, prefix)
+		if relative == directory || relative == "" || strings.Contains(relative, "/") || seen[directory] {
+			continue
+		}
+		result.Entries = append(result.Entries, dabackend.FileInfo{Path: directory + "/", IsDir: true})
+	}
+	sort.Slice(result.Entries, func(i, j int) bool { return result.Entries[i].Path < result.Entries[j].Path })
+	return result, nil
 }
 
 func (workspace *browserWorkspace) Read(ctx context.Context, path string, offset, limit int) (dabackend.ReadResult, error) {
@@ -120,12 +126,65 @@ func (workspace *browserWorkspace) Replace(files map[string]dabackend.FileData) 
 	}
 	workspace.mu.Lock()
 	workspace.memory = memory
+	workspace.directories = browserDirectories(files)
 	workspace.mu.Unlock()
 	return nil
 }
 
+func (workspace *browserWorkspace) CreateDirectory(ctx context.Context, path string) error {
+	path = strings.TrimSuffix(strings.TrimSpace(path), "/")
+	if path == "" || (path != workspaceRoot && !strings.HasPrefix(path, workspaceRoot+"/")) {
+		return fmt.Errorf("browser directory must be inside %s", workspaceRoot)
+	}
+	workspace.mu.Lock()
+	defer workspace.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for current := path; current != "" && current != workspaceRoot; {
+		workspace.directories[current] = true
+		index := strings.LastIndex(current, "/")
+		if index <= 0 {
+			break
+		}
+		current = current[:index]
+	}
+	return nil
+}
+
+func (workspace *browserWorkspace) Directories() []string {
+	workspace.mu.Lock()
+	defer workspace.mu.Unlock()
+	result := make([]string, 0, len(workspace.directories))
+	for path := range workspace.directories {
+		result = append(result, path)
+	}
+	return result
+}
+
+func browserDirectories(files map[string]dabackend.FileData) map[string]bool {
+	result := map[string]bool{workspaceRoot: true}
+	for path := range files {
+		current := strings.TrimSuffix(path, "/")
+		for {
+			index := strings.LastIndex(current, "/")
+			if index <= 0 {
+				break
+			}
+			current = current[:index]
+			if current == workspaceRoot || strings.HasPrefix(current, workspaceRoot+"/") {
+				result[current] = true
+			}
+			if current == workspaceRoot {
+				break
+			}
+		}
+	}
+	return result
+}
+
 type browserSandbox struct {
-	*browserWorkspace
+	Workspace
 	shellMu sync.Mutex
 	execute ShellExecutor
 }
@@ -154,8 +213,7 @@ func (sandbox *browserSandbox) executeCommand(ctx context.Context, command strin
 	}
 	sandbox.shellMu.Lock()
 	defer sandbox.shellMu.Unlock()
-	before := sandbox.Snapshot()
-	request := ShellRequest{Command: command, Cwd: workspaceRoot, Files: before}
+	request := ShellRequest{Command: command, Cwd: workspaceRoot}
 	if timeout > 0 {
 		request.TimeoutMilliseconds = timeout.Milliseconds()
 	}
@@ -163,60 +221,9 @@ func (sandbox *browserSandbox) executeCommand(ctx context.Context, command strin
 	if err != nil {
 		return dabackend.ExecuteResult{}, err
 	}
-	if response.Files == nil {
-		return dabackend.ExecuteResult{}, fmt.Errorf("browser shell returned no workspace snapshot")
-	}
-	if err := sandbox.mergeShellFiles(ctx, before, response.Files); err != nil {
-		return dabackend.ExecuteResult{}, err
-	}
 	output := formatBrowserShellOutput(response.Stdout, response.Stderr)
 	code := response.ExitCode
 	return dabackend.ExecuteResult{Output: output, ExitCode: &code, Truncated: response.Truncated}, nil
-}
-
-func (sandbox *browserSandbox) mergeShellFiles(ctx context.Context, before, files map[string]dabackend.FileData) error {
-	for path := range files {
-		if !strings.HasPrefix(path, workspaceRoot+"/") {
-			return fmt.Errorf("browser shell returned path outside %s: %q", workspaceRoot, path)
-		}
-	}
-	sandbox.mu.Lock()
-	defer sandbox.mu.Unlock()
-	for path, previous := range before {
-		updated, exists := files[path]
-		if exists && sameShellFile(previous, updated) {
-			continue
-		}
-		if !exists {
-			if _, err := sandbox.memory.Delete(ctx, path); err != nil {
-				return err
-			}
-		}
-	}
-	for path, file := range files {
-		if previous, exists := before[path]; exists && sameShellFile(previous, file) {
-			continue
-		}
-		content := []byte(file.Content)
-		if file.Encoding == dabackend.EncodingBase64 {
-			decoded, err := base64.StdEncoding.DecodeString(file.Content)
-			if err != nil {
-				return fmt.Errorf("decode browser shell file %q: %w", path, err)
-			}
-			content = decoded
-		} else if file.Encoding != "" && file.Encoding != dabackend.EncodingUTF8 {
-			return fmt.Errorf("browser shell file %q has unsupported encoding %q", path, file.Encoding)
-		}
-		result := sandbox.memory.Upload(ctx, []dabackend.Upload{{Path: path, Content: content}})[0]
-		if result.Error != "" {
-			return fmt.Errorf("store browser shell file %q: %s", path, result.Error)
-		}
-	}
-	return nil
-}
-
-func sameShellFile(left, right dabackend.FileData) bool {
-	return left.Content == right.Content && left.Encoding == right.Encoding
 }
 
 func formatBrowserShellOutput(stdout, stderr string) string {

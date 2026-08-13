@@ -218,6 +218,7 @@ limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 | `dabackend/langsmith` | Adapter for an existing LangSmith sandbox using `langsmith-go` |
 | `dabackend/contexthub` | Persistent Context Hub agent-repository files with linked-entry and parent-commit support |
 | `dacheckpoint` | Saver contract and in-memory implementation |
+| `dawasm/...` | Reusable browser WebAssembly filesystem, IndexedDB checkpoint, promise bridge, just-bash, directory-handle, and WebGPU adapters; see [`dawasm/README.md`](dawasm/README.md) |
 | `dacheckpoint/sqlite`, `dacheckpoint/postgres` | Python-schema-compatible durable savers |
 | `dastore`, `dastore/sqlite`, `dacache` | Namespaced data store and cache contracts and implementations |
 | `daproviders/openai` | Focused Responses API adapter and credential flows |

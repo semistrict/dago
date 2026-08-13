@@ -138,6 +138,7 @@ const props = defineProps<{
   conversations: ConversationWithState[];
   currentConversation: ConversationWithState | null;
   hasCwd: boolean;
+  supportsGit: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -349,7 +350,7 @@ const actionItems = computed<CommandItem[]>(() => {
     keywords: ["previous", "up", "back", "user", "message", "navigate", "jump"],
   });
 
-  if (props.hasCwd) {
+  if (props.hasCwd && props.supportsGit) {
     items.push({
       id: "open-diffs",
       type: "action",

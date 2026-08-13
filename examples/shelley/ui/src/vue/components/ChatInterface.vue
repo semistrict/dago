@@ -63,6 +63,7 @@
         <!-- Overflow menu (PrimeVue Popover + SelectButton/Select) -->
         <ChatOverflowMenu
           :has-cwd="hasCwd"
+          :supports-git="!isBrowserRuntime"
           :links="links"
           :can-archive="
             !!(conversationId && onArchiveConversation && !currentConversation?.archived)
@@ -366,6 +367,7 @@ import {
 } from "../../services/draftCache";
 import { setFaviconStatus } from "../../services/favicon";
 import { modelSetupHintKeys, canSendWithModel, needsModel } from "../../utils/modelSetupHint";
+import { conversationToMarkdown } from "../../utils/conversationMarkdown";
 import { useMarkdownMode } from "../composables/markdownMode";
 import { useI18n } from "../composables/i18n";
 import { useDraftAutosave } from "../composables/draftAutosave";
@@ -475,6 +477,7 @@ const props = withDefaults(
 );
 
 const { t } = useI18n();
+const isBrowserRuntime = sessionStorage.getItem("shelley_runtime") === "wasm";
 const { markdownMode } = useMarkdownMode();
 const toolPillsEnabled = useFeatureFlag("tool-pills");
 const {
@@ -2079,6 +2082,11 @@ async function sendMessage(message: string) {
     return;
   }
   if (trimmedMessage === SLASH_COMMANDS.DIFF.command) {
+    if (isBrowserRuntime) {
+      const err = new Error("Git history and diffs require the server runtime.");
+      error.value = err.message;
+      throw err;
+    }
     showDiffViewer.value = true;
     return;
   }
@@ -2314,8 +2322,24 @@ function focusOrOpenTerminal() {
   }
   openInAppTerminal();
 }
+function browserExportMarkdown(): string {
+  return conversationToMarkdown(props.currentConversation, messages.value);
+}
+
 function openExport() {
-  window.open(`/export/${props.conversationId}`, "_blank", "noopener");
+  if (sessionStorage.getItem("shelley_runtime") !== "wasm") {
+    window.open(`/export/${props.conversationId}`, "_blank", "noopener");
+    return;
+  }
+  const blob = new Blob([browserExportMarkdown()], { type: "text/markdown;charset=utf-8" });
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = `${props.currentConversation?.slug || "conversation"}.md`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(href), 0);
 }
 async function archiveFromMenu() {
   if (!props.conversationId || !props.onArchiveConversation) return;
@@ -2347,11 +2371,11 @@ function handleMenuShortcut(e: KeyboardEvent) {
   if (!action) return;
   switch (action) {
     case "diffs":
-      if (!hasCwd.value) return;
+      if (!hasCwd.value || isBrowserRuntime) return;
       showDiffViewer.value = true;
       break;
     case "gitGraph":
-      if (!hasCwd.value) return;
+      if (!hasCwd.value || isBrowserRuntime) return;
       showGitGraph.value = true;
       break;
     case "terminal":
@@ -3037,14 +3061,14 @@ watch(
 watch(
   () => props.openDiffViewerTrigger,
   (trigger) => {
-    if (trigger && trigger > 0) showDiffViewer.value = true;
+    if (!isBrowserRuntime && trigger && trigger > 0) showDiffViewer.value = true;
   },
 );
 // Trigger: open git graph.
 watch(
   () => props.openGitGraphTrigger,
   (trigger) => {
-    if (trigger && trigger > 0) showGitGraph.value = true;
+    if (!isBrowserRuntime && trigger && trigger > 0) showGitGraph.value = true;
   },
 );
 // Trigger: open terminal.
@@ -3384,7 +3408,7 @@ function handleScrollKeyDown(e: KeyboardEvent) {
 onMounted(() => {
   const params = new URLSearchParams(window.location.search);
   const commit = params.get("diff");
-  if (commit) {
+  if (commit && !isBrowserRuntime) {
     const cwdParam = params.get("cwd") || undefined;
     diffViewerInitialCommit.value = commit;
     diffViewerCwd.value = cwdParam;

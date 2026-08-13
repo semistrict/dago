@@ -28,15 +28,15 @@ importers:
       '@excalidraw/excalidraw':
         specifier: 0.18.1
         version: 0.18.1(@types/react-dom@18.3.7(@types/react@18.3.27))(@types/react@18.3.27)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
-      '@huggingface/transformers':
-        specifier: 4.2.0
-        version: 4.2.0
       '@pierre/diffs':
         specifier: 1.1.20
         version: 1.1.20(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@primeuix/themes':
         specifier: ^2.0.3
         version: 2.0.3
+      '@semistrict/dawasm-browser':
+        specifier: file:../../../dawasm/browser
+        version: file:../../../dawasm/browser(esbuild@0.19.12)
       '@xterm/addon-fit':
         specifier: 0.12.0-beta.213
         version: 0.12.0-beta.213(@xterm/xterm@6.1.0-beta.213)
@@ -52,18 +52,12 @@ importers:
       dompurify:
         specifier: ^3.4.13
         version: 3.4.13
-      fflate:
-        specifier: ^0.8.3
-        version: 0.8.3
       idb:
         specifier: ^8.0.3
         version: 8.0.3
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
-      just-bash:
-        specifier: ^3.2.0
-        version: 3.2.0
       marked:
         specifier: ^17.0.3
         version: 17.0.3
@@ -1160,6 +1154,14 @@ packages:
 
   '@radix-ui/rect@1.1.0':
     resolution: {integrity: sha512-A9+lCBZoaMJlVKcRBz2YByCG+Cp2t6nAnMnNba+XiWxnj6r4JUFqfsgwocMBZU9LPtdxC6wB56ySYpc7LQIoJg==}
+
+  '@semistrict/dawasm-browser@file:../../../dawasm/browser':
+    resolution: {directory: ../../../dawasm/browser, type: directory}
+    peerDependencies:
+      esbuild: '>=0.19.0'
+    peerDependenciesMeta:
+      esbuild:
+        optional: true
 
   '@shikijs/core@3.23.0':
     resolution: {integrity: sha512-NSWQz0riNb67xthdm5br6lAkvpDJRTgB36fxlo37ZzM2yq0PQFFzbd8psqC2XMPgCzo1fW6cVi18+ArJ44wqgA==}
@@ -4043,6 +4045,16 @@ snapshots:
       '@types/react': 18.3.27
 
   '@radix-ui/rect@1.1.0': {}
+
+  '@semistrict/dawasm-browser@file:../../../dawasm/browser(esbuild@0.19.12)':
+    dependencies:
+      '@huggingface/transformers': 4.2.0
+      fflate: 0.8.3
+      just-bash: 3.2.0
+    optionalDependencies:
+      esbuild: 0.19.12
+    transitivePeerDependencies:
+      - supports-color
 
   '@shikijs/core@3.23.0':
     dependencies:

@@ -5,6 +5,7 @@ import * as path from "path";
 import * as zlib from "zlib";
 import * as crypto from "crypto";
 import { execFileSync, execSync } from "child_process";
+import { justBashBrowserShims } from "@semistrict/dawasm-browser/esbuild";
 
 // Esbuild plugin: rewrite any "monaco-editor*" import (including deep paths
 // like monaco-editor/esm/vs/editor/editor.api) to the deployed runtime URL,
@@ -25,17 +26,6 @@ function monacoExternalPlugin(monacoRuntimePath) {
       }));
       const monacoVimEsm = path.resolve(process.cwd(), "node_modules/monaco-vim/dist/index.mjs");
       build.onResolve({ filter: /^monaco-vim$/ }, () => ({ path: monacoVimEsm }));
-    },
-  };
-}
-
-function justBashBrowserShims() {
-  return {
-    name: "just-bash-browser-shims",
-    setup(build) {
-      build.onResolve({ filter: /^node:zlib$/ }, () => ({
-        path: path.resolve(process.cwd(), "src/shims/node-zlib.ts"),
-      }));
     },
   };
 }

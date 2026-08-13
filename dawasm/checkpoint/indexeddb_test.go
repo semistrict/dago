@@ -1,4 +1,4 @@
-package browserapp
+package checkpoint
 
 import (
 	"context"

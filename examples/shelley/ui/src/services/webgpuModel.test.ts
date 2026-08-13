@@ -1,4 +1,9 @@
-import { fromQwenText, toQwenMessages, toQwenTools, webGPUErrorMessage } from "./webgpuModel";
+import {
+  fromQwenText,
+  toQwenMessages,
+  toQwenTools,
+  webGPUErrorMessage,
+} from "@semistrict/dawasm-browser/webgpu-qwen";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(`Assertion failed: ${message}`);
@@ -49,7 +54,10 @@ assert(
   (toolResponse.message.tool_calls?.[0].arguments as { line_end?: number }).line_end === 20,
   "JSON scalar tool argument parsing",
 );
-assert(webGPUErrorMessage(new Error("adapter failed")) === "adapter failed", "Error messages survive");
+assert(
+  webGPUErrorMessage(new Error("adapter failed")) === "adapter failed",
+  "Error messages survive",
+);
 assert(
   webGPUErrorMessage({ code: "GPUValidationError" }).includes("GPUValidationError"),
   "structured browser errors survive",

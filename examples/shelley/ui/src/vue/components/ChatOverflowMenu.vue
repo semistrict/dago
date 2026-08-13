@@ -53,7 +53,7 @@
       @hide="open = false"
     >
       <!-- Conversation / workspace actions -->
-      <button v-if="hasCwd" class="overflow-menu-item" @click="onDiffs">
+      <button v-if="hasCwd && supportsGit" class="overflow-menu-item" @click="onDiffs">
         <!-- Diffs: two rows of +/- changes -->
         <svg
           fill="none"
@@ -75,7 +75,7 @@
           ><kbd>{{ menuShortcutLabel("diffs") }}</kbd></span
         >
       </button>
-      <button v-if="hasCwd" class="overflow-menu-item" @click="onGitGraph">
+      <button v-if="hasCwd && supportsGit" class="overflow-menu-item" @click="onGitGraph">
         <!-- Git graph: commits A (top) and B (top-right) branching from C (bottom) -->
         <svg
           fill="none"
@@ -267,6 +267,7 @@ import {
 
 defineProps<{
   hasCwd: boolean;
+  supportsGit: boolean;
   links: Link[];
   canArchive: boolean;
   canExport: boolean;

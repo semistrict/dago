@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"sort"
 	"strings"
@@ -105,10 +107,18 @@ type record struct {
 	PendingCtx   context.Context     `json:"-"`
 }
 
+type browserQueuedMessage struct {
+	ID        string      `json:"id"`
+	LLM       llm.Message `json:"llm"`
+	CreatedAt time.Time   `json:"created_at"`
+	Model     string      `json:"model"`
+}
+
 type snapshot struct {
 	Version       int                           `json:"version"`
 	Conversations map[string]persistedRecord    `json:"conversations"`
-	Files         map[string]dabackend.FileData `json:"files"`
+	Files         map[string]dabackend.FileData `json:"files,omitempty"`
+	Directories   []string                      `json:"directories,omitempty"`
 }
 
 type persistedRecord struct {
@@ -146,7 +156,7 @@ type App struct {
 	providerModels map[string]CustomModel
 	webGPUModel    damodel.Chat
 	saver          dacheckpoint.Saver
-	workspace      *browserWorkspace
+	workspace      Workspace
 	backend        dabackend.Backend
 	shellExecutor  ShellExecutor
 	conversations  map[string]*record
@@ -182,6 +192,22 @@ func NewWithShellAndSaver(executor ShellExecutor, saver dacheckpoint.Saver) (*Ap
 	return newApp(executor, saver)
 }
 
+// NewWithWorkspaceAndSaver constructs the WASM application around a shared
+// browser workspace. The workspace owns file persistence independently, so
+// application snapshots contain conversations rather than file bodies.
+func NewWithWorkspaceAndSaver(workspace Workspace, executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
+	if workspace == nil {
+		return nil, fmt.Errorf("browser workspace is required")
+	}
+	if executor == nil {
+		return nil, fmt.Errorf("browser shell executor is required")
+	}
+	if saver == nil {
+		return nil, fmt.Errorf("browser checkpoint saver is required")
+	}
+	return newAppWithWorkspace(workspace, executor, saver)
+}
+
 // ConfigureWebGPUModel installs the browser worker's local inference bridge.
 // Model weights and execution remain owned by the worker; the Go application
 // only sees the provider-neutral model contract.
@@ -203,28 +229,6 @@ func (app *App) ConfigureWebGPUModel(model damodel.Chat) error {
 	return nil
 }
 
-// ReplaceWorkspace refreshes the portable workspace from a user-authorized
-// browser directory without changing conversations or rebuilding agents.
-func (app *App) ReplaceWorkspace(files map[string]dabackend.FileData) error {
-	for path := range files {
-		if !strings.HasPrefix(path, workspaceRoot+"/") {
-			return fmt.Errorf("browser workspace path must be inside %s: %q", workspaceRoot, path)
-		}
-	}
-	app.mu.RLock()
-	workspace := app.workspace
-	app.mu.RUnlock()
-	return workspace.Replace(files)
-}
-
-// WorkspaceSnapshot returns an isolated copy for the browser directory sync.
-func (app *App) WorkspaceSnapshot() map[string]dabackend.FileData {
-	app.mu.RLock()
-	workspace := app.workspace
-	app.mu.RUnlock()
-	return workspace.Snapshot()
-}
-
 func newApp(executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
 	workspace, err := newBrowserWorkspace(map[string]dabackend.FileData{
 		workspaceRoot + "/README.md": {
@@ -235,9 +239,13 @@ func newApp(executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newAppWithWorkspace(workspace, executor, saver)
+}
+
+func newAppWithWorkspace(workspace Workspace, executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
 	backend := dabackend.Backend(workspace)
 	if executor != nil {
-		backend = &browserSandbox{browserWorkspace: workspace, execute: executor}
+		backend = &browserSandbox{Workspace: workspace, execute: executor}
 	}
 	agent, err := newAgent(backend, newPredictableModel(), modelID, saver)
 	if err != nil {
@@ -275,8 +283,15 @@ func (app *App) Handle(request Request) Response {
 	switch {
 	case method == "GET" && path == "/api/capabilities":
 		shellReady := dabackend.CapabilitiesOf(app.backend).Execute
-		local := []string{"agent", "conversations", "virtual_filesystem", "checkpoint_snapshot"}
-		unavailable := []string{"shell", "pty", "host_filesystem", "git_worktrees", "local_browser_control"}
+		local := []string{
+			"agent", "conversations", "conversation_fork", "conversation_retry", "conversation_queue",
+			"conversation_generations", "conversation_compaction", "drafts", "full_text_search",
+			"virtual_filesystem", "directory_access", "file_upload", "file_export", "checkpoint_snapshot",
+		}
+		unavailable := []string{
+			"shell", "pty", "host_processes", "unrestricted_host_filesystem", "git", "git_worktrees",
+			"server_oauth", "server_notification_channels", "local_browser_control",
+		}
 		if shellReady {
 			local = append(local, "shell")
 			unavailable = unavailable[1:]
@@ -304,7 +319,12 @@ func (app *App) Handle(request Request) Response {
 	case method == "POST" && path == "/api/browser-openai-key":
 		return app.configureBrowserOpenAI(request.Body)
 	case method == "GET" && path == "/api/conversations":
+		if parsed.Query().Get("search_content") == "true" {
+			return jsonResponse(200, app.searchConversationsByArchive(parsed.Query().Get("q"), false))
+		}
 		return jsonResponse(200, app.listConversations(false, parsed.Query().Get("q")))
+	case method == "GET" && path == "/api/conversations/search":
+		return jsonResponse(200, app.searchConversations(parsed.Query().Get("q")))
 	case method == "GET" && path == "/api/conversations/snapshot":
 		items := app.listConversations(false, "")
 		return jsonResponse(200, map[string]any{"conversations": items, "hash": listHash(items)})
@@ -314,6 +334,8 @@ func (app *App) Handle(request Request) Response {
 		return app.newConversation(request.Body)
 	case method == "POST" && path == "/api/conversations/draft":
 		return app.newDraft(request.Body)
+	case method == "POST" && path == "/api/conversations/distill-new-generation":
+		return app.distillNewGeneration(request.Body)
 	case strings.HasPrefix(path, "/api/conversation-by-slug/") && method == "GET":
 		return app.bySlug(strings.TrimPrefix(path, "/api/conversation-by-slug/"))
 	case strings.HasPrefix(path, "/api/conversation/"):
@@ -331,9 +353,28 @@ func (app *App) Handle(request Request) Response {
 		return app.listDirectory(parsed.Query().Get("path"))
 	case method == "GET" && path == "/api/find-files":
 		return app.findFiles(parsed.Query().Get("dir"), parsed.Query().Get("q"))
+	case method == "POST" && path == "/api/create-directory":
+		return app.createDirectory(request.Body)
+	case method == "GET" && path == "/api/read":
+		return app.readFile(parsed.Query().Get("path"), false)
+	case method == "GET" && path == "/api/read-file":
+		return app.readFile(parsed.Query().Get("path"), true)
+	case method == "POST" && path == "/api/write-file":
+		return app.writeFile(request.Body)
+	case path == "/api/user-agents-md":
+		if method == "GET" {
+			return app.readFile(workspaceRoot+"/AGENTS.md", true)
+		}
+		if method == "POST" {
+			return app.writeUserAgents(bodyOrEmpty(request.Body))
+		}
+		return errorResponse(405, fmt.Errorf("method not allowed"))
 	case method == "GET" && path == "/version-check":
 		return jsonResponse(200, map[string]any{"current_version": "browser", "latest_version": "browser", "update_available": false, "should_notify": false})
-	case method == "GET" && path == "/feature-flags":
+	case path == "/feature-flags":
+		if method != "GET" {
+			return changedResponse(204, nil)
+		}
 		return jsonResponse(200, []any{})
 	case method == "GET" && path == "/settings":
 		return jsonResponse(200, map[string]string{})
@@ -345,7 +386,7 @@ func (app *App) Handle(request Request) Response {
 		return app.testCustomModel(request.Body)
 	case strings.HasPrefix(path, "/api/custom-models/"):
 		return app.handleCustomModel(method, strings.TrimPrefix(path, "/api/custom-models/"), request.Body)
-	case method == "GET" && path == "/api/model-costs":
+	case (method == "GET" || method == "POST") && path == "/api/model-costs":
 		return jsonResponse(200, map[string]any{"costs": map[string]any{}})
 	default:
 		return capabilityResponse(path)
@@ -406,6 +447,15 @@ func (app *App) createRecord(model, cwd string, options json.RawMessage, draft b
 	if cwd == "" {
 		cwd = workspaceRoot
 	}
+	app.mu.RLock()
+	configured := app.agents[model] != nil
+	app.mu.RUnlock()
+	if !configured {
+		return Conversation{}, fmt.Errorf("model %q is not configured in this browser session", model)
+	}
+	if cwd != workspaceRoot && !strings.HasPrefix(cwd, workspaceRoot+"/") {
+		return Conversation{}, fmt.Errorf("browser paths must be inside %s", workspaceRoot)
+	}
 	optionText := "{}"
 	if len(options) > 0 && string(options) != "null" {
 		optionText = string(options)
@@ -433,9 +483,22 @@ func (app *App) handleConversation(method, path string, query url.Values, body s
 		return app.getConversation(id, query)
 	case method == "POST" && action == "chat":
 		var input struct {
-			Message string `json:"message"`
+			Message             string          `json:"message"`
+			Model               string          `json:"model"`
+			Cwd                 string          `json:"cwd"`
+			ConversationOptions json.RawMessage `json:"conversation_options"`
+			Queue               bool            `json:"queue"`
 		}
 		if err := json.Unmarshal([]byte(body), &input); err != nil {
+			return errorResponse(400, err)
+		}
+		if strings.HasPrefix(strings.TrimSpace(input.Message), "/model") {
+			return app.changeModel(id, input.Message)
+		}
+		if input.Queue {
+			return app.queueTurn(id, input.Message, input.Model)
+		}
+		if err := app.applyDraftSelections(id, input.Model, input.Cwd, input.ConversationOptions); err != nil {
 			return errorResponse(400, err)
 		}
 		if !app.prepareTurn(id, input.Message) {
@@ -452,6 +515,22 @@ func (app *App) handleConversation(method, path string, query url.Values, body s
 		}
 		app.mu.Unlock()
 		return changedResponse(200, map[string]string{"status": "cancelled"})
+	case method == "POST" && action == "cancel-queued":
+		return app.cancelQueued(id, query.Get("queued_id"))
+	case method == "POST" && action == "fork":
+		return app.forkConversation(id, body)
+	case method == "POST" && action == "retry":
+		return app.retryConversation(id, "")
+	case method == "POST" && action == "continue":
+		var input struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal([]byte(body), &input)
+		return app.retryConversation(id, input.Model)
+	case method == "POST" && action == "new-generation":
+		return app.startNewGeneration(id)
+	case method == "PUT" && action == "draft":
+		return app.updateDraft(id, body)
 	case method == "POST" && action == "archive":
 		return app.setArchived(id, true)
 	case method == "POST" && action == "unarchive":
@@ -495,6 +574,379 @@ func (app *App) handleConversation(method, path string, query url.Values, body s
 	}
 }
 
+func (app *App) applyDraftSelections(id, model, cwd string, options json.RawMessage) error {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	record := app.conversations[id]
+	if record == nil {
+		return fmt.Errorf("conversation not found")
+	}
+	if !record.Conversation.IsDraft {
+		return nil
+	}
+	if model != "" {
+		if app.agents[model] == nil {
+			return fmt.Errorf("model %q is not configured in this browser session", model)
+		}
+		record.Conversation.Model = pointer(model)
+	}
+	if cwd != "" {
+		if cwd != workspaceRoot && !strings.HasPrefix(cwd, workspaceRoot+"/") {
+			return fmt.Errorf("browser paths must be inside %s", workspaceRoot)
+		}
+		record.Conversation.Cwd = pointer(cwd)
+	}
+	if len(options) > 0 && string(options) != "null" {
+		record.Conversation.ConversationOptions = string(options)
+	}
+	return nil
+}
+
+func (app *App) updateDraft(id, body string) Response {
+	var input struct {
+		Draft *string `json:"draft"`
+		Model *string `json:"model"`
+		Cwd   *string `json:"cwd"`
+	}
+	if err := json.Unmarshal([]byte(body), &input); err != nil {
+		return errorResponse(400, err)
+	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	record := app.conversations[id]
+	if record == nil || !record.Conversation.IsDraft {
+		return errorResponse(404, fmt.Errorf("draft conversation not found"))
+	}
+	if input.Model != nil {
+		if app.agents[*input.Model] == nil {
+			return errorResponse(400, fmt.Errorf("model %q is not configured in this browser session", *input.Model))
+		}
+		record.Conversation.Model = pointer(*input.Model)
+	}
+	if input.Cwd != nil {
+		if *input.Cwd != workspaceRoot && !strings.HasPrefix(*input.Cwd, workspaceRoot+"/") {
+			return errorResponse(400, fmt.Errorf("browser paths must be inside %s", workspaceRoot))
+		}
+		record.Conversation.Cwd = pointer(*input.Cwd)
+	}
+	if input.Draft != nil {
+		record.Conversation.Draft = *input.Draft
+	}
+	record.Conversation.UpdatedAt = app.now().UTC().Format(time.RFC3339Nano)
+	return changedResponse(200, record.Conversation)
+}
+
+func (app *App) changeModel(id, command string) Response {
+	model := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "/model"))
+	if model == "" {
+		return errorResponse(400, fmt.Errorf("usage: /model <model>"))
+	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.agents[model] == nil {
+		return errorResponse(400, fmt.Errorf("model %q is not configured in this browser session", model))
+	}
+	record := app.conversations[id]
+	if record == nil {
+		return errorResponse(404, fmt.Errorf("conversation not found"))
+	}
+	if record.Conversation.AgentWorking {
+		return errorResponse(409, fmt.Errorf("conversation is already working"))
+	}
+	record.Conversation.Model = pointer(model)
+	record.Conversation.UpdatedAt = app.now().UTC().Format(time.RFC3339Nano)
+	return changedResponse(200, map[string]string{"status": "changed", "model": model})
+}
+
+func (app *App) forkConversation(id, body string) Response {
+	var input struct {
+		MessageID  string `json:"message_id"`
+		SequenceID int64  `json:"sequence_id"`
+	}
+	if strings.TrimSpace(body) != "" {
+		if err := json.Unmarshal([]byte(body), &input); err != nil {
+			return errorResponse(400, err)
+		}
+	}
+	app.mu.RLock()
+	source := app.conversations[id]
+	if source == nil {
+		app.mu.RUnlock()
+		return errorResponse(404, fmt.Errorf("conversation not found"))
+	}
+	conversation := source.Conversation
+	apiMessages := append([]apiMessage(nil), source.API...)
+	nativeMessages := cloneMessages(source.Messages)
+	app.mu.RUnlock()
+	if len(apiMessages) == 0 {
+		return errorResponse(400, fmt.Errorf("conversation has no messages to fork"))
+	}
+	cutoff := input.SequenceID
+	if input.MessageID != "" {
+		cutoff = 0
+		for _, message := range apiMessages {
+			if message.MessageID == input.MessageID {
+				cutoff = message.SequenceID
+				break
+			}
+		}
+		if cutoff == 0 {
+			return errorResponse(404, fmt.Errorf("message not found"))
+		}
+	}
+	if cutoff <= 0 || cutoff > apiMessages[len(apiMessages)-1].SequenceID {
+		cutoff = apiMessages[len(apiMessages)-1].SequenceID
+	}
+	generation := int64(0)
+	selectedIDs := map[string]bool{}
+	for _, message := range apiMessages {
+		if message.SequenceID == cutoff {
+			generation = message.Generation
+			break
+		}
+	}
+	if generation == 0 {
+		return errorResponse(400, fmt.Errorf("invalid fork point"))
+	}
+	selectedAPI := make([]apiMessage, 0)
+	for _, message := range apiMessages {
+		if message.Generation == generation && message.SequenceID <= cutoff {
+			selectedAPI = append(selectedAPI, message)
+			selectedIDs[message.MessageID] = true
+		}
+	}
+	if len(selectedAPI) == 0 {
+		return errorResponse(400, fmt.Errorf("invalid fork point"))
+	}
+	selectedNative := make([]damessage.Message, 0, len(selectedAPI))
+	for _, message := range nativeMessages {
+		if selectedIDs[message.ID] {
+			selectedNative = append(selectedNative, message.Clone())
+		}
+	}
+	created, err := app.createRecord(pointerText(conversation.Model), pointerText(conversation.Cwd), json.RawMessage(conversation.ConversationOptions), false, "")
+	if err != nil {
+		return errorResponse(500, err)
+	}
+	app.mu.Lock()
+	forked := app.conversations[created.ConversationID]
+	forked.Messages = selectedNative
+	forked.Conversation.CurrentGeneration = 1
+	forked.Conversation.Slug = app.uniqueForkSlugLocked(conversation.Slug)
+	for index, message := range selectedAPI {
+		message.ConversationID = created.ConversationID
+		message.SequenceID = int64(index + 1)
+		message.Generation = 1
+		forked.API = append(forked.API, message)
+	}
+	created = forked.Conversation
+	app.mu.Unlock()
+	return changedResponse(201, created)
+}
+
+func (app *App) uniqueForkSlugLocked(source *string) *string {
+	base := "fork"
+	if source != nil && *source != "" {
+		base = slugify(*source + "-fork")
+	}
+	for suffix := 1; ; suffix++ {
+		candidate := base
+		if suffix > 1 {
+			candidate = fmt.Sprintf("%s-%d", base, suffix)
+		}
+		available := true
+		for _, record := range app.conversations {
+			if record.Conversation.Slug != nil && *record.Conversation.Slug == candidate {
+				available = false
+				break
+			}
+		}
+		if available {
+			return pointer(candidate)
+		}
+	}
+}
+
+func (app *App) retryConversation(id, model string) Response {
+	app.mu.RLock()
+	record := app.conversations[id]
+	if record == nil {
+		app.mu.RUnlock()
+		return errorResponse(404, fmt.Errorf("conversation not found"))
+	}
+	if record.Conversation.AgentWorking {
+		app.mu.RUnlock()
+		return errorResponse(409, fmt.Errorf("conversation is already working"))
+	}
+	hasError := len(record.API) > 0 && record.API[len(record.API)-1].Type == "error"
+	app.mu.RUnlock()
+	if !hasError {
+		return jsonResponse(202, map[string]string{"status": "not_applicable"})
+	}
+	if model != "" {
+		app.mu.RLock()
+		configured := app.agents[model] != nil
+		app.mu.RUnlock()
+		if !configured {
+			return errorResponse(400, fmt.Errorf("model %q is not configured in this browser session", model))
+		}
+	}
+	if app.saver != nil {
+		if err := app.saver.DeleteThread(context.Background(), id); err != nil {
+			return errorResponse(500, err)
+		}
+	}
+	app.mu.Lock()
+	record = app.conversations[id]
+	if model != "" {
+		record.Conversation.Model = pointer(model)
+	}
+	for len(record.Messages) > 0 && strings.HasPrefix(record.Messages[len(record.Messages)-1].TextContent(), "Agent error: ") {
+		record.Messages = record.Messages[:len(record.Messages)-1]
+	}
+	if len(record.Messages) == 0 {
+		app.mu.Unlock()
+		return errorResponse(409, fmt.Errorf("conversation has no request to retry"))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	record.Cancel = cancel
+	record.Pending = cloneMessages(record.Messages)
+	record.PendingCtx = ctx
+	record.Conversation.AgentWorking = true
+	record.Conversation.UpdatedAt = app.now().UTC().Format(time.RFC3339Nano)
+	app.mu.Unlock()
+	app.publish(app.streamFrame(id, nil, true))
+	response := changedResponse(202, map[string]string{"status": "retrying"})
+	response.ContinueConversation = id
+	return response
+}
+
+func (app *App) startNewGeneration(id string) Response {
+	app.mu.RLock()
+	record := app.conversations[id]
+	if record == nil {
+		app.mu.RUnlock()
+		return errorResponse(404, fmt.Errorf("conversation not found"))
+	}
+	if record.Conversation.AgentWorking {
+		app.mu.RUnlock()
+		return errorResponse(409, fmt.Errorf("conversation is already working"))
+	}
+	app.mu.RUnlock()
+	if app.saver != nil {
+		if err := app.saver.DeleteThread(context.Background(), id); err != nil {
+			return errorResponse(500, err)
+		}
+	}
+	app.mu.Lock()
+	record = app.conversations[id]
+	record.Messages = nil
+	record.Pending = nil
+	record.PendingCtx = nil
+	record.Conversation.CurrentGeneration++
+	record.Conversation.UpdatedAt = app.now().UTC().Format(time.RFC3339Nano)
+	conversation := record.Conversation
+	app.mu.Unlock()
+	app.publish(app.streamFrame(id, nil, false))
+	return changedResponse(200, conversation)
+}
+
+func (app *App) distillNewGeneration(body string) Response {
+	var input struct {
+		SourceConversationID string `json:"source_conversation_id"`
+		Model                string `json:"model"`
+		Cwd                  string `json:"cwd"`
+		Method               string `json:"method"`
+		Instructions         string `json:"instructions"`
+	}
+	if err := json.Unmarshal([]byte(body), &input); err != nil {
+		return errorResponse(400, err)
+	}
+	if input.SourceConversationID == "" {
+		return errorResponse(400, fmt.Errorf("source_conversation_id is required"))
+	}
+	if input.Method != "" && input.Method != "default" && input.Method != "compact" {
+		return errorResponse(400, fmt.Errorf("unknown distill method %q", input.Method))
+	}
+	if input.Cwd != "" && input.Cwd != workspaceRoot && !strings.HasPrefix(input.Cwd, workspaceRoot+"/") {
+		return errorResponse(400, fmt.Errorf("browser paths must be inside %s", workspaceRoot))
+	}
+	app.mu.RLock()
+	record := app.conversations[input.SourceConversationID]
+	if record == nil {
+		app.mu.RUnlock()
+		return errorResponse(404, fmt.Errorf("source conversation not found"))
+	}
+	if record.Conversation.AgentWorking {
+		app.mu.RUnlock()
+		return errorResponse(409, fmt.Errorf("conversation is already working"))
+	}
+	selectedModel := input.Model
+	if selectedModel == "" {
+		selectedModel = pointerText(record.Conversation.Model)
+	}
+	var model damodel.Chat
+	if agentModel, ok := app.providerModels[selectedModel]; ok {
+		model, _ = openAIChat(agentModel)
+	} else if customModel, ok := app.customModels[selectedModel]; ok {
+		model, _ = openAIChat(customModel)
+	} else if selectedModel == modelID {
+		model = newPredictableModel()
+	} else if selectedModel == webGPUModelID {
+		model = app.webGPUModel
+	}
+	history := cloneMessages(record.Messages)
+	app.mu.RUnlock()
+	if model == nil {
+		return errorResponse(400, fmt.Errorf("model %q is not configured in this browser session", selectedModel))
+	}
+	var transcript strings.Builder
+	for _, message := range history {
+		text := strings.TrimSpace(message.TextContent())
+		if text == "" {
+			continue
+		}
+		fmt.Fprintf(&transcript, "%s: %s\n", message.Role, text)
+	}
+	prompt := "Summarize this conversation for another coding agent. Preserve decisions, file paths, changes, unresolved work, and constraints."
+	if input.Instructions != "" {
+		prompt += " Additional instructions: " + input.Instructions
+	}
+	prompt += "\n\n" + transcript.String()
+	result, err := model.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human(prompt)}})
+	if err != nil {
+		return errorResponse(500, fmt.Errorf("compact conversation: %w", err))
+	}
+	summary := strings.TrimSpace(result.Message.TextContent())
+	if summary == "" {
+		return errorResponse(500, fmt.Errorf("compact conversation returned an empty summary"))
+	}
+	if app.saver != nil {
+		if err := app.saver.DeleteThread(context.Background(), input.SourceConversationID); err != nil {
+			return errorResponse(500, err)
+		}
+	}
+	app.mu.Lock()
+	record = app.conversations[input.SourceConversationID]
+	record.Conversation.CurrentGeneration++
+	record.Conversation.Model = pointer(selectedModel)
+	if input.Cwd != "" {
+		record.Conversation.Cwd = pointer(input.Cwd)
+	}
+	message := damessage.Assistant("Conversation summary:\n\n" + summary)
+	message.ID = newMessageID()
+	record.Messages = []damessage.Message{message}
+	projected := projectMessage(input.SourceConversationID, int64(len(record.API)+1), record.Conversation.CurrentGeneration, selectedModel, message, app.now())
+	record.API = append(record.API, projected)
+	record.Conversation.UpdatedAt = app.now().UTC().Format(time.RFC3339Nano)
+	generation := record.Conversation.CurrentGeneration
+	app.mu.Unlock()
+	app.publish(app.streamFrame(input.SourceConversationID, []apiMessage{projected}, false))
+	return changedResponse(201, map[string]any{
+		"status": "created", "conversation_id": input.SourceConversationID, "current_generation": generation,
+	})
+}
+
 func (app *App) prepareTurn(id, text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -532,6 +984,134 @@ func (app *App) prepareTurn(id, text string) bool {
 	return true
 }
 
+func (app *App) queueTurn(id, text, model string) Response {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return errorResponse(400, fmt.Errorf("message is required"))
+	}
+	app.mu.Lock()
+	record := app.conversations[id]
+	if record == nil {
+		app.mu.Unlock()
+		return errorResponse(404, fmt.Errorf("conversation not found"))
+	}
+	if !record.Conversation.AgentWorking {
+		app.mu.Unlock()
+		if model != "" {
+			if err := app.applyDraftSelections(id, model, "", nil); err != nil {
+				return errorResponse(400, err)
+			}
+		}
+		if !app.prepareTurn(id, text) {
+			return errorResponse(409, fmt.Errorf("conversation is already working"))
+		}
+		response := changedResponse(202, map[string]string{"status": "accepted"})
+		response.ContinueConversation = id
+		return response
+	}
+	if model == "" {
+		model = pointerText(record.Conversation.Model)
+	}
+	queued, err := parseBrowserQueue(record.Conversation.QueuedMessages)
+	if err != nil {
+		app.mu.Unlock()
+		return errorResponse(500, err)
+	}
+	queued = append(queued, browserQueuedMessage{
+		ID:        newMessageID(),
+		LLM:       llm.Message{Role: llm.MessageRoleUser, Content: llm.TextContent(text)},
+		CreatedAt: app.now().UTC(), Model: model,
+	})
+	record.Conversation.QueuedMessages = marshalBrowserQueue(queued)
+	record.Conversation.UpdatedAt = app.now().UTC().Format(time.RFC3339Nano)
+	app.mu.Unlock()
+	app.publish(app.streamFrame(id, nil, true))
+	return changedResponse(202, map[string]string{"status": "queued"})
+}
+
+func parseBrowserQueue(raw string) ([]browserQueuedMessage, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var queued []browserQueuedMessage
+	if err := json.Unmarshal([]byte(raw), &queued); err != nil {
+		return nil, fmt.Errorf("decode queued messages: %w", err)
+	}
+	return queued, nil
+}
+
+func marshalBrowserQueue(queued []browserQueuedMessage) string {
+	if len(queued) == 0 {
+		return "[]"
+	}
+	raw, _ := json.Marshal(queued)
+	return string(raw)
+}
+
+func browserQueuedText(message browserQueuedMessage) string {
+	var result strings.Builder
+	for _, content := range message.LLM.Content {
+		if content.Type == llm.ContentTypeText {
+			result.WriteString(content.Text)
+		}
+	}
+	return result.String()
+}
+
+func (app *App) cancelQueued(id, queuedID string) Response {
+	app.mu.Lock()
+	record := app.conversations[id]
+	if record == nil {
+		app.mu.Unlock()
+		return errorResponse(404, fmt.Errorf("conversation not found"))
+	}
+	queued, err := parseBrowserQueue(record.Conversation.QueuedMessages)
+	if err != nil {
+		app.mu.Unlock()
+		return errorResponse(500, err)
+	}
+	if queuedID == "" {
+		queued = nil
+	} else {
+		kept := queued[:0]
+		for _, message := range queued {
+			if message.ID != queuedID {
+				kept = append(kept, message)
+			}
+		}
+		queued = kept
+	}
+	record.Conversation.QueuedMessages = marshalBrowserQueue(queued)
+	record.Conversation.UpdatedAt = app.now().UTC().Format(time.RFC3339Nano)
+	working := record.Conversation.AgentWorking
+	app.mu.Unlock()
+	app.publish(app.streamFrame(id, nil, working))
+	return changedResponse(200, map[string]string{"status": "ok"})
+}
+
+func (app *App) drainQueued(id string) {
+	app.mu.Lock()
+	record := app.conversations[id]
+	if record == nil || record.Conversation.AgentWorking {
+		app.mu.Unlock()
+		return
+	}
+	queued, err := parseBrowserQueue(record.Conversation.QueuedMessages)
+	if err != nil || len(queued) == 0 {
+		app.mu.Unlock()
+		return
+	}
+	next := queued[0]
+	record.Conversation.QueuedMessages = marshalBrowserQueue(queued[1:])
+	if next.Model != "" && app.agents[next.Model] != nil {
+		record.Conversation.Model = pointer(next.Model)
+	}
+	app.mu.Unlock()
+	if app.prepareTurn(id, browserQueuedText(next)) {
+		app.Continue(id)
+	}
+}
+
 // Continue starts a turn that Handle prepared. Keeping this explicit lets
 // transports acknowledge the request before a fast local model can finish.
 func (app *App) Continue(id string) bool {
@@ -554,10 +1134,8 @@ func (app *App) runTurn(ctx context.Context, id string, history []damessage.Mess
 	app.mu.RLock()
 	record := app.conversations[id]
 	selectedModel := ""
-	messageCount := 0
 	if record != nil {
 		selectedModel = pointerText(record.Conversation.Model)
-		messageCount = len(record.Messages)
 	}
 	agent := app.agents[selectedModel]
 	saver := app.saver
@@ -577,9 +1155,53 @@ func (app *App) runTurn(ctx context.Context, id string, history []damessage.Mess
 			}
 		}
 		if err == nil {
-			result, err = agent.Invoke(ctx, dagent.Input{
+			stream := agent.Stream(ctx, dagent.Input{
 				Config: dacheckpoint.Config{ThreadID: id}, Messages: input,
-			})
+			}, 64)
+			defer stream.Close()
+			projected := make(map[string]bool)
+			for {
+				event, nextErr := stream.Next(ctx)
+				if nextErr == io.EOF {
+					break
+				}
+				if nextErr != nil {
+					err = nextErr
+					break
+				}
+				switch event.Mode {
+				case dagent.EventUpdate:
+					if event.Node != "model" && event.Node != "tools" {
+						continue
+					}
+					messages, ok := event.Update[dagent.MessagesKey].([]damessage.Message)
+					if !ok {
+						continue
+					}
+					additions := app.projectRuntimeMessages(id, selectedModel, messages, projected)
+					if len(additions) > 0 {
+						app.publish(app.streamFrame(id, additions, true))
+					}
+				case dagent.EventToolProgress:
+					if event.ToolProgress != nil {
+						app.publish(map[string]any{
+							"conversation_id": id,
+							"tool_progress": map[string]any{
+								"tool_use_id": event.ToolProgress.CallID,
+								"tool_name":   event.ToolProgress.Name,
+								"output":      event.ToolProgress.Output,
+							},
+						})
+					}
+				case dagent.EventToken:
+					if event.Chunk != nil {
+						app.publishToken(id, *event.Chunk)
+					}
+				}
+			}
+			if err == nil {
+				result, err = stream.Result(ctx)
+			}
 		}
 	}
 	app.mu.Lock()
@@ -592,7 +1214,9 @@ func (app *App) runTurn(ctx context.Context, id string, history []damessage.Mess
 	record.Conversation.AgentWorking = false
 	record.Conversation.UpdatedAt = app.now().UTC().Format(time.RFC3339Nano)
 	var additions []apiMessage
-	if err != nil {
+	if err == nil {
+		record.Messages = cloneMessages(result.Messages)
+	} else if !errors.Is(err, context.Canceled) {
 		message := damessage.Assistant("Agent error: " + err.Error())
 		message.ID = newMessageID()
 		record.Messages = append(record.Messages, message)
@@ -600,20 +1224,64 @@ func (app *App) runTurn(ctx context.Context, id string, history []damessage.Mess
 		projected.Type = "error"
 		record.API = append(record.API, projected)
 		additions = append(additions, projected)
-	} else {
-		start := messageCount
-		if start > len(result.Messages) {
-			start = len(result.Messages)
-		}
-		record.Messages = cloneMessages(result.Messages)
-		for _, message := range result.Messages[start:] {
-			projected := projectMessage(id, int64(len(record.API)+1), record.Conversation.CurrentGeneration, selectedModel, message, app.now())
-			record.API = append(record.API, projected)
-			additions = append(additions, projected)
-		}
 	}
 	app.mu.Unlock()
 	app.publish(app.streamFrame(id, additions, false))
+	app.drainQueued(id)
+}
+
+func (app *App) projectRuntimeMessages(id, model string, messages []damessage.Message, seen map[string]bool) []apiMessage {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	record := app.conversations[id]
+	if record == nil {
+		return nil
+	}
+	additions := make([]apiMessage, 0, len(messages))
+	for _, message := range messages {
+		if message.Role != damessage.RoleAssistant && message.Role != damessage.RoleTool {
+			continue
+		}
+		key := message.ID
+		if key == "" {
+			key = string(message.Role) + ":" + message.ToolCallID + ":" + message.TextContent()
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		projected := projectMessage(id, int64(len(record.API)+1), record.Conversation.CurrentGeneration, model, message, app.now())
+		record.API = append(record.API, projected)
+		additions = append(additions, projected)
+	}
+	return additions
+}
+
+func (app *App) publishToken(id string, chunk damodel.Chunk) {
+	for index, block := range chunk.MessageDelta.Content {
+		blockIndex := index
+		if block.Index != nil {
+			blockIndex = *block.Index
+		}
+		delta := map[string]any{"index": blockIndex}
+		switch block.Type {
+		case damessage.BlockText:
+			if block.Text == "" {
+				continue
+			}
+			delta["type"] = "text"
+			delta["text"] = block.Text
+		case damessage.BlockReasoning:
+			if block.Reasoning == "" {
+				continue
+			}
+			delta["type"] = "thinking"
+			delta["text"] = block.Reasoning
+		default:
+			continue
+		}
+		app.publish(map[string]any{"conversation_id": id, "stream_delta": delta})
+	}
 }
 
 func (app *App) streamFrame(id string, messages []apiMessage, working bool) map[string]any {
@@ -705,6 +1373,49 @@ func (app *App) listConversations(archived bool, query string) []conversationWit
 	return items
 }
 
+func (app *App) searchConversations(query string) []conversationWithState {
+	return app.searchConversationsByArchive(query)
+}
+
+func (app *App) searchConversationsByArchive(query string, archived ...bool) []conversationWithState {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		if len(archived) > 0 {
+			return app.listConversations(archived[0], "")
+		}
+		active := app.listConversations(false, "")
+		return append(active, app.listConversations(true, "")...)
+	}
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+	items := make([]conversationWithState, 0)
+	for _, record := range app.conversations {
+		if len(archived) > 0 && record.Conversation.Archived != archived[0] {
+			continue
+		}
+		haystack := pointerText(record.Conversation.Slug) + " " + record.Conversation.Draft
+		for _, message := range record.Messages {
+			haystack += " " + message.TextContent()
+		}
+		if !strings.Contains(strings.ToLower(haystack), query) {
+			continue
+		}
+		preview := record.Conversation.Draft
+		for _, message := range record.Messages {
+			if message.Role == damessage.RoleHuman && message.TextContent() != "" {
+				preview = message.TextContent()
+				break
+			}
+		}
+		items = append(items, conversationWithState{
+			Conversation: record.Conversation, Working: record.Conversation.AgentWorking,
+			Preview: preview, MaxSequenceID: int64(len(record.API)), Participants: []string{},
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt > items[j].UpdatedAt })
+	return items
+}
+
 func (app *App) bySlug(slug string) Response {
 	app.mu.RLock()
 	defer app.mu.RUnlock()
@@ -772,13 +1483,16 @@ func (app *App) listDirectory(directory string) Response {
 		return errorResponse(400, err)
 	}
 	entries := make([]map[string]any, 0, len(listed.Entries))
+	seen := make(map[string]bool)
 	for _, entry := range listed.Entries {
 		name := strings.TrimSuffix(entry.Path, "/")
 		if index := strings.LastIndex(name, "/"); index >= 0 {
 			name = name[index+1:]
 		}
 		entries = append(entries, map[string]any{"name": name, "is_dir": entry.IsDir})
+		seen[name] = true
 	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i]["name"].(string) < entries[j]["name"].(string) })
 	parent := directory
 	if directory != workspaceRoot {
 		parent = directory[:strings.LastIndex(directory, "/")]
@@ -787,6 +1501,71 @@ func (app *App) listDirectory(directory string) Response {
 		}
 	}
 	return jsonResponse(200, map[string]any{"path": directory, "parent": parent, "entries": entries})
+}
+
+func (app *App) createDirectory(body string) Response {
+	var input struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(body), &input); err != nil {
+		return errorResponse(400, err)
+	}
+	if err := app.workspace.CreateDirectory(context.Background(), input.Path); err != nil {
+		return errorResponse(400, err)
+	}
+	return changedResponse(201, map[string]string{"path": strings.TrimSuffix(input.Path, "/")})
+}
+
+func (app *App) readFile(path string, wrapped bool) Response {
+	result, err := app.workspace.Read(context.Background(), path, 0, 8*1024*1024)
+	if err != nil || result.Data == nil {
+		if err == nil {
+			err = fmt.Errorf("file not found")
+		}
+		return errorResponse(404, err)
+	}
+	if wrapped {
+		return jsonResponse(200, map[string]string{"content": result.Data.Content})
+	}
+	raw, _ := json.Marshal(result.Data.Content)
+	return Response{Status: 200, Headers: map[string]string{"Content-Type": "text/plain; charset=utf-8"}, Body: raw}
+}
+
+func (app *App) writeFile(body string) Response {
+	var input struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(body), &input); err != nil {
+		return errorResponse(400, err)
+	}
+	if input.Path == "" || !strings.HasPrefix(input.Path, workspaceRoot+"/") {
+		return errorResponse(400, fmt.Errorf("browser file must be inside %s", workspaceRoot))
+	}
+	if _, err := app.workspace.Write(context.Background(), input.Path, input.Content); err != nil {
+		return errorResponse(400, err)
+	}
+	return changedResponse(200, map[string]string{"path": input.Path})
+}
+
+func (app *App) writeUserAgents(body string) Response {
+	var input struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(body), &input); err != nil {
+		return errorResponse(400, err)
+	}
+	if _, err := app.workspace.Write(context.Background(), workspaceRoot+"/AGENTS.md", input.Content); err != nil {
+		return errorResponse(500, err)
+	}
+	return changedResponse(200, map[string]string{"status": "saved"})
+}
+
+func bodyOrEmpty(body string) string {
+	if strings.TrimSpace(body) == "" {
+		return `{"content":""}`
+	}
+	return body
 }
 
 func (app *App) findFiles(directory, query string) Response {
@@ -1097,8 +1876,9 @@ func (app *App) uniqueModelID(modelName string) string {
 	}
 }
 
-// Snapshot returns portable JSON for IndexedDB. It stores language-neutral
-// dago messages and virtual files, never provider-private runtime objects.
+// Snapshot returns portable conversation JSON for IndexedDB. Browser-owned
+// files are persisted independently by the filesystem bridge and never form
+// one application-sized object.
 func (app *App) Snapshot() ([]byte, error) {
 	app.mu.RLock()
 	conversations := make(map[string]persistedRecord, len(app.conversations))
@@ -1110,7 +1890,12 @@ func (app *App) Snapshot() ([]byte, error) {
 		}
 	}
 	app.mu.RUnlock()
-	return json.Marshal(snapshot{Version: snapshotVersion, Conversations: conversations, Files: app.workspace.Snapshot()})
+	saved := snapshot{Version: snapshotVersion, Conversations: conversations}
+	if workspace, ok := app.workspace.(*browserWorkspace); ok {
+		saved.Files = workspace.Snapshot()
+		saved.Directories = workspace.Directories()
+	}
+	return json.Marshal(saved)
 }
 
 // Restore atomically replaces browser-local durable state.
@@ -1125,14 +1910,19 @@ func (app *App) Restore(data []byte) error {
 	if saved.Version != snapshotVersion {
 		return fmt.Errorf("unsupported browser snapshot version %d", saved.Version)
 	}
-	workspace, err := newBrowserWorkspace(saved.Files)
-	if err != nil {
-		return fmt.Errorf("restore browser workspace: %w", err)
+	if workspace, ok := app.workspace.(*browserWorkspace); ok && saved.Files != nil {
+		if err := workspace.Replace(saved.Files); err != nil {
+			return fmt.Errorf("restore browser workspace: %w", err)
+		}
+		for _, directory := range saved.Directories {
+			if err := workspace.CreateDirectory(context.Background(), directory); err != nil {
+				return fmt.Errorf("restore browser directory: %w", err)
+			}
+		}
 	}
-	backend := dabackend.Backend(workspace)
-	if app.shellExecutor != nil {
-		backend = &browserSandbox{browserWorkspace: workspace, execute: app.shellExecutor}
-	}
+	app.mu.RLock()
+	backend := app.backend
+	app.mu.RUnlock()
 	defaultAgent, err := newAgent(backend, newPredictableModel(), modelID, app.saver)
 	if err != nil {
 		return err
@@ -1177,8 +1967,6 @@ func (app *App) Restore(data []byte) error {
 			record.Cancel()
 		}
 	}
-	app.workspace = workspace
-	app.backend = backend
 	app.agents = agents
 	app.conversations = restored
 	app.mu.Unlock()
@@ -1209,7 +1997,6 @@ func newAgent(backend dabackend.Backend, model damodel.Chat, name string, saver 
 		FilesystemTools:  tools,
 		EnableTodo:       true,
 		DisableSubagents: true,
-		DisableSummary:   true,
 	})
 }
 

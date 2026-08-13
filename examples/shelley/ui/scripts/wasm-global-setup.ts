@@ -30,22 +30,44 @@ export default async function globalSetup() {
       response.end(JSON.stringify({ error: { message: "unexpected browser authorization" } }));
       return;
     }
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(
-      JSON.stringify({
-        id: `resp_browser_${Date.now()}`,
-        status: "completed",
-        output: [
-          {
-            type: "message",
-            id: `msg_browser_${Date.now()}`,
-            role: "assistant",
-            content: [{ type: "output_text", text: "direct browser response" }],
-          },
-        ],
-        usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
-      }),
-    );
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => {
+      const streaming = (JSON.parse(body) as { stream?: boolean }).stream === true;
+      if (streaming) {
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        response.write(
+          `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "direct browser response" })}\n\n`,
+        );
+        response.end(
+          `data: ${JSON.stringify({
+            type: "response.completed",
+            response: {
+              id: `resp_browser_${Date.now()}`,
+              usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+            },
+          })}\n\n`,
+        );
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          id: `resp_browser_${Date.now()}`,
+          status: "completed",
+          output: [
+            {
+              type: "message",
+              id: `msg_browser_${Date.now()}`,
+              role: "assistant",
+              content: [{ type: "output_text", text: "direct browser response" }],
+            },
+          ],
+          usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+        }),
+      );
+    });
   });
   await listen(openAIServer);
   const openAIAddress = openAIServer.address();

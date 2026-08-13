@@ -1,0 +1,27 @@
+{
+  "name": "@semistrict/dawasm-browser",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./checkpoint": "./src/checkpoint.ts",
+    "./directory-handle": "./src/directory-handle.ts",
+    "./filesystem": "./src/filesystem.ts",
+    "./indexeddb": "./src/indexeddb.ts",
+    "./just-bash": "./src/just-bash.ts",
+    "./webgpu-qwen": "./src/webgpu-qwen.ts",
+    "./esbuild": "./src/esbuild.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.2.0",
+    "fflate": "^0.8.3",
+    "just-bash": "^3.2.0"
+  },
+  "peerDependencies": {
+    "esbuild": ">=0.19.0"
+  },
+  "peerDependenciesMeta": {
+    "esbuild": {
+      "optional": true
+    }
+  }
+}

@@ -1,14 +1,6 @@
 import { appPath } from "../basePath";
-import {
-  browserDirectoryPermission,
-  browserDirectoryPickerSupported,
-  forgetBrowserDirectory,
-  loadRememberedBrowserDirectory,
-  pickBrowserDirectory,
-  rememberBrowserDirectory,
-  requestBrowserDirectoryPermission,
-} from "./browserDirectoryHandle";
-import type { BrowserDirectoryInfo } from "./browserDirectory";
+import { BrowserDirectoryHandleStore } from "@semistrict/dawasm-browser/directory-handle";
+import type { BrowserDirectoryInfo } from "@semistrict/dawasm-browser/filesystem";
 
 type PendingRequest = {
   resolve: (response: Response) => void;
@@ -53,11 +45,95 @@ const browserPredictableModelKey = "shelley_wasm_predictable_model";
 const browserOpenAIKeyStorageKey = "shelley_wasm_openai_key";
 const browserOpenAITestEndpointKey = "shelley_wasm_openai_test_endpoint";
 const browserModelBackendKey = "shelley_wasm_model_backend";
+const browserCustomModelsKey = "shelley_wasm_custom_models";
+const browserDirectoryHandles = new BrowserDirectoryHandleStore({
+  databaseName: "shelley-local-directory",
+  storeName: "handles",
+  handleKey: "workspace",
+  pickerID: "shelley-workspace",
+});
 let browserOpenAIConfigured = false;
 let browserWebGPUConfigured = false;
 let rememberedDirectoryHandle: FileSystemDirectoryHandle | null = null;
 let browserDirectoryReconnect = false;
 let connectedDirectory: BrowserDirectoryInfo | null = null;
+
+type StoredBrowserModel = Record<string, unknown> & { model_id: string; api_key: string };
+
+function storedBrowserModels(): StoredBrowserModel[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(browserCustomModelsKey) || "[]");
+    return Array.isArray(value) ? (value as StoredBrowserModel[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveBrowserModels(models: StoredBrowserModel[]): void {
+  localStorage.setItem(browserCustomModelsKey, JSON.stringify(models));
+}
+
+async function rememberBrowserModel(
+  request: Request,
+  body: string,
+  response: Response,
+): Promise<void> {
+  if (!response.ok) return;
+  const path = new URL(request.url).pathname;
+  if (!path.startsWith("/api/custom-models") || path === "/api/custom-models-test") return;
+  const models = storedBrowserModels();
+  const tail = path.slice("/api/custom-models".length).replace(/^\//, "");
+  const [encodedID, action] = tail.split("/");
+  const id = encodedID ? decodeURIComponent(encodedID) : "";
+  if (request.method === "DELETE" && id) {
+    saveBrowserModels(models.filter((model) => model.model_id !== id));
+    return;
+  }
+  const returned = (await response.clone().json()) as Record<string, unknown>;
+  const input = body ? (JSON.parse(body) as Record<string, unknown>) : {};
+  let saved: StoredBrowserModel;
+  if (action === "duplicate") {
+    const source = models.find((model) => model.model_id === id);
+    if (!source || typeof returned.model_id !== "string") return;
+    saved = { ...source, ...returned, model_id: returned.model_id, api_key: source.api_key };
+  } else if (request.method === "PUT" && id) {
+    const source = models.find((model) => model.model_id === id);
+    if (!source) return;
+    saved = {
+      ...source,
+      ...input,
+      ...returned,
+      model_id: id,
+      api_key: String(input.api_key || source.api_key),
+    };
+  } else if (request.method === "POST" && !id && typeof returned.model_id === "string") {
+    saved = {
+      ...input,
+      ...returned,
+      model_id: returned.model_id,
+      api_key: String(input.api_key || ""),
+    } as StoredBrowserModel;
+  } else {
+    return;
+  }
+  saveBrowserModels([...models.filter((model) => model.model_id !== saved.model_id), saved]);
+}
+
+async function restoreBrowserModels(): Promise<void> {
+  if (!runtime) return;
+  for (const model of storedBrowserModels()) {
+    try {
+      const response = await runtime.fetch("/api/custom-models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(model),
+      });
+      if (!response.ok) console.warn(`Failed to restore browser model ${model.model_id}`);
+    } catch (error) {
+      console.warn(`Failed to restore browser model ${model.model_id}`, error);
+    }
+  }
+}
 
 function browserOpenAIRequest(apiKey: string): { api_key: string; endpoint?: string } {
   const endpoint = sessionStorage.getItem(browserOpenAITestEndpointKey);
@@ -107,7 +183,15 @@ class WasmRuntime {
           const pending = this.pending.get(data.id);
           if (!pending) return;
           this.pending.delete(data.id);
-          const body = data.response.body === undefined ? null : JSON.stringify(data.response.body);
+          const contentType = Object.entries(data.response.headers || {}).find(
+            ([name]) => name.toLowerCase() === "content-type",
+          )?.[1];
+          const body =
+            typeof data.response.body === "string" && !contentType?.includes("application/json")
+              ? data.response.body
+              : data.response.body === undefined
+                ? null
+                : JSON.stringify(data.response.body);
           pending.resolve(
             new Response(body, {
               status: data.response.status,
@@ -173,19 +257,37 @@ class WasmRuntime {
     );
     const headers: Record<string, string> = {};
     request.headers.forEach((value, name) => (headers[name] = value));
+    const requestURL = new URL(request.url);
+    if (request.method === "POST" && requestURL.pathname === "/api/upload") {
+      const form = await request.formData();
+      const file = form.get("file");
+      if (!(file instanceof File)) {
+        this.pending.delete(id);
+        return new Response(JSON.stringify({ message: "missing file" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const bytes = await file.arrayBuffer();
+      this.worker.postMessage({ type: "upload", id, name: file.name, bytes }, [bytes]);
+      return promise;
+    }
+    const body = request.method === "GET" || request.method === "HEAD" ? "" : await request.text();
     this.worker.postMessage({
       type: "request",
       id,
       method: request.method,
       url: request.url,
       headers,
-      body: request.method === "GET" || request.method === "HEAD" ? "" : await request.text(),
+      body,
     });
     if (request.signal.aborted) {
       this.pending.delete(id);
       throw request.signal.reason ?? new DOMException("Request aborted", "AbortError");
     }
-    return promise;
+    const response = await promise;
+    await rememberBrowserModel(request, body, response);
+    return response;
   }
 
   addStream(stream: WasmEventSource): void {
@@ -308,11 +410,11 @@ export async function installWasmRuntime(): Promise<void> {
   globalThis.EventSource = WasmEventSource as unknown as typeof EventSource;
   await runtime.ready;
 
-  if (browserDirectoryPickerSupported()) {
+  if (browserDirectoryHandles.pickerSupported()) {
     try {
-      rememberedDirectoryHandle = await loadRememberedBrowserDirectory();
+      rememberedDirectoryHandle = await browserDirectoryHandles.load();
       if (rememberedDirectoryHandle) {
-        const permission = await browserDirectoryPermission(rememberedDirectoryHandle);
+        const permission = await browserDirectoryHandles.permission(rememberedDirectoryHandle);
         if (permission === "granted") {
           connectedDirectory = await runtime.connectLocalDirectory(rememberedDirectoryHandle);
         } else {
@@ -344,6 +446,8 @@ export async function installWasmRuntime(): Promise<void> {
     }
   }
 
+  await restoreBrowserModels();
+
   const selectedDirectory = localStorage.getItem("shelley_selected_cwd");
   if (selectedDirectory !== "/workspace" && !selectedDirectory?.startsWith("/workspace/")) {
     localStorage.setItem("shelley_selected_cwd", "/workspace");
@@ -364,6 +468,7 @@ export async function installWasmRuntime(): Promise<void> {
     default_cwd: "/workspace",
     home_dir: "/workspace",
     hostname: "browser",
+    user_agents_md_path: "/workspace/AGENTS.md",
     notification_channel_types: [],
     banner:
       "Browser runtime: conversations stay in this browser. Folder access is limited to directories you choose.",
@@ -384,7 +489,7 @@ export function browserOpenAIKeyRequired(): boolean {
 }
 
 export function browserLocalDirectorySupported(): boolean {
-  return browserDirectoryPickerSupported();
+  return browserDirectoryHandles.pickerSupported();
 }
 
 export function browserLocalDirectoryReconnectRequired(): boolean {
@@ -411,16 +516,16 @@ export async function connectBrowserLocalDirectory(
   if (handle && browserDirectoryReconnect) {
     // The handle is already in memory, so permission is the first awaited
     // browser operation and still carries the button click's user activation.
-    await requestBrowserDirectoryPermission(handle);
+    await browserDirectoryHandles.requestPermission(handle);
   } else {
-    handle = await pickBrowserDirectory();
+    handle = await browserDirectoryHandles.pick();
   }
   const info = await runtime.connectLocalDirectory(handle, onProgress);
   rememberedDirectoryHandle = handle;
   connectedDirectory = info;
   browserDirectoryReconnect = false;
   try {
-    await rememberBrowserDirectory(handle);
+    await browserDirectoryHandles.remember(handle);
   } catch (error) {
     console.warn("The local directory is connected but could not be remembered", error);
   }
@@ -430,7 +535,7 @@ export async function connectBrowserLocalDirectory(
 export async function useBrowserWorkspaceInstead(): Promise<void> {
   if (!runtime) throw new Error("WASM runtime is not installed");
   await runtime.disconnectLocalDirectory();
-  await forgetBrowserDirectory();
+  await browserDirectoryHandles.forget();
   rememberedDirectoryHandle = null;
   connectedDirectory = null;
   browserDirectoryReconnect = false;

@@ -82,6 +82,7 @@
         :conversations="topLevelConversations"
         :current-conversation="currentConversation || null"
         :has-cwd="commandPaletteHasCwd"
+        :supports-git="!isBrowserRuntime"
         @close="onCommandPaletteClose"
         @new-conversation="
           () => {
@@ -255,6 +256,7 @@ import PerfHud from "./components/PerfHud.vue";
 const perfHudEnabled = useFeatureFlag("performance-hud");
 
 const { t } = useI18n();
+const isBrowserRuntime = sessionStorage.getItem("shelley_runtime") === "wasm";
 
 // ---- URL/slug helpers ----
 function isGeneratedId(slug: string | null): boolean {

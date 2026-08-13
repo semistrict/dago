@@ -1,4 +1,5 @@
-package browserapp
+// Package checkpoint implements browser persistence for graph checkpoints.
+package checkpoint
 
 import (
 	"context"

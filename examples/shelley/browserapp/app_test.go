@@ -58,7 +58,9 @@ func TestBrowserAppRunsDagoTurnAndPublishesOrderedMessages(t *testing.T) {
 			if err := json.Unmarshal(raw, &frame); err != nil {
 				t.Fatal(err)
 			}
-			frames = append(frames, frame)
+			if frame.ConversationState != nil {
+				frames = append(frames, frame)
+			}
 			if frame.ConversationState != nil && !frame.ConversationState.Working {
 				goto complete
 			}
@@ -68,8 +70,8 @@ func TestBrowserAppRunsDagoTurnAndPublishesOrderedMessages(t *testing.T) {
 	}
 
 complete:
-	if len(frames) != 2 {
-		t.Fatalf("event count = %d, want 2", len(frames))
+	if len(frames) != 3 {
+		t.Fatalf("stateful event count = %d, want 3", len(frames))
 	}
 	if frames[0].ConversationID != created.ConversationID || len(frames[0].Messages) != 1 || frames[0].Messages[0].Type != "user" {
 		t.Fatalf("first frame = %#v", frames[0])
@@ -88,6 +90,228 @@ complete:
 	}
 	if len(projected.Content) != 1 || projected.Content[0].Type != int(2) || projected.Content[0].Text != "Well, hi there!" {
 		t.Fatalf("assistant projection = %#v", projected)
+	}
+}
+
+func TestBrowserAppStreamsToolUseResultAndFinalAnswer(t *testing.T) {
+	app, err := newApp(nil, dacheckpoint.NewMemorySaver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan json.RawMessage, 16)
+	app.SetEventSink(func(event json.RawMessage) { events <- append(json.RawMessage(nil), event...) })
+	response := app.Handle(Request{
+		Method: "POST", URL: "/api/conversations/new",
+		Body: `{"message":"tool: write_file {\"file_path\":\"/workspace/tool.txt\",\"content\":\"visible\"}"}`,
+	})
+	if !app.Continue(response.ContinueConversation) {
+		t.Fatal("prepared tool turn did not continue")
+	}
+	waitForCompletedFrame(t, events)
+
+	var loaded struct {
+		Messages []apiMessage `json:"messages"`
+	}
+	conversationID := response.ContinueConversation
+	got := app.Handle(Request{Method: "GET", URL: "/api/conversation/" + conversationID})
+	if err := json.Unmarshal(got.Body, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 4 {
+		t.Fatalf("tool turn message count = %d, want 4: %#v", len(loaded.Messages), loaded.Messages)
+	}
+	wantTypes := []string{"user", "agent", "tool", "agent"}
+	for index, want := range wantTypes {
+		if loaded.Messages[index].Type != want {
+			t.Fatalf("message %d type = %q, want %q", index, loaded.Messages[index].Type, want)
+		}
+	}
+	if !strings.Contains(*loaded.Messages[1].LLMData, `"ToolName":"write_file"`) {
+		t.Fatalf("tool-use projection = %s", *loaded.Messages[1].LLMData)
+	}
+	if !strings.Contains(*loaded.Messages[2].LLMData, `"ToolUseID"`) {
+		t.Fatalf("tool-result projection = %s", *loaded.Messages[2].LLMData)
+	}
+}
+
+func TestBrowserConversationLifecycleWorksLocally(t *testing.T) {
+	app, err := newApp(nil, dacheckpoint.NewMemorySaver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan json.RawMessage, 64)
+	app.SetEventSink(func(event json.RawMessage) { events <- append(json.RawMessage(nil), event...) })
+	created := app.Handle(Request{Method: "POST", URL: "/api/conversations/new", Body: `{"message":"hello"}`})
+	if created.Status != http.StatusAccepted || !app.Continue(created.ContinueConversation) {
+		t.Fatalf("create response = %#v", created)
+	}
+	waitForCompletedFrame(t, events)
+
+	forkedResponse := app.Handle(Request{
+		Method: "POST", URL: "/api/conversation/" + created.ContinueConversation + "/fork",
+		Body: `{"sequence_id":2}`,
+	})
+	if forkedResponse.Status != http.StatusCreated {
+		t.Fatalf("fork response = %#v", forkedResponse)
+	}
+	var forked Conversation
+	if err := json.Unmarshal(forkedResponse.Body, &forked); err != nil {
+		t.Fatal(err)
+	}
+	if forked.ConversationID == created.ContinueConversation || forked.ParentConversationID != nil {
+		t.Fatalf("forked conversation = %#v", forked)
+	}
+	forkedTurn := app.Handle(Request{
+		Method: "POST", URL: "/api/conversation/" + forked.ConversationID + "/chat",
+		Body: `{"message":"echo: fork continued"}`,
+	})
+	if !app.Continue(forkedTurn.ContinueConversation) {
+		t.Fatal("forked turn did not continue")
+	}
+	waitForCompletedFrame(t, events)
+
+	newGeneration := app.Handle(Request{
+		Method: "POST", URL: "/api/conversation/" + created.ContinueConversation + "/new-generation",
+	})
+	if newGeneration.Status != http.StatusOK {
+		t.Fatalf("new generation response = %#v", newGeneration)
+	}
+	var generation Conversation
+	if err := json.Unmarshal(newGeneration.Body, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if generation.CurrentGeneration != 2 {
+		t.Fatalf("current generation = %d, want 2", generation.CurrentGeneration)
+	}
+	waitForCompletedFrame(t, events)
+	secondGeneration := app.Handle(Request{
+		Method: "POST", URL: "/api/conversation/" + created.ContinueConversation + "/chat",
+		Body: `{"message":"echo: clean context"}`,
+	})
+	if !app.Continue(secondGeneration.ContinueConversation) {
+		t.Fatal("second generation did not continue")
+	}
+	waitForCompletedFrame(t, events)
+
+	loaded := app.Handle(Request{Method: "GET", URL: "/api/conversation/" + created.ContinueConversation})
+	var history struct {
+		Messages []apiMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(loaded.Body, &history); err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Messages) != 4 || history.Messages[2].Generation != 2 || history.Messages[3].Generation != 2 {
+		t.Fatalf("generation history = %#v", history.Messages)
+	}
+}
+
+func TestBrowserDraftSearchQueueAndRetryWorkLocally(t *testing.T) {
+	app, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftResponse := app.Handle(Request{
+		Method: "POST", URL: "/api/conversations/draft",
+		Body: `{"draft":"initial words","model":"browser-predictable","cwd":"/workspace"}`,
+	})
+	var draft Conversation
+	if err := json.Unmarshal(draftResponse.Body, &draft); err != nil {
+		t.Fatal(err)
+	}
+	updated := app.Handle(Request{
+		Method: "PUT", URL: "/api/conversation/" + draft.ConversationID + "/draft",
+		Body: `{"draft":"durable needle"}`,
+	})
+	if updated.Status != http.StatusOK {
+		t.Fatalf("draft update = %#v", updated)
+	}
+	search := app.Handle(Request{Method: "GET", URL: "/api/conversations/search?q=needle"})
+	var results []conversationWithState
+	if err := json.Unmarshal(search.Body, &results); err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ConversationID != draft.ConversationID {
+		t.Fatalf("search results = %#v", results)
+	}
+
+	events := make(chan json.RawMessage, 64)
+	app.SetEventSink(func(event json.RawMessage) { events <- append(json.RawMessage(nil), event...) })
+	created := app.Handle(Request{
+		Method: "POST", URL: "/api/conversations/new", Body: `{"message":"delay: 100ms"}`,
+	})
+	if !app.Continue(created.ContinueConversation) {
+		t.Fatal("delayed turn did not continue")
+	}
+	queued := app.Handle(Request{
+		Method: "POST", URL: "/api/conversation/" + created.ContinueConversation + "/chat",
+		Body: `{"message":"echo: queued turn","queue":true}`,
+	})
+	if queued.Status != http.StatusAccepted || !strings.Contains(string(queued.Body), "queued") {
+		t.Fatalf("queue response = %#v", queued)
+	}
+	waitForCompletedFrame(t, events)
+	waitForCompletedFrame(t, events)
+	loaded := app.Handle(Request{Method: "GET", URL: "/api/conversation/" + created.ContinueConversation})
+	if !strings.Contains(string(loaded.Body), "queued turn") {
+		t.Fatalf("queued turn history = %s", loaded.Body)
+	}
+
+	failed := app.Handle(Request{Method: "POST", URL: "/api/conversations/new", Body: `{"message":"error: retry me"}`})
+	if !app.Continue(failed.ContinueConversation) {
+		t.Fatal("failing turn did not continue")
+	}
+	waitForCompletedFrame(t, events)
+	retry := app.Handle(Request{Method: "POST", URL: "/api/conversation/" + failed.ContinueConversation + "/retry"})
+	if retry.Status != http.StatusAccepted || !app.Continue(retry.ContinueConversation) {
+		t.Fatalf("retry response = %#v", retry)
+	}
+	waitForCompletedFrame(t, events)
+
+	cancelled := app.Handle(Request{Method: "POST", URL: "/api/conversations/new", Body: `{"message":"delay: 1s"}`})
+	if !app.Continue(cancelled.ContinueConversation) {
+		t.Fatal("cancellable turn did not continue")
+	}
+	app.Handle(Request{Method: "POST", URL: "/api/conversation/" + cancelled.ContinueConversation + "/cancel"})
+	waitForCompletedFrame(t, events)
+	cancelledHistory := app.Handle(Request{Method: "GET", URL: "/api/conversation/" + cancelled.ContinueConversation})
+	if strings.Contains(string(cancelledHistory.Body), "Agent error:") {
+		t.Fatalf("cancelled turn was projected as an error: %s", cancelledHistory.Body)
+	}
+}
+
+func TestBrowserFileAPIsPersistFilesAndEmptyDirectories(t *testing.T) {
+	app, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := app.Handle(Request{Method: "POST", URL: "/api/create-directory", Body: `{"path":"/workspace/empty"}`})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("create directory = %#v", created)
+	}
+	written := app.Handle(Request{
+		Method: "POST", URL: "/api/write-file", Body: `{"path":"/workspace/notes/plan.txt","content":"browser plan"}`,
+	})
+	if written.Status != http.StatusOK {
+		t.Fatalf("write file = %#v", written)
+	}
+	read := app.Handle(Request{Method: "GET", URL: "/api/read-file?path=%2Fworkspace%2Fnotes%2Fplan.txt"})
+	if read.Status != http.StatusOK || !strings.Contains(string(read.Body), "browser plan") {
+		t.Fatalf("read file = %#v", read)
+	}
+	snapshot, err := app.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Restore(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	listed := restored.Handle(Request{Method: "GET", URL: "/api/list-directory?path=%2Fworkspace"})
+	if !strings.Contains(string(listed.Body), `"name":"empty"`) || !strings.Contains(string(listed.Body), `"name":"notes"`) {
+		t.Fatalf("restored directory listing = %s", listed.Body)
 	}
 }
 
@@ -279,7 +503,7 @@ func TestBrowserCapabilitiesDoNotPretendHostFeaturesExist(t *testing.T) {
 	if err := json.Unmarshal(response.Body, &capabilities); err != nil {
 		t.Fatal(err)
 	}
-	if capabilities.Runtime != "wasm" || !contains(capabilities.Unavailable, "shell") || !contains(capabilities.Unavailable, "host_filesystem") {
+	if capabilities.Runtime != "wasm" || !contains(capabilities.Unavailable, "host_processes") || !contains(capabilities.Unavailable, "unrestricted_host_filesystem") {
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
 	unsupported := app.Handle(Request{Method: "GET", URL: "/api/git/diffs"})
@@ -413,45 +637,22 @@ func TestConfigureWebGPUModelAddsLocalDefaultWithoutPersistingModelState(t *test
 	}
 }
 
-func TestReplaceWorkspaceRefreshesFilesWithoutReplacingAgentState(t *testing.T) {
-	app, err := New()
+func TestBrowserShellExecutesAgainstAndUpdatesDurableWorkspace(t *testing.T) {
+	workspace, err := newBrowserWorkspace(map[string]dabackend.FileData{
+		workspaceRoot + "/README.md": {Content: "browser workspace", Encoding: dabackend.EncodingUTF8},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.ReplaceWorkspace(map[string]dabackend.FileData{
-		workspaceRoot + "/main.go": {Content: "package main\n", Encoding: dabackend.EncodingUTF8},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := app.workspace.Read(context.Background(), workspaceRoot+"/README.md", 0, 10); err == nil {
-		t.Fatal("replaced workspace retained the previous README")
-	}
-	read, err := app.workspace.Read(context.Background(), workspaceRoot+"/main.go", 0, 10)
-	if err != nil || read.Data == nil || read.Data.Content != "package main\n" {
-		t.Fatalf("replacement file = %#v, %v", read, err)
-	}
-	if app.agents[modelID] == nil {
-		t.Fatal("workspace replacement removed the configured agent")
-	}
-	if err := app.ReplaceWorkspace(map[string]dabackend.FileData{
-		"/outside.txt": {Content: "no", Encoding: dabackend.EncodingUTF8},
-	}); err == nil {
-		t.Fatal("workspace replacement accepted a path outside /workspace")
-	}
-}
-
-func TestBrowserShellExecutesAgainstAndUpdatesDurableWorkspace(t *testing.T) {
-	app, err := NewWithShell(func(_ context.Context, request ShellRequest) (ShellResponse, error) {
-		if request.Cwd != workspaceRoot || request.Files[workspaceRoot+"/README.md"].Content == "" {
-			return ShellResponse{}, fmt.Errorf("shell did not receive browser workspace: %#v", request)
+	app, err := newAppWithWorkspace(workspace, func(ctx context.Context, request ShellRequest) (ShellResponse, error) {
+		if request.Cwd != workspaceRoot {
+			return ShellResponse{}, fmt.Errorf("shell cwd = %q", request.Cwd)
 		}
-		files := make(map[string]dabackend.FileData, len(request.Files)+1)
-		for path, file := range request.Files {
-			files[path] = file
+		if _, err := workspace.Write(ctx, workspaceRoot+"/shell.txt", "from just-bash\n"); err != nil {
+			return ShellResponse{}, err
 		}
-		files[workspaceRoot+"/shell.txt"] = dabackend.FileData{Content: "from just-bash\n", Encoding: dabackend.EncodingUTF8}
-		return ShellResponse{Stdout: "from just-bash\n", ExitCode: 0, Files: files}, nil
-	})
+		return ShellResponse{Stdout: "from just-bash\n", ExitCode: 0}, nil
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,19 +678,58 @@ func TestBrowserShellExecutesAgainstAndUpdatesDurableWorkspace(t *testing.T) {
 	}
 }
 
+type independentlyPersistedWorkspace struct {
+	*browserWorkspace
+}
+
+func TestBrowserOwnedWorkspaceFilesStayOutOfApplicationSnapshot(t *testing.T) {
+	memory, err := newBrowserWorkspace(map[string]dabackend.FileData{
+		workspaceRoot + "/project.txt": {Content: "selected directory contents", Encoding: dabackend.EncodingUTF8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := &independentlyPersistedWorkspace{browserWorkspace: memory}
+	app, err := newAppWithWorkspace(workspace, func(ctx context.Context, request ShellRequest) (ShellResponse, error) {
+		if request.Cwd != workspaceRoot {
+			return ShellResponse{}, fmt.Errorf("shell cwd = %q", request.Cwd)
+		}
+		if _, err := workspace.Write(ctx, workspaceRoot+"/shell.txt", "shared"); err != nil {
+			return ShellResponse{}, err
+		}
+		return ShellResponse{}, nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := app.Handle(Request{Method: "POST", URL: "/api/browser-shell", Body: `{"command":"touch shell.txt"}`})
+	if response.Status != http.StatusOK {
+		t.Fatalf("browser shell response = %#v", response)
+	}
+	saved, err := app.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "selected directory contents") || strings.Contains(string(saved), "shared") || strings.Contains(string(saved), `"files"`) {
+		t.Fatalf("independently persisted workspace leaked into application snapshot: %s", saved)
+	}
+}
+
 func TestBrowserShellDoesNotBlockSnapshotsAndPreservesConcurrentFileChanges(t *testing.T) {
 	started := make(chan ShellRequest, 1)
 	release := make(chan struct{})
-	app, err := NewWithShell(func(_ context.Context, request ShellRequest) (ShellResponse, error) {
+	workspace, err := newBrowserWorkspace(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := newAppWithWorkspace(workspace, func(ctx context.Context, request ShellRequest) (ShellResponse, error) {
 		started <- request
 		<-release
-		files := make(map[string]dabackend.FileData, len(request.Files)+1)
-		for path, file := range request.Files {
-			files[path] = file
+		if _, err := workspace.Write(ctx, workspaceRoot+"/shell.txt", "shell"); err != nil {
+			return ShellResponse{}, err
 		}
-		files[workspaceRoot+"/shell.txt"] = dabackend.FileData{Content: "shell", Encoding: dabackend.EncodingUTF8}
-		return ShellResponse{Files: files}, nil
-	})
+		return ShellResponse{}, nil
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

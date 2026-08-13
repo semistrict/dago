@@ -1,5 +1,5 @@
-// just-bash 3.2's advertised browser bundle still imports node:zlib. Keep that
-// Node-only module out of Shelley and provide its browser-native equivalents.
+// just-bash 3.2's browser bundle imports node:zlib. These browser-native
+// implementations keep Node-only code out of browser workers.
 export { gzipSync, gunzipSync } from "fflate";
 
 export const constants = {
