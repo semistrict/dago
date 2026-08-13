@@ -73,7 +73,7 @@ func TestProfileAppliesPromptAndToolOverride(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled := dago.New(script, dago.Options{Profiles: []dago.Profile{profile}, DisableSubagents: true, DisableSummary: true})
+	compiled := dago.NewAgent(script, dago.WithProfiles(profile), dago.WithoutSubagents(), dago.WithoutSummary())
 
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("hello")}}); err != nil {
 		t.Fatal(err)

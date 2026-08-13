@@ -55,12 +55,7 @@ func TestAgentInterpreterPersistsCheckpointedStateAcrossInvocations(t *testing.T
 			Response: damodel.Response{Message: damessage.Assistant("second done")},
 		},
 	)
-	agent := New(script, Options{
-		Interpreter:      Interpreter{Enabled: true, PTC: []string{}},
-		Saver:            dacheckpoint.NewMemorySaver(),
-		DisableSubagents: true,
-		DisableSummary:   true,
-	})
+	agent := NewAgent(script, WithInterpreter(Interpreter{PTC: []string{}}), WithSaver(dacheckpoint.NewMemorySaver()), WithoutSubagents(), WithoutSummary())
 	config := dacheckpoint.Config{ThreadID: "interpreter-checkpoint"}
 	if _, err := agent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("first")}}); err != nil {
 		t.Fatal(err)
@@ -98,11 +93,7 @@ func TestAgentInterpreterCallsSubagentThroughPTC(t *testing.T) {
 			Response: damodel.Response{Message: damessage.Assistant("parent done")},
 		},
 	)
-	agent := New(parentModel, Options{
-		Interpreter:    Interpreter{Enabled: true, PTC: []string{"task"}},
-		Subagents:      []Subagent{{Name: "special", Description: "Specialized", Runnable: child}},
-		DisableSummary: true,
-	})
+	agent := NewAgent(parentModel, WithInterpreter(Interpreter{PTC: []string{"task"}}), WithSubagents(NewRunnableSubagent("special", "Specialized", child)), WithoutSummary())
 	result, err := agent.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("delegate")}})
 	if err != nil {
 		t.Fatal(err)
@@ -155,12 +146,7 @@ func assertInterpreterSaverRoundTrip(t *testing.T, saver dacheckpoint.Saver, thr
 			Response: damodel.Response{Message: damessage.Assistant("restored")},
 		},
 	)
-	agent := New(script, Options{
-		Interpreter:      Interpreter{Enabled: true, PTC: []string{}},
-		Saver:            saver,
-		DisableSubagents: true,
-		DisableSummary:   true,
-	})
+	agent := NewAgent(script, WithInterpreter(Interpreter{PTC: []string{}}), WithSaver(saver), WithoutSubagents(), WithoutSummary())
 	config := dacheckpoint.Config{ThreadID: thread}
 	if _, err := agent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("save")}}); err != nil {
 		t.Fatal(err)

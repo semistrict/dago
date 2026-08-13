@@ -16,7 +16,7 @@ func main() {
 	chat := modeltest.New(damodel.Profile{}, modeltest.Step{
 		Response: damodel.Response{Message: damessage.Assistant("The scripted deep agent is ready.")},
 	})
-	compiled := dago.New(chat, dago.Options{DisableSubagents: true, DisableSummary: true})
+	compiled := dago.NewAgent(chat, dago.WithoutSubagents(), dago.WithoutSummary())
 	result, err := compiled.Invoke(context.Background(), dagent.Input{
 		Messages: []damessage.Message{damessage.Human("Introduce yourself.")},
 	})

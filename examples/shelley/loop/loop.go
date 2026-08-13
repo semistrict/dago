@@ -391,40 +391,42 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			}
 			dagoTools = append(dagoTools, aliases...)
 		}
-		options := dago.Options{
-			Name:       "Shelley",
-			Tools:      dagoTools,
-			Middleware: []dagent.Middleware{l.runtimeMiddleware(harnessBackend)},
-			Backend:    harnessBackend,
-			Saver:      l.saver, RetainThreadState: true, MaxConcurrency: 1, FailOnToolError: false,
-			StateFields: map[string]dagent.StateField{
+		agentOptions := []dago.Option{
+			dago.WithName("Shelley"),
+			dago.WithTools(dagoTools...),
+			dago.WithMiddleware(l.runtimeMiddleware(harnessBackend)),
+			dago.WithBackend(harnessBackend),
+			dago.WithSaver(l.saver),
+			dago.WithRetainedThreadState(),
+			dago.WithMaxConcurrency(1),
+			dago.WithStateFields(map[string]dagent.StateField{
 				"shelley.run": {Kind: dagent.FieldEphemeral, Contract: "shelley.run.v1", Clone: func(value any) any { return value }},
-			},
+			}),
 		}
 		if prompt := runtimeSystemPrompt(system); prompt != "" {
-			options.SystemMessage = dmessage.System(prompt)
+			agentOptions = append(agentOptions, dago.WithSystemMessage(dmessage.System(prompt)))
 		}
+		filesystem := dago.Filesystem{}
 		if l.filesystemTools == nil {
 			// A nil selection is the embedding form used by direct callers that
 			// provide their complete tool surface. It still runs through dago, but
 			// does not opt into dago's default harness tools or prompts.
-			options.Filesystem.Tools = []string{}
-			options.DisableSubagents = true
-			options.DisableSummary = true
+			filesystem.Tools = []string{}
+			agentOptions = append(agentOptions, dago.WithoutSubagents(), dago.WithoutSummary())
 		} else {
-			options.Filesystem.Tools = cloneFilesystemTools(l.filesystemTools)
-			options.Skills.Catalog = cloneSkillCatalog(l.skillCatalog)
-			options.Skills.Activate = l.skillActivation
-			options.Memory.Sources = append([]string(nil), l.memory...)
-			options.Memory.Contents = cloneStringMap(l.memoryContents)
+			filesystem.Tools = cloneFilesystemTools(l.filesystemTools)
+			skills := dago.Skills{Catalog: cloneSkillCatalog(l.skillCatalog), Activate: l.skillActivation}
+			memory := dago.Memory{Sources: append([]string(nil), l.memory...), Contents: cloneStringMap(l.memoryContents)}
 			if l.memoryPrompt != nil {
-				options.Memory.SystemPrompt = dago.PromptTemplate{Mode: dago.PromptCustom, Text: *l.memoryPrompt}
+				memory.SystemPrompt = dago.PromptTemplate{Mode: dago.PromptCustom, Text: *l.memoryPrompt}
 			}
+			agentOptions = append(agentOptions, dago.WithSkills(skills), dago.WithMemory(memory))
 			// Shelley uses dago's conversation-subagent tool so child runs retain
 			// their application-level UI and persistence contracts.
-			options.DisableSubagents = true
+			agentOptions = append(agentOptions, dago.WithoutSubagents())
 		}
-		l.runtime = dago.New(model, options)
+		agentOptions = append(agentOptions, dago.WithFilesystem(filesystem))
+		l.runtime = dago.NewAgent(model, agentOptions...)
 	}
 	runtime := l.runtime
 
@@ -546,9 +548,13 @@ func predictableFilesystemAliases(model damodel.Chat, files dbackend.Backend, se
 		return nil, nil
 	}
 	middlewareTools := append([]string{"read_file"}, wanted...)
-	compiled := dago.New(model, dago.Options{
-		Backend: files, Filesystem: dago.Filesystem{Tools: middlewareTools}, DisableSubagents: true, DisableSummary: true,
-	})
+	compiled := dago.NewAgent(
+		model,
+		dago.WithBackend(files),
+		dago.WithFilesystem(dago.Filesystem{Tools: middlewareTools}),
+		dago.WithoutSubagents(),
+		dago.WithoutSummary(),
+	)
 	tools := compiled.Tools()
 	byName := make(map[string]datool.Tool, len(tools))
 	for _, item := range tools {

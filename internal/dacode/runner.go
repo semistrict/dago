@@ -244,14 +244,22 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 	systemText += guidanceSummary
 	system := damessage.System(systemText)
 	goalOptions := dagoal.Options{}
-	agent := dago.New(model, dago.Options{
-		Name: "dacode", SystemMessage: system, Backend: backend,
-		Tools:      options.Tools,
-		Filesystem: filesystem, Skills: dago.Skills{Sources: skillSources}, Memory: memory,
-		EnableTodo: true, Middleware: []dagent.Middleware{dagoal.Middleware(goalOptions)},
-		InterruptOn: interruptOn, Saver: saver, RetainThreadState: true,
-		StateFields: sessionStateFields(),
-	})
+	agent := dago.NewAgent(
+		model,
+		dago.WithName("dacode"),
+		dago.WithSystemMessage(system),
+		dago.WithBackend(backend),
+		dago.WithTools(options.Tools...),
+		dago.WithFilesystem(filesystem),
+		dago.WithSkills(dago.Skills{Sources: skillSources}),
+		dago.WithMemory(memory),
+		dago.WithTodo(),
+		dago.WithMiddleware(dagoal.Middleware(goalOptions)),
+		dago.WithApprovalRules(interruptOn...),
+		dago.WithSaver(saver),
+		dago.WithRetainedThreadState(),
+		dago.WithStateFields(sessionStateFields()),
+	)
 	runner := &dagoRunner{
 		agent: agent, saver: saver, database: database, workingDir: options.WorkingDir,
 		goals: dagoal.NewService(agent, goalOptions),

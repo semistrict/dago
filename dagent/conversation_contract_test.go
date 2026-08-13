@@ -399,13 +399,13 @@ func TestDepthAdditional(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "inner", Name: "task", Arguments: json.RawMessage(`{"description":"deep work","subagent_type":"deep"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child done")}},
 	)
-	child := dago.New(childModel, dago.Options{Subagents: []dago.Subagent{{Name: "deep", Description: "Deep worker", Runnable: grandchild}}, DisableSummary: true})
+	child := dago.NewAgent(childModel, dago.WithSubagents(dago.NewRunnableSubagent("deep", "Deep worker", grandchild)), dago.WithoutSummary())
 
 	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "outer", Name: "task", Arguments: json.RawMessage(`{"description":"child work","subagent_type":"child"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent done")}},
 	)
-	parent := dago.New(parentModel, dago.Options{Subagents: []dago.Subagent{{Name: "child", Description: "Child worker", Runnable: child}}, DisableSummary: true})
+	parent := dago.NewAgent(parentModel, dago.WithSubagents(dago.NewRunnableSubagent("child", "Child worker", child)), dago.WithoutSummary())
 
 	result, err := parent.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("delegate twice")}})
 	if err != nil {

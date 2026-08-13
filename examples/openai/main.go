@@ -28,7 +28,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	compiled := dago.New(chat, dago.Options{Backend: workspace})
+	compiled := dago.NewAgent(chat, dago.WithBackend(workspace))
 	stream := compiled.Stream(context.Background(), dagent.Input{
 		Messages: []damessage.Message{damessage.Human("Summarize this workspace.")},
 	})

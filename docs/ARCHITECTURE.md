@@ -14,9 +14,14 @@ public use case; public consumers use `dagent.Agent`.
 Public construction follows one rule: a constructor exists only when it establishes
 an invariant or compiles configuration into behavior. Passive configuration is an
 exported value. Agent-owned facilities such as `Filesystem`, `Skills`, `Memory`, and
-`Summarization` are nested on `dago.Options`; `dago.New` binds them to the agent model
-and backend. Mandatory static dependencies are positional constructor parameters,
-option zero values select useful defaults, and static programmer mistakes panic.
+`Summarization` are configured through `dago.Option` values; `dago.NewAgent` binds
+them to the agent model and backend. Mandatory static dependencies are positional
+constructor parameters, omitted options select useful defaults, and static programmer
+mistakes panic.
+`dago.NewSubagent` accepts the exact same `dago.Option` values so option slices can
+be shared between top-level and delegated agents. `dago.NewRunnableSubagent` is a
+separate boundary for already compiled graphs: construction options cannot alter a
+graph after compilation, so that constructor accepts only delegation options.
 Errors are reserved for external configuration, model or tool input, I/O, remote
 operations, and runtime execution where the caller can make a meaningful decision.
 

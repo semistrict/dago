@@ -46,9 +46,6 @@ type interpreterInput struct {
 }
 
 func newInterpreter(options Interpreter) (dagent.Middleware, error) {
-	if !options.Enabled {
-		return dagent.Middleware{}, nil
-	}
 	if options.ToolName == "" {
 		options.ToolName = "js_eval"
 	}

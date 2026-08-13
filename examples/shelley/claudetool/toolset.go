@@ -339,9 +339,13 @@ func dagoFilesystemDefinitions(root string, names []string) []datool.Definition 
 	if err != nil {
 		return nil
 	}
-	compiled := dago.New(filesystemSchemaModel{}, dago.Options{
-		Backend: files, Filesystem: dago.Filesystem{Tools: names}, DisableSubagents: true, DisableSummary: true,
-	})
+	compiled := dago.NewAgent(
+		filesystemSchemaModel{},
+		dago.WithBackend(files),
+		dago.WithFilesystem(dago.Filesystem{Tools: names}),
+		dago.WithoutSubagents(),
+		dago.WithoutSummary(),
+	)
 	tools := compiled.Tools()
 	byName := make(map[string]datool.Definition, len(tools))
 	for _, executable := range tools {

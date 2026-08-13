@@ -46,11 +46,9 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstAgent := New(
-		firstModel, Options{
-			Saver: firstSaver, Filesystem: Filesystem{HumanMessageTokenLimit: limit},
-			DisableSubagents: true, DisableSummary: true,
-		})
+	firstAgent := NewAgent(
+		firstModel, WithSaver(firstSaver), WithFilesystem(Filesystem{HumanMessageTokenLimit: limit}), WithoutSubagents(), WithoutSummary(),
+	)
 	config := dacheckpoint.Config{ThreadID: "human-eviction"}
 	first, err := firstAgent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{{
 		Role: damessage.RoleHuman,
@@ -98,11 +96,9 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 		t.Fatal(err)
 	}
 	defer secondSaver.Close()
-	secondAgent := New(
-		secondModel, Options{
-			Saver: secondSaver, Filesystem: Filesystem{HumanMessageTokenLimit: limit},
-			DisableSubagents: true, DisableSummary: true,
-		})
+	secondAgent := NewAgent(
+		secondModel, WithSaver(secondSaver), WithFilesystem(Filesystem{HumanMessageTokenLimit: limit}), WithoutSubagents(), WithoutSummary(),
+	)
 	second, err := secondAgent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("continue")}})
 	if err != nil {
 		t.Fatal(err)

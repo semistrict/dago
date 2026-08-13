@@ -1978,16 +1978,19 @@ func newAgent(backend dabackend.Backend, model damodel.Chat, name string, saver 
 	if dabackend.CapabilitiesOf(backend).Execute {
 		tools = append(tools, "execute")
 	}
-	return dago.New(model, dago.Options{
-		Name:             "shelley-browser-" + name,
-		Backend:          backend,
-		Saver:            saver,
-		Filesystem:       dago.Filesystem{Tools: tools},
-		Interpreter:      dago.Interpreter{Enabled: browserInterpreterEnabled},
-		EnableTodo:       true,
-		DisableSubagents: true,
-		DisableSummary:   true,
-	}), nil
+	options := []dago.Option{
+		dago.WithName("shelley-browser-" + name),
+		dago.WithBackend(backend),
+		dago.WithSaver(saver),
+		dago.WithFilesystem(dago.Filesystem{Tools: tools}),
+		dago.WithTodo(),
+		dago.WithoutSubagents(),
+		dago.WithoutSummary(),
+	}
+	if browserInterpreterEnabled {
+		options = append(options, dago.WithInterpreter(dago.Interpreter{}))
+	}
+	return dago.NewAgent(model, options...), nil
 }
 
 // uniqueIDModel prevents a fresh WASM instance from reusing deterministic

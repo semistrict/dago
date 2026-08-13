@@ -25,7 +25,6 @@ import (
 
 func prepareInterpreterTest(t *testing.T, options Interpreter, thread string, tools ...datool.Tool) (dagent.Middleware, datool.Tool, string) {
 	t.Helper()
-	options.Enabled = true
 	middleware, err := newInterpreter(options)
 	if err != nil {
 		t.Fatal(err)
@@ -95,11 +94,11 @@ func TestInterpreterRegistersCustomToolAndRendersPTCPrompt(t *testing.T) {
 
 func TestInterpreterRejectsInvalidLimits(t *testing.T) {
 	tests := []Interpreter{
-		{Enabled: true, Timeout: -time.Second},
-		{Enabled: true, MaxStdoutChars: -1},
-		{Enabled: true, MaxResultChars: -1},
-		{Enabled: true, MaxSnapshotBytes: -1},
-		{Enabled: true, MaxPTCCalls: -1},
+		{Timeout: -time.Second},
+		{MaxStdoutChars: -1},
+		{MaxResultChars: -1},
+		{MaxSnapshotBytes: -1},
+		{MaxPTCCalls: -1},
 	}
 	for _, options := range tests {
 		if _, err := newInterpreter(options); err == nil {

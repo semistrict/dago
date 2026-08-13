@@ -4,9 +4,8 @@ import "time"
 
 // Interpreter configures the agent-owned JavaScript code interpreter. Normal
 // Go builds host an isolated QuickJS-ng WASM instance in Wazero. TinyGo builds
-// exclude that implementation and reject configurations that enable it.
+// exclude that implementation and reject WithInterpreter configurations.
 type Interpreter struct {
-	Enabled          bool
 	ToolName         string
 	Timeout          time.Duration
 	MemoryLimit      uint64

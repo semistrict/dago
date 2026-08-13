@@ -8,7 +8,7 @@ import (
 )
 
 func TestTinyGoInterpreterIsUnavailable(t *testing.T) {
-	_, err := newInterpreter(Interpreter{Enabled: true})
+	_, err := newInterpreter(Interpreter{})
 	if err == nil || !strings.Contains(err.Error(), "unavailable in TinyGo builds") {
 		t.Fatalf("newInterpreter error = %v", err)
 	}

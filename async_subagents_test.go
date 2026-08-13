@@ -68,12 +68,9 @@ func TestAsyncSubagentTaskStatePersistsAcrossAgentTurns(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("checked")}},
 	)
-	compiled := New(
-		script, Options{
-			Saver: dacheckpoint.NewMemorySaver(), DisableSubagents: true, DisableSummary: true, Filesystem: Filesystem{Tools: []string{}},
-			AsyncSubagents:      []AsyncSubagent{{Name: "researcher", Description: "Researches topics", GraphID: "research", Runner: runner}},
-			AsyncSubagentPrompt: "background guidance",
-		})
+	compiled := NewAgent(
+		script, WithSaver(dacheckpoint.NewMemorySaver()), WithoutSubagents(), WithoutSummary(), WithFilesystem(Filesystem{Tools: []string{}}), WithAsyncSubagents(AsyncSubagent{Name: "researcher", Description: "Researches topics", GraphID: "research", Runner: runner}), WithAsyncSubagentPrompt("background guidance"),
+	)
 
 	config := dacheckpoint.Config{ThreadID: "async-tasks"}
 	first, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("start")}})

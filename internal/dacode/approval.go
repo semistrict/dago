@@ -72,17 +72,20 @@ type approvalReviewResult struct {
 }
 
 func newApprovalReviewer(model damodel.Chat, backend dabackend.Backend) *dagent.Agent {
-	return dago.New(model, dago.Options{
-		Name: "approval-reviewer", Backend: backend,
-		SystemMessage: damessage.System(approvalReviewPolicy),
-		Filesystem:    dago.Filesystem{Tools: []string{"ls", "read_file", "glob", "grep"}},
-		StructuredOutput: &dagent.StructuredOutput{
+	return dago.NewAgent(
+		model,
+		dago.WithName("approval-reviewer"),
+		dago.WithBackend(backend),
+		dago.WithSystemMessage(damessage.System(approvalReviewPolicy)),
+		dago.WithFilesystem(dago.Filesystem{Tools: []string{"ls", "read_file", "glob", "grep"}}),
+		dago.WithStructuredOutput(&dagent.StructuredOutput{
 			Strategy: dagent.StructuredProvider, Name: "approval_assessment",
 			Description: "Risk and authorization assessment for one planned action.",
 			Schema:      approvalAssessmentSchema, Strict: true,
-		},
-		DisableSubagents: true, DisableSummary: true,
-	})
+		}),
+		dago.WithoutSubagents(),
+		dago.WithoutSummary(),
+	)
 }
 
 func (runner *dagoRunner) Review(ctx context.Context, request approvalReviewRequest) (approvalReviewResult, error) {

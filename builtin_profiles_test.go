@@ -53,7 +53,7 @@ func TestBuiltinHarnessProfileResolvesFromModel(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled := New(script, Options{SystemMessage: damessage.System("user instructions"), DisableSubagents: true, DisableSummary: true})
+	compiled := NewAgent(script, WithSystemMessage(damessage.System("user instructions")), WithoutSubagents(), WithoutSummary())
 
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestBuiltinEngineeringProfileAddsPlanningAndBehavior(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled := New(script, Options{DisableSubagents: true, DisableSummary: true})
+	compiled := NewAgent(script, WithoutSubagents(), WithoutSummary())
 
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
 		t.Fatal(err)

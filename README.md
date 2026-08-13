@@ -96,7 +96,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	compiled := dago.New(chat, dago.Options{})
+	compiled := dago.NewAgent(chat)
 	result, err := compiled.Invoke(context.Background(), dagent.Input{
 		Messages: []damessage.Message{damessage.Human("Introduce yourself.")},
 	})
@@ -116,11 +116,11 @@ Agent-owned facilities use that same backend automatically. Configure them as va
 instead of constructing middleware with a duplicate backend argument:
 
 ```go
-compiled := dago.New(chat, dago.Options{
-	Backend: workspace,
-	Skills: dago.Skills{Sources: []string{"/skills"}},
-	Memory: dago.Memory{Sources: []string{"/AGENTS.md"}},
-})
+compiled := dago.NewAgent(chat,
+	dago.WithBackend(workspace),
+	dago.WithSkills(dago.Skills{Sources: []string{"/skills"}}),
+	dago.WithMemory(dago.Memory{Sources: []string{"/AGENTS.md"}}),
+)
 ```
 
 Durable goals are an opt-in agent facility and require a checkpoint saver. The
@@ -130,20 +130,39 @@ operations:
 
 ```go
 goalOptions := dagoal.Options{}
-compiled := dago.New(chat, dago.Options{
-	Middleware: []dagent.Middleware{dagoal.Middleware(goalOptions)},
-	Saver:      saver,
-})
+compiled := dago.NewAgent(chat,
+	dago.WithMiddleware(dagoal.Middleware(goalOptions)),
+	dago.WithSaver(saver),
+)
 goals := dagoal.NewService(compiled, goalOptions)
 ```
 
 Binary media is returned opaquely by default. Supplying
-`dago.Options.Filesystem.VideoExtractor` changes video `read_file` pagination to
-seconds and returns sampled JPEG frames. `davideo.NewFFmpeg` is the optional
+`dago.WithFilesystem` can configure a `VideoExtractor`, which changes video
+`read_file` pagination to seconds and returns sampled JPEG frames. `davideo.NewFFmpeg` is the optional
 ready-made implementation; the FFmpeg executable remains an external deployment
 dependency.
 
-Declarative subagents inherit the parent model and tools unless they override them.
+Declarative subagents use the same functional options as top-level agents. A nil
+model inherits the parent model, and tools inherit unless `WithTools` overrides them:
+
+```go
+researcher := dago.NewSubagent(
+	"researcher",
+	"Researches a topic and returns a concise answer.",
+	nil,
+	dago.WithSystemMessage(damessage.System("Research the delegated topic.")),
+	dago.WithTodo(),
+)
+compiled := dago.NewAgent(chat, dago.WithSubagents(researcher))
+```
+
+They receive the standard filesystem, compaction, repair, profile, and prompt-cache
+stack. Precompiled graphs can be registered with `NewRunnableSubagent`; only
+delegation options such as `WithInheritedState` apply because their construction is
+already complete. Human approval, including approval inside a subagent, requires a
+checkpoint saver so the exact pending tool call can resume without replaying completed
+sibling tools.
 
 ### Type-safe tools
 
@@ -186,13 +205,6 @@ Owned agent streams support `for event, err := range stream.Events()`. Model
 streams support `for chunk, err := range stream.Chunks()`. Both iterators close
 their stream on completion, error, or early loop exit; `Next` and `Close` remain
 available for explicit control.
-They receive the standard filesystem, compaction, repair, profile, and prompt-cache
-stack; optional skills, permissions, structured output, and approval rules are
-configured on the subagent specification. Precompiled `Runnable` subagents remain
-available when the caller needs a completely custom graph. Human approval, including
-approval inside a subagent, requires a checkpoint saver so the exact pending tool call
-can resume without replaying completed sibling tools.
-
 Applicable built-in Anthropic harness profiles resolve from the model's provider and
 identifier. The full Nemotron 3 Ultra repair, retry, progress-budget, tool-selection,
 entity-resolution, and answer-completeness stack is available explicitly from
@@ -210,13 +222,12 @@ enabling `Interpreter` in a TinyGo build fails during agent construction, and th
 Shelley TinyGo application omits `js_eval` from its tool catalog.
 
 ```go
-compiled := dago.New(chat, dago.Options{
-	Saver: saver,
-	Interpreter: dago.Interpreter{
-		Enabled: true,
+compiled := dago.NewAgent(chat,
+	dago.WithSaver(saver),
+	dago.WithInterpreter(dago.Interpreter{
 		PTC: []string{"read_file", "glob", "grep", "search"},
-	},
-})
+	}),
+)
 ```
 
 The first memory image is checkpointed as an anchor. The generated QuickJS guest
@@ -282,7 +293,7 @@ if err != nil {
 }
 defer saver.Close()
 
-compiled := dago.New(chat, dago.Options{Saver: saver})
+compiled := dago.NewAgent(chat, dago.WithSaver(saver))
 result, err := compiled.Invoke(ctx, dagent.Input{
 	Config: dacheckpoint.Config{ThreadID: "conversation-1"},
 	Messages: []damessage.Message{damessage.Human("Inspect the project.")},
@@ -337,11 +348,11 @@ same durable data as agent runs:
 
 ```go
 func NewAgent(_ context.Context, runtime daserver.Runtime) (*dagent.Agent, error) {
-	return dago.New(chat, dago.Options{
-		Saver: runtime.Saver,
-		Store: runtime.Store,
-		Deps:  runtime.Deps,
-	}), nil
+	return dago.NewAgent(chat,
+		dago.WithSaver(runtime.Saver),
+		dago.WithStore(runtime.Store),
+		dago.WithDependencies(runtime.Deps),
+	), nil
 }
 ```
 
@@ -425,9 +436,7 @@ if err != nil {
 }
 defer sandbox.Close()
 
-compiled := dago.New(chat, dago.Options{
-	Backend: sandbox,
-})
+compiled := dago.NewAgent(chat, dago.WithBackend(sandbox))
 ```
 
 By default the container has no network, a read-only root filesystem, no Linux

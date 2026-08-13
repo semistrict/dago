@@ -39,21 +39,85 @@ type StreamingRunnable interface {
 	Stream(context.Context, dagent.Input) *dagent.Stream
 }
 
+// RunnableSubagentOption configures delegation to an already compiled runnable.
+// Agent construction options are intentionally unavailable because the graph
+// has already been built.
+type RunnableSubagentOption interface {
+	applyRunnableSubagent(*runnableSubagentConfig)
+}
+
+type runnableSubagentConfig struct {
+	inheritedState []string
+}
+
+type inheritedStateOption []string
+
+func (option inheritedStateOption) applyRunnableSubagent(config *runnableSubagentConfig) {
+	config.inheritedState = append([]string{}, option...)
+}
+
 type Subagent struct {
-	Name             string
-	Description      string
-	Runnable         Runnable
-	SystemPrompt     string
-	Model            damodel.Chat
-	Tools            []datool.Tool
-	Middleware       []dagent.Middleware
-	InterruptOn      []dagent.ApprovalRule
-	Skills           Skills
-	Permissions      []FilesystemPermission
-	StructuredOutput *dagent.StructuredOutput
-	InheritedState   []string
-	inheritAllState  bool
-	responseFactory  func(*dagent.StructuredOutput) (Runnable, error)
+	name            string
+	description     string
+	runnable        Runnable
+	model           damodel.Chat
+	options         []Option
+	inheritedState  []string
+	inheritAllState bool
+	responseFactory func(*dagent.StructuredOutput) (Runnable, error)
+}
+
+// NewSubagent declares an agent compiled with the same functional options as a
+// top-level agent. A nil model inherits the parent model.
+func NewSubagent(name, description string, model damodel.Chat, options ...Option) Subagent {
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(description) == "" {
+		panic("subagent name and description are required")
+	}
+	for index, option := range options {
+		if option == nil {
+			panic(fmt.Sprintf("subagent %q option %d is nil", name, index))
+		}
+	}
+	return Subagent{
+		name: name, description: description, model: model,
+		options: append([]Option(nil), options...), inheritAllState: true,
+	}
+}
+
+// WithInheritedState selects parent state fields copied into this declarative
+// subagent and propagated back when changed. Calling it with no keys disables
+// inheritance. It is separate from Option because delegation is not part of
+// agent construction.
+func (subagent Subagent) WithInheritedState(keys ...string) Subagent {
+	subagent.inheritedState = append([]string{}, keys...)
+	subagent.inheritAllState = false
+	return subagent
+}
+
+// NewRunnableSubagent registers an already compiled runnable. It accepts only
+// delegation options because agent construction options cannot reconfigure a
+// compiled graph.
+func NewRunnableSubagent(name, description string, runnable Runnable, options ...RunnableSubagentOption) Subagent {
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(description) == "" || runnable == nil {
+		panic("runnable subagent name, description, and runnable are required")
+	}
+	config := runnableSubagentConfig{}
+	for index, option := range options {
+		if option == nil {
+			panic(fmt.Sprintf("runnable subagent %q option %d is nil", name, index))
+		}
+		option.applyRunnableSubagent(&config)
+	}
+	return Subagent{
+		name: name, description: description, runnable: runnable,
+		inheritedState: append([]string(nil), config.inheritedState...),
+	}
+}
+
+// WithInheritedState selects parent state fields copied into an already
+// compiled runnable subagent and propagated back when changed.
+func WithInheritedState(keys ...string) RunnableSubagentOption {
+	return inheritedStateOption(append([]string{}, keys...))
 }
 
 // SubagentResponseFormatConfigKey selects a structured-output format for the
@@ -237,13 +301,13 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 	}
 	byName := map[string]Subagent{}
 	for _, item := range subagents {
-		if item.Name == "" || item.Description == "" || item.Runnable == nil {
+		if item.name == "" || item.description == "" || item.runnable == nil {
 			return dagent.Middleware{}, fmt.Errorf("subagent name, description, and runnable are required")
 		}
-		if _, duplicate := byName[item.Name]; duplicate {
-			return dagent.Middleware{}, fmt.Errorf("duplicate subagent %q", item.Name)
+		if _, duplicate := byName[item.name]; duplicate {
+			return dagent.Middleware{}, fmt.Errorf("duplicate subagent %q", item.name)
 		}
-		byName[item.Name] = item
+		byName[item.name] = item
 	}
 	names := make([]string, 0, len(byName))
 	for name := range byName {
@@ -252,7 +316,7 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 	sort.Strings(names)
 	descriptionParts := make([]string, len(names))
 	for i, name := range names {
-		descriptionParts[i] = name + ": " + byName[name].Description
+		descriptionParts[i] = name + ": " + byName[name].description
 	}
 	type taskInput struct {
 		Description string `json:"description" description:"A detailed task for the selected subagent to complete autonomously."`
@@ -278,7 +342,7 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 			}
 			if persistedDescriptor != "" && persistedDescriptor != descriptor {
 				return datool.Result{}, subagentExecutionError{err: fmt.Errorf(
-					"response format for resumed subagent %q does not match its interrupted task", selected.Name,
+					"response format for resumed subagent %q does not match its interrupted task", selected.name,
 				)}
 			}
 			responseFormat = format
@@ -286,24 +350,24 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 		} else if persistedDescriptor != "" {
 			format, err := decodeTaskResponseFormat(persistedDescriptor)
 			if err != nil {
-				return datool.Result{}, subagentExecutionError{err: fmt.Errorf("restore subagent %q response format: %w", selected.Name, err)}
+				return datool.Result{}, subagentExecutionError{err: fmt.Errorf("restore subagent %q response format: %w", selected.name, err)}
 			}
 			responseFormat = format
 		}
 		if responseFormat != nil {
 			if selected.responseFactory == nil {
 				return datool.Result{}, subagentExecutionError{err: fmt.Errorf(
-					"response format cannot be used with compiled subagent %q; task-scoped formats require a declarative subagent", selected.Name,
+					"response format cannot be used with compiled subagent %q; task-scoped formats require a declarative subagent", selected.name,
 				)}
 			}
 			runnable, err := selected.responseFactory(responseFormat)
 			if err != nil {
-				return datool.Result{}, subagentExecutionError{err: fmt.Errorf("configure subagent %q response format: %w", selected.Name, err)}
+				return datool.Result{}, subagentExecutionError{err: fmt.Errorf("configure subagent %q response format: %w", selected.name, err)}
 			}
-			selected.Runnable = runnable
+			selected.runnable = runnable
 		}
 		inherited := dastate.Values{}
-		inheritedKeys := append([]string(nil), selected.InheritedState...)
+		inheritedKeys := append([]string(nil), selected.inheritedState...)
 		if selected.inheritAllState {
 			if values, ok := runtime.State.(dastate.Values); ok {
 				for key := range values {
@@ -351,7 +415,7 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 		}
 		if len(result.Interrupts) > 0 {
 			if len(result.Interrupts) != 1 {
-				return datool.Result{}, fmt.Errorf("subagent %q produced multiple interrupts", selected.Name)
+				return datool.Result{}, fmt.Errorf("subagent %q produced multiple interrupts", selected.name)
 			}
 			interrupted := datool.Result{Interrupt: &datool.Interrupt{ID: result.Interrupts[0].ID, Value: result.Interrupts[0].Value}}
 			if responseDescriptor != "" {
@@ -512,9 +576,9 @@ func (failure subagentExecutionError) Unwrap() error { return failure.err }
 func (subagentExecutionError) PropagateToolError()   {}
 
 func invokeSubagent(ctx context.Context, selected Subagent, invocation dagent.Input, runtime datool.Runtime) (dagent.Result, error) {
-	streaming, supportsStreaming := selected.Runnable.(StreamingRunnable)
+	streaming, supportsStreaming := selected.runnable.(StreamingRunnable)
 	if !supportsStreaming || runtime.Stream == nil {
-		return selected.Runnable.Invoke(ctx, invocation)
+		return selected.runnable.Invoke(ctx, invocation)
 	}
 	emit := func(event dagent.ChildEvent) error {
 		encoded, err := dagent.EncodeChildEvent(event)
@@ -524,7 +588,7 @@ func invokeSubagent(ctx context.Context, selected Subagent, invocation dagent.In
 		return runtime.Stream.Write(ctx, encoded)
 	}
 	base := dagent.ChildEvent{
-		Name: selected.Name, ToolCallID: runtime.CallID,
+		Name: selected.name, ToolCallID: runtime.CallID,
 		Namespace: invocation.Config.Namespace,
 	}
 	started := base
