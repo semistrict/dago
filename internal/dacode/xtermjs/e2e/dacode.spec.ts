@@ -112,6 +112,18 @@ test("renders the complete ready screen without browser overflow", async ({ page
   expect(layout.bodyHeight).toBeLessThanOrEqual(layout.viewportHeight);
   expect(layout.terminal?.width).toBeGreaterThan(0);
   expect(layout.screen?.height).toBeLessThanOrEqual(layout.terminal?.height ?? 0);
+
+  const terminalRows = await page.evaluate(() => {
+    const terminal = window.dacodeTerminal;
+    if (!terminal) return undefined;
+    const buffer = terminal.buffer.active;
+    let lastContentRow = -1;
+    for (let row = 0; row < buffer.length; row += 1) {
+      if ((buffer.getLine(row)?.translateToString(true).trim() ?? "") !== "") lastContentRow = row;
+    }
+    return { lastContentRow, rows: terminal.rows };
+  });
+  expect(terminalRows?.lastContentRow).toBe((terminalRows?.rows ?? 0) - 1);
 });
 
 test("does not paint a background across the composer row", async ({ page }) => {

@@ -532,8 +532,8 @@ func TestTUIComposerGrowsForMultilineDraft(t *testing.T) {
 			t.Fatalf("view missing %q:\n%s", expected, view)
 		}
 	}
-	if height := lipgloss.Height(view); height > 24 {
-		t.Fatalf("view height = %d, want at most 24", height)
+	if height := lipgloss.Height(view); height != 24 {
+		t.Fatalf("view height = %d, want 24", height)
 	}
 }
 

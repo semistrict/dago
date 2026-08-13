@@ -640,7 +640,7 @@ func (model *tuiModel) relayout() {
 	composerWidth := max(model.width-4, 10)
 	model.composer.SetWidth(composerWidth)
 	model.composer.SetHeight(composerContentHeight(model.composer.Value(), max(composerWidth-2, 1)))
-	viewportHeight := max(model.height-model.composer.Height()-6, 3)
+	viewportHeight := max(model.height-model.composer.Height()-4, 3)
 	if !model.ready {
 		model.viewport = viewport.New(model.width, viewportHeight)
 		model.ready = true
