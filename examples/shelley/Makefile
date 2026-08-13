@@ -1,6 +1,6 @@
 # Shelley Makefile
 
-.PHONY: build build-linux-aarch64 build-linux-x86 wasm wasm-serve test test-go test-e2e test-e2e-wasm bench-agent bench-scaling ui serve clean help templates demo
+.PHONY: build build-linux-aarch64 build-linux-x86 wasm wasm-tinygo wasm-tinygo-check wasm-serve test test-go test-e2e test-e2e-wasm bench-agent bench-scaling ui serve clean help templates demo
 
 # Default target
 all: build
@@ -48,6 +48,16 @@ wasm:
 	@cd ui && pnpm install --frozen-lockfile --silent && WASM_BUILD=1 pnpm run --silent build
 	GOOS=js GOARCH=wasm go build -o ui/dist/shelley.wasm ./cmd/shelley-wasm
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" ui/dist/wasm_exec.js
+
+wasm-tinygo:
+	@cd ui && pnpm install --frozen-lockfile --silent && WASM_BUILD=1 pnpm run --silent build
+	../../scripts/prepare-tinygo-dev.sh
+	tinygo build -target=wasm -stack-size=1MB -o ui/dist/shelley.wasm ./cmd/shelley-wasm
+	cp "$$(tinygo env TINYGOROOT)/targets/wasm_exec.js" ui/dist/wasm_exec.js
+
+wasm-tinygo-check:
+	../../scripts/prepare-tinygo-dev.sh
+	tinygo build -target=wasm -stack-size=1MB -o /dev/null ./cmd/shelley-wasm
 
 wasm-serve: wasm
 	go run ./cmd/shelley-wasm-serve
@@ -121,6 +131,8 @@ help:
 	@echo "  build-linux-x86      Build for Linux x86_64"
 	@echo "  ui            Build UI only"
 	@echo "  wasm          Build standalone browser application"
+	@echo "  wasm-tinygo   Build standalone browser application with TinyGo"
+	@echo "  wasm-tinygo-check  Compile browser application with TinyGo"
 	@echo "  wasm-serve    Build and serve browser application on port 9000"
 	@echo "  templates     Build template tarballs"
 	@echo "  test          Run all tests (Go + E2E)"

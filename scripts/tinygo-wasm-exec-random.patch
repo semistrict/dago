@@ -1,0 +1,8 @@
+--- wasm_exec.js
++++ wasm_exec.js
+@@ -296,0 +297,5 @@
++					// func getRandomData(r []byte)
++					"runtime.getRandomData": (slice_ptr, slice_len, slice_cap) => {
++						crypto.getRandomValues(loadSlice(slice_ptr, slice_len, slice_cap));
++					},
++

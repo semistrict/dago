@@ -584,11 +584,11 @@ test("browser saves the OpenAI key locally and restores it after reload", async 
   const input = page.locator("textarea");
   await input.fill("answer through the direct provider");
   await page.getByRole("button", { name: "Send message" }).click();
-  await expect(page.getByTestId("agent-thinking")).toBeHidden();
   await expect(page.locator('[role="article"]')).toHaveText([
     "answer through the direct provider",
     "direct browser response",
   ]);
+  await expect(page.getByTestId("agent-thinking")).toBeHidden();
   const customModel = await page.evaluate(async (customEndpoint) => {
     const response = await fetch("/api/custom-models", {
       method: "POST",
@@ -668,11 +668,11 @@ test("browser saves the OpenAI key locally and restores it after reload", async 
   expect(restoredModels.map((model) => model.model_id)).toContain(customModel.model.model_id);
   await input.fill("continue after restoring the checkpoint");
   await page.getByRole("button", { name: "Send message" }).click();
-  await expect(page.getByTestId("agent-thinking")).toBeHidden();
   await expect(page.locator('[role="article"]')).toHaveText([
     "answer through the direct provider",
     "direct browser response",
     "continue after restoring the checkpoint",
     "direct browser response",
   ]);
+  await expect(page.getByTestId("agent-thinking")).toBeHidden();
 });

@@ -88,6 +88,19 @@ pnpm test:e2e
 pnpm test:e2e:wasm
 ```
 
+Compile the core library closure and Shelley browser application with the
+pinned TinyGo release:
+
+```sh
+make tinygo
+make -C examples/shelley wasm-tinygo-check
+make -C examples/shelley wasm-tinygo
+```
+
+`wasm-tinygo` applies checksum-verified upstream development fixes that are
+not yet in TinyGo 0.41.1. Remove the backports when updating the pinned release
+to one that contains both fixes.
+
 Use focused tests while iterating, then run the owning module's full checks before
 publishing a change.
 

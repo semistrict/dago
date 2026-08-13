@@ -46,9 +46,21 @@ type Filesystem struct {
 }
 
 type filesystemPath struct {
-	root *os.Root
+	root rootedFilesystem
 	name string
 	host string
+}
+
+type rootedFilesystem interface {
+	Close() error
+	FS() fs.FS
+	Lstat(name string) (fs.FileInfo, error)
+	MkdirAll(path string, perm fs.FileMode) error
+	Open(name string) (*os.File, error)
+	ReadFile(name string) ([]byte, error)
+	RemoveAll(path string) error
+	Stat(name string) (fs.FileInfo, error)
+	WriteFile(name string, data []byte, perm fs.FileMode) error
 }
 
 func (value filesystemPath) Close() {
@@ -79,7 +91,7 @@ func (backend *Filesystem) openPath(value string) (filesystemPath, error) {
 	if name == "" {
 		name = "."
 	}
-	root, err := os.OpenRoot(rootName)
+	root, err := openRoot(rootName)
 	if err != nil {
 		return filesystemPath{}, fmt.Errorf("filesystem root: %w", err)
 	}

@@ -1,4 +1,4 @@
-.PHONY: check checkpoint-interop coverage drift fmt fmt-check generate test test-race vet
+.PHONY: check checkpoint-interop coverage drift fmt fmt-check generate test test-race tinygo vet
 
 check: fmt-check drift vet test test-race
 
@@ -23,6 +23,10 @@ test:
 
 test-race:
 	go test -race ./...
+
+tinygo:
+	tinygo build -o /dev/null ./examples/basic
+	tinygo build -target=wasm -o /dev/null ./examples/basic
 
 coverage:
 	go test -coverprofile=coverage.out ./...

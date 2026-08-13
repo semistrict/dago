@@ -1,4 +1,4 @@
-import { execSync, spawn, type ChildProcess } from "child_process";
+import { execFileSync, spawn, type ChildProcess } from "child_process";
 import { createServer, type Server } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -80,7 +80,8 @@ export default async function globalSetup() {
     return closeServers;
   }
 
-  execSync("make wasm", {
+  const wasmTarget = process.env.SHELLEY_TINYGO_WASM === "1" ? "wasm-tinygo" : "wasm";
+  execFileSync("make", [wasmTarget], {
     cwd: shelleyDirectory,
     stdio: "inherit",
     env: { ...process.env, PUBLIC_BASE_PATH: publicBasePath },

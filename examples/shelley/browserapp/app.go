@@ -25,7 +25,6 @@ import (
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
-	"github.com/semistrict/dago/daproviders/openai"
 	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
@@ -437,7 +436,7 @@ func (app *App) newDraft(body string) Response {
 }
 
 func (app *App) createRecord(model, cwd string, options json.RawMessage, draft bool, draftText string) (Conversation, error) {
-	idText := rand.Text()
+	idText := randomText()
 	if len(idText) < 8 {
 		return Conversation{}, fmt.Errorf("generate conversation id")
 	}
@@ -1825,17 +1824,6 @@ func (app *App) setCustomModel(model CustomModel, replacing bool) (CustomModel, 
 	return model, nil
 }
 
-func openAIChat(model CustomModel) (damodel.Chat, error) {
-	var reasoning *damodel.Reasoning
-	if model.ReasoningEffort != "" {
-		reasoning = &damodel.Reasoning{Effort: model.ReasoningEffort}
-	}
-	return openai.NewAPIKey(model.APIKey, openai.Options{
-		Model: model.ModelName, BaseURL: model.Endpoint, ContextWindow: int(model.MaxTokens),
-		DefaultReasoning: reasoning, WebSearch: true,
-	})
-}
-
 func (app *App) listCustomModels() []CustomModel {
 	app.mu.RLock()
 	defer app.mu.RUnlock()
@@ -1978,7 +1966,7 @@ func newPredictableModel() damodel.Chat {
 	model := modeltest.NewPredictable(modeltest.PredictableOptions{
 		DefaultResponse: "The browser-local dago agent is ready. Try `hello`, `echo: text`, or a structured tool command.",
 	})
-	prefix := strings.ToLower(rand.Text())
+	prefix := strings.ToLower(randomText())
 	if len(prefix) > 10 {
 		prefix = prefix[:10]
 	}
@@ -2191,11 +2179,23 @@ func cloneMessages(messages []damessage.Message) []damessage.Message {
 }
 
 func newMessageID() string {
-	text := rand.Text()
+	text := randomText()
 	if len(text) > 12 {
 		text = text[:12]
 	}
 	return "m" + strings.ToLower(text)
+}
+
+func randomText() string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	text := make([]byte, 26)
+	if _, err := rand.Read(text); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
+	for index := range text {
+		text[index] = alphabet[text[index]%byte(len(alphabet))]
+	}
+	return string(text)
 }
 
 func slugify(value string) string {
