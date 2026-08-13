@@ -17,6 +17,7 @@ import (
 	"github.com/semistrict/dago/dacheckpoint"
 	checkpointsqlite "github.com/semistrict/dago/dacheckpoint/sqlite"
 	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/dagoal"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/daworkspace"
@@ -46,6 +47,9 @@ type agentRunner interface {
 	Review(context.Context, approvalReviewRequest) (approvalReviewResult, error)
 	ListSessions(context.Context) ([]sessionInfo, error)
 	LoadSession(context.Context, string) ([]damessage.Message, error)
+	Goal(context.Context, string) (*dagoal.Goal, error)
+	SetGoal(context.Context, string, dagoal.SetRequest) (*dagoal.Goal, error)
+	ClearGoal(context.Context, string) (bool, error)
 }
 
 type dagoRunner struct {
@@ -54,6 +58,7 @@ type dagoRunner struct {
 	saver      *checkpointsqlite.Saver
 	database   *sql.DB
 	workingDir string
+	goals      *dagoal.Service
 }
 
 func (runner *dagoRunner) Start(ctx context.Context, input dagent.Input) eventStream {
@@ -166,6 +171,18 @@ func decodeSessionMessages(value any) ([]damessage.Message, error) {
 	return result, nil
 }
 
+func (runner *dagoRunner) Goal(ctx context.Context, threadID string) (*dagoal.Goal, error) {
+	return runner.goals.Get(ctx, dacheckpoint.Config{ThreadID: threadID})
+}
+
+func (runner *dagoRunner) SetGoal(ctx context.Context, threadID string, request dagoal.SetRequest) (*dagoal.Goal, error) {
+	return runner.goals.Set(ctx, dacheckpoint.Config{ThreadID: threadID}, request)
+}
+
+func (runner *dagoRunner) ClearGoal(ctx context.Context, threadID string) (bool, error) {
+	return runner.goals.Clear(ctx, dacheckpoint.Config{ThreadID: threadID})
+}
+
 type runnerOptions struct {
 	Authentication modelAuthentication
 	BaseURL        string
@@ -224,13 +241,18 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 	systemText := `You are dacode, an interactive coding agent. Work as a careful senior engineer inside the configured workspace. Filesystem tool paths are virtual: use / for the workspace root and never pass a host filesystem path. Inspect relevant files before making claims, use the available filesystem and shell tools to complete requested work, preserve unrelated user changes, and verify edits with focused tests. Keep final responses concise and concrete.`
 	systemText += guidanceSummary
 	system := damessage.System(systemText)
+	goalOptions := dagoal.Options{}
 	agent := dago.New(model, dago.Options{
 		Name: "dacode", SystemMessage: system, Backend: backend,
 		Filesystem: filesystem, Skills: dago.Skills{Sources: skillSources}, Memory: memory,
-		EnableTodo: true, InterruptOn: interruptOn, Saver: saver, RetainThreadState: true,
+		EnableTodo: true, Middleware: []dagent.Middleware{dagoal.Middleware(goalOptions)},
+		InterruptOn: interruptOn, Saver: saver, RetainThreadState: true,
 		StateFields: sessionStateFields(),
 	})
-	runner := &dagoRunner{agent: agent, saver: saver, database: database, workingDir: options.WorkingDir}
+	runner := &dagoRunner{
+		agent: agent, saver: saver, database: database, workingDir: options.WorkingDir,
+		goals: dagoal.NewService(agent, goalOptions),
+	}
 	if options.AutoReview {
 		reviewModel, reviewErr := options.Authentication.newModel(options.ReviewModel, options.BaseURL)
 		if reviewErr != nil {

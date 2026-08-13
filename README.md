@@ -20,9 +20,10 @@ dago requires Go 1.26 or newer.
 
 ### Interactive coding agent
 
-`dacode` is a terminal coding agent with durable threads, streaming tool activity,
-workspace-aware instructions and skills, and review gates for file writes and shell
-commands. It uses Bubble Tea, Bubbles, and Lip Gloss for its terminal interface.
+`dacode` is a terminal coding agent with durable threads and goals, streaming tool
+activity, workspace-aware instructions and skills, and review gates for file writes
+and shell commands. It uses Bubble Tea, Bubbles, and Lip Gloss for its terminal
+interface.
 
 ```sh
 go install github.com/semistrict/dago/cmd/dacode@latest
@@ -51,6 +52,11 @@ Use `-n 'task'` for one-shot operation, `-r ID` to resume a durable thread, and
 before opening the TUI, or `dacode resume ID` to resume a known session. Inside
 the TUI, `/threads` opens the same picker. Selected sessions restore their
 transcripts before continuing.
+
+Use `/goal <objective>` for work that should continue across turns until complete or
+blocked. `/goal show`, `/goal pause`, `/goal resume`, `/goal clear`, and
+`/goal budget <tokens|clear>` control the persisted goal. Active goals resume
+automatically when the thread becomes idle; one-shot mode follows the same lifecycle.
 
 `--serve-xtermjs` serves the same PTY-backed TUI on a loopback-only web address
 and prints its URL. Use `--xtermjs-address HOST:PORT` to select a specific
@@ -109,6 +115,20 @@ compiled := dago.New(chat, dago.Options{
 	Skills: dago.Skills{Sources: []string{"/skills"}},
 	Memory: dago.Memory{Sources: []string{"/AGENTS.md"}},
 })
+```
+
+Durable goals are an opt-in agent facility and require a checkpoint saver. The
+middleware exposes `create_goal`, `get_goal`, and constrained `update_goal` tools;
+`dagoal.Service` provides host-owned pause, resume, budget, objective, and clear
+operations:
+
+```go
+goalOptions := dagoal.Options{}
+compiled := dago.New(chat, dago.Options{
+	Middleware: []dagent.Middleware{dagoal.Middleware(goalOptions)},
+	Saver:      saver,
+})
+goals := dagoal.NewService(compiled, goalOptions)
 ```
 
 Binary media is returned opaquely by default. Supplying
@@ -332,6 +352,7 @@ limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 |---|---|
 | `dago` | Deep Agent constructor plus filesystem, JavaScript interpreter, subagent, summary, skill, memory, profile, and rubric middleware |
 | `dagent` | Provider-neutral model/tool graph, middleware lifecycle, approval, retry, todo, streaming, and checkpoint operations |
+| `dagoal` | Durable goal state, model tools, host lifecycle controls, accounting, and continuation messages |
 | `damessage`, `damodel`, `datool`, `dastate` | Stable public contracts and reducers |
 | `damodel/modeltest` | Scripted and prompt-driven predictable model doubles for offline tests and examples |
 | `dabackend` | State, memory, host filesystem, namespaced store, composite, and explicit local-shell backends |

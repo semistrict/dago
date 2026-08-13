@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/dagoal"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
@@ -61,6 +62,10 @@ type fakeRunner struct {
 	sessions        []sessionInfo
 	sessionMessages map[string][]damessage.Message
 	sessionErr      error
+	goal            *dagoal.Goal
+	goalErr         error
+	goalRequests    []dagoal.SetRequest
+	goalCleared     bool
 }
 
 func (runner *fakeRunner) Start(_ context.Context, input dagent.Input) eventStream {
@@ -92,6 +97,20 @@ func (runner *fakeRunner) LoadSession(_ context.Context, threadID string) ([]dam
 		return nil, runner.sessionErr
 	}
 	return append([]damessage.Message(nil), runner.sessionMessages[threadID]...), nil
+}
+
+func (runner *fakeRunner) Goal(context.Context, string) (*dagoal.Goal, error) {
+	return runner.goal, runner.goalErr
+}
+
+func (runner *fakeRunner) SetGoal(_ context.Context, _ string, request dagoal.SetRequest) (*dagoal.Goal, error) {
+	runner.goalRequests = append(runner.goalRequests, request)
+	return runner.goal, runner.goalErr
+}
+
+func (runner *fakeRunner) ClearGoal(context.Context, string) (bool, error) {
+	runner.goalCleared = true
+	return true, runner.goalErr
 }
 
 func TestAuthenticationPrefersExplicitAPIKey(t *testing.T) {
@@ -216,8 +235,62 @@ func TestRunnerStartsWithHostShellAndApprovalGates(t *testing.T) {
 	if runner == nil {
 		t.Fatal("runner is nil")
 	}
+	compiled := runner.(*dagoRunner)
+	toolNames := map[string]bool{}
+	for _, tool := range compiled.agent.Tools() {
+		toolNames[tool.Definition().Name] = true
+	}
+	for _, name := range []string{"create_goal", "get_goal", "update_goal"} {
+		if !toolNames[name] {
+			t.Errorf("runner is missing %s", name)
+		}
+	}
 	if err := closer.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTUIGoalCommandPersistsAndStartsContinuation(t *testing.T) {
+	goal := &dagoal.Goal{ID: "goal-1", Objective: "Ship the release", Status: dagoal.StatusActive}
+	runner := &fakeRunner{goal: goal, streams: []eventStream{&fakeEventStream{}}}
+	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, true, "")
+	command := model.goalCommand("Ship the release")
+	if command == nil {
+		t.Fatal("goal command did not start")
+	}
+	message := command().(goalActionMsg)
+	_, continuation := model.Update(message)
+	if continuation == nil || len(runner.inputs) != 1 || len(runner.goalRequests) != 1 {
+		t.Fatalf("continuation = %v, inputs = %d, goal requests = %d", continuation, len(runner.inputs), len(runner.goalRequests))
+	}
+	request := runner.goalRequests[0]
+	if request.Objective == nil || *request.Objective != "Ship the release" || request.Status == nil || *request.Status != dagoal.StatusActive {
+		t.Fatalf("goal request = %#v", request)
+	}
+	input := runner.inputs[0]
+	if len(input.Messages) != 1 || !strings.Contains(input.Messages[0].TextContent(), "Ship the release") {
+		t.Fatalf("continuation input = %#v", input)
+	}
+}
+
+func TestTUIActiveGoalContinuesAfterFinishedTurn(t *testing.T) {
+	goal := &dagoal.Goal{ID: "goal-1", Objective: "Keep working", Status: dagoal.StatusActive}
+	runner := &fakeRunner{streams: []eventStream{&fakeEventStream{}}}
+	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, true, "")
+	model.running = true
+	_, command := model.finishStream(streamDoneMsg{result: dagent.Result{State: dastate.Values{dagoal.StateKey: goal}}})
+	if command == nil || len(runner.inputs) != 1 || model.status != "Continuing goal" {
+		t.Fatalf("command = %v, inputs = %d, status = %q", command, len(runner.inputs), model.status)
+	}
+}
+
+func TestTUIStoppedGoalDoesNotContinue(t *testing.T) {
+	goal := &dagoal.Goal{ID: "goal-1", Objective: "Stop at budget", Status: dagoal.StatusBudgetLimited}
+	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "main-model", "thread-1", false, true, "")
+	model.running = true
+	_, command := model.finishStream(streamDoneMsg{result: dagent.Result{State: dastate.Values{dagoal.StateKey: goal}}})
+	if command != nil || model.status != "Ready" {
+		t.Fatalf("command = %v, status = %q", command, model.status)
 	}
 }
 
@@ -526,6 +599,32 @@ func TestNonInteractiveAutomaticReviewContinues(t *testing.T) {
 	response, ok := runner.inputs[1].Resume.(dagent.ApprovalResponse)
 	if !ok || response.Decisions["call-1"].Decision != dagent.ApprovalApprove {
 		t.Fatalf("resume = %#v", runner.inputs[1].Resume)
+	}
+}
+
+func TestNonInteractiveActiveGoalContinuesUntilStopped(t *testing.T) {
+	active := &dagoal.Goal{ID: "goal-1", Objective: "Finish the work", Status: dagoal.StatusActive}
+	complete := &dagoal.Goal{ID: "goal-1", Objective: "Finish the work", Status: dagoal.StatusComplete}
+	runner := &fakeRunner{streams: []eventStream{
+		&fakeEventStream{result: dagent.Result{
+			Messages: []damessage.Message{damessage.Assistant("still working")},
+			State:    dastate.Values{dagoal.StateKey: active},
+		}},
+		&fakeEventStream{result: dagent.Result{
+			Messages: []damessage.Message{damessage.Assistant("done")},
+			State:    dastate.Values{dagoal.StateKey: complete},
+		}},
+	}}
+	var stdout, stderr bytes.Buffer
+	if err := runNonInteractive(t.Context(), runner, "/work", "thread-1", "Start", true, true, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "done\n" || len(runner.inputs) != 2 {
+		t.Fatalf("stdout = %q, inputs = %d", stdout.String(), len(runner.inputs))
+	}
+	continuation := runner.inputs[1]
+	if len(continuation.Messages) != 1 || !strings.Contains(continuation.Messages[0].TextContent(), "Finish the work") {
+		t.Fatalf("continuation input = %#v", continuation)
 	}
 }
 

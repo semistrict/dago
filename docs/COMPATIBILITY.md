@@ -28,6 +28,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Inline subagent todo isolation and operational failure propagation | verified | root subagent isolation, recoverable-argument, and child failure tests |
 | Invocation-scoped runtime context | verified | graph runtime, concurrent invocation, inline subagent, and rubric grader propagation tests |
 | Durable rubric terminal outcomes | verified | public result and persisted-checkpoint status tests for terminal grading outcomes |
+| Durable thread goals, constrained model tools, host lifecycle controls, usage accounting, and continuation messages | implemented | `dagoal` middleware/service tests plus dacode command and continuation coverage |
 | Task-scoped structured output for declarative subagents | verified | per-task schema validation and precompiled-runnable rejection tests |
 | Summarization, offload, and compaction | verified | AND/OR/fraction threshold clauses, valid cutoffs, thread-aware offload, and state-update tests |
 | Skills and memory prompt injection | verified | safe YAML, deterministic discovery, warning, ordering, and prompt tests |

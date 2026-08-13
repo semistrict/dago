@@ -78,6 +78,7 @@ func (model *tuiModel) finishSessionLoad(message sessionLoadedMsg) tea.Cmd {
 		return nil
 	}
 	model.threadID = message.session.ThreadID
+	model.goal = nil
 	model.restoreTranscript(message.messages)
 	model.sessionPicker = nil
 	model.status = "Resumed session"
@@ -85,7 +86,7 @@ func (model *tuiModel) finishSessionLoad(message sessionLoadedMsg) tea.Cmd {
 	if strings.TrimSpace(model.initial) != "" {
 		return model.submitPrompt(model.initial)
 	}
-	return nil
+	return loadGoal(model.ctx, model.runner, model.threadID)
 }
 
 func (model *tuiModel) handleSessionKey(message tea.KeyMsg) (tea.Cmd, bool) {

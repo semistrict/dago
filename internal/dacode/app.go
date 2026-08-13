@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/dagoal"
 	"github.com/semistrict/dago/damessage"
 )
 
@@ -82,6 +84,19 @@ type reviewDoneMsg struct {
 
 type initialPromptMsg string
 
+type goalLoadedMsg struct {
+	goal *dagoal.Goal
+	err  error
+}
+
+type goalActionMsg struct {
+	action       string
+	goal         *dagoal.Goal
+	cleared      bool
+	continueWork bool
+	err          error
+}
+
 type tuiModel struct {
 	ctx        context.Context
 	runner     agentRunner
@@ -111,6 +126,7 @@ type tuiModel struct {
 	sessionPicker    *sessionPickerState
 	status           string
 	totalTokens      int
+	goal             *dagoal.Goal
 }
 
 func newTUIModel(ctx context.Context, runner agentRunner, workingDir, modelName, threadID string, yolo, autoReview bool, initial string) *tuiModel {
@@ -148,8 +164,12 @@ func (model *tuiModel) Init() tea.Cmd {
 	} else if model.sessionPicker != nil && model.sessionPicker.resuming && len(model.sessionPicker.sessions) > 0 {
 		commands = append(commands, loadSession(model.ctx, model.runner, model.sessionPicker.sessions[0]))
 	}
-	if model.sessionPicker == nil && strings.TrimSpace(model.initial) != "" {
-		commands = append(commands, func() tea.Msg { return initialPromptMsg(model.initial) })
+	if model.sessionPicker == nil {
+		if strings.TrimSpace(model.initial) != "" {
+			commands = append(commands, func() tea.Msg { return initialPromptMsg(model.initial) })
+		} else {
+			commands = append(commands, loadGoal(model.ctx, model.runner, model.threadID))
+		}
 	}
 	return tea.Batch(commands...)
 }
@@ -163,6 +183,18 @@ func (model *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if !model.running {
 			return model, model.submitPrompt(string(typed))
 		}
+	case goalLoadedMsg:
+		if typed.err != nil {
+			model.appendItem(transcriptItem{kind: itemError, text: "Could not restore goal: " + typed.err.Error()})
+			model.refreshTranscript()
+			return model, nil
+		}
+		model.goal = typed.goal
+		if model.goal != nil && model.goal.Actionable() && !model.running {
+			return model, model.startGoalContinuation()
+		}
+	case goalActionMsg:
+		return model.finishGoalAction(typed)
 	case spinner.TickMsg:
 		var command tea.Cmd
 		model.spinner, command = model.spinner.Update(typed)
@@ -282,9 +314,12 @@ func (model *tuiModel) slashCommand(prompt string) (tea.Cmd, bool) {
 	if command == prompt {
 		return nil, false
 	}
+	if command == "goal" || strings.HasPrefix(command, "goal ") {
+		return model.goalCommand(strings.TrimSpace(strings.TrimPrefix(command, "goal"))), true
+	}
 	switch command {
 	case "help":
-		model.appendItem(transcriptItem{kind: itemNotice, text: "Commands: /help  /clear  /new  /threads  /model  /quit"})
+		model.appendItem(transcriptItem{kind: itemNotice, text: "Commands: /help  /clear  /new  /threads  /model  /goal  /quit"})
 		model.refreshTranscript()
 		return nil, true
 	case "clear":
@@ -299,6 +334,7 @@ func (model *tuiModel) slashCommand(prompt string) (tea.Cmd, bool) {
 			model.appendItem(transcriptItem{kind: itemError, text: err.Error()})
 		} else {
 			model.threadID = threadID
+			model.goal = nil
 			model.items = nil
 			model.toolItems = map[string]int{}
 			model.currentAssistant = -1
@@ -322,6 +358,133 @@ func (model *tuiModel) slashCommand(prompt string) (tea.Cmd, bool) {
 	}
 }
 
+func (model *tuiModel) goalCommand(arguments string) tea.Cmd {
+	text := "/goal"
+	if arguments != "" {
+		text += " " + arguments
+	}
+	model.appendItem(transcriptItem{kind: itemUser, text: text})
+	model.currentAssistant = -1
+	model.running = true
+	model.status = "Updating goal"
+	model.refreshTranscript()
+
+	action := "set"
+	request := dagoal.SetRequest{}
+	continueWork := false
+	switch {
+	case arguments == "" || arguments == "show" || arguments == "status":
+		action = "show"
+	case arguments == "pause":
+		action = "pause"
+		status := dagoal.StatusPaused
+		request.Status = &status
+	case arguments == "resume":
+		action = "resume"
+		status := dagoal.StatusActive
+		request.Status = &status
+		continueWork = true
+	case arguments == "clear":
+		action = "clear"
+	case strings.HasPrefix(arguments, "budget "):
+		action = "budget"
+		value := strings.TrimSpace(strings.TrimPrefix(arguments, "budget "))
+		if value == "clear" {
+			request.Budget = dagoal.ClearBudget()
+			break
+		}
+		budget, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || budget <= 0 {
+			model.running = false
+			model.status = "Ready"
+			model.appendItem(transcriptItem{kind: itemError, text: "Usage: /goal budget <positive tokens|clear>"})
+			model.refreshTranscript()
+			return nil
+		}
+		request.Budget = dagoal.SetBudget(budget)
+	default:
+		objective := arguments
+		status := dagoal.StatusActive
+		request.Objective = &objective
+		request.Status = &status
+		continueWork = true
+	}
+	return runGoalAction(model.ctx, model.runner, model.threadID, action, request, continueWork)
+}
+
+func loadGoal(ctx context.Context, runner agentRunner, threadID string) tea.Cmd {
+	return func() tea.Msg {
+		goal, err := runner.Goal(ctx, threadID)
+		return goalLoadedMsg{goal: goal, err: err}
+	}
+}
+
+func runGoalAction(ctx context.Context, runner agentRunner, threadID, action string, request dagoal.SetRequest, continueWork bool) tea.Cmd {
+	return func() tea.Msg {
+		if action == "show" {
+			goal, err := runner.Goal(ctx, threadID)
+			return goalActionMsg{action: action, goal: goal, err: err}
+		}
+		if action == "clear" {
+			cleared, err := runner.ClearGoal(ctx, threadID)
+			return goalActionMsg{action: action, cleared: cleared, err: err}
+		}
+		goal, err := runner.SetGoal(ctx, threadID, request)
+		return goalActionMsg{action: action, goal: goal, continueWork: continueWork, err: err}
+	}
+}
+
+func (model *tuiModel) finishGoalAction(message goalActionMsg) (tea.Model, tea.Cmd) {
+	model.running = false
+	if message.err != nil {
+		model.status = "Goal error"
+		model.appendItem(transcriptItem{kind: itemError, text: message.err.Error()})
+		model.refreshTranscript()
+		return model, nil
+	}
+	if message.action == "clear" {
+		model.goal = nil
+		model.status = "Ready"
+		text := "No goal was set."
+		if message.cleared {
+			text = "Goal cleared."
+		}
+		model.appendItem(transcriptItem{kind: itemNotice, text: text})
+		model.refreshTranscript()
+		return model, nil
+	}
+	model.goal = message.goal
+	model.status = "Ready"
+	switch message.action {
+	case "show", "budget":
+		model.appendItem(transcriptItem{kind: itemNotice, text: formatGoal(message.goal)})
+	case "pause":
+		model.appendItem(transcriptItem{kind: itemNotice, text: "Goal paused."})
+	case "resume":
+		model.appendItem(transcriptItem{kind: itemNotice, text: "Goal resumed."})
+	default:
+		model.appendItem(transcriptItem{kind: itemNotice, text: "Goal set. " + formatGoal(message.goal)})
+	}
+	model.refreshTranscript()
+	if message.continueWork && message.goal != nil && message.goal.Actionable() {
+		return model, model.startGoalContinuation()
+	}
+	return model, nil
+}
+
+func formatGoal(goal *dagoal.Goal) string {
+	if goal == nil {
+		return "No goal set. Usage: /goal <objective>"
+	}
+	budget := "unbounded"
+	if goal.TokenBudget != nil {
+		budget = fmt.Sprintf("%d/%d tokens", goal.TokensUsed, *goal.TokenBudget)
+	} else if goal.TokensUsed > 0 {
+		budget = fmt.Sprintf("%d tokens used", goal.TokensUsed)
+	}
+	return fmt.Sprintf("%s\nStatus: %s · %s · %ds", goal.Objective, goal.Status, budget, goal.TimeUsedSeconds)
+}
+
 func (model *tuiModel) submitPrompt(prompt string) tea.Cmd {
 	model.appendItem(transcriptItem{kind: itemUser, text: prompt})
 	model.currentAssistant = -1
@@ -329,6 +492,19 @@ func (model *tuiModel) submitPrompt(prompt string) tea.Cmd {
 		Config:   dacheckpoint.Config{ThreadID: model.threadID},
 		Messages: []damessage.Message{damessage.Human(prompt)}, SkipValueEvents: true,
 	})
+}
+
+func (model *tuiModel) startGoalContinuation() tea.Cmd {
+	if model.goal == nil || !model.goal.Actionable() {
+		return nil
+	}
+	model.currentAssistant = -1
+	command := model.startStream(dagent.Input{
+		Config:   dacheckpoint.Config{ThreadID: model.threadID},
+		Messages: []damessage.Message{dagoal.ContinuationMessage(*model.goal)}, SkipValueEvents: true,
+	})
+	model.status = "Continuing goal"
+	return command
 }
 
 func (model *tuiModel) startStream(input dagent.Input) tea.Cmd {
@@ -489,6 +665,9 @@ func (model *tuiModel) finishStream(message streamDoneMsg) (tea.Model, tea.Cmd) 
 		model.refreshTranscript()
 		return model, nil
 	}
+	if goal, present := dagoal.FromState(message.result.State); present {
+		model.goal = goal
+	}
 	if model.approval == nil && len(message.result.Interrupts) > 0 {
 		requests, err := decodeApprovalRequests(message.result.Interrupts[0].Value)
 		if err != nil {
@@ -509,6 +688,10 @@ func (model *tuiModel) finishStream(message streamDoneMsg) (tea.Model, tea.Cmd) 
 		}
 		model.status = "Review action"
 	} else {
+		if model.goal != nil && model.goal.Actionable() {
+			model.refreshTranscript()
+			return model, model.startGoalContinuation()
+		}
 		model.status = "Ready"
 	}
 	model.refreshTranscript()
@@ -835,7 +1018,11 @@ func (model *tuiModel) renderStatus() string {
 	first := left + strings.Repeat(" ", space) + right
 	statusWidth := max(model.width-1, 1)
 	id := truncate(model.threadID, 8)
-	suffix := "  •  " + id
+	goalStatus := ""
+	if model.goal != nil {
+		goalStatus = "  •  goal:" + string(model.goal.Status)
+	}
+	suffix := goalStatus + "  •  " + id
 	pathWidth := max(statusWidth-lipgloss.Width(suffix), 1)
 	secondText := truncate(shortPath(model.workingDir), pathWidth) + suffix
 	second := lipgloss.NewStyle().Background(colorSurface).Foreground(colorMuted).Width(statusWidth).

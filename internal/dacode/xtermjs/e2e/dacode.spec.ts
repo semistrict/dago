@@ -357,11 +357,29 @@ test("accepts keyboard input and renders local slash-command output", async ({ p
 
   await page.keyboard.type("/help");
   await page.keyboard.press("Enter");
-  await expect.poll(() => terminalText(page)).toContain("Commands: /help  /clear  /new  /threads  /model  /quit");
+  await expect.poll(() => terminalText(page)).toContain("Commands: /help  /clear  /new  /threads  /model  /goal  /quit");
 
   await page.keyboard.type("/model");
   await page.keyboard.press("Enter");
   await expect.poll(() => terminalText(page)).toContain("Model: openai:gpt-5.6-terra");
+});
+
+test("sets and pauses a goal", async ({ page }) => {
+  await openTerminal(page);
+
+  await page.keyboard.type("/goal Finish the release checklist");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("Goal set. Finish the release checklist");
+  await expect.poll(() => terminalText(page)).toContain("goal:active");
+  await expect.poll(() => terminalText(page)).toContain("Continuing goal…");
+
+  await page.keyboard.press("Control+c");
+  await expect.poll(() => terminalText(page)).toContain("Operation cancelled.");
+
+  await page.keyboard.type("/goal pause");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("Goal paused.");
+  await expect.poll(() => terminalText(page)).toContain("goal:paused");
 });
 
 test("reports unknown slash commands and clears local output", async ({ page }) => {

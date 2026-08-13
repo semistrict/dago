@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/dagoal"
 	"github.com/semistrict/dago/damessage"
 )
 
@@ -272,6 +273,14 @@ func runNonInteractive(ctx context.Context, runner agentRunner, workingDir, thre
 			return resultErr
 		}
 		if len(result.Interrupts) == 0 {
+			goal, present := dagoal.FromState(result.State)
+			if present && goal != nil && goal.Actionable() {
+				input = dagent.Input{
+					Config:   dacheckpoint.Config{ThreadID: threadID},
+					Messages: []damessage.Message{dagoal.ContinuationMessage(*goal)}, SkipValueEvents: true,
+				}
+				continue
+			}
 			break
 		}
 		if !autoReview {
