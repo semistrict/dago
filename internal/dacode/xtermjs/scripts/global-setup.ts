@@ -1,6 +1,8 @@
 import type { FullConfig } from "@playwright/test";
 import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
@@ -20,10 +22,34 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
     throw new Error(`failed to build dacode:\n${build.stderr}`);
   }
 
+  const slowAPI = createServer((request, response) => {
+    request.resume();
+    setTimeout(() => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          id: "response-playwright",
+          status: "completed",
+          output: [{ type: "message", id: "message-playwright", role: "assistant", content: [] }],
+          usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 }
+        })
+      );
+    }, 2_000);
+  });
+  slowAPI.listen(0, "127.0.0.1");
+  await once(slowAPI, "listening");
+  const slowAddress = slowAPI.address();
+  if (!slowAddress || typeof slowAddress === "string") {
+    slowAPI.close();
+    await rm(temporary, { force: true, recursive: true });
+    throw new Error("failed to start slow Responses API fixture");
+  }
+  const slowAPIURL = `http://127.0.0.1:${slowAddress.port}`;
+
   const servers = [
-    startServer(binary, temporary, "default"),
-    startServer(binary, temporary, "manual", ["--manual-review"]),
-    startServer(binary, temporary, "yolo", ["--yolo"])
+    startServer(binary, temporary, "default", slowAPIURL),
+    startServer(binary, temporary, "manual", slowAPIURL, ["--manual-review"]),
+    startServer(binary, temporary, "yolo", slowAPIURL, ["--yolo"])
   ];
 
   try {
@@ -33,17 +59,27 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
     process.env.PLAYWRIGHT_YOLO_URL = yoloURL;
   } catch (error) {
     for (const server of servers) server.kill("SIGTERM");
+    slowAPI.closeAllConnections();
+    slowAPI.close();
     await rm(temporary, { force: true, recursive: true });
     throw error;
   }
 
   return async () => {
     await Promise.all(servers.map(stopServer));
+    slowAPI.closeAllConnections();
+    await new Promise<void>((resolve) => slowAPI.close(() => resolve()));
     await rm(temporary, { force: true, recursive: true });
   };
 }
 
-function startServer(binary: string, temporary: string, name: string, extraArguments: string[] = []) {
+function startServer(
+  binary: string,
+  temporary: string,
+  name: string,
+  baseURL: string,
+  extraArguments: string[] = []
+) {
   return spawn(
     binary,
     [
@@ -58,7 +94,12 @@ function startServer(binary: string, temporary: string, name: string, extraArgum
     ],
     {
       cwd: root,
-      env: { ...process.env, OPENAI_API_KEY: "playwright-placeholder", TERM: "xterm-256color" },
+      env: {
+        ...process.env,
+        OPENAI_API_KEY: "playwright-placeholder",
+        OPENAI_BASE_URL: baseURL,
+        TERM: "xterm-256color"
+      },
       stdio: ["ignore", "pipe", "pipe"]
     }
   );

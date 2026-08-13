@@ -160,6 +160,7 @@ func (model *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var command tea.Cmd
 		model.spinner, command = model.spinner.Update(typed)
+		model.refreshSpinner()
 		return model, command
 	case streamEventMsg:
 		model.applyEvent(typed.event)
@@ -664,6 +665,13 @@ func (model *tuiModel) refreshTranscript() {
 	}
 	model.viewport.SetContent(model.renderTranscript())
 	model.viewport.GotoBottom()
+}
+
+func (model *tuiModel) refreshSpinner() {
+	if !model.ready || !model.running {
+		return
+	}
+	model.viewport.SetContent(model.renderTranscript())
 }
 
 func (model *tuiModel) View() string {

@@ -205,6 +205,35 @@ test("accepts ctrl+j as a composer newline without submitting", async ({ page })
   await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
 });
 
+test("animates the spinner while a response is pending", async ({ page }) => {
+  await openTerminal(page);
+
+  await page.keyboard.type("wait for the response");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("Thinking…");
+
+  const frames = await page.evaluate(async () => {
+    const visibleFrame = (): string => {
+      const terminal = window.dacodeTerminal;
+      if (!terminal) return "";
+      const buffer = terminal.buffer.active;
+      for (let row = 0; row < buffer.length; row += 1) {
+        const text = buffer.getLine(row)?.translateToString(true) ?? "";
+        if (text.includes("Thinking…")) return text.trimStart().charAt(0);
+      }
+      return "";
+    };
+    const observed: string[] = [];
+    for (let sample = 0; sample < 8; sample += 1) {
+      observed.push(visibleFrame());
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return observed.filter(Boolean);
+  });
+
+  expect(new Set(frames).size).toBeGreaterThan(1);
+});
+
 test("refits the TUI when the browser becomes narrow", async ({ page }) => {
   await openTerminal(page);
   const desktopColumns = await page.evaluate(() => window.dacodeTerminal?.cols ?? 0);
