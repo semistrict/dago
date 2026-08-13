@@ -11,6 +11,7 @@ import (
 	"time"
 
 	dskill "github.com/semistrict/dago/daskill"
+	"github.com/semistrict/dago/daworkspace"
 )
 
 const (
@@ -70,11 +71,9 @@ func RenderPromptXML(skills []Skill) string {
 // DefaultDirs returns the default skill directories to search.
 // These are always returned if they exist, regardless of the current working directory.
 func DefaultDirs() []string {
-	var dirs []string
-
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return dirs
+		return nil
 	}
 
 	// Search these directories for skills:
@@ -87,13 +86,7 @@ func DefaultDirs() []string {
 		filepath.Join(home, ".shelley"),
 	}
 
-	for _, dir := range candidateDirs {
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			dirs = append(dirs, dir)
-		}
-	}
-
-	return dirs
+	return daworkspace.ExistingDirectories(candidateDirs...)
 }
 
 // expandPath expands ~ to the user's home directory.

@@ -216,7 +216,7 @@ func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
 	}
 	ensureMessageIDsInValues(values)
 	execution, err := agent.graph.Invoke(ctx, graph.Invocation{
-		Config: input.Config, State: values, Resume: input.Resume, Deps: input.Deps,
+		Config: input.Config, State: values, Resume: portableResume(input.Resume), Deps: input.Deps,
 		Configurable:    cloneConfigurable(input.Configurable),
 		SkipValueEvents: input.SkipValueEvents,
 	})
@@ -224,6 +224,39 @@ func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
 		return Result{}, err
 	}
 	return resultFromExecution(execution, agent.private, input.DiscardResultState)
+}
+
+func portableResume(value any) any {
+	response, ok := value.(ApprovalResponse)
+	if !ok {
+		if pointer, pointerOK := value.(*ApprovalResponse); pointerOK && pointer != nil {
+			response, ok = *pointer, true
+		}
+	}
+	if !ok {
+		return value
+	}
+	decisions := make(map[string]any, len(response.Decisions))
+	for callID, choice := range response.Decisions {
+		record := map[string]any{"decision": string(choice.Decision)}
+		if choice.Call != nil {
+			var arguments any
+			if err := json.Unmarshal(choice.Call.Arguments, &arguments); err != nil {
+				arguments = string(choice.Call.Arguments)
+			}
+			record["call"] = map[string]any{
+				"id": choice.Call.ID, "name": choice.Call.Name, "arguments": arguments,
+			}
+		}
+		if choice.Reason != "" {
+			record["reason"] = choice.Reason
+		}
+		if choice.Message != "" {
+			record["message"] = choice.Message
+		}
+		decisions[callID] = record
+	}
+	return map[string]any{"decisions": decisions}
 }
 
 // Cancel durably appends final messages/state and clears pending graph tasks.

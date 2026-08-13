@@ -14,7 +14,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Replay by checkpoint and thread fork | verified | public history/replay/fork helpers and saver copy/replay tests |
 | SQLite standard schema and saver behavior | verified | schema, conflict, history, copy, prune, restart tests |
 | PostgreSQL migrations 0–9 and saver behavior | verified | migration tests and live saver integration gate |
-| Safe checkpoint payload subset | verified | serde round trips and rejection tests |
+| Safe checkpoint payload subset | verified | serde round trips, portable named-scalar normalization, approval-interrupt persistence, and rejection tests |
 | Bidirectional Python payload fixtures | verified | SQLite and PostgreSQL are generated, read, and continued in both directions |
 | State, memory, store, filesystem, composite, local shell | verified | shared backend and thread-scoped delta-state tests |
 | Rooted local filesystem confinement | verified | `os.Root` operations plus traversal, symlink-escape, write, delete, glob, grep, upload, and download tests |
@@ -30,6 +30,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Task-scoped structured output for declarative subagents | verified | per-task schema validation and precompiled-runnable rejection tests |
 | Summarization, offload, and compaction | verified | AND/OR/fraction threshold clauses, valid cutoffs, thread-aware offload, and state-update tests |
 | Skills and memory prompt injection | verified | safe YAML, deterministic discovery, warning, ordering, and prompt tests |
+| Workspace instruction discovery | verified | `daworkspace` precedence, trust gating, deduplication, scoped-file, directory-filter, and JSON-contract tests plus shelley-in-dago prompt coverage |
 | Provider and harness profiles | verified | built-in Anthropic harness overlays; explicit Nemotron profile composition; explicit OpenAI/NVIDIA/OpenRouter construction-profile sets; active repair, retry, budget, policy, entity, follow-up, and final-answer contracts |
 | Token/update/task/interrupt/custom streaming | verified | graph, agent, and provider stream tests |
 | Agent-event and model-chunk iterators | verified | completion, terminal-error, and early-break closure tests while retaining explicit `Next`/`Close` |

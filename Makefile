@@ -1,4 +1,4 @@
-.PHONY: check checkpoint-interop coverage drift fmt fmt-check generate test test-openai-live test-race tinygo vet
+.PHONY: check checkpoint-interop coverage dacode-e2e drift fmt fmt-check generate test test-openai-live test-race tinygo vet
 
 check: fmt-check drift vet test test-race
 
@@ -34,6 +34,9 @@ tinygo:
 
 coverage:
 	go test -coverprofile=coverage.out ./...
+
+dacode-e2e:
+	cd internal/dacode/xtermjs && pnpm test:e2e
 
 checkpoint-interop:
 	./scripts/check-checkpoint-interop.sh

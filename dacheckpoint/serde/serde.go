@@ -186,6 +186,16 @@ func toWire(value any, depth, maxDepth int) (any, error) {
 
 	reflected := reflect.ValueOf(value)
 	switch reflected.Kind() {
+	case reflect.Bool:
+		return reflected.Bool(), nil
+	case reflect.String:
+		return reflected.String(), nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return reflected.Int(), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return reflected.Uint(), nil
+	case reflect.Float32, reflect.Float64:
+		return reflected.Float(), nil
 	case reflect.Slice, reflect.Array:
 		result := make([]any, reflected.Len())
 		for index := 0; index < reflected.Len(); index++ {

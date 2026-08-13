@@ -40,6 +40,31 @@ func TestSafeTypedTags(t *testing.T) {
 	}
 }
 
+func TestSafeNamedScalarsRoundTripAsPortablePrimitives(t *testing.T) {
+	type decision string
+	type count int32
+	input := map[string]any{
+		"allowed_decisions": []decision{"approve", "reject"},
+		"attempt":           count(2),
+	}
+	codec := New(Limits{})
+	encoded, err := codec.Encode(input)
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	decoded, err := codec.Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	want := map[string]any{
+		"allowed_decisions": []any{"approve", "reject"},
+		"attempt":           uint64(2),
+	}
+	if !reflect.DeepEqual(decoded, want) {
+		t.Fatalf("Decode() = %#v, want %#v", decoded, want)
+	}
+}
+
 func TestSafeCheckpointRoundTrip(t *testing.T) {
 	codec := New(Limits{})
 	call := damessage.Message{

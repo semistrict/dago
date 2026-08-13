@@ -18,6 +18,41 @@ go get github.com/semistrict/dago
 
 dago requires Go 1.26 or newer.
 
+### Interactive coding agent
+
+`dacode` is a terminal coding agent with durable threads, streaming tool activity,
+workspace-aware instructions and skills, and review gates for file writes and shell
+commands. It uses Bubble Tea, Bubbles, and Lip Gloss for its terminal interface.
+
+```sh
+go install github.com/semistrict/dago/cmd/dacode@latest
+dacode
+```
+
+Run the TUI directly without installing it:
+
+```sh
+go run github.com/semistrict/dago/cmd/dacode@latest --cwd .
+```
+
+From a dago source checkout, use `go run ./cmd/dacode` instead.
+
+On first run, `dacode` opens OpenAI subscription sign-in and stores its refreshable
+session under the user configuration directory. Set `OPENAI_API_KEY` to use API-key
+authentication instead; an explicit key takes precedence over the saved session.
+
+Actions that change files or run commands are routed through a separate, read-only
+reviewer model by default. Review failures return to a user decision.
+`--approval-model` selects that reviewer, `--manual-review` requires a user decision
+for every gated action, and `--yolo` bypasses review.
+
+Use `-n 'task'` for one-shot operation, `-r ID` to resume a durable thread, and
+`--cwd PATH` to select the workspace.
+
+`--serve-xtermjs` serves the same PTY-backed TUI on a loopback-only web address
+and prints its URL. Use `--xtermjs-address HOST:PORT` to select a specific
+loopback listener.
+
 ## Quick start
 
 Models implement the small `damodel.Chat` interface. This example uses the OpenAI
@@ -261,6 +296,7 @@ limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 | `daagentprotocol` | Agent Protocol background-subagent client |
 | `daprofilecfg` | JSON/YAML-safe harness-profile configuration |
 | `daskill` | Agent Skills parsing, discovery, validation, and rendering contracts |
+| `daworkspace` | Shared workspace-instruction discovery, scoped guidance summaries, and conventional directory filtering |
 | `daserver` | Embeddable LangGraph Agent Server protocol for LangSmith Studio and SDK clients |
 
 The graph runtime is internal. dago claims compatibility only for the Deep Agents

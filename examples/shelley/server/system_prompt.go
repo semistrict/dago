@@ -18,6 +18,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/semistrict/dago/daworkspace"
 	"github.com/semistrict/dago/examples/shelley/skills"
 )
 
@@ -54,23 +55,7 @@ type CodebaseInfo struct {
 // SubdirGuidanceSummary returns a prompt-friendly summary of subdirectory guidance files.
 // If ≤10, lists them explicitly. If >10, lists the first 10 and notes how many more exist.
 func (c *CodebaseInfo) SubdirGuidanceSummary() string {
-	if len(c.SubdirGuidanceFiles) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("\nSubdirectory guidance files (read before editing files in these directories):\n")
-	show := c.SubdirGuidanceFiles
-	if len(show) > 10 {
-		show = show[:10]
-	}
-	for _, f := range show {
-		b.WriteString(f)
-		b.WriteByte('\n')
-	}
-	if len(c.SubdirGuidanceFiles) > 10 {
-		fmt.Fprintf(&b, "...and %d more. Use `find` to discover others.\n", len(c.SubdirGuidanceFiles)-10)
-	}
-	return b.String()
+	return daworkspace.FormatSubdirectoryGuidance(c.SubdirGuidanceFiles, 10)
 }
 
 // SystemPromptOption configures optional fields on the system prompt.
@@ -695,174 +680,31 @@ func collectGitInfo(dir string) (*GitInfo, error) {
 }
 
 func collectCodebaseInfo(wd string, gitInfo *GitInfo, trustWorkspace bool) (*CodebaseInfo, error) {
-	info := &CodebaseInfo{
-		InjectFiles:        []string{},
-		InjectFileContents: make(map[string]string),
-	}
-
-	// Track seen files to avoid duplicates: by resolved path (handles symlinks
-	// and case-insensitive filesystems) and by content (handles copies).
-	seenFiles := make(map[string]bool)
-	seenContents := make(map[string]bool)
-
-	// Check for user-level agent instructions in ~/.config/AGENTS.md, ~/.config/shelley/AGENTS.md, and ~/.shelley/AGENTS.md
+	var userFiles []string
 	if home, err := os.UserHomeDir(); err == nil {
-		userAgentsFiles := []string{
+		userFiles = []string{
 			filepath.Join(home, ".config", "AGENTS.md"),
 			filepath.Join(home, ".config", "shelley", "AGENTS.md"),
 			filepath.Join(home, ".shelley", "AGENTS.md"),
 		}
-		for _, f := range userAgentsFiles {
-			canonical := resolveAndNormalize(f)
-			if seenFiles[canonical] {
-				continue
-			}
-			if content, err := os.ReadFile(f); err == nil && len(content) > 0 {
-				contentKey := string(content)
-				if seenContents[contentKey] {
-					continue
-				}
-				info.InjectFiles = append(info.InjectFiles, f)
-				info.InjectFileContents[f] = contentKey
-				seenFiles[canonical] = true
-				seenContents[contentKey] = true
-			}
-		}
 	}
-	if !trustWorkspace {
-		return info, nil
-	}
-
-	// Determine the root directory to search
 	searchRoot := wd
 	if gitInfo != nil {
 		searchRoot = gitInfo.Root
 	}
-
-	// Find root-level guidance files (case-insensitive)
-	rootGuidanceFiles := findGuidanceFilesInDir(searchRoot)
-	for _, file := range rootGuidanceFiles {
-		canonical := resolveAndNormalize(file)
-		if seenFiles[canonical] {
-			continue
-		}
-
-		content, err := os.ReadFile(file)
-		if err == nil && len(content) > 0 {
-			contentKey := string(content)
-			if seenContents[contentKey] {
-				continue
-			}
-			seenFiles[canonical] = true
-			seenContents[contentKey] = true
-			info.InjectFiles = append(info.InjectFiles, file)
-			info.InjectFileContents[file] = contentKey
-		}
-	}
-
-	// If working directory is different from root, also check working directory
-	if wd != searchRoot {
-		wdGuidanceFiles := findGuidanceFilesInDir(wd)
-		for _, file := range wdGuidanceFiles {
-			canonical := resolveAndNormalize(file)
-			if seenFiles[canonical] {
-				continue
-			}
-
-			content, err := os.ReadFile(file)
-			if err == nil && len(content) > 0 {
-				contentKey := string(content)
-				if seenContents[contentKey] {
-					continue
-				}
-				seenFiles[canonical] = true
-				seenContents[contentKey] = true
-				info.InjectFiles = append(info.InjectFiles, file)
-				info.InjectFileContents[file] = contentKey
-			}
-		}
-	}
-
-	// Find subdirectory guidance files for the system prompt listing
-	info.SubdirGuidanceFiles = findSubdirGuidanceFiles(searchRoot)
-
-	return info, nil
-}
-
-func findGuidanceFilesInDir(dir string) []string {
-	// Read directory entries to handle case-insensitive file systems
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-
-	var found []string
-	seen := make(map[string]bool)
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		lowerName := strings.ToLower(entry.Name())
-		if isGuidanceFile(lowerName) && lowerName != "readme.md" && !seen[lowerName] {
-			seen[lowerName] = true
-			found = append(found, filepath.Join(dir, entry.Name()))
-		}
-	}
-	return found
-}
-
-// isGuidanceFile returns true if the lowercased filename is a recognized guidance file.
-func isGuidanceFile(lowerName string) bool {
-	switch lowerName {
-	case "agents.md", "agent.md", "claude.md", "dear_llm.md", "readme.md":
-		return true
-	}
-	return false
-}
-
-// findSubdirGuidanceFiles returns guidance files in subdirectories of root (not root itself).
-func findSubdirGuidanceFiles(root string) []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	var found []string
-	seen := make(map[string]bool)
-
-	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if ctx.Err() != nil {
-			return filepath.SkipAll
-		}
-		if err != nil {
-			return nil // Continue on errors
-		}
-		if info.IsDir() {
-			// Skip hidden directories and common ignore patterns
-			if strings.HasPrefix(info.Name(), ".") || info.Name() == "node_modules" || info.Name() == "vendor" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// Only count files in subdirectories, not root
-		if filepath.Dir(path) != root && isGuidanceFile(strings.ToLower(info.Name())) {
-			lowerPath := strings.ToLower(path)
-			if !seen[lowerPath] {
-				seen[lowerPath] = true
-				found = append(found, path)
-			}
-		}
-		return nil
+	discovered := daworkspace.DiscoverGuidance(context.Background(), daworkspace.GuidanceOptions{
+		Root: searchRoot, WorkingDirectory: wd, UserFiles: userFiles, TrustWorkspace: trustWorkspace,
 	})
-	return found
-}
-
-// resolveAndNormalize returns a canonical lowercase path for dedup.
-// It resolves symlinks and normalizes to lowercase for case-insensitive FS.
-func resolveAndNormalize(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
+	info := &CodebaseInfo{
+		InjectFiles:         make([]string, 0, len(discovered.Root)),
+		InjectFileContents:  make(map[string]string, len(discovered.Root)),
+		SubdirGuidanceFiles: discovered.Subdirectories,
 	}
-	return strings.ToLower(path)
+	for _, file := range discovered.Root {
+		info.InjectFiles = append(info.InjectFiles, file.Path)
+		info.InjectFileContents[file.Path] = file.Content
+	}
+	return info, nil
 }
 
 func isSudoAvailable() bool {

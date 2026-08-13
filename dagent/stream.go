@@ -103,7 +103,7 @@ func (agent *Agent) Stream(ctx context.Context, input Input) *Stream {
 	ensureMessageIDsInValues(values)
 	return &Stream{
 		graph: agent.graph.Stream(ctx, graph.Invocation{
-			Config: input.Config, State: values, Resume: input.Resume, Deps: input.Deps,
+			Config: input.Config, State: values, Resume: portableResume(input.Resume), Deps: input.Deps,
 			Configurable:    cloneConfigurable(input.Configurable),
 			SkipValueEvents: input.SkipValueEvents,
 		}, defaultStreamBuffer),

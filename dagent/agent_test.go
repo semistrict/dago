@@ -860,6 +860,55 @@ func TestHumanApprovalPausesBeforeAnyToolAndResumesAllDecisions(t *testing.T) {
 	}
 }
 
+func TestHumanApprovalInterruptPersistsAndResumesFromSQLite(t *testing.T) {
+	saver, err := checkpointsqlite.Open(filepath.Join(t.TempDir(), "approval.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer saver.Close()
+
+	var executions atomic.Int32
+	action := datool.Func{
+		Spec: datool.Definition{Name: "danger", Description: "Danger", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+			executions.Add(1)
+			return datool.TextResult("done"), nil
+		},
+	}
+	rules := []ApprovalRule{{
+		Pattern: "danger", Description: "Allow danger?",
+		AllowedDecisions: []ApprovalDecision{ApprovalApprove, ApprovalReject},
+	}}
+	firstModel := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{
+		Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
+			ID: "call", Name: "danger", Arguments: json.RawMessage(`{}`),
+		}}}},
+	})
+	config := dacheckpoint.Config{ThreadID: "sqlite-approval"}
+	paused, err := New(firstModel, Options{Tools: []datool.Tool{action}, Middleware: []Middleware{HumanApproval(rules)}, Saver: saver}).Invoke(
+		context.Background(), Input{Config: config, Messages: []damessage.Message{damessage.Human("go")}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paused.Interrupts) != 1 || executions.Load() != 0 {
+		t.Fatalf("paused = %#v, executions = %d", paused.Interrupts, executions.Load())
+	}
+
+	secondModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("finished")}})
+	resumed, err := New(secondModel, Options{Tools: []datool.Tool{action}, Middleware: []Middleware{HumanApproval(rules)}, Saver: saver}).Invoke(
+		context.Background(), Input{Config: config, Resume: ApprovalResponse{Decisions: map[string]ApprovalChoice{
+			"call": {Decision: ApprovalApprove},
+		}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Interrupts) != 0 || executions.Load() != 1 || resumed.Messages[len(resumed.Messages)-1].TextContent() != "finished" {
+		t.Fatalf("resumed = %#v, executions = %d", resumed, executions.Load())
+	}
+}
+
 func TestHumanApprovalRespondsWithoutExecutingTool(t *testing.T) {
 	var executions atomic.Int32
 	ask := datool.Func{

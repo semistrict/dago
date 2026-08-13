@@ -112,6 +112,14 @@ make -C examples/shelley wasm-tinygo
 not yet in TinyGo 0.41.1. Remove the backports when updating the pinned release
 to one that contains both fixes.
 
+Run the dacode PTY browser coverage from `internal/dacode/xtermjs`:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+pnpm test:e2e
+```
+
 Use focused tests while iterating, then run the owning module's full checks before
 publishing a change.
 
