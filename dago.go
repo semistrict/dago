@@ -25,6 +25,7 @@ type Options struct {
 	Middleware           []dagent.Middleware
 	Backend              dabackend.Backend
 	Filesystem           Filesystem
+	Interpreter          Interpreter
 	Subagents            []Subagent
 	AsyncSubagents       []AsyncSubagent
 	AsyncSubagentPrompt  string
@@ -117,6 +118,13 @@ func newAgent(model damodel.Chat, options Options) (*dagent.Agent, error) {
 		core = append(core, middleware)
 	}
 	core = append(core, filesystem)
+	if options.Interpreter.Enabled {
+		interpreter, err := newInterpreter(options.Interpreter)
+		if err != nil {
+			return nil, err
+		}
+		core = append(core, interpreter)
+	}
 
 	subagentPrivateState := map[string]bool{}
 	if !options.DisableSubagents {
@@ -197,6 +205,7 @@ func newAgent(model damodel.Chat, options Options) (*dagent.Agent, error) {
 	if len(profile.ExcludeTools) > 0 {
 		middleware = append(middleware, ToolExclusion(profile.ExcludeTools))
 	}
+	middleware = moveMiddlewareLast(middleware, "code_interpreter")
 	for name, private := range privateStateFields(options.StateFields, middleware) {
 		if private {
 			subagentPrivateState[name] = true
@@ -266,6 +275,13 @@ func buildDeclarativeSubagents(parentModel damodel.Chat, options Options, inheri
 		}
 		filesystem.Tools = applyToolProfile(filesystem.Tools, profile.ToolDescriptions, nil)
 		core := []dagent.Middleware{filesystem}
+		if options.Interpreter.Enabled {
+			interpreter, err := newInterpreter(options.Interpreter)
+			if err != nil {
+				return nil, fmt.Errorf("subagent %q interpreter: %w", spec.Name, err)
+			}
+			core = append(core, interpreter)
+		}
 		if !options.DisableSummary {
 			compact, err := newSummarization(options.Summarization.modelFor(chat), options.Backend, options.Summarization)
 			if err != nil {
@@ -299,6 +315,7 @@ func buildDeclarativeSubagents(parentModel damodel.Chat, options Options, inheri
 		if len(profile.ExcludeTools) > 0 {
 			middleware = append(middleware, ToolExclusion(profile.ExcludeTools))
 		}
+		middleware = moveMiddlewareLast(middleware, "code_interpreter")
 		tools := spec.Tools
 		if tools == nil {
 			tools = inheritedTools
@@ -371,6 +388,13 @@ const defaultGeneralSubagentPrompt = "In order to complete the objective that th
 func buildGeneralSubagent(model damodel.Chat, options Options, filesystem dagent.Middleware, profile Profile, exclusionMatches map[string]bool, structuredOutput *dagent.StructuredOutput) (*dagent.Agent, error) {
 	middleware := []dagent.Middleware{}
 	middleware = append(middleware, filesystem)
+	if options.Interpreter.Enabled {
+		interpreter, err := newInterpreter(options.Interpreter)
+		if err != nil {
+			return nil, err
+		}
+		middleware = append(middleware, interpreter)
+	}
 	if !options.DisableSummary {
 		compact, err := newSummarization(options.Summarization.modelFor(model), options.Backend, options.Summarization)
 		if err != nil {
@@ -415,6 +439,7 @@ func buildGeneralSubagent(model damodel.Chat, options Options, filesystem dagent
 	if len(profile.ExcludeTools) > 0 {
 		middleware = append(middleware, ToolExclusion(profile.ExcludeTools))
 	}
+	middleware = moveMiddlewareLast(middleware, "code_interpreter")
 	prompt := applyProfilePrompt(profile, "", defaultGeneralSubagentPrompt)
 	if profile.GeneralPurpose != nil && profile.GeneralPurpose.SystemPrompt != nil {
 		prompt = strings.TrimSpace(*profile.GeneralPurpose.SystemPrompt)
@@ -471,6 +496,18 @@ func mergeMiddleware(core, tail, custom []dagent.Middleware) []dagent.Middleware
 		copy(result[insertAt:], additions)
 	}
 	return result
+}
+
+func moveMiddlewareLast(values []dagent.Middleware, name string) []dagent.Middleware {
+	for index, value := range values {
+		if value.Name != name || index == len(values)-1 {
+			continue
+		}
+		copy(values[index:], values[index+1:])
+		values[len(values)-1] = value
+		break
+	}
+	return values
 }
 
 func hasSubagent(values []Subagent, name string) bool {

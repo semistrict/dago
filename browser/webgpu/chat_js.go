@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"syscall/js"
 
+	"github.com/semistrict/dago/browser/jsbridge"
 	"github.com/semistrict/dago/damodel"
-	"github.com/semistrict/dago/dawasm/jsbridge"
 )
 
 // Options configures the stable JavaScript bridge names and model profile.

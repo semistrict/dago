@@ -3,7 +3,7 @@ import {
   toQwenMessages,
   toQwenTools,
   webGPUErrorMessage,
-} from "@semistrict/dawasm-browser/webgpu-qwen";
+} from "@semistrict/browser/webgpu-qwen";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(`Assertion failed: ${message}`);

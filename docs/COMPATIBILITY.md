@@ -17,6 +17,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Safe checkpoint payload subset | verified | serde round trips, portable named-scalar normalization, approval-interrupt persistence, and rejection tests |
 | Bidirectional Python payload fixtures | verified | SQLite and PostgreSQL are generated, read, and continued in both directions |
 | State, memory, store, filesystem, composite, local shell | verified | shared backend and thread-scoped delta-state tests |
+| Persistent JavaScript interpreter and programmatic tool calling | verified | pinned quickjs-rs WASM guest under Wazero's portable interpreter; full applicable upstream suite map in `docs/QUICKJS_TEST_PORT.md`; Promise settlement, typed PTC, interruption, WAFL dirty-page checkpoints, memory/SQLite/PostgreSQL restore, subagent dispatch, and browser execution tests |
 | Rooted local filesystem confinement | verified | `os.Root` operations plus traversal, symlink-escape, write, delete, glob, grep, upload, and download tests |
 | Filesystem result safety, media compaction, partial/uncapped grep, and transfer batching | verified | root filesystem contracts plus backend concurrency, pagination, deterministic grep, partial-error, and composite batch tests |
 | LangSmith remote sandbox | verified | SDK adapter tests; live test is credential-gated |
@@ -46,6 +47,10 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 ## Intentional differences
 
 - Go exposes one context-aware API rather than Python sync and async variants.
+- The JavaScript interpreter exposes durable checkpointed-thread state rather
+  than Python's additional turn-reset and per-call lifecycle modes. Its PTC
+  configuration is a typed tool-name allowlist; JavaScript names are safely
+  normalized instead of being rejected solely for identifier syntax.
 - Python decorators, runtime imports, reflection-driven runnable composition, and
   class hierarchy are replaced by small Go interfaces.
 - Pickle, arbitrary constructor tags, Pydantic and NumPy reconstruction, and

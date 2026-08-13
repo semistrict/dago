@@ -1,14 +1,14 @@
 # Reusable browser WebAssembly packages
 
-`dawasm` contains browser runtime pieces that are independent of any one agent
+`browser` contains browser runtime pieces that are independent of any one agent
 application.
 
 | Package | Environment | Compatibility contract |
 |---|---|---|
-| `dawasm/browserfs` | Go `js/wasm` | Implements `dabackend.Backend` at `/workspace`; File System Access API directories are indexed without reading bodies; virtual records use `metadata`, `get`, `put`, and `delete` operations. |
-| `dawasm/jsbridge` | Go `js/wasm` | Exposes retained global callbacks, cancellation-safe promise waits, JSON calls, and operation-store adapters. |
-| `dawasm/justbash` | Go and `js/wasm` | Stable JSON request/response boundary with command, cwd, timeout, stdout, stderr, exit code, and optional truncation. |
-| `dawasm/browser` | Browser TypeScript | Adapts the Go filesystem to just-bash, supplies record-oriented IndexedDB persistence, and owns the persistent just-bash mount. |
+| `browser/browserfs` | Go `js/wasm` | Implements `dabackend.Backend` at `/workspace`; File System Access API directories are indexed without reading bodies; virtual records use `metadata`, `get`, `put`, and `delete` operations. |
+| `browser/jsbridge` | Go `js/wasm` | Exposes retained global callbacks, cancellation-safe promise waits, JSON calls, and operation-store adapters. |
+| `browser/justbash` | Go and `js/wasm` | Stable JSON request/response boundary with command, cwd, timeout, stdout, stderr, exit code, and optional truncation. |
+| `browser/browser` | Browser TypeScript | Adapts the Go filesystem to just-bash, supplies record-oriented IndexedDB persistence, and owns the persistent just-bash mount. |
 
 Persisted browser file records are additive JSON objects keyed by path. The
 browser package does not own a database version or perform migrations; callers

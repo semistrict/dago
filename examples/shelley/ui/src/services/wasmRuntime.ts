@@ -1,6 +1,6 @@
 import { appPath } from "../basePath";
-import { BrowserDirectoryHandleStore } from "@semistrict/dawasm-browser/directory-handle";
-import type { BrowserDirectoryInfo } from "@semistrict/dawasm-browser/filesystem";
+import { BrowserDirectoryHandleStore } from "@semistrict/browser/directory-handle";
+import type { BrowserDirectoryInfo } from "@semistrict/browser/filesystem";
 
 type PendingRequest = {
   resolve: (response: Response) => void;

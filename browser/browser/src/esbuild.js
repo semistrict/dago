@@ -6,7 +6,7 @@ const zlibShim = fileURLToPath(new URL("./node-zlib.ts", import.meta.url));
 // browser worker bundle.
 export function justBashBrowserShims() {
   return {
-    name: "dawasm-just-bash-browser-shims",
+    name: "browser-just-bash-shims",
     setup(build) {
       build.onResolve({ filter: /^node:zlib$/ }, () => ({ path: zlibShim }));
     },

@@ -19,8 +19,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/semistrict/dago/browser/jsbridge"
 	"github.com/semistrict/dago/dabackend"
-	"github.com/semistrict/dago/dawasm/jsbridge"
 )
 
 const (

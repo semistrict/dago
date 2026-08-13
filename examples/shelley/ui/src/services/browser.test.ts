@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
-import { createBrowserFileStore } from "@semistrict/dawasm-browser/indexeddb";
-import { WasmFileSystemAdapter } from "@semistrict/dawasm-browser/filesystem";
+import { createBrowserFileStore } from "@semistrict/browser/indexeddb";
+import { WasmFileSystemAdapter } from "@semistrict/browser/filesystem";
 
-const databaseName = `dawasm-browser-test-${crypto.randomUUID()}`;
+const databaseName = `browser-test-${crypto.randomUUID()}`;
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -86,4 +86,4 @@ async function testConfigurableFilesystemBridge(): Promise<void> {
 
 await testRecordOrientedStore();
 await testConfigurableFilesystemBridge();
-console.log("dawasm browser package tests passed");
+console.log("browser package tests passed");

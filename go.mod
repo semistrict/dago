@@ -13,6 +13,8 @@ require (
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	github.com/tetratelabs/wabin v0.0.0-20230304001439-f6f874872834
+	github.com/tetratelabs/wazero v1.12.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
 )

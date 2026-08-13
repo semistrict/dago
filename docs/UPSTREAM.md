@@ -16,10 +16,16 @@ path is embedded in the repository.
 | Deep Agents TypeScript | `945b362d06d03728d16bc0020cb242a9eeae8451` | `DEEPAGENTS_TYPESCRIPT_ROOT` |
 | LangChain TypeScript | `62fc484b2a0d1ec5b8bebff4a8a0efe6300ada72` | `LANGCHAIN_TYPESCRIPT_ROOT` |
 | Shelley | `1d4cbe79c6be45cc0105d46819cb54844f98eddd` | `SHELLEY_UPSTREAM_ROOT` |
+| Deep Agents QuickJS | `217b9eb372fa51b0439434f31abc3ac22e6cd7f2` | `DEEPAGENTS_QUICKJS_ROOT` |
+| quickjs-rs | `278cf32d17b07a9ba2951ebc826256eef703182d` | `QUICKJS_RS_ROOT` |
+| WAFL | `c1585f4c3efbf2ba9354d1989cee8f075d013f27` | `WAFL_ROOT` |
 
 `make drift` validates the manifest structure and verifies the exact Git
 revision of each checkout whose variable is set. Missing optional checkouts do
 not make the normal suite machine-specific.
+
+The Deep Agents QuickJS suite-by-suite coverage and intentional Go runtime
+boundaries are recorded in [`QUICKJS_TEST_PORT.md`](QUICKJS_TEST_PORT.md).
 
 ## Provenance rules
 

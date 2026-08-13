@@ -120,7 +120,7 @@ import {
   connectBrowserLocalDirectory,
   useBrowserWorkspaceInstead,
 } from "../../services/wasmRuntime";
-import type { BrowserDirectoryInfo } from "@semistrict/dawasm-browser/filesystem";
+import type { BrowserDirectoryInfo } from "@semistrict/browser/filesystem";
 
 const props = defineProps<{ isOpen: boolean }>();
 const emit = defineEmits<{

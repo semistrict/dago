@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"syscall/js"
 
-	"github.com/semistrict/dago/dawasm/jsbridge"
+	"github.com/semistrict/dago/browser/jsbridge"
 )
 
 // GlobalExecutor returns an Executor backed by an async JavaScript function on

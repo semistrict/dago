@@ -79,7 +79,7 @@ function deleteIndexMatches(
 }
 
 // createIndexedDBCheckpointStore implements the normalized operation protocol
-// used by dawasm/checkpoint. The caller owns database creation and versioning.
+// used by browser/checkpoint. The caller owns database creation and versioning.
 export function createIndexedDBCheckpointStore(
   options: IndexedDBCheckpointStoreOptions,
 ): IndexedDBCheckpointStore {

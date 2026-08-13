@@ -59,6 +59,32 @@
       "version": "0.25.4",
       "license": "MIT",
       "surfaces": ["sandbox.go", "sandbox_resource.go", "sandbox_files.go", "sandbox_commands.go"]
+    },
+    {
+      "name": "deepagents-quickjs",
+      "repository": "https://github.com/langchain-ai/deepagents",
+      "revision": "217b9eb372fa51b0439434f31abc3ac22e6cd7f2",
+      "version": "0.3.5",
+      "license": "MIT",
+      "checkout_env": "DEEPAGENTS_QUICKJS_ROOT",
+      "surfaces": ["libs/partners/quickjs/langchain_quickjs", "libs/partners/quickjs/tests"]
+    },
+    {
+      "name": "quickjs-rs",
+      "repository": "https://github.com/langchain-ai/quickjs-rs",
+      "revision": "278cf32d17b07a9ba2951ebc826256eef703182d",
+      "version": "0.2.5",
+      "license": "MIT",
+      "checkout_env": "QUICKJS_RS_ROOT",
+      "surfaces": ["crates/quickjs-wasm", "crates/quickjs-wasm-transform", "quickjs_rs/_engine.py", "quickjs_rs/context.py", "quickjs_rs/_transform.py", "tests"]
+    },
+    {
+      "name": "wafl",
+      "repository": "https://github.com/semistrict/wafl",
+      "revision": "c1585f4c3efbf2ba9354d1989cee8f075d013f27",
+      "license": "proprietary",
+      "checkout_env": "WAFL_ROOT",
+      "surfaces": ["src/config.rs", "src/bitmap.rs", "src/instrument.rs", "tests/wat.rs", "tests/integration.rs"]
     }
   ]
 }

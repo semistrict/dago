@@ -21,7 +21,7 @@
     "test:e2e:debug": "pnpm run build && playwright test --debug"
   },
   "dependencies": {
-    "@semistrict/dawasm-browser": "file:../../../dawasm/browser",
+    "@semistrict/browser": "file:../../../browser/browser",
     "@excalidraw/excalidraw": "0.18.1",
     "@pierre/diffs": "1.1.20",
     "@primeuix/themes": "^2.0.3",

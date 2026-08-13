@@ -241,6 +241,10 @@ type Handoff struct {
 // it is not exposed to the model directly.
 type Result struct {
 	Content []damessage.ContentBlock `json:"content,omitempty"`
+	// Structured preserves the JSON representation of a typed handler return for
+	// trusted in-process consumers such as the JavaScript PTC bridge. It is not
+	// serialized into model-visible tool results.
+	Structured json.RawMessage `json:"-"`
 	// Status marks model-visible tool failures that still carry useful content,
 	// such as partial search results. Empty defaults to success.
 	Status     damessage.ToolStatus      `json:"status,omitempty"`
@@ -276,7 +280,9 @@ func ResultFrom(value any) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("convert tool result to JSON: %w", err)
 	}
-	return TextResult(string(encoded)), nil
+	result := TextResult(string(encoded))
+	result.Structured = append(json.RawMessage(nil), encoded...)
+	return result, nil
 }
 
 // Tool executes validated JSON arguments.
@@ -348,6 +354,7 @@ func (result Result) Clone() Result {
 		}
 	}
 	copy.Artifact = cloneRaw(result.Artifact)
+	copy.Structured = cloneRaw(result.Structured)
 	if result.Interrupt != nil {
 		interrupt := *result.Interrupt
 		copy.Interrupt = &interrupt

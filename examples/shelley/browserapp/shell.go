@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/semistrict/dago/browser/justbash"
 	"github.com/semistrict/dago/dabackend"
-	"github.com/semistrict/dago/dawasm/justbash"
 )
 
 const defaultBrowserShellTimeout = 120 * time.Second

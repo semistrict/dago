@@ -122,3 +122,36 @@ func TestFuncClonesPurposedUsage(t *testing.T) {
 		t.Fatalf("purposed usage was not cloned: %#v", result.OtherUsage)
 	}
 }
+
+func TestResultFromPreservesTypedJSONForInProcessConsumers(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{name: "number", value: 7, want: `7`},
+		{name: "null", value: nil, want: `null`},
+		{name: "array", value: []int{1, 2}, want: `[1,2]`},
+		{name: "object", value: map[string]any{"ok": true}, want: `{"ok":true}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := ResultFrom(test.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(result.Structured) != test.want || result.Content[0].Text != test.want {
+				t.Fatalf("structured = %q, content = %q", result.Structured, result.Content[0].Text)
+			}
+			clone := result.Clone()
+			clone.Structured[0] ^= 1
+			if string(result.Structured) != test.want {
+				t.Fatal("Clone() aliased structured JSON")
+			}
+		})
+	}
+	text, err := ResultFrom("plain")
+	if err != nil || len(text.Structured) != 0 || text.Content[0].Text != "plain" {
+		t.Fatalf("string result = %#v, %v", text, err)
+	}
+}

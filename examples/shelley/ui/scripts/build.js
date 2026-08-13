@@ -5,7 +5,7 @@ import * as path from "path";
 import * as zlib from "zlib";
 import * as crypto from "crypto";
 import { execFileSync, execSync } from "child_process";
-import { justBashBrowserShims } from "@semistrict/dawasm-browser/esbuild";
+import { justBashBrowserShims } from "@semistrict/browser/esbuild";
 
 // Esbuild plugin: rewrite any "monaco-editor*" import (including deep paths
 // like monaco-editor/esm/vs/editor/editor.api) to the deployed runtime URL,

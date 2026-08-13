@@ -44,6 +44,40 @@ test.describe("local browser model", () => {
     await expect(page.locator('[role="article"]')).toHaveCount(7);
   });
 
+  test("code interpreter calls filesystem tools and restores state after reload", async ({
+    page,
+  }) => {
+    await page.goto(`${basePath}?model=predictable`);
+    const input = page.getByTestId("message-input");
+    await expect(input).toBeVisible();
+
+    const writeStatus = await page.evaluate(async () => {
+      const response = await fetch("/api/write-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "/workspace/ptc.txt", content: "PTC_SENTINEL" }),
+      });
+      return response.status;
+    });
+    expect(writeStatus).toBe(200);
+
+    const firstCode =
+      'const ptcText = await tools.readFile({file_path: "/workspace/ptc.txt"}); ptcText';
+    await input.fill(`tool: js_eval ${JSON.stringify({ code: firstCode })}`);
+    await page.getByRole("button", { name: "Send message" }).click();
+    await expect(page.getByTestId("tool-call-completed")).toBeVisible();
+    await expect(page.getByTestId("agent-thinking")).toBeHidden();
+    await expect(page.getByText("PTC_SENTINEL", { exact: false }).first()).toBeVisible();
+
+    await page.reload();
+    await expect(input).toBeVisible();
+    const secondCode = 'ptcText.includes("PTC_SENTINEL") ? 42 : 0';
+    await input.fill(`tool: js_eval ${JSON.stringify({ code: secondCode })}`);
+    await page.getByRole("button", { name: "Send message" }).click();
+    await expect(page.getByTestId("agent-thinking")).toBeHidden();
+    await expect(page.getByText("<result>42</result>", { exact: false }).first()).toBeVisible();
+  });
+
   test("browser runtime reports host-only capabilities as unavailable", async ({ page }) => {
     await page.goto(`${basePath}?model=predictable`);
     const result = await page.evaluate(async () => {

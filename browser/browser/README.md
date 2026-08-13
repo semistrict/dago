@@ -6,7 +6,7 @@ agents in browser workers:
 - `filesystem` adapts the Go filesystem operation bridge to just-bash's
   `IFileSystem` without copying a workspace snapshot.
 - `checkpoint` implements normalized IndexedDB checkpoint operations for the
-  Go `dawasm/checkpoint` saver.
+  Go `browser/checkpoint` saver.
 - `directory-handle` stores selected directory handles and manages read/write
   permissions using caller-supplied database and picker names.
 - `indexeddb` persists virtual files as independent records and reads metadata

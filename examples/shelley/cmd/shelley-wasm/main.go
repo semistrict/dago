@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"syscall/js"
 
+	"github.com/semistrict/dago/browser/browserfs"
+	wasmcheckpoint "github.com/semistrict/dago/browser/checkpoint"
+	"github.com/semistrict/dago/browser/jsbridge"
+	"github.com/semistrict/dago/browser/justbash"
+	"github.com/semistrict/dago/browser/webgpu"
 	"github.com/semistrict/dago/damodel"
-	"github.com/semistrict/dago/dawasm/browserfs"
-	wasmcheckpoint "github.com/semistrict/dago/dawasm/checkpoint"
-	"github.com/semistrict/dago/dawasm/jsbridge"
-	"github.com/semistrict/dago/dawasm/justbash"
-	"github.com/semistrict/dago/dawasm/webgpu"
 	"github.com/semistrict/dago/examples/shelley/browserapp"
 )
 

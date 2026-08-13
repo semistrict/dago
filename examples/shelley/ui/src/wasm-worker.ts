@@ -1,14 +1,14 @@
 /// <reference lib="webworker" />
 
-import { WasmFileSystemAdapter } from "@semistrict/dawasm-browser/filesystem";
-import { createIndexedDBCheckpointStore } from "@semistrict/dawasm-browser/checkpoint";
-import { createBrowserFileStore } from "@semistrict/dawasm-browser/indexeddb";
-import { JustBashRuntime } from "@semistrict/dawasm-browser/just-bash";
+import { WasmFileSystemAdapter } from "@semistrict/browser/filesystem";
+import { createIndexedDBCheckpointStore } from "@semistrict/browser/checkpoint";
+import { createBrowserFileStore } from "@semistrict/browser/indexeddb";
+import { JustBashRuntime } from "@semistrict/browser/just-bash";
 import {
   interruptWebGPUModel,
   invokeWebGPUModel,
   loadWebGPUModel,
-} from "@semistrict/dawasm-browser/webgpu-qwen";
+} from "@semistrict/browser/webgpu-qwen";
 
 type WorkerRequest = {
   type: "request";

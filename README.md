@@ -170,6 +170,31 @@ entity-resolution, and answer-completeness stack is available explicitly from
 `daproviders/nemotron`. Provider construction defaults for OpenAI, NVIDIA, and
 OpenRouter are available as an explicit `daproviders/profile.Profiles` value.
 
+## JavaScript interpreter
+
+Enable a persistent, sandboxed QuickJS-ng REPL with `Interpreter`. The `js_eval`
+tool supports top-level await, console output, functions and variables that persist
+through checkpoints, and concurrent programmatic tool calls. It runs the exact
+`quickjs-rs` 0.2.5 WASM guest under Wazero's interpreter backend, including in Go
+browser-WASM builds.
+
+```go
+compiled := dago.New(chat, dago.Options{
+	Saver: saver,
+	Interpreter: dago.Interpreter{
+		Enabled: true,
+		PTC: []string{"read_file", "glob", "grep", "search"},
+	},
+})
+```
+
+The first memory image is checkpointed as an anchor. The generated QuickJS guest
+uses WAFL-style 4 KiB write barriers, so subsequent checkpoints copy only dirty
+memory pages. A nil `PTC` allowlist exposes only `read_file`, `glob`, and
+`grep`; an empty non-nil list disables PTC. Explicitly allowlisted tools execute
+inside `js_eval` and do not pass through model-tool approval middleware, so mutating
+tools should only be included when that direct authority is intended.
+
 ## OpenAI adapter
 
 The focused Responses API adapter supports text and multimodal messages, tool calls,
@@ -277,7 +302,7 @@ limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 
 | Package | Purpose |
 |---|---|
-| `dago` | Deep Agent constructor plus filesystem, subagent, summary, skill, memory, profile, and rubric middleware |
+| `dago` | Deep Agent constructor plus filesystem, JavaScript interpreter, subagent, summary, skill, memory, profile, and rubric middleware |
 | `dagent` | Provider-neutral model/tool graph, middleware lifecycle, approval, retry, todo, streaming, and checkpoint operations |
 | `damessage`, `damodel`, `datool`, `dastate` | Stable public contracts and reducers |
 | `damodel/modeltest` | Scripted and prompt-driven predictable model doubles for offline tests and examples |
@@ -286,7 +311,7 @@ limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 | `dabackend/langsmith` | Adapter for an existing LangSmith sandbox using `langsmith-go` |
 | `dabackend/contexthub` | Persistent Context Hub agent-repository files with linked-entry and parent-commit support |
 | `dacheckpoint` | Saver contract and in-memory implementation |
-| `dawasm/...` | Reusable browser WebAssembly filesystem, IndexedDB checkpoint, promise bridge, just-bash, directory-handle, and WebGPU adapters; see [`dawasm/README.md`](dawasm/README.md) |
+| `browser/...` | Reusable browser WebAssembly filesystem, IndexedDB checkpoint, promise bridge, just-bash, directory-handle, and WebGPU adapters; see [`browser/README.md`](browser/README.md) |
 | `dacheckpoint/sqlite`, `dacheckpoint/postgres` | Python-schema-compatible durable savers |
 | `dastore`, `dastore/sqlite`, `dacache` | Namespaced data store and cache contracts and implementations |
 | `daproviders/openai` | Focused Responses API adapter and credential flows |

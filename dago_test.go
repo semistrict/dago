@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1029,7 +1030,7 @@ func TestSubagentInvocationPropagatesCancellation(t *testing.T) {
 		}()
 
 		synctest.Wait()
-		if !childModel.started {
+		if !childModel.started.Load() {
 			t.Fatal("child model did not start")
 		}
 		cancel()
@@ -1054,7 +1055,7 @@ func TestSubagentInvocationPropagatesDeadline(t *testing.T) {
 		if elapsed := time.Since(started); elapsed != 5*time.Second {
 			t.Fatalf("elapsed = %s, want 5s", elapsed)
 		}
-		if !childModel.started {
+		if !childModel.started.Load() {
 			t.Fatal("child model did not start")
 		}
 	})
@@ -1078,10 +1079,10 @@ func invokeBlockingSubagent(ctx context.Context, compiled *dagent.Agent) (dagent
 	})
 }
 
-type blockingChat struct{ started bool }
+type blockingChat struct{ started atomic.Bool }
 
 func (chat *blockingChat) Invoke(ctx context.Context, _ damodel.Request) (damodel.Response, error) {
-	chat.started = true
+	chat.started.Store(true)
 	<-ctx.Done()
 	return damodel.Response{}, ctx.Err()
 }
