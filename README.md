@@ -32,7 +32,7 @@ dacode
 Run the TUI directly without installing it:
 
 ```sh
-go run github.com/semistrict/dago/cmd/dacode@latest --cwd .
+go run github.com/semistrict/dago/cmd/dacode@latest
 ```
 
 From a dago source checkout, use `go run ./cmd/dacode` instead.
