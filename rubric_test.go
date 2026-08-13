@@ -7,11 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dacheckpoint/serde"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/datool"
 )
 
 func TestRubricMiddlewareRevisesUntilSatisfied(t *testing.T) {
@@ -55,10 +57,48 @@ func TestRubricMiddlewareRevisesUntilSatisfied(t *testing.T) {
 	if result.Messages[len(result.Messages)-1].TextContent() != "revised answer" || len(evaluations) != 2 || evaluations[1].Result != RubricSatisfied {
 		t.Fatalf("result = %#v, evaluations = %#v", result.Messages, evaluations)
 	}
-	for _, private := range []string{RubricStatusKey, RubricIterationsKey, RubricEvaluationsKey, RubricRunIDKey, RubricActiveKey} {
+	if result.State[RubricStatusKey] != string(RubricSatisfied) {
+		t.Fatalf("rubric status = %#v", result.State[RubricStatusKey])
+	}
+	for _, private := range []string{RubricIterationsKey, RubricEvaluationsKey, RubricRunIDKey, RubricActiveKey} {
 		if _, leaked := result.State[private]; leaked {
 			t.Fatalf("private rubric state %q leaked", private)
 		}
+	}
+}
+
+func TestRubricGraderReceivesInvocationConfigurableSettings(t *testing.T) {
+	inspect := datool.Func{
+		Spec: datool.Definition{Name: "inspect_config", Description: "Inspect runtime settings", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(_ context.Context, _ json.RawMessage, runtime datool.Runtime) (datool.Result, error) {
+			value, ok := runtime.Configurable.Get("tenant")
+			if !ok || value != "request-tenant" {
+				return datool.Result{}, errors.New("grader configurable setting missing")
+			}
+			return datool.TextResult("config ok"), nil
+		},
+	}
+	grader := modeltest.New(damodel.Profile{ToolCalling: true, StructuredOutput: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "inspect", Name: "inspect_config", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("graded"), Structured: json.RawMessage(`{"result":"satisfied","explanation":"done","criteria":[]}`)}},
+	)
+	middleware, err := RubricMiddleware(RubricOptions{Model: grader, Tools: []datool.Tool{inspect}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := New(Options{
+		Model:      modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}),
+		Middleware: []dagent.Middleware{middleware}, DisableSubagents: true, DisableSummary: true, DisableTodo: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = compiled.Invoke(t.Context(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"},
+		Configurable: map[string]any{"tenant": "request-tenant"},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -72,16 +112,78 @@ func TestRubricMiddlewareStopsAtIterationLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	primary := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}})
-	compiled, err := New(Options{Model: primary, Middleware: []dagent.Middleware{middleware}, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
+	saver := dacheckpoint.NewMemorySaver()
+	compiled, err := New(Options{Model: primary, Middleware: []dagent.Middleware{middleware}, Saver: saver, DisableSubagents: true, DisableSummary: true, DisableTodo: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"}})
+	config := dacheckpoint.Config{ThreadID: "rubric-limit"}
+	result, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if evaluation.Result != RubricMaxIterations || result.Messages[len(result.Messages)-1].TextContent() != "answer" {
 		t.Fatalf("evaluation = %#v, messages = %#v", evaluation, result.Messages)
+	}
+	if result.State[RubricStatusKey] != string(RubricMaxIterations) {
+		t.Fatalf("result rubric status = %#v", result.State[RubricStatusKey])
+	}
+	snapshot, err := compiled.State(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.State[RubricStatusKey] != string(RubricMaxIterations) {
+		t.Fatalf("checkpoint rubric status = %#v", snapshot.State[RubricStatusKey])
+	}
+}
+
+func TestRubricTerminalStatusesAreDurable(t *testing.T) {
+	tests := []struct {
+		name       string
+		want       RubricResult
+		structured json.RawMessage
+		graderErr  error
+	}{
+		{name: "satisfied", want: RubricSatisfied, structured: json.RawMessage(`{"result":"satisfied","explanation":"done","criteria":[]}`)},
+		{name: "failed", want: RubricFailed, structured: json.RawMessage(`{"result":"failed","explanation":"cannot satisfy","criteria":[]}`)},
+		{name: "grader_error", want: RubricGraderError, graderErr: errors.New("grader unavailable")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			grader := modeltest.New(damodel.Profile{StructuredOutput: true}, modeltest.Step{
+				Response: damodel.Response{Message: damessage.Assistant("graded"), Structured: test.structured}, Error: test.graderErr,
+			})
+			middleware, err := RubricMiddleware(RubricOptions{Model: grader})
+			if err != nil {
+				t.Fatal(err)
+			}
+			saver := dacheckpoint.NewMemorySaver()
+			compiled, err := New(Options{
+				Model:      modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}),
+				Middleware: []dagent.Middleware{middleware}, Saver: saver,
+				DisableSubagents: true, DisableSummary: true, DisableTodo: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := dacheckpoint.Config{ThreadID: "rubric-terminal-" + test.name}
+			result, err := compiled.Invoke(t.Context(), dagent.Input{
+				Config: config, Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.State[RubricStatusKey] != string(test.want) {
+				t.Fatalf("result rubric status = %#v", result.State[RubricStatusKey])
+			}
+			snapshot, err := compiled.State(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.State[RubricStatusKey] != string(test.want) {
+				t.Fatalf("checkpoint rubric status = %#v", snapshot.State[RubricStatusKey])
+			}
+		})
 	}
 }
 

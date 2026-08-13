@@ -101,7 +101,9 @@ func (agent *Agent) Stream(ctx context.Context, input Input, buffer int) *Stream
 	ensureMessageIDsInValues(values)
 	return &Stream{
 		graph: agent.graph.Stream(ctx, graph.Invocation{
-			Config: input.Config, State: values, Resume: input.Resume, SkipValueEvents: input.SkipValueEvents,
+			Config: input.Config, State: values, Resume: input.Resume, Deps: input.Deps,
+			Configurable:    cloneConfigurable(input.Configurable),
+			SkipValueEvents: input.SkipValueEvents,
 		}, buffer),
 		ctx: ctx, private: agent.private, discardResultState: input.DiscardResultState,
 	}

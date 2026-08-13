@@ -94,6 +94,9 @@ func (memory *Memory) Read(ctx context.Context, name string, offset, limit int) 
 	}
 	if data.Encoding == EncodingBase64 || IsBinaryReadPath(name) {
 		copy := data
+		if copy.Encoding != EncodingBase64 {
+			copy.Content = base64.StdEncoding.EncodeToString([]byte(copy.Content))
+		}
 		copy.Encoding = EncodingBase64
 		return ReadResult{Data: &copy}, nil
 	}
@@ -206,6 +209,9 @@ func (memory *Memory) Glob(ctx context.Context, pattern, base string) (GlobResul
 }
 
 func (memory *Memory) Grep(ctx context.Context, pattern string, options GrepOptions) (GrepResult, error) {
+	if err := ValidateGrepOptions(options); err != nil {
+		return GrepResult{}, err
+	}
 	if pattern == "" {
 		return GrepResult{}, fmt.Errorf("grep pattern is required")
 	}
@@ -226,13 +232,19 @@ func (memory *Memory) Grep(ctx context.Context, pattern string, options GrepOpti
 	}
 	prefix := strings.TrimSuffix(base, "/") + "/"
 	limit := options.MaxCount
-	if limit <= 0 {
+	if options.Uncapped || limit <= 0 {
 		limit = int(^uint(0) >> 1)
 	}
 	memory.mu.RLock()
 	defer memory.mu.RUnlock()
+	names := make([]string, 0, len(memory.files))
+	for name := range memory.files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	result := GrepResult{}
-	for name, data := range memory.files {
+	for _, name := range names {
+		data := memory.files[name]
 		if err := ctx.Err(); err != nil {
 			return GrepResult{}, err
 		}
@@ -258,12 +270,6 @@ func (memory *Memory) Grep(ctx context.Context, pattern string, options GrepOpti
 			break
 		}
 	}
-	sort.Slice(result.Matches, func(i, j int) bool {
-		if result.Matches[i].Path != result.Matches[j].Path {
-			return result.Matches[i].Path < result.Matches[j].Path
-		}
-		return result.Matches[i].Line < result.Matches[j].Line
-	})
 	return result, nil
 }
 

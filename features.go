@@ -3,11 +3,13 @@ package dago
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"mime"
+	"net/url"
 	"path"
 	"reflect"
 	"regexp"
@@ -51,6 +53,25 @@ type Subagent struct {
 	StructuredOutput *dagent.StructuredOutput
 	InheritedState   []string
 	inheritAllState  bool
+	responseFactory  func(*dagent.StructuredOutput) (Runnable, error)
+}
+
+// SubagentResponseFormatConfigKey selects a structured-output format for the
+// declarative subagent launched by a task call. The configurable value must be
+// a dagent.StructuredOutput or *dagent.StructuredOutput.
+const SubagentResponseFormatConfigKey = "subagent_response_format"
+
+const taskResponseFormatsKey = "__subagent_response_formats"
+
+type taskResponseFormatDescriptor struct {
+	Version            int                       `json:"version"`
+	Strategy           dagent.StructuredStrategy `json:"strategy,omitempty"`
+	Name               string                    `json:"name"`
+	Description        string                    `json:"description,omitempty"`
+	Schema             json.RawMessage           `json:"schema"`
+	Strict             bool                      `json:"strict,omitempty"`
+	HandleErrors       bool                      `json:"handle_errors,omitempty"`
+	ToolMessageContent string                    `json:"tool_message_content,omitempty"`
 }
 
 // PatchToolCallsMiddleware repairs assistant tool calls that have no matching
@@ -237,12 +258,50 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 		if !ok {
 			return "Unknown subagent type " + input.Type, nil
 		}
+		persistedDescriptor := taskResponseFormats(runtime.State)[runtime.CallID]
+		responseDescriptor := persistedDescriptor
+		var responseFormat *dagent.StructuredOutput
+		if configured, exists := runtime.Configurable.Get(SubagentResponseFormatConfigKey); exists {
+			format, err := configuredSubagentResponseFormat(configured)
+			if err != nil {
+				return datool.Result{}, subagentExecutionError{err: err}
+			}
+			descriptor, err := encodeTaskResponseFormat(format)
+			if err != nil {
+				return datool.Result{}, subagentExecutionError{err: err}
+			}
+			if persistedDescriptor != "" && persistedDescriptor != descriptor {
+				return datool.Result{}, subagentExecutionError{err: fmt.Errorf(
+					"response format for resumed subagent %q does not match its interrupted task", selected.Name,
+				)}
+			}
+			responseFormat = format
+			responseDescriptor = descriptor
+		} else if persistedDescriptor != "" {
+			format, err := decodeTaskResponseFormat(persistedDescriptor)
+			if err != nil {
+				return datool.Result{}, subagentExecutionError{err: fmt.Errorf("restore subagent %q response format: %w", selected.Name, err)}
+			}
+			responseFormat = format
+		}
+		if responseFormat != nil {
+			if selected.responseFactory == nil {
+				return datool.Result{}, subagentExecutionError{err: fmt.Errorf(
+					"response format cannot be used with compiled subagent %q; task-scoped formats require a declarative subagent", selected.Name,
+				)}
+			}
+			runnable, err := selected.responseFactory(responseFormat)
+			if err != nil {
+				return datool.Result{}, subagentExecutionError{err: fmt.Errorf("configure subagent %q response format: %w", selected.Name, err)}
+			}
+			selected.Runnable = runnable
+		}
 		inherited := dastate.Values{}
 		inheritedKeys := append([]string(nil), selected.InheritedState...)
 		if selected.inheritAllState {
 			if values, ok := runtime.State.(dastate.Values); ok {
 				for key := range values {
-					if key != dagent.MessagesKey && key != dagent.StructuredResponseKey && !privateState[key] {
+					if !subagentStateExcluded(key, privateState) {
 						inheritedKeys = append(inheritedKeys, key)
 					}
 				}
@@ -257,7 +316,7 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 			}
 		}
 		for _, key := range inheritedKeys {
-			if key == dagent.MessagesKey || key == dagent.StructuredResponseKey || strings.HasPrefix(key, "__") || privateState[key] {
+			if subagentStateExcluded(key, privateState) {
 				continue
 			}
 			if value, exists := runtime.State.Get(key); exists {
@@ -269,7 +328,11 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 			namespace += "/"
 		}
 		namespace += "subagent:" + runtime.TaskID + ":" + runtime.CallID
-		invocation := dagent.Input{Config: dacheckpoint.Config{ThreadID: runtime.ThreadID, Namespace: namespace}}
+		invocation := dagent.Input{
+			Config:       dacheckpoint.Config{ThreadID: runtime.ThreadID, Namespace: namespace},
+			Deps:         runtime.Deps,
+			Configurable: runtime.Configurable.Snapshot(),
+		}
 		if runtime.Resume != nil {
 			invocation.Resume = runtime.Resume
 		} else {
@@ -278,13 +341,17 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 		}
 		result, err := invokeSubagent(ctx, selected, invocation, runtime)
 		if err != nil {
-			return datool.Result{}, err
+			return datool.Result{}, subagentExecutionError{err: err}
 		}
 		if len(result.Interrupts) > 0 {
 			if len(result.Interrupts) != 1 {
 				return datool.Result{}, fmt.Errorf("subagent %q produced multiple interrupts", selected.Name)
 			}
-			return datool.Result{Interrupt: &datool.Interrupt{ID: result.Interrupts[0].ID, Value: result.Interrupts[0].Value}}, nil
+			interrupted := datool.Result{Interrupt: &datool.Interrupt{ID: result.Interrupts[0].ID, Value: result.Interrupts[0].Value}}
+			if responseDescriptor != "" {
+				interrupted.Update = map[string]any{taskResponseFormatsKey: map[string]string{runtime.CallID: responseDescriptor}}
+			}
+			return interrupted, nil
 		}
 		text := ""
 		if len(result.Structured) > 0 {
@@ -303,8 +370,11 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 			text = "Subagent completed without a text response."
 		}
 		toolResult := datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: text}}}
+		if persistedDescriptor != "" {
+			toolResult.Update = map[string]any{taskResponseFormatsKey: map[string]string{runtime.CallID: ""}}
+		}
 		for _, key := range inheritedKeys {
-			if key == dagent.MessagesKey || key == dagent.StructuredResponseKey || strings.HasPrefix(key, "__") || privateState[key] {
+			if subagentStateExcluded(key, privateState) {
 				continue
 			}
 			before, beforeExists := inherited[key]
@@ -318,8 +388,122 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 		}
 		return toolResult, nil
 	}, datool.WithPropertyEnum("subagent_type", names...))
-	return dagent.Middleware{Name: "subagents", SerializedName: "SubAgentMiddleware", Tools: []datool.Tool{taskTool}}, nil
+	return dagent.Middleware{
+		Name: "subagents", SerializedName: "SubAgentMiddleware", Tools: []datool.Tool{taskTool},
+		Fields: map[string]dagent.StateField{taskResponseFormatsKey: {
+			Kind: dagent.FieldAggregate, Contract: "dago.subagent.response-formats.v1", Private: true,
+			Initial: func() any { return map[string]string{} }, Reduce: reduceTaskResponseFormats, Clone: cloneTaskResponseFormats,
+		}},
+	}, nil
 }
+
+func subagentStateExcluded(key string, privateState map[string]bool) bool {
+	return key == dagent.MessagesKey || key == "todos" || key == dagent.StructuredResponseKey || key == RubricStatusKey ||
+		strings.HasPrefix(key, "__") || privateState[key]
+}
+
+func configuredSubagentResponseFormat(value any) (*dagent.StructuredOutput, error) {
+	switch format := value.(type) {
+	case dagent.StructuredOutput:
+		copy := format
+		return &copy, nil
+	case *dagent.StructuredOutput:
+		if format == nil {
+			return nil, fmt.Errorf("subagent response format is nil")
+		}
+		copy := *format
+		return &copy, nil
+	default:
+		return nil, fmt.Errorf("subagent response format has type %T, want dagent.StructuredOutput", value)
+	}
+}
+
+func encodeTaskResponseFormat(format *dagent.StructuredOutput) (string, error) {
+	if format == nil {
+		return "", fmt.Errorf("subagent response format is nil")
+	}
+	var schema any
+	decoder := json.NewDecoder(strings.NewReader(string(format.Schema)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&schema); err != nil {
+		return "", fmt.Errorf("subagent response format schema is invalid: %w", err)
+	}
+	canonicalSchema, err := json.Marshal(schema)
+	if err != nil {
+		return "", fmt.Errorf("encode subagent response format schema: %w", err)
+	}
+	descriptor, err := json.Marshal(taskResponseFormatDescriptor{
+		Version: 1, Strategy: format.Strategy, Name: format.Name, Description: format.Description,
+		Schema: canonicalSchema, Strict: format.Strict, HandleErrors: format.HandleErrors,
+		ToolMessageContent: format.ToolMessageContent,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode subagent response format: %w", err)
+	}
+	return string(descriptor), nil
+}
+
+func decodeTaskResponseFormat(encoded string) (*dagent.StructuredOutput, error) {
+	var descriptor taskResponseFormatDescriptor
+	if err := json.Unmarshal([]byte(encoded), &descriptor); err != nil {
+		return nil, fmt.Errorf("decode task response format: %w", err)
+	}
+	if descriptor.Version != 1 {
+		return nil, fmt.Errorf("unsupported task response format version %d", descriptor.Version)
+	}
+	return &dagent.StructuredOutput{
+		Strategy: descriptor.Strategy, Name: descriptor.Name, Description: descriptor.Description,
+		Schema: append(json.RawMessage(nil), descriptor.Schema...), Strict: descriptor.Strict,
+		HandleErrors: descriptor.HandleErrors, ToolMessageContent: descriptor.ToolMessageContent,
+	}, nil
+}
+
+func taskResponseFormats(state datool.StateReader) map[string]string {
+	if state == nil {
+		return map[string]string{}
+	}
+	value, _ := state.Get(taskResponseFormatsKey)
+	return taskResponseFormatsValue(value)
+}
+
+func taskResponseFormatsValue(value any) map[string]string {
+	result := map[string]string{}
+	switch typed := value.(type) {
+	case map[string]string:
+		for key, item := range typed {
+			result[key] = item
+		}
+	case map[string]any:
+		for key, item := range typed {
+			if encoded, ok := item.(string); ok {
+				result[key] = encoded
+			}
+		}
+	}
+	return result
+}
+
+func reduceTaskResponseFormats(current any, writes []any) (any, error) {
+	result := taskResponseFormatsValue(current)
+	for _, write := range writes {
+		for callID, descriptor := range taskResponseFormatsValue(write) {
+			if descriptor == "" {
+				delete(result, callID)
+			} else {
+				result[callID] = descriptor
+			}
+		}
+	}
+	return result, nil
+}
+
+func cloneTaskResponseFormats(value any) any { return taskResponseFormatsValue(value) }
+
+type subagentExecutionError struct{ err error }
+
+func (failure subagentExecutionError) Error() string { return failure.err.Error() }
+func (failure subagentExecutionError) Unwrap() error { return failure.err }
+func (subagentExecutionError) PropagateToolError()   {}
 
 func invokeSubagent(ctx context.Context, selected Subagent, invocation dagent.Input, runtime datool.Runtime) (dagent.Result, error) {
 	streaming, supportsStreaming := selected.Runnable.(StreamingRunnable)
@@ -708,22 +892,32 @@ func offloadSummaryMedia(ctx context.Context, messages []damessage.Message, opti
 	for messageIndex := range result {
 		for blockIndex := range result[messageIndex].Content {
 			block := &result[messageIndex].Content[blockIndex]
-			if len(block.Data) == 0 {
+			data := block.Data
+			mimeType := block.MIMEType
+			if len(data) == 0 && strings.HasPrefix(strings.ToLower(block.URL), "data:") {
+				var err error
+				data, mimeType, err = decodeMediaDataURL(block.URL, mimeType)
+				if err != nil {
+					*block = damessage.ContentBlock{Type: damessage.BlockText, Text: "<image error=\"failed_to_offload\" />"}
+					continue
+				}
+			}
+			if len(data) == 0 {
 				continue
 			}
-			digest := sha256.Sum256(block.Data)
+			digest := sha256.Sum256(data)
 			key := fmt.Sprintf("%x", digest[:8])
 			mediaPath := paths[key]
 			if mediaPath == "" {
 				extension := path.Ext(block.Name)
 				if extension == "" {
-					extensions, _ := mime.ExtensionsByType(block.MIMEType)
+					extensions, _ := mime.ExtensionsByType(mimeType)
 					if len(extensions) > 0 {
 						extension = extensions[0]
 					}
 				}
 				mediaPath = fmt.Sprintf("%s/%s%s", strings.TrimSuffix(options.MediaRoot, "/"), key, extension)
-				uploads := options.Backend.Upload(ctx, []dabackend.Upload{{Path: mediaPath, Content: block.Data}})
+				uploads := options.Backend.Upload(ctx, []dabackend.Upload{{Path: mediaPath, Content: data}})
 				if len(uploads) != 1 || uploads[0].Error != "" {
 					*block = damessage.ContentBlock{Type: damessage.BlockText, Text: "<media error=\"failed_to_offload\" />"}
 					continue
@@ -738,6 +932,36 @@ func offloadSummaryMedia(ctx context.Context, messages []damessage.Message, opti
 		}
 	}
 	return result
+}
+
+func decodeMediaDataURL(value, fallbackMIMEType string) ([]byte, string, error) {
+	metadata, payload, ok := strings.Cut(value[len("data:"):], ",")
+	if !ok {
+		return nil, "", fmt.Errorf("data URL has no payload separator")
+	}
+	parts := strings.Split(metadata, ";")
+	mimeType := fallbackMIMEType
+	if parts[0] != "" {
+		mimeType = parts[0]
+	}
+	base64Encoded := false
+	for _, parameter := range parts[1:] {
+		if strings.EqualFold(parameter, "base64") {
+			base64Encoded = true
+		}
+	}
+	if base64Encoded {
+		decoded, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode base64 data URL: %w", err)
+		}
+		return decoded, mimeType, nil
+	}
+	decoded, err := url.PathUnescape(payload)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode percent-encoded data URL: %w", err)
+	}
+	return []byte(decoded), mimeType, nil
 }
 
 func updateClippedMessages(update dastate.Values, before, after []damessage.Message) {
@@ -1546,7 +1770,28 @@ func summaryCutoff(messages []damessage.Message, options SummarizationOptions) i
 func renderHistory(messages []damessage.Message) string {
 	var output strings.Builder
 	for _, item := range messages {
-		fmt.Fprintf(&output, "## %s\n%s\n", item.Role, item.TextContent())
+		fmt.Fprintf(&output, "## %s\n", item.Role)
+		for _, block := range item.Content {
+			if block.Type == damessage.BlockText {
+				output.WriteString(block.Text)
+				output.WriteByte('\n')
+				continue
+			}
+			if block.URL != "" {
+				kind := string(block.Type)
+				if kind == "" {
+					kind = "media"
+				}
+				fmt.Fprintf(&output, "<%s url=\"%s\"", kind, html.EscapeString(block.URL))
+				if block.MIMEType != "" {
+					fmt.Fprintf(&output, " mime_type=\"%s\"", html.EscapeString(block.MIMEType))
+				}
+				if block.Name != "" {
+					fmt.Fprintf(&output, " name=\"%s\"", html.EscapeString(block.Name))
+				}
+				output.WriteString(" />\n")
+			}
+		}
 		if len(item.ToolCalls) > 0 {
 			data, _ := json.Marshal(item.ToolCalls)
 			output.Write(data)

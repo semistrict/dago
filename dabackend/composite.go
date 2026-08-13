@@ -3,6 +3,7 @@ package dabackend
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -112,6 +113,9 @@ func NewCompositeWithOptions(options CompositeOptions) (*Composite, error) {
 	if options.Default == nil {
 		return nil, fmt.Errorf("composite default backend is required")
 	}
+	if !reflect.TypeOf(options.Default).Comparable() {
+		return nil, fmt.Errorf("composite default backend %T must be comparable so transfer batching has stable identity", options.Default)
+	}
 	artifactsRoot := options.ArtifactsRoot
 	if artifactsRoot == "" {
 		artifactsRoot = "/"
@@ -127,6 +131,9 @@ func NewCompositeWithOptions(options CompositeOptions) (*Composite, error) {
 	for prefix, value := range options.Routes {
 		if value == nil || !strings.HasPrefix(prefix, "/") {
 			return nil, fmt.Errorf("composite route %q is invalid", prefix)
+		}
+		if !reflect.TypeOf(value).Comparable() {
+			return nil, fmt.Errorf("composite route %q backend %T must be comparable so transfer batching has stable identity", prefix, value)
 		}
 		normalized, err := normalizeVirtual(prefix)
 		if err != nil || normalized == "/" {
@@ -202,6 +209,14 @@ func (composite *Composite) Read(ctx context.Context, value string, offset, limi
 	backend, inner, _ := composite.selectBackend(value)
 	return backend.Read(ctx, inner, offset, limit)
 }
+
+func (composite *Composite) ReadBinary(ctx context.Context, value string, maxBytes int64) (ReadResult, error) {
+	backend, inner, _ := composite.selectBackend(value)
+	if bounded, ok := backend.(BoundedBinaryReader); ok {
+		return bounded.ReadBinary(ctx, inner, maxBytes)
+	}
+	return backend.Read(ctx, inner, 0, 1)
+}
 func (composite *Composite) Write(ctx context.Context, value, content string) (WriteResult, error) {
 	backend, inner, prefix := composite.selectBackend(value)
 	result, err := backend.Write(ctx, inner, content)
@@ -257,37 +272,50 @@ func (composite *Composite) Glob(ctx context.Context, pattern, base string) (Glo
 }
 
 func (composite *Composite) Grep(ctx context.Context, pattern string, options GrepOptions) (GrepResult, error) {
+	if err := ValidateGrepOptions(options); err != nil {
+		return GrepResult{}, err
+	}
 	if options.Path != "" && options.Path != "/" {
 		backend, inner, prefix := composite.selectBackend(options.Path)
 		options.Path = inner
 		result, err := backend.Grep(ctx, pattern, options)
+		result = clampGrepResult(result, -1)
 		for index := range result.Matches {
 			result.Matches[index].Path = remapPath(result.Matches[index].Path, prefix)
 		}
 		return result, err
 	}
+	bounded := !options.Uncapped && options.MaxCount > 0
 	remaining := options.MaxCount
 	result, err := composite.defaultBackend.Grep(ctx, pattern, options)
 	if err != nil {
 		return GrepResult{}, err
 	}
-	if remaining > 0 {
+	if bounded {
+		result = clampGrepResult(result, remaining)
 		remaining -= len(result.Matches)
+	} else {
+		result = clampGrepResult(result, -1)
 	}
 	for _, route := range composite.routes {
-		if options.MaxCount > 0 && remaining <= 0 {
+		if bounded && remaining <= 0 {
 			result.Truncated = true
 			break
 		}
 		routedOptions := options
 		routedOptions.Path = "/"
 		routedOptions.Glob = stripPatternPrefix(options.Glob, route.prefix)
-		if options.MaxCount > 0 {
+		if bounded {
 			routedOptions.MaxCount = remaining
 		}
 		routed, err := route.backend.Grep(ctx, pattern, routedOptions)
 		if err != nil {
 			return GrepResult{}, err
+		}
+		if bounded {
+			routed = clampGrepResult(routed, remaining)
+		} else {
+			routed = clampGrepResult(routed, -1)
 		}
 		for _, item := range routed.Matches {
 			item.Path = remapPath(item.Path, route.prefix)
@@ -295,6 +323,7 @@ func (composite *Composite) Grep(ctx context.Context, pattern string, options Gr
 		}
 		remaining -= len(routed.Matches)
 		result.Truncated = result.Truncated || routed.Truncated
+		result.Error = AppendGrepError(result.Error, routed.Error)
 	}
 	sort.Slice(result.Matches, func(i, j int) bool {
 		if result.Matches[i].Path != result.Matches[j].Path {
@@ -307,23 +336,102 @@ func (composite *Composite) Grep(ctx context.Context, pattern string, options Gr
 
 func (composite *Composite) Upload(ctx context.Context, uploads []Upload) []UploadResult {
 	result := make([]UploadResult, len(uploads))
+	type group struct {
+		backend Backend
+		indexes []int
+		items   []Upload
+	}
+	var groups []group
 	for index, upload := range uploads {
-		backend, inner, prefix := composite.selectBackend(upload.Path)
-		part := backend.Upload(ctx, []Upload{{Path: inner, Content: upload.Content}})[0]
-		part.Path = remapPath(part.Path, prefix)
-		result[index] = part
+		backend, inner, _ := composite.selectBackend(upload.Path)
+		groupIndex := backendGroupIndex(groups, backend, func(item group) Backend { return item.backend })
+		if groupIndex < 0 {
+			groupIndex = len(groups)
+			groups = append(groups, group{backend: backend})
+		}
+		groups[groupIndex].indexes = append(groups[groupIndex].indexes, index)
+		groups[groupIndex].items = append(groups[groupIndex].items, Upload{Path: inner, Content: upload.Content})
+	}
+	for _, batch := range groups {
+		parts := batch.backend.Upload(ctx, batch.items)
+		for batchIndex, originalIndex := range batch.indexes {
+			part := UploadResult{Path: uploads[originalIndex].Path}
+			if batchIndex < len(parts) {
+				part.Error = parts[batchIndex].Error
+			} else {
+				part.Error = fmt.Sprintf("backend returned %d upload results for %d requests", len(parts), len(batch.items))
+			}
+			result[originalIndex] = part
+		}
 	}
 	return result
 }
 func (composite *Composite) Download(ctx context.Context, paths []string) []DownloadResult {
 	result := make([]DownloadResult, len(paths))
+	type group struct {
+		backend Backend
+		indexes []int
+		paths   []string
+	}
+	var groups []group
 	for index, value := range paths {
-		backend, inner, prefix := composite.selectBackend(value)
-		part := backend.Download(ctx, []string{inner})[0]
-		part.Path = remapPath(part.Path, prefix)
-		result[index] = part
+		backend, inner, _ := composite.selectBackend(value)
+		groupIndex := backendGroupIndex(groups, backend, func(item group) Backend { return item.backend })
+		if groupIndex < 0 {
+			groupIndex = len(groups)
+			groups = append(groups, group{backend: backend})
+		}
+		groups[groupIndex].indexes = append(groups[groupIndex].indexes, index)
+		groups[groupIndex].paths = append(groups[groupIndex].paths, inner)
+	}
+	for _, batch := range groups {
+		parts := batch.backend.Download(ctx, batch.paths)
+		for batchIndex, originalIndex := range batch.indexes {
+			part := DownloadResult{Path: paths[originalIndex]}
+			if batchIndex < len(parts) {
+				part.Content = parts[batchIndex].Content
+				part.Error = parts[batchIndex].Error
+			} else {
+				part.Error = fmt.Sprintf("backend returned %d download results for %d requests", len(parts), len(batch.paths))
+			}
+			result[originalIndex] = part
+		}
 	}
 	return result
+}
+
+func clampGrepResult(result GrepResult, limit int) GrepResult {
+	if limit >= 0 && len(result.Matches) > limit {
+		result.Matches = result.Matches[:limit]
+		result.Truncated = true
+	}
+	result.Error = AppendGrepError("", result.Error)
+	return result
+}
+
+func backendGroupIndex[T any](groups []T, target Backend, backendOf func(T) Backend) int {
+	for index, group := range groups {
+		if sameBackend(backendOf(group), target) {
+			return index
+		}
+	}
+	return -1
+}
+
+func sameBackend(left, right Backend) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	leftType, rightType := reflect.TypeOf(left), reflect.TypeOf(right)
+	if leftType != rightType {
+		return false
+	}
+	if leftType.Comparable() {
+		return left == right
+	}
+	// Construction rejects non-comparable implementations, but keep this guard
+	// for defensive use if a Composite is assembled without its constructor.
+	return false
 }
 
 func stripPatternPrefix(pattern, prefix string) string {

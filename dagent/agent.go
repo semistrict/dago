@@ -55,10 +55,16 @@ type Agent struct {
 
 // Input starts or resumes one agent thread.
 type Input struct {
-	Config             dacheckpoint.Config
-	Messages           []damessage.Message
-	State              dastate.Values
-	Resume             any
+	Config   dacheckpoint.Config
+	Messages []damessage.Message
+	State    dastate.Values
+	Resume   any
+	// Deps overrides construction-time dependencies for this invocation and is
+	// inherited by inline subagents. A nil value uses Options.Deps.
+	Deps any
+	// Configurable contains immutable, runtime-only application settings. It is
+	// available to middleware and tools but is never persisted.
+	Configurable       map[string]any
 	SkipValueEvents    bool
 	DiscardResultState bool
 }
@@ -201,7 +207,9 @@ func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
 	}
 	ensureMessageIDsInValues(values)
 	execution, err := agent.graph.Invoke(ctx, graph.Invocation{
-		Config: input.Config, State: values, Resume: input.Resume, SkipValueEvents: input.SkipValueEvents,
+		Config: input.Config, State: values, Resume: input.Resume, Deps: input.Deps,
+		Configurable:    cloneConfigurable(input.Configurable),
+		SkipValueEvents: input.SkipValueEvents,
 	})
 	if err != nil {
 		return Result{}, err
@@ -223,7 +231,9 @@ func (agent *Agent) Cancel(ctx context.Context, input Input) (Result, error) {
 		values[MessagesKey] = damessage.EnsureIDs(input.Messages)
 	}
 	ensureMessageIDsInValues(values)
-	execution, err := agent.graph.Cancel(ctx, graph.Invocation{Config: input.Config, State: values})
+	execution, err := agent.graph.Cancel(ctx, graph.Invocation{
+		Config: input.Config, State: values, Deps: input.Deps, Configurable: cloneConfigurable(input.Configurable),
+	})
 	if err != nil {
 		return Result{}, err
 	}
@@ -769,21 +779,6 @@ func (compiler *compiler) executeTools(ctx context.Context, values dastate.Value
 		}
 	}
 	for _, result := range results {
-		if result.interrupt != nil {
-			continue
-		}
-		byCallID[result.message.ToolCallID] = result.message
-		if result.direct {
-			update[toolDirectKey] = true
-		}
-		if result.handoff != nil {
-			if handoff != nil {
-				return graph.Command{}, fmt.Errorf("multiple tools requested parent handoffs to %q and %q", handoff.Destination, result.handoff.Destination)
-			}
-			value := *result.handoff
-			handoff = &value
-			update[toolDirectKey] = true
-		}
 		for key, value := range result.update {
 			if previous, exists := update[key]; exists {
 				field, reducible := compiler.fields[key]
@@ -799,6 +794,21 @@ func (compiler *compiler) executeTools(ctx context.Context, values dastate.Value
 				continue
 			}
 			update[key] = value
+		}
+		if result.interrupt != nil {
+			continue
+		}
+		byCallID[result.message.ToolCallID] = result.message
+		if result.direct {
+			update[toolDirectKey] = true
+		}
+		if result.handoff != nil {
+			if handoff != nil {
+				return graph.Command{}, fmt.Errorf("multiple tools requested parent handoffs to %q and %q", handoff.Destination, result.handoff.Destination)
+			}
+			value := *result.handoff
+			handoff = &value
+			update[toolDirectKey] = true
 		}
 	}
 	toolMessages := make([]damessage.Message, 0, len(byCallID)+len(unassociated))
@@ -867,7 +877,8 @@ func (compiler *compiler) executeTool(ctx context.Context, call damessage.ToolCa
 			CheckpointID: runtime.Config.CheckpointID,
 			Resume:       request.Runtime.Resume,
 			State:        request.State, Store: runtime.Store,
-			Stream: toolWriter{writer: runtime.Writer}, Deps: runtime.Deps,
+			Stream: toolWriter{writer: runtime.Writer}, Deps: request.Runtime.Deps,
+			Configurable: request.Runtime.Configurable,
 		})
 		return ToolCallResponse{Result: output}, err
 	}
@@ -883,7 +894,7 @@ func (compiler *compiler) executeTool(ctx context.Context, call damessage.ToolCa
 	}
 	response, err := handler(ctx, request)
 	if err != nil {
-		if compiler.options.FailOnToolError {
+		if compiler.options.FailOnToolError || propagatesToolError(err) {
 			result.err = err
 			return
 		}
@@ -894,14 +905,23 @@ func (compiler *compiler) executeTool(ctx context.Context, call damessage.ToolCa
 	}
 	if response.Result.Interrupt != nil {
 		result.interrupt = &Interrupt{ID: response.Result.Interrupt.ID, Value: response.Result.Interrupt.Value}
+		result.update = dastate.Values(response.Result.Update)
 		return
 	}
 	if response.Call != nil {
 		call = *response.Call
 	}
+	status := response.Result.Status
+	if status == "" {
+		status = damessage.ToolStatusSuccess
+	}
+	if status != damessage.ToolStatusSuccess && status != damessage.ToolStatusError {
+		result.err = fmt.Errorf("tool %q returned invalid status %q", call.Name, status)
+		return
+	}
 	result.message = damessage.Message{
 		Role: damessage.RoleTool, Name: call.Name, ToolCallID: call.ID,
-		ToolStatus: damessage.ToolStatusSuccess, Content: response.Result.Content,
+		ToolStatus: status, Content: response.Result.Content,
 		Artifact: response.Result.Artifact, OtherUsage: response.Result.OtherUsage,
 	}
 	result.update = dastate.Values(response.Result.Update)
@@ -921,6 +941,15 @@ func (compiler *compiler) executeTool(ctx context.Context, call damessage.ToolCa
 		result.message.ResponseMetadata = map[string]json.RawMessage{handoffMetadataKey: encoded}
 	}
 	return
+}
+
+type propagatingToolError interface {
+	PropagateToolError()
+}
+
+func propagatesToolError(err error) bool {
+	var marker propagatingToolError
+	return errors.As(err, &marker)
 }
 
 func (compiler *compiler) routeModel(_ context.Context, values dastate.Values) ([]string, error) {
@@ -1209,13 +1238,49 @@ func ensureMessageIDsInValues(values dastate.Values) {
 
 func identityClone(value any) any { return value }
 
+func cloneConfigurable(values map[string]any) map[string]any {
+	if values == nil {
+		return nil
+	}
+	result := make(map[string]any, len(values))
+	for key, value := range values {
+		result[key] = cloneConfigurableValue(value)
+	}
+	return result
+}
+
+func cloneConfigurableValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneConfigurable(typed)
+	case []any:
+		result := make([]any, len(typed))
+		for index := range typed {
+			result[index] = cloneConfigurableValue(typed[index])
+		}
+		return result
+	case map[string]string:
+		result := make(map[string]string, len(typed))
+		for key, item := range typed {
+			result[key] = item
+		}
+		return result
+	case []string:
+		return append([]string(nil), typed...)
+	case json.RawMessage:
+		return append(json.RawMessage(nil), typed...)
+	default:
+		return value
+	}
+}
+
 func convertRuntime(runtime graph.Runtime) Runtime {
 	var writer EventWriter
 	if runtime.Writer != nil {
 		writer = eventWriter{writer: runtime.Writer}
 	}
 	return Runtime{
-		Deps: runtime.Deps, Config: runtime.Config,
+		Deps: runtime.Deps, Config: runtime.Config, Configurable: datool.NewConfigurable(runtime.Configurable),
 		Store: runtime.Store, Cache: runtime.Cache,
 		Previous: runtime.Previous.Clone(), TaskID: runtime.TaskID, Resume: runtime.Resume,
 		Writer: writer,

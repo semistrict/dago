@@ -348,6 +348,9 @@ func (remote *Backend) Glob(ctx context.Context, pattern, _ string) (dabackend.G
 }
 
 func (remote *Backend) Grep(ctx context.Context, pattern string, options dabackend.GrepOptions) (dabackend.GrepResult, error) {
+	if err := dabackend.ValidateGrepOptions(options); err != nil {
+		return dabackend.GrepResult{}, err
+	}
 	matcher, err := regexp.Compile(pattern)
 	if err != nil {
 		return dabackend.GrepResult{}, fmt.Errorf("invalid regex pattern: %w", err)
@@ -384,7 +387,7 @@ func (remote *Backend) Grep(ctx context.Context, pattern string, options dabacke
 			if !matcher.MatchString(line) {
 				continue
 			}
-			if options.MaxCount > 0 && len(result.Matches) >= options.MaxCount {
+			if !options.Uncapped && options.MaxCount > 0 && len(result.Matches) >= options.MaxCount {
 				result.Truncated = true
 				return result, nil
 			}

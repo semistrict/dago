@@ -23,9 +23,21 @@ type blockingGlobBackend struct {
 	err     error
 }
 
+type recordingGrepBackend struct {
+	dabackend.Backend
+	options []dabackend.GrepOptions
+	result  dabackend.GrepResult
+}
+
+func (backend *recordingGrepBackend) Grep(_ context.Context, _ string, options dabackend.GrepOptions) (dabackend.GrepResult, error) {
+	backend.options = append(backend.options, options)
+	return backend.result, nil
+}
+
 type recordingConfigurableSandbox struct {
 	dabackend.Backend
 	options []dabackend.ExecuteOptions
+	unknown bool
 }
 
 func (sandbox *recordingConfigurableSandbox) ID() string { return "recording" }
@@ -36,6 +48,9 @@ func (sandbox *recordingConfigurableSandbox) Execute(context.Context, string, ti
 
 func (sandbox *recordingConfigurableSandbox) ExecuteWithOptions(_ context.Context, _ string, options dabackend.ExecuteOptions) (dabackend.ExecuteResult, error) {
 	sandbox.options = append(sandbox.options, options)
+	if sandbox.unknown {
+		return dabackend.ExecuteResult{Output: "unknown", Truncated: true}, nil
+	}
 	code := 0
 	return dabackend.ExecuteResult{ExitCode: &code}, nil
 }
@@ -218,12 +233,88 @@ func TestExecuteReportsExitStatusAndCaptureTruncation(t *testing.T) {
 	if !strings.Contains(text, "1234") || !strings.Contains(text, "failed with exit code 3") || !strings.Contains(text, "capture size limit") {
 		t.Fatalf("execute result = %q", text)
 	}
-	if !strings.Contains(string(result.Artifact), `"exit_code":3`) || !strings.Contains(string(result.Artifact), `"truncated":true`) {
+	if string(result.Artifact) != `{"exit_code":3}` {
 		t.Fatalf("execute artifact = %s", result.Artifact)
 	}
 	capped := filesystemTool(t, FilesystemOptions{Backend: shell, MaxExecuteTimeout: 1}, "execute")
 	if _, err := capped.Execute(context.Background(), json.RawMessage(`{"command":"true","timeout":2}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "exceeds maximum 1") {
 		t.Fatalf("execute timeout error = %v", err)
+	}
+}
+
+func TestExecuteArtifactOmitsUnknownExitCodeAndTruncation(t *testing.T) {
+	memory, err := dabackend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox := &recordingConfigurableSandbox{Backend: memory, unknown: true}
+	execute := filesystemTool(t, FilesystemOptions{Backend: sandbox}, "execute")
+	result, err := execute.Execute(context.Background(), json.RawMessage(`{"command":"true"}`), datool.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Artifact) != `{}` {
+		t.Fatalf("unknown exit code artifact = %s", result.Artifact)
+	}
+}
+
+func TestFilesystemNonEmptyToolAllowlistRequiresReadFile(t *testing.T) {
+	memory, err := dabackend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FilesystemMiddleware(FilesystemOptions{Backend: memory, Tools: []string{"write_file"}}); err == nil || !strings.Contains(err.Error(), "read_file must be included") {
+		t.Fatalf("allowlist error = %v", err)
+	}
+	if _, err := FilesystemMiddleware(FilesystemOptions{Backend: memory, Tools: []string{}}); err != nil {
+		t.Fatalf("empty disabled tool set: %v", err)
+	}
+}
+
+func TestGrepSupportsConfiguredAndPerCallUncappedSearch(t *testing.T) {
+	memory, err := dabackend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recording := &recordingGrepBackend{Backend: memory}
+	grep := filesystemTool(t, FilesystemOptions{Backend: recording, GrepUncapped: true}, "grep")
+	for _, arguments := range []string{
+		`{"pattern":"hit"}`,
+		`{"pattern":"hit","max_count":5}`,
+		`{"pattern":"hit","max_count":null}`,
+	} {
+		if _, err := grep.Execute(context.Background(), json.RawMessage(arguments), datool.Runtime{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(recording.options) != 3 || !recording.options[0].Uncapped || recording.options[0].MaxCount != 0 {
+		t.Fatalf("configured uncapped options = %#v", recording.options)
+	}
+	if recording.options[1].Uncapped || recording.options[1].MaxCount != 5 {
+		t.Fatalf("per-call cap options = %#v", recording.options[1])
+	}
+	if !recording.options[2].Uncapped || recording.options[2].MaxCount != 0 {
+		t.Fatalf("per-call null options = %#v", recording.options[2])
+	}
+}
+
+func TestGrepPreservesPartialMatchesWithBoundedError(t *testing.T) {
+	memory, err := dabackend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recording := &recordingGrepBackend{Backend: memory, result: dabackend.GrepResult{
+		Error:   strings.Repeat("failure", 2_000),
+		Matches: []dabackend.GrepMatch{{Path: "/partial.txt", Line: 7, Text: "hit"}},
+	}}
+	grep := filesystemTool(t, FilesystemOptions{Backend: recording}, "grep")
+	result, err := grep.Execute(context.Background(), json.RawMessage(`{"pattern":"hit","output_mode":"content"}`), datool.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].Text
+	if result.Status != damessage.ToolStatusError || len(text) >= len(recording.result.Error) || !strings.Contains(text, "Partial matches:") || !strings.Contains(text, "/partial.txt:") || !strings.Contains(text, "7: hit") {
+		t.Fatalf("partial grep output = %q", text)
 	}
 }
 
@@ -312,12 +403,47 @@ func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text := response.Result.Content[0].Text; !strings.Contains(text, "/workspace/large_tool_results/evict.txt") {
+	if text := response.Result.Content[0].Text; !strings.Contains(text, "/workspace/large_tool_results/evict") {
 		t.Fatalf("offload result = %q", text)
 	}
-	read, err := composite.Read(context.Background(), "/workspace/large_tool_results/evict.txt", 0, 100)
+	read, err := composite.Read(context.Background(), "/workspace/large_tool_results/evict", 0, 100)
 	if err != nil || read.Data == nil || read.Data.Content != strings.Repeat("x", 50) {
 		t.Fatalf("offloaded file = %#v, %v", read, err)
+	}
+}
+
+func TestToolResultOffloadConfinesArtifactAndPreservesMedia(t *testing.T) {
+	memory, err := dabackend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := FilesystemMiddleware(FilesystemOptions{
+		Backend: memory, ArtifactsRoot: "/artifacts/large_tool_results", LargeResultBytes: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := damessage.ContentBlock{Type: damessage.BlockImage, MIMEType: "image/png", Data: []byte("image")}
+	response, err := middleware.WrapToolCall(context.Background(), dagent.ToolCallRequest{
+		Call: damessage.ToolCall{ID: `../outside\result`, Name: "custom"},
+	}, func(context.Context, dagent.ToolCallRequest) (dagent.ToolCallResponse, error) {
+		return dagent.ToolCallResponse{Result: datool.Result{Content: []damessage.ContentBlock{
+			{Type: damessage.BlockText, Text: strings.Repeat("x", 50)}, image,
+		}}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := "/artifacts/large_tool_results/___outside_result"
+	if len(response.Result.Content) != 2 || !strings.Contains(response.Result.Content[0].Text, wantPath) || response.Result.Content[1].Type != damessage.BlockImage || string(response.Result.Content[1].Data) != "image" {
+		t.Fatalf("offloaded result = %#v", response.Result.Content)
+	}
+	read, err := memory.Read(context.Background(), wantPath, 0, 100)
+	if err != nil || read.Data == nil || read.Data.Content != strings.Repeat("x", 50) {
+		t.Fatalf("offloaded file = %#v, %v", read, err)
+	}
+	if _, err := memory.Read(context.Background(), "/artifacts/outside/result.txt", 0, 100); err == nil {
+		t.Fatal("separator-bearing call ID escaped the artifact subtree")
 	}
 }
 

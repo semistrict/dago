@@ -67,6 +67,26 @@ func TestAliasPreservesSchemaAndDelegatesRuntime(t *testing.T) {
 	}
 }
 
+func TestConfigurableSnapshotAndGetAreDefensive(t *testing.T) {
+	source := map[string]any{"nested": map[string]any{"items": []any{"original"}}}
+	config := NewConfigurable(source)
+	source["nested"].(map[string]any)["items"].([]any)[0] = "source mutation"
+	value, ok := config.Get("nested")
+	if !ok {
+		t.Fatal("nested setting missing")
+	}
+	value.(map[string]any)["items"].([]any)[0] = "get mutation"
+	snapshot := config.Snapshot()
+	if got := snapshot["nested"].(map[string]any)["items"].([]any)[0]; got != "original" {
+		t.Fatalf("snapshot value = %#v", got)
+	}
+	snapshot["nested"].(map[string]any)["items"].([]any)[0] = "snapshot mutation"
+	value, _ = config.Get("nested")
+	if got := value.(map[string]any)["items"].([]any)[0]; got != "original" {
+		t.Fatalf("configurable value = %#v", got)
+	}
+}
+
 func TestFuncRejectsInvalidArgumentsAndWrapsErrors(t *testing.T) {
 	wantErr := errors.New("failed")
 	function := Func{

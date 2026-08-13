@@ -323,6 +323,15 @@ func selectedNativeFilesystemTools(overrides map[string]string, disableAll bool)
 			selected = append(selected, name)
 		}
 	}
+	if len(selected) > 0 {
+		hasRead := false
+		for _, name := range selected {
+			hasRead = hasRead || name == "read_file"
+		}
+		if !hasRead {
+			selected = append([]string{"read_file"}, selected...)
+		}
+	}
 	return selected
 }
 

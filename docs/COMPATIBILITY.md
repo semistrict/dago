@@ -18,11 +18,16 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Bidirectional Python payload fixtures | verified | SQLite and PostgreSQL are generated, read, and continued in both directions |
 | State, memory, store, filesystem, composite, local shell | verified | shared backend and thread-scoped delta-state tests |
 | Rooted local filesystem confinement | verified | `os.Root` operations plus traversal, symlink-escape, write, delete, glob, grep, upload, and download tests |
+| Filesystem result safety, media compaction, partial/uncapped grep, and transfer batching | verified | root filesystem contracts plus backend concurrency, pagination, deterministic grep, partial-error, and composite batch tests |
 | LangSmith remote sandbox | verified | SDK adapter tests; live test is credential-gated |
 | Docker local sandbox | implemented | hardened creation, workspace confinement, execution, cancellation restart, cleanup, and opt-in live-container tests |
 | Context Hub persistent agent repository | verified | lazy pull, commit chaining, linked entries, cache recovery, batch transfer, and LangSmith SDK transport tests |
 | Filesystem tools and permission approval | verified | root vertical-slice tests |
 | Declarative and precompiled subagents, isolation, state propagation, and nested approval resume | verified | root and agent tests |
+| Inline subagent todo isolation and operational failure propagation | verified | root subagent isolation, recoverable-argument, and child failure tests |
+| Invocation-scoped runtime context | verified | graph runtime, concurrent invocation, inline subagent, and rubric grader propagation tests |
+| Durable rubric terminal outcomes | verified | public result and persisted-checkpoint status tests for terminal grading outcomes |
+| Task-scoped structured output for declarative subagents | verified | per-task schema validation and precompiled-runnable rejection tests |
 | Summarization, offload, and compaction | verified | AND/OR/fraction threshold clauses, valid cutoffs, thread-aware offload, and state-update tests |
 | Skills and memory prompt injection | verified | safe YAML, deterministic discovery, warning, ordering, and prompt tests |
 | Provider and harness profiles | verified | built-in Anthropic and Nemotron harness overlays plus OpenAI/NVIDIA/OpenRouter construction defaults; active repair, retry, budget, policy, entity, follow-up, and final-answer contracts; additive registration and override tests |
@@ -34,6 +39,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Remote Agent Protocol background client | verified | thread/run create, status/result, interrupting update, cancellation, auth, path escaping, and redirect-boundary tests |
 | LangSmith Studio / Agent Server development API | verified | info and schema discovery; assistant, thread, run, checkpoint state/history/update/fork, store, cancellation, replayable SSE, CORS, generated-wrapper, and config tests |
 | Video processing | verified | pluggable extractor contract plus optional bounded FFmpeg adapter; video-window, frame, truncation, fallback, and failure tests |
+| Executable upstream conformance provenance | verified | generator validates pinned source paths and test selectors; generated-contract tests strictly decode, validate, mutate, and round-trip every fixture |
 | shelley-in-dago end-to-end application | verified | HTTP route tests plus desktop/mobile browser interaction checks |
 
 ## Intentional differences

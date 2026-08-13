@@ -549,7 +549,8 @@ func predictableFilesystemAliases(files dbackend.Backend, selected []string) ([]
 	if len(wanted) == 0 {
 		return nil, nil
 	}
-	middleware, err := dago.FilesystemMiddleware(dago.FilesystemOptions{Backend: files, Tools: wanted})
+	middlewareTools := append([]string{"read_file"}, wanted...)
+	middleware, err := dago.FilesystemMiddleware(dago.FilesystemOptions{Backend: files, Tools: middlewareTools})
 	if err != nil {
 		return nil, fmt.Errorf("create predictable filesystem alias: %w", err)
 	}

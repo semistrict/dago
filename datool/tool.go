@@ -127,6 +127,66 @@ type Runtime struct {
 	Store        dastore.Store
 	Stream       StreamWriter
 	Deps         any
+	// Configurable contains immutable, runtime-only invocation settings supplied
+	// by the application.
+	Configurable Configurable
+}
+
+// Configurable is a defensive, read-only view of invocation settings.
+type Configurable struct{ values map[string]any }
+
+// NewConfigurable builds an isolated settings view. Container values are
+// recursively copied while typed descriptors remain typed.
+func NewConfigurable(values map[string]any) Configurable {
+	return Configurable{values: cloneConfigurableMap(values)}
+}
+
+// Get returns an isolated copy of one setting.
+func (config Configurable) Get(key string) (any, bool) {
+	value, ok := config.values[key]
+	return cloneConfigurableValue(value), ok
+}
+
+// Snapshot returns an isolated map suitable for forwarding into a nested
+// invocation. Mutating the returned values cannot affect the source runtime.
+func (config Configurable) Snapshot() map[string]any {
+	return cloneConfigurableMap(config.values)
+}
+
+func cloneConfigurableMap(values map[string]any) map[string]any {
+	if values == nil {
+		return nil
+	}
+	result := make(map[string]any, len(values))
+	for key, value := range values {
+		result[key] = cloneConfigurableValue(value)
+	}
+	return result
+}
+
+func cloneConfigurableValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneConfigurableMap(typed)
+	case []any:
+		result := make([]any, len(typed))
+		for index := range typed {
+			result[index] = cloneConfigurableValue(typed[index])
+		}
+		return result
+	case map[string]string:
+		result := make(map[string]string, len(typed))
+		for key, item := range typed {
+			result[key] = item
+		}
+		return result
+	case []string:
+		return append([]string(nil), typed...)
+	case json.RawMessage:
+		return append(json.RawMessage(nil), typed...)
+	default:
+		return value
+	}
 }
 
 // ResumeAs decodes a live or checkpoint-restored resume value as T.
@@ -180,7 +240,10 @@ type Handoff struct {
 // Result is normalized tool output. Update is merged into graph state by reducers;
 // it is not exposed to the model directly.
 type Result struct {
-	Content    []damessage.ContentBlock  `json:"content,omitempty"`
+	Content []damessage.ContentBlock `json:"content,omitempty"`
+	// Status marks model-visible tool failures that still carry useful content,
+	// such as partial search results. Empty defaults to success.
+	Status     damessage.ToolStatus      `json:"status,omitempty"`
 	Artifact   json.RawMessage           `json:"artifact,omitempty"`
 	OtherUsage []damessage.PurposedUsage `json:"other_usage,omitempty"`
 	Update     map[string]any            `json:"-"`

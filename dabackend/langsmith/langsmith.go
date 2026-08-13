@@ -285,6 +285,9 @@ func (remote *Backend) Glob(ctx context.Context, pattern, base string) (dabacken
 }
 
 func (remote *Backend) Grep(ctx context.Context, pattern string, options dabackend.GrepOptions) (dabackend.GrepResult, error) {
+	if err := dabackend.ValidateGrepOptions(options); err != nil {
+		return dabackend.GrepResult{}, err
+	}
 	if pattern == "" {
 		return dabackend.GrepResult{}, fmt.Errorf("grep pattern is required")
 	}
@@ -304,7 +307,9 @@ func (remote *Backend) Grep(ctx context.Context, pattern string, options dabacke
 		}
 	}
 	limit := options.MaxCount
-	if limit <= 0 {
+	if options.Uncapped {
+		limit = int(^uint(0) >> 1)
+	} else if limit <= 0 {
 		limit = remote.maxResults
 	}
 	result := dabackend.GrepResult{}
@@ -320,7 +325,14 @@ func (remote *Backend) Grep(ctx context.Context, pattern string, options dabacke
 			continue
 		}
 		data, readErr := remote.readRaw(ctx, info.Path)
-		if readErr != nil || !utf8.Valid(data) {
+		if readErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return dabackend.GrepResult{}, ctxErr
+			}
+			result.Error = dabackend.AppendGrepError(result.Error, fmt.Sprintf("read %s: backend_error", info.Path))
+			continue
+		}
+		if !utf8.Valid(data) {
 			continue
 		}
 		lines := splitLines(string(data))

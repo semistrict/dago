@@ -68,6 +68,7 @@ type Options struct {
 	DefaultTimeout time.Duration
 	MaxOutput      int
 	MaxFileSize    int64
+	MaxVideoSize   int64
 	MaxResults     int
 }
 
@@ -184,7 +185,7 @@ func newBackend(ctx context.Context, options Options, engine engineAPI, closeEng
 		}
 	}
 	filesystem, err := dabackend.NewFilesystem(dabackend.FilesystemOptions{
-		Root: workspace, MaxFileSize: options.MaxFileSize, MaxResults: options.MaxResults,
+		Root: workspace, MaxFileSize: options.MaxFileSize, MaxVideoSize: options.MaxVideoSize, MaxResults: options.MaxResults,
 	})
 	if err != nil {
 		cleanupWorkspace()
@@ -333,6 +334,17 @@ func (backend *Backend) Read(ctx context.Context, name string, offset, limit int
 		return dabackend.ReadResult{}, err
 	}
 	return backend.filesystem.Read(ctx, name, offset, limit)
+}
+
+func (backend *Backend) ReadBinary(ctx context.Context, name string, maxBytes int64) (dabackend.ReadResult, error) {
+	if err := backend.acquire(ctx); err != nil {
+		return dabackend.ReadResult{}, err
+	}
+	defer backend.release()
+	if err := backend.requireOpenLocked(); err != nil {
+		return dabackend.ReadResult{}, err
+	}
+	return backend.filesystem.ReadBinary(ctx, name, maxBytes)
 }
 
 func (backend *Backend) Write(ctx context.Context, name, content string) (dabackend.WriteResult, error) {

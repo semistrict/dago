@@ -94,6 +94,10 @@ func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, sessio
 	}
 
 	resume := invocation.Resume
+	runtimeDeps := invocation.Deps
+	if runtimeDeps == nil {
+		runtimeDeps = graph.options.Deps
+	}
 	for step := 0; step < graph.options.RecursionLimit; step++ {
 		if err := ctx.Err(); err != nil {
 			return Execution{}, err
@@ -102,7 +106,7 @@ func (graph *Compiled) invoke(ctx context.Context, invocation Invocation, sessio
 			values, err := machine.values()
 			return Execution{Config: current, State: values, Steps: step}, err
 		}
-		results := graph.executeTasks(ctx, machine, tasks, current, resume, step)
+		results := graph.executeTasks(ctx, machine, tasks, current, resume, runtimeDeps, invocation.Configurable, step)
 		resume = nil
 		for _, result := range results {
 			if result.err != nil {

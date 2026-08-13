@@ -114,7 +114,7 @@ func RubricMiddleware(options RubricOptions) (dagent.Middleware, error) {
 
 	fields := map[string]dagent.StateField{
 		RubricKey:            {Kind: dagent.FieldLast, Contract: "dago.rubric.input.v1", Clone: cloneRubricScalar},
-		RubricStatusKey:      {Kind: dagent.FieldLast, Contract: "dago.rubric.status.v1", Private: true, Clone: cloneRubricScalar},
+		RubricStatusKey:      {Kind: dagent.FieldLast, Contract: "dago.rubric.status.v1", Clone: cloneRubricScalar},
 		RubricIterationsKey:  {Kind: dagent.FieldLast, Contract: "dago.rubric.iterations.v1", Private: true, Clone: cloneRubricScalar},
 		RubricEvaluationsKey: {Kind: dagent.FieldLast, Contract: "dago.rubric.evaluations.v1", Private: true, Clone: cloneRubricEvaluations},
 		RubricRunIDKey:       {Kind: dagent.FieldLast, Contract: "dago.rubric.run.v1", Private: true, Clone: cloneRubricScalar},
@@ -169,7 +169,11 @@ func RubricMiddleware(options RubricOptions) (dagent.Middleware, error) {
 				if payloadErr != nil {
 					err = payloadErr
 				} else {
-					result, invokeErr := compiled.Invoke(ctx, dagent.Input{Messages: []damessage.Message{damessage.Human(payload)}})
+					result, invokeErr := compiled.Invoke(ctx, dagent.Input{
+						Messages:     []damessage.Message{damessage.Human(payload)},
+						Deps:         runtime.Deps,
+						Configurable: runtime.Configurable.Snapshot(),
+					})
 					err = invokeErr
 					if err == nil {
 						err = json.Unmarshal(result.Structured, &graded)

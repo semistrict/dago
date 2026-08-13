@@ -119,7 +119,7 @@ func TestLoopNativeHarnessAcceptsShelleyHostPaths(t *testing.T) {
 		}, Response: damodel.Response{Message: dmessage.Assistant("done")}},
 	)
 	runtime := NewLoop(Config{
-		Model: script, WorkingDir: workingDir, FilesystemTools: []string{"ls"},
+		Model: script, WorkingDir: workingDir, FilesystemTools: []string{"read_file", "ls"},
 		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
 	})
 	runtime.QueueUserMessage(userStringMessage("list files"))
@@ -153,7 +153,7 @@ func TestLoopNativeHarnessObservesWorkingDirectoryChangesWithinTurn(t *testing.T
 	)
 	runtime := NewLoop(Config{
 		Model: script, WorkingDir: first, GetWorkingDir: func() string { return current },
-		Tools: []datool.Tool{changeDir}, FilesystemTools: []string{"execute"},
+		Tools: []datool.Tool{changeDir}, FilesystemTools: []string{"read_file", "execute"},
 		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
 	})
 	runtime.QueueUserMessage(userStringMessage("change directory and list files"))

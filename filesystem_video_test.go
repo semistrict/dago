@@ -13,6 +13,25 @@ import (
 	"github.com/semistrict/dago/datool"
 )
 
+type boundedVideoBackend struct {
+	dabackend.Backend
+	reads        int
+	bounded      int
+	requestedMax int64
+	result       dabackend.ReadResult
+}
+
+func (backend *boundedVideoBackend) Read(context.Context, string, int, int) (dabackend.ReadResult, error) {
+	backend.reads++
+	return dabackend.ReadResult{}, errors.New("unbounded read must not be used")
+}
+
+func (backend *boundedVideoBackend) ReadBinary(_ context.Context, _ string, maxBytes int64) (dabackend.ReadResult, error) {
+	backend.bounded++
+	backend.requestedMax = maxBytes
+	return backend.result, nil
+}
+
 func TestReadFileExtractsVideoWindow(t *testing.T) {
 	raw := []byte{0xff, 0x00, 0x01}
 	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
@@ -89,6 +108,25 @@ func TestReadFileEnforcesVideoInputCap(t *testing.T) {
 	_, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/movie.avi"}`), datool.Runtime{})
 	if err == nil || !strings.Contains(err.Error(), "maximum input size of 2 bytes") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestReadFileUsesBackendVideoGuardBeforePayloadAllocation(t *testing.T) {
+	memory, err := dabackend.NewMemory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &boundedVideoBackend{Backend: memory, result: dabackend.ReadResult{Data: &dabackend.FileData{
+		Content: base64.StdEncoding.EncodeToString([]byte{0xff}), Encoding: dabackend.EncodingBase64,
+	}}}
+	read := filesystemTool(t, FilesystemOptions{Backend: backend, MaxVideoBytes: 7, VideoExtractor: VideoExtractorFunc(func(context.Context, []byte, VideoWindow) ([]damessage.ContentBlock, error) {
+		return nil, nil
+	})}, "read_file")
+	if _, err := read.Execute(t.Context(), json.RawMessage(`{"file_path":"/movie.mp4"}`), datool.Runtime{}); err != nil {
+		t.Fatal(err)
+	}
+	if backend.reads != 0 || backend.bounded != 1 || backend.requestedMax != 7 {
+		t.Fatalf("video reads: unbounded=%d bounded=%d max=%d", backend.reads, backend.bounded, backend.requestedMax)
 	}
 }
 

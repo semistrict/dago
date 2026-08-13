@@ -148,7 +148,7 @@ func New(options Options) (*DeepAgent, error) {
 		}
 		generalEnabled := profile.GeneralPurpose == nil || profile.GeneralPurpose.Enabled == nil || *profile.GeneralPurpose.Enabled
 		if generalEnabled && !hasSubagent(subagents, "general-purpose") {
-			general, err := buildGeneralSubagent(options, filesystem, profile, profileExclusionMatches)
+			general, err := buildGeneralSubagent(options, filesystem, profile, profileExclusionMatches, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -156,9 +156,12 @@ func New(options Options) (*DeepAgent, error) {
 			if profile.GeneralPurpose != nil && profile.GeneralPurpose.Description != nil {
 				description = *profile.GeneralPurpose.Description
 			}
+			generalFactory := func(output *dagent.StructuredOutput) (Runnable, error) {
+				return buildGeneralSubagent(options, filesystem, profile, profileExclusionMatches, output)
+			}
 			subagents = append([]Subagent{{
 				Name: "general-purpose", Description: description, Runnable: general,
-				inheritAllState: true,
+				inheritAllState: true, responseFactory: generalFactory,
 			}}, subagents...)
 		}
 		if len(subagents) > 0 {
@@ -361,20 +364,26 @@ func buildDeclarativeSubagents(options Options, inheritedTools []datool.Tool) ([
 			tools = inheritedTools
 		}
 		tools = applyToolProfile(tools, profile.ToolDescriptions, nil)
-		compiled, err := dagent.New(dagent.Options{
-			Name: spec.Name, Model: chat, Tools: tools,
-			SystemPrompt: applyProfilePrompt(profile, "", spec.SystemPrompt), Middleware: middleware,
-			StateFields: options.StateFields, StructuredOutput: spec.StructuredOutput, Saver: options.Saver,
-			Store: options.Store, Cache: options.Cache, Deps: options.Deps,
-			RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
-			FailOnToolError: options.FailOnToolError,
-			Metadata:        mergeAgentMetadata(options.Metadata, spec.Name), Tags: options.Tags, Debug: options.Debug,
-		})
+		name := spec.Name
+		prompt := applyProfilePrompt(profile, "", spec.SystemPrompt)
+		compile := func(output *dagent.StructuredOutput) (Runnable, error) {
+			return dagent.New(dagent.Options{
+				Name: name, Model: chat, Tools: tools,
+				SystemPrompt: prompt, Middleware: middleware,
+				StateFields: options.StateFields, StructuredOutput: output, Saver: options.Saver,
+				Store: options.Store, Cache: options.Cache, Deps: options.Deps,
+				RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
+				FailOnToolError: options.FailOnToolError,
+				Metadata:        mergeAgentMetadata(options.Metadata, name), Tags: options.Tags, Debug: options.Debug,
+			})
+		}
+		compiled, err := compile(spec.StructuredOutput)
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q: %w", spec.Name, err)
 		}
 		spec.Runnable = compiled
 		spec.inheritAllState = spec.InheritedState == nil
+		spec.responseFactory = compile
 		result = append(result, spec)
 	}
 	return result, nil
@@ -419,7 +428,7 @@ const defaultGeneralSubagentDescription = "General-purpose agent for researching
 
 const defaultGeneralSubagentPrompt = "In order to complete the objective that the user asks of you, you have access to a number of standard tools.\n\nThe calling agent only sees your final assistant message, not your intermediate work, tool results, or status tracking. Ensure your final response contains the complete answer."
 
-func buildGeneralSubagent(options Options, filesystem dagent.Middleware, profile Profile, exclusionMatches map[string]bool) (*dagent.Agent, error) {
+func buildGeneralSubagent(options Options, filesystem dagent.Middleware, profile Profile, exclusionMatches map[string]bool, structuredOutput *dagent.StructuredOutput) (*dagent.Agent, error) {
 	middleware := []dagent.Middleware{}
 	middleware = append(middleware, filesystem)
 	if !options.DisableSummary {
@@ -489,7 +498,8 @@ func buildGeneralSubagent(options Options, filesystem dagent.Middleware, profile
 	return dagent.New(dagent.Options{
 		Name: "general-purpose", Model: options.Model, Tools: options.Tools,
 		SystemPrompt: prompt, Middleware: middleware, StateFields: options.StateFields,
-		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Deps: options.Deps,
+		StructuredOutput: structuredOutput,
+		Saver:            options.Saver, Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
 		Metadata:        mergeAgentMetadata(options.Metadata, "general-purpose"), Tags: options.Tags, Debug: options.Debug,

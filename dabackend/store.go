@@ -2,11 +2,13 @@ package dabackend
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/semistrict/dago/dastore"
 )
@@ -16,7 +18,82 @@ type Store struct {
 	store            dastore.Store
 	namespaceFactory NamespaceFactory
 	session          storeSessionKey
-	mu               sync.Mutex
+	locks            *storePathLocks
+}
+
+type storePathLock struct {
+	path string
+	tree bool
+}
+
+type storePathLocks struct {
+	mu      sync.Mutex
+	next    uint64
+	active  map[uint64][]storePathLock
+	changed chan struct{}
+}
+
+func newStorePathLocks() *storePathLocks {
+	return &storePathLocks{active: map[uint64][]storePathLock{}, changed: make(chan struct{})}
+}
+
+func (locks *storePathLocks) acquire(ctx context.Context, requested []storePathLock) (func(), error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		locks.mu.Lock()
+		if !locks.conflicts(requested) {
+			locks.next++
+			id := locks.next
+			locks.active[id] = append([]storePathLock(nil), requested...)
+			locks.mu.Unlock()
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					locks.mu.Lock()
+					delete(locks.active, id)
+					close(locks.changed)
+					locks.changed = make(chan struct{})
+					locks.mu.Unlock()
+				})
+			}, nil
+		}
+		changed := locks.changed
+		locks.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (locks *storePathLocks) conflicts(requested []storePathLock) bool {
+	for _, held := range locks.active {
+		for _, left := range requested {
+			for _, right := range held {
+				if storePathLocksConflict(left, right) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func storePathLocksConflict(left, right storePathLock) bool {
+	if left.path == right.path {
+		return true
+	}
+	if left.tree && storePathWithin(right.path, left.path) {
+		return true
+	}
+	return right.tree && storePathWithin(left.path, right.path)
+}
+
+func storePathWithin(candidate, root string) bool {
+	return strings.HasPrefix(candidate, strings.TrimSuffix(root, "/")+"/")
 }
 
 // NamespaceFactory resolves the persistent namespace for one invocation. The
@@ -54,7 +131,7 @@ func NewStoreWithOptions(options StoreOptions) (*Store, error) {
 	if options.Namespace == nil {
 		return nil, fmt.Errorf("backend store namespace factory is required")
 	}
-	result := &Store{store: options.Store, namespaceFactory: options.Namespace}
+	result := &Store{store: options.Store, namespaceFactory: options.Namespace, locks: newStorePathLocks()}
 	result.session.owner = result
 	return result, nil
 }
@@ -131,19 +208,23 @@ func (backend *Store) snapshot(ctx context.Context) (*Memory, error) {
 	return NewMemory(files)
 }
 
-func (backend *Store) persist(ctx context.Context, memory *Memory) error {
+func (backend *Store) loadFile(ctx context.Context, name string) (dastore.Store, dastore.Namespace, FileData, bool, error) {
 	values, namespace, err := backend.resolve(ctx)
 	if err != nil {
-		return err
+		return nil, nil, FileData{}, false, err
 	}
-	memory.mu.RLock()
-	defer memory.mu.RUnlock()
-	for name, data := range memory.files {
-		if err := values.Put(ctx, namespace, name, fileDataMap(data)); err != nil {
-			return err
-		}
+	item, err := values.Get(ctx, namespace, name)
+	if err != nil {
+		return nil, nil, FileData{}, false, err
 	}
-	return nil
+	if item == nil {
+		return values, namespace, FileData{}, false, nil
+	}
+	data, err := fileDataFromMap(item.Value)
+	if err != nil {
+		return nil, nil, FileData{}, false, fmt.Errorf("decode stored file %q: %w", name, err)
+	}
+	return values, namespace, data, true, nil
 }
 
 func (backend *Store) List(ctx context.Context, path string) (ListResult, error) {
@@ -154,75 +235,126 @@ func (backend *Store) List(ctx context.Context, path string) (ListResult, error)
 	return memory.List(ctx, path)
 }
 func (backend *Store) Read(ctx context.Context, path string, offset, limit int) (ReadResult, error) {
-	memory, err := backend.snapshot(ctx)
+	name, err := normalizeVirtual(path)
 	if err != nil {
 		return ReadResult{}, err
 	}
-	return memory.Read(ctx, path, offset, limit)
+	_, _, data, ok, err := backend.loadFile(ctx, name)
+	if err != nil {
+		return ReadResult{}, err
+	}
+	if !ok {
+		return ReadResult{}, fmt.Errorf("path %q: file not found", name)
+	}
+	if data.Encoding == EncodingBase64 || IsBinaryReadPath(name) {
+		copy := data
+		if copy.Encoding != EncodingBase64 {
+			copy.Content = base64.StdEncoding.EncodeToString([]byte(copy.Content))
+		}
+		copy.Encoding = EncodingBase64
+		return ReadResult{Data: &copy}, nil
+	}
+	return SliceRead(data, offset, limit)
 }
 func (backend *Store) Write(ctx context.Context, path, content string) (WriteResult, error) {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	memory, err := backend.snapshot(ctx)
+	name, err := normalizeVirtual(path)
 	if err != nil {
 		return WriteResult{}, err
 	}
-	result, err := memory.Write(ctx, path, content)
+	release, err := backend.locks.acquire(ctx, []storePathLock{{path: name}})
 	if err != nil {
 		return WriteResult{}, err
 	}
-	return result, backend.persist(ctx, memory)
+	defer release()
+	values, namespace, previous, exists, err := backend.loadFile(ctx, name)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	now := time.Now().UTC()
+	created := now
+	if exists {
+		created = previous.CreatedAt
+	}
+	data := FileData{Content: content, Encoding: EncodingUTF8, CreatedAt: created, ModifiedAt: now}
+	if err := values.Put(ctx, namespace, name, fileDataMap(data)); err != nil {
+		return WriteResult{}, err
+	}
+	return WriteResult{Path: name}, nil
 }
 func (backend *Store) Edit(ctx context.Context, path, old, replacement string, all bool) (EditResult, error) {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	memory, err := backend.snapshot(ctx)
+	if old == "" || old == replacement {
+		return EditResult{}, fmt.Errorf("edit: old string must be non-empty and differ from replacement")
+	}
+	name, err := normalizeVirtual(path)
 	if err != nil {
 		return EditResult{}, err
 	}
-	result, err := memory.Edit(ctx, path, old, replacement, all)
+	release, err := backend.locks.acquire(ctx, []storePathLock{{path: name}})
 	if err != nil {
 		return EditResult{}, err
 	}
-	return result, backend.persist(ctx, memory)
+	defer release()
+	values, namespace, data, exists, err := backend.loadFile(ctx, name)
+	if err != nil {
+		return EditResult{}, err
+	}
+	if !exists {
+		return EditResult{}, fmt.Errorf("path %q: file not found", name)
+	}
+	if data.Encoding != EncodingUTF8 {
+		return EditResult{}, fmt.Errorf("edit %q: binary files are unsupported", name)
+	}
+	updated, count, err := ReplaceText(name, data.Content, old, replacement, all)
+	if err != nil {
+		return EditResult{}, err
+	}
+	data.Content = updated
+	data.ModifiedAt = time.Now().UTC()
+	if err := values.Put(ctx, namespace, name, fileDataMap(data)); err != nil {
+		return EditResult{}, err
+	}
+	return EditResult{Path: name, Occurrences: count}, nil
 }
 func (backend *Store) Delete(ctx context.Context, path string) (DeleteResult, error) {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	memory, err := backend.snapshot(ctx)
+	name, err := normalizeVirtual(path)
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	before := map[string]struct{}{}
-	memory.mu.RLock()
-	for name := range memory.files {
-		before[name] = struct{}{}
+	if name == "/" {
+		return DeleteResult{}, fmt.Errorf("delete virtual root is not allowed")
 	}
-	memory.mu.RUnlock()
-	result, err := memory.Delete(ctx, path)
+	release, err := backend.locks.acquire(ctx, []storePathLock{{path: name, tree: true}})
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	memory.mu.RLock()
-	for name := range memory.files {
-		delete(before, name)
-	}
-	memory.mu.RUnlock()
+	defer release()
 	values, namespace, err := backend.resolve(ctx)
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	operations := make([]dastore.Operation, 0, len(before))
-	for name := range before {
-		operations = append(operations, dastore.Operation{Namespace: namespace, Key: name, Delete: true})
+	items, err := values.Search(ctx, dastore.SearchOptions{Prefix: namespace})
+	if err != nil {
+		return DeleteResult{}, err
 	}
-	sort.Slice(operations, func(i, j int) bool { return operations[i].Key < operations[j].Key })
-	if len(operations) > 0 {
-		if _, err := values.Batch(ctx, operations); err != nil {
-			return DeleteResult{}, err
+	prefix := strings.TrimSuffix(name, "/") + "/"
+	var names []string
+	for _, item := range items {
+		if len(item.Namespace) == len(namespace) && (item.Key == name || strings.HasPrefix(item.Key, prefix)) {
+			names = append(names, item.Key)
 		}
 	}
-	return result, nil
+	if len(names) == 0 {
+		return DeleteResult{}, fmt.Errorf("path %q: file not found", name)
+	}
+	sort.Strings(names)
+	operations := make([]dastore.Operation, len(names))
+	for index, candidate := range names {
+		operations[index] = dastore.Operation{Namespace: namespace, Key: candidate, Delete: true}
+	}
+	if _, err := values.Batch(ctx, operations); err != nil {
+		return DeleteResult{}, err
+	}
+	return DeleteResult{Path: name}, nil
 }
 func (backend *Store) Glob(ctx context.Context, pattern, path string) (GlobResult, error) {
 	memory, err := backend.snapshot(ctx)
@@ -239,28 +371,109 @@ func (backend *Store) Grep(ctx context.Context, pattern string, options GrepOpti
 	return memory.Grep(ctx, pattern, options)
 }
 func (backend *Store) Upload(ctx context.Context, uploads []Upload) []UploadResult {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	memory, err := backend.snapshot(ctx)
-	if err != nil {
-		return failedUploads(uploads, err)
+	result := make([]UploadResult, len(uploads))
+	names := make([]string, len(uploads))
+	requested := make([]storePathLock, 0, len(uploads))
+	seen := map[string]bool{}
+	for index, upload := range uploads {
+		result[index].Path = upload.Path
+		name, err := normalizeVirtual(upload.Path)
+		if err != nil {
+			result[index].Error = err.Error()
+			continue
+		}
+		names[index] = name
+		if !seen[name] {
+			seen[name] = true
+			requested = append(requested, storePathLock{path: name})
+		}
 	}
-	result := memory.Upload(ctx, uploads)
-	if err := backend.persist(ctx, memory); err != nil {
-		return failedUploads(uploads, err)
+	release, err := backend.locks.acquire(ctx, requested)
+	if err != nil {
+		for index := range result {
+			if result[index].Error == "" {
+				result[index].Error = err.Error()
+			}
+		}
+		return result
+	}
+	defer release()
+	values, namespace, err := backend.resolve(ctx)
+	if err != nil {
+		for index := range result {
+			if result[index].Error == "" {
+				result[index].Error = err.Error()
+			}
+		}
+		return result
+	}
+	operations := make([]dastore.Operation, 0, len(uploads))
+	operationIndexes := make([]int, 0, len(uploads))
+	for index, upload := range uploads {
+		if result[index].Error != "" {
+			continue
+		}
+		name := names[index]
+		itemErr := ctx.Err()
+		var previous *dastore.Item
+		if itemErr == nil {
+			previous, itemErr = values.Get(ctx, namespace, name)
+		}
+		if itemErr != nil {
+			result[index].Error = itemErr.Error()
+			continue
+		}
+		now := time.Now().UTC()
+		created := now
+		if previous != nil {
+			if data, decodeErr := fileDataFromMap(previous.Value); decodeErr != nil {
+				result[index].Error = fmt.Sprintf("decode stored file %q: %v", name, decodeErr)
+				continue
+			} else {
+				created = data.CreatedAt
+			}
+		}
+		data := FileData{CreatedAt: created, ModifiedAt: now}
+		if utf8.Valid(upload.Content) {
+			data.Content, data.Encoding = string(upload.Content), EncodingUTF8
+		} else {
+			data.Content, data.Encoding = base64.StdEncoding.EncodeToString(upload.Content), EncodingBase64
+		}
+		operations = append(operations, dastore.Operation{Namespace: namespace, Key: name, PutValue: fileDataMap(data)})
+		operationIndexes = append(operationIndexes, index)
+	}
+	if len(operations) > 0 {
+		if _, err := values.Batch(ctx, operations); err != nil {
+			for _, index := range operationIndexes {
+				result[index].Error = err.Error()
+			}
+		}
 	}
 	return result
 }
 func (backend *Store) Download(ctx context.Context, paths []string) []DownloadResult {
-	memory, err := backend.snapshot(ctx)
-	if err != nil {
-		result := make([]DownloadResult, len(paths))
-		for i, path := range paths {
-			result[i] = DownloadResult{Path: path, Error: err.Error()}
+	result := make([]DownloadResult, len(paths))
+	for index, raw := range paths {
+		result[index].Path = raw
+		name, err := normalizeVirtual(raw)
+		if err == nil {
+			_, _, data, ok, loadErr := backend.loadFile(ctx, name)
+			err = loadErr
+			if err == nil && !ok {
+				result[index].Error = "file_not_found"
+				continue
+			}
+			if err == nil && data.Encoding == EncodingBase64 {
+				result[index].Content, err = base64.StdEncoding.DecodeString(data.Content)
+			} else if err == nil {
+				result[index].Content = []byte(data.Content)
+			}
 		}
-		return result
+		if err != nil {
+			result[index].Error = err.Error()
+		}
 	}
-	return memory.Download(ctx, paths)
+	return result
 }
 
 func fileDataMap(data FileData) map[string]any {

@@ -1,6 +1,7 @@
 package dabackend
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -24,17 +26,23 @@ type FilesystemOptions struct {
 	// AllowHostPaths disables virtual-root confinement. It is intended only for
 	// trusted local development and must be opted into explicitly.
 	AllowHostPaths bool
-	MaxFileSize    int64
-	MaxResults     int
+	// MaxFileSize limits files scanned by Grep. It does not limit paginated
+	// text reads.
+	MaxFileSize int64
+	// MaxVideoSize limits video values returned by a direct Read. Middleware can
+	// impose a lower per-invocation limit through ReadBinary.
+	MaxVideoSize int64
+	MaxResults   int
 }
 
 // Filesystem confines virtual paths to an explicit root by default.
 type Filesystem struct {
-	root        string
-	getRoot     func() string
-	virtual     bool
-	maxFileSize int64
-	maxResults  int
+	root         string
+	getRoot      func() string
+	virtual      bool
+	maxFileSize  int64
+	maxVideoSize int64
+	maxResults   int
 }
 
 type filesystemPath struct {
@@ -142,7 +150,10 @@ func NewFilesystem(options FilesystemOptions) (*Filesystem, error) {
 	if options.MaxResults <= 0 {
 		options.MaxResults = 1000
 	}
-	return &Filesystem{root: filepath.Clean(resolved), getRoot: options.GetRoot, virtual: !options.AllowHostPaths, maxFileSize: options.MaxFileSize, maxResults: options.MaxResults}, nil
+	if options.MaxVideoSize <= 0 {
+		options.MaxVideoSize = 1 << 30
+	}
+	return &Filesystem{root: filepath.Clean(resolved), getRoot: options.GetRoot, virtual: !options.AllowHostPaths, maxFileSize: options.MaxFileSize, maxVideoSize: options.MaxVideoSize, maxResults: options.MaxResults}, nil
 }
 
 func (backend *Filesystem) List(ctx context.Context, path string) (ListResult, error) {
@@ -194,19 +205,58 @@ func (backend *Filesystem) Read(ctx context.Context, path string, offset, limit 
 		return ReadResult{}, err
 	}
 	defer opened.Close()
-	data, info, err := readFilesystemFile(ctx, opened, backend.maxFileSize)
+	file, err := openFilesystemFile(opened)
 	if err != nil {
 		return ReadResult{}, normalizeFileError(path, err)
 	}
-	fileData := FileData{CreatedAt: info.ModTime().UTC(), ModifiedAt: info.ModTime().UTC()}
-	if IsBinaryReadPath(path) || !utf8.Valid(data) {
-		fileData.Content = base64.StdEncoding.EncodeToString(data)
-		fileData.Encoding = EncodingBase64
-		return ReadResult{Data: &fileData}, nil
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return ReadResult{}, normalizeFileError(path, err)
 	}
-	fileData.Content = string(data)
-	fileData.Encoding = EncodingUTF8
-	return SliceRead(fileData, offset, limit)
+	if info.IsDir() {
+		return ReadResult{}, normalizeFileError(path, fmt.Errorf("is a directory"))
+	}
+	if IsBinaryReadPath(path) {
+		maxBytes := int64(0)
+		if IsVideoReadPath(path) {
+			maxBytes = backend.maxVideoSize
+		}
+		return readFilesystemBinary(ctx, file, info, maxBytes)
+	}
+	result, binary, err := readFilesystemTextPage(ctx, file, info, offset, limit)
+	if err != nil {
+		return ReadResult{}, normalizeFileError(path, err)
+	}
+	if !binary {
+		return result, nil
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return ReadResult{}, normalizeFileError(path, err)
+	}
+	return readFilesystemBinary(ctx, file, info, 0)
+}
+
+// ReadBinary reads one binary value with a caller-selected allocation bound.
+func (backend *Filesystem) ReadBinary(ctx context.Context, name string, maxBytes int64) (ReadResult, error) {
+	opened, err := backend.openPath(name)
+	if err != nil {
+		return ReadResult{}, err
+	}
+	defer opened.Close()
+	file, err := openFilesystemFile(opened)
+	if err != nil {
+		return ReadResult{}, normalizeFileError(name, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return ReadResult{}, normalizeFileError(name, err)
+	}
+	if info.IsDir() {
+		return ReadResult{}, normalizeFileError(name, fmt.Errorf("is a directory"))
+	}
+	return readFilesystemBinary(ctx, file, info, maxBytes)
 }
 
 func (backend *Filesystem) Write(ctx context.Context, path, content string) (WriteResult, error) {
@@ -364,6 +414,9 @@ func (backend *Filesystem) Glob(ctx context.Context, pattern, base string) (Glob
 }
 
 func (backend *Filesystem) Grep(ctx context.Context, pattern string, options GrepOptions) (GrepResult, error) {
+	if err := ValidateGrepOptions(options); err != nil {
+		return GrepResult{}, err
+	}
 	if pattern == "" {
 		return GrepResult{}, fmt.Errorf("grep pattern is required")
 	}
@@ -384,7 +437,9 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 		}
 	}
 	limit := options.MaxCount
-	if limit <= 0 {
+	if options.Uncapped {
+		limit = int(^uint(0) >> 1)
+	} else if limit <= 0 {
 		limit = backend.maxResults
 	}
 	result := GrepResult{}
@@ -408,7 +463,16 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 		}
 		file := filesystemPath{root: opened.root, name: filepath.FromSlash(filePath), host: filePath}
 		data, _, err := readFilesystemFile(ctx, file, backend.maxFileSize)
-		if err != nil || !utf8.Valid(data) {
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if !strings.Contains(err.Error(), "file exceeds") {
+				result.Error = AppendGrepError(result.Error, fmt.Sprintf("read %s: filesystem_error", backend.displayPath(opened, filePath)))
+			}
+			return nil
+		}
+		if !utf8.Valid(data) {
 			return nil
 		}
 		lines := splitLines(string(data))
@@ -442,7 +506,11 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 		return nil
 	})
 	if err != nil {
-		return GrepResult{}, err
+		if errors.Is(err, ctx.Err()) {
+			return GrepResult{}, err
+		}
+		result.Error = AppendGrepError(result.Error, grepWalkError(base, err))
+		return result, nil
 	}
 	sort.Slice(result.Matches, func(i, j int) bool {
 		if result.Matches[i].Path != result.Matches[j].Path {
@@ -557,11 +625,147 @@ func readFilesystemFile(ctx context.Context, file filesystemPath, maxSize int64)
 	return data, info, err
 }
 
+func openFilesystemFile(file filesystemPath) (*os.File, error) {
+	if file.root != nil {
+		return file.root.Open(file.name)
+	}
+	return os.Open(file.host)
+}
+
 func walkFilesystem(file filesystemPath, root string, walk fs.WalkDirFunc) error {
 	if file.root != nil {
 		return fs.WalkDir(file.root.FS(), root, walk)
 	}
 	return filepath.WalkDir(root, walk)
+}
+
+func readFilesystemBinary(ctx context.Context, file *os.File, info os.FileInfo, maxBytes int64) (ReadResult, error) {
+	if maxBytes > 0 && info.Size() > maxBytes {
+		return ReadResult{}, fmt.Errorf("%w: media file exceeds %d bytes", ErrPayloadTooLarge, maxBytes)
+	}
+	reader := io.Reader(&contextReader{ctx: ctx, reader: file})
+	if maxBytes > 0 {
+		reader = io.LimitReader(reader, maxBytes+1)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return ReadResult{}, err
+	}
+	if maxBytes > 0 && int64(len(data)) > maxBytes {
+		return ReadResult{}, fmt.Errorf("%w: media file exceeds %d bytes", ErrPayloadTooLarge, maxBytes)
+	}
+	fileData := FileData{
+		Content: base64.StdEncoding.EncodeToString(data), Encoding: EncodingBase64,
+		CreatedAt: info.ModTime().UTC(), ModifiedAt: info.ModTime().UTC(),
+	}
+	return ReadResult{Data: &fileData}, nil
+}
+
+func readFilesystemTextPage(ctx context.Context, file *os.File, info os.FileInfo, offset, limit int) (ReadResult, bool, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	reader := bufio.NewReader(&contextReader{ctx: ctx, reader: file})
+	var page, blank strings.Builder
+	line, total := 0, 0
+	lineOpen, pendingCR, blankOnly := false, false, true
+	appendPage := func(value string) {
+		if limit > 0 && line >= offset && line < offset+limit {
+			page.WriteString(value)
+		}
+	}
+	finishLine := func() {
+		total++
+		line++
+		lineOpen = false
+	}
+	for {
+		r, size, err := reader.ReadRune()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return ReadResult{}, false, err
+		}
+		if r == utf8.RuneError && size == 1 {
+			return ReadResult{}, true, nil
+		}
+		if blankOnly {
+			blank.WriteRune(r)
+			if !unicode.IsSpace(r) {
+				blankOnly = false
+				blank.Reset()
+			}
+		}
+		if pendingCR {
+			appendPage("\n")
+			finishLine()
+			pendingCR = false
+			if r == '\n' {
+				continue
+			}
+		}
+		switch r {
+		case '\r':
+			lineOpen = true
+			pendingCR = true
+		case '\n':
+			appendPage("\n")
+			finishLine()
+		default:
+			lineOpen = true
+			appendPage(string(r))
+		}
+	}
+	if pendingCR {
+		appendPage("\n")
+		finishLine()
+	} else if lineOpen {
+		finishLine()
+	}
+	fileData := FileData{Encoding: EncodingUTF8, CreatedAt: info.ModTime().UTC(), ModifiedAt: info.ModTime().UTC()}
+	if blankOnly {
+		fileData.Content = blank.String()
+		return ReadResult{Data: &fileData}, false, nil
+	}
+	if limit <= 0 {
+		return ReadResult{Data: &fileData, NoLinesRequested: true}, false, nil
+	}
+	if offset >= total {
+		return ReadResult{}, false, fmt.Errorf("line offset %d exceeds file length (%d lines)", offset, total)
+	}
+	end := min(total, offset+limit)
+	fileData.Content = page.String()
+	startLine, endLine := offset+1, end
+	result := ReadResult{Data: &fileData, TotalLines: &total, StartLine: &startLine, EndLine: &endLine}
+	if end < total {
+		next := end
+		result.NextOffset = &next
+	}
+	return result, false, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader *contextReader) Read(data []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.reader.Read(data)
+}
+
+func grepWalkError(base string, err error) string {
+	code := "filesystem_error"
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		code = "file_not_found"
+	case errors.Is(err, os.ErrPermission):
+		code = "permission_denied"
+	}
+	return fmt.Sprintf("grep %q stopped early: %s", base, code)
 }
 
 func splitLines(value string) []string {
@@ -661,6 +865,17 @@ func IsBinaryReadPath(name string) bool {
 	case ".png", ".jpeg", ".jpg", ".webp", ".gif", ".heic", ".heif",
 		".mp4", ".mpeg", ".mov", ".avi", ".flv", ".mpg", ".webm", ".wmv", ".3gpp", ".mkv",
 		".wav", ".mp3", ".aiff", ".aac", ".ogg", ".flac", ".pdf", ".ppt", ".pptx":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsVideoReadPath reports paths whose payload must be size-checked before a
+// video extractor receives it.
+func IsVideoReadPath(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".mp4", ".mpeg", ".mov", ".avi", ".flv", ".mpg", ".webm", ".wmv", ".3gpp", ".mkv":
 		return true
 	default:
 		return false

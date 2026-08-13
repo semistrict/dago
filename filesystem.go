@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +57,9 @@ type FilesystemOptions struct {
 	ToolDescriptions  map[string]string
 	ReadLimit         int
 	GrepLimit         int
+	// GrepUncapped disables the configured default match cap. Individual grep
+	// calls can also request this behavior with an explicit JSON null max_count.
+	GrepUncapped      bool
 	GlobTimeout       time.Duration
 	MaxExecuteTimeout int
 	// ToolResultTokenLimit follows the upstream four-characters-per-token
@@ -190,7 +195,10 @@ func FilesystemMiddleware(options FilesystemOptions) (dagent.Middleware, error) 
 	if options.ReadLimit <= 0 {
 		options.ReadLimit = 100
 	}
-	if options.GrepLimit <= 0 {
+	if options.GrepLimit < 0 {
+		return dagent.Middleware{}, fmt.Errorf("grep limit cannot be negative")
+	}
+	if !options.GrepUncapped && options.GrepLimit == 0 {
 		options.GrepLimit = 1000
 	}
 	if options.GlobTimeout <= 0 {
@@ -246,6 +254,9 @@ func FilesystemMiddleware(options FilesystemOptions) (dagent.Middleware, error) 
 	}
 	available := makeFilesystemTools(options)
 	selected := []datool.Tool{}
+	if len(options.Tools) > 0 && !slices.Contains(options.Tools, "read_file") {
+		return dagent.Middleware{}, fmt.Errorf("read_file must be included in a non-empty filesystem tools allowlist")
+	}
 	if options.Tools == nil {
 		options.Tools = []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
 	}
@@ -758,11 +769,38 @@ type filesystemGlobInput struct {
 }
 
 type filesystemGrepInput struct {
-	Pattern    string  `json:"pattern" description:"Text pattern to search for (literal string, not regex)."`
-	Path       *string `json:"path,omitempty" description:"Directory to search in. Defaults to the backend's default root."`
-	Glob       *string `json:"glob,omitempty" description:"Glob pattern (not regex) limiting which files are searched."`
-	OutputMode string  `json:"output_mode,omitempty" description:"Shape of the result: matching paths, matching lines grouped by file, or match counts by file." jsonschema:"enum=files_with_matches|content|count,default=files_with_matches"`
-	MaxCount   *int    `json:"max_count,omitempty" description:"Optional cap on matches across all files. Leave unset to use the configured default." jsonschema:"minimum=1"`
+	Pattern     string  `json:"pattern" description:"Text pattern to search for (literal string, not regex)."`
+	Path        *string `json:"path,omitempty" description:"Directory to search in. Defaults to the backend's default root."`
+	Glob        *string `json:"glob,omitempty" description:"Glob pattern (not regex) limiting which files are searched."`
+	OutputMode  string  `json:"output_mode,omitempty" description:"Shape of the result: matching paths, matching lines grouped by file, or match counts by file." jsonschema:"enum=files_with_matches|content|count,default=files_with_matches"`
+	MaxCount    any     `json:"max_count,omitempty" description:"Optional cap on matches across all files. Leave unset to use the configured default; use null for no cap."`
+	maxCountSet bool
+}
+
+func (input *filesystemGrepInput) UnmarshalJSON(data []byte) error {
+	type grepWire struct {
+		Pattern    string          `json:"pattern"`
+		Path       *string         `json:"path,omitempty"`
+		Glob       *string         `json:"glob,omitempty"`
+		OutputMode string          `json:"output_mode,omitempty"`
+		MaxCount   json.RawMessage `json:"max_count,omitempty"`
+	}
+	var wire grepWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	input.Pattern, input.Path, input.Glob, input.OutputMode = wire.Pattern, wire.Path, wire.Glob, wire.OutputMode
+	input.maxCountSet = wire.MaxCount != nil
+	if !input.maxCountSet || string(wire.MaxCount) == "null" {
+		input.MaxCount = nil
+		return nil
+	}
+	var count int
+	if err := json.Unmarshal(wire.MaxCount, &count); err != nil {
+		return err
+	}
+	input.MaxCount = count
+	return nil
 }
 
 type filesystemExecuteInput struct {
@@ -815,8 +853,20 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 		if video && limit <= 0 {
 			return datool.Result{}, fmt.Errorf("error reading video %s: limit must be > 0, got %d", input.FilePath, limit)
 		}
-		result, err := options.Backend.Read(ctx, input.FilePath, input.Offset, limit)
+		var result dabackend.ReadResult
+		if video {
+			if bounded, ok := options.Backend.(dabackend.BoundedBinaryReader); ok {
+				result, err = bounded.ReadBinary(ctx, input.FilePath, int64(options.MaxVideoBytes))
+			} else {
+				result, err = options.Backend.Read(ctx, input.FilePath, input.Offset, limit)
+			}
+		} else {
+			result, err = options.Backend.Read(ctx, input.FilePath, input.Offset, limit)
+		}
 		if err != nil {
+			if video && errors.Is(err, dabackend.ErrPayloadTooLarge) {
+				return datool.Result{}, fmt.Errorf("error reading video %s: video payload exceeds maximum input size of %d bytes", input.FilePath, options.MaxVideoBytes)
+			}
 			return datool.Result{}, err
 		}
 		if result.Data == nil {
@@ -943,14 +993,14 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 		}
 		return text, nil
 	})
-	values["grep"] = datool.MustNew("grep", filesystemGrepDescription(true), func(ctx context.Context, input filesystemGrepInput) (string, error) {
+	values["grep"] = datool.MustNew("grep", filesystemGrepDescription(true), func(ctx context.Context, input filesystemGrepInput) (datool.Result, error) {
 		basePath := ""
 		if input.Path != nil {
 			basePath = *input.Path
 		}
 		validatedPath, err := validateFilesystemToolPath(basePath, true)
 		if err != nil {
-			return "", err
+			return datool.Result{}, err
 		}
 		globPattern := ""
 		if input.Glob != nil {
@@ -958,22 +1008,48 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 		}
 		if globPattern != "" {
 			if err := validateFilesystemGlob(globPattern); err != nil {
-				return "", err
+				return datool.Result{}, err
 			}
 		}
-		maxCount := options.GrepLimit
-		if input.MaxCount != nil {
-			maxCount = *input.MaxCount
+		grepOptions := dabackend.GrepOptions{Path: validatedPath, Glob: globPattern, MaxCount: options.GrepLimit, Uncapped: options.GrepUncapped}
+		if input.maxCountSet {
+			if input.MaxCount == nil {
+				grepOptions.MaxCount = 0
+				grepOptions.Uncapped = true
+			} else {
+				count, ok := input.MaxCount.(int)
+				if !ok || count <= 0 {
+					return datool.Result{}, fmt.Errorf("max_count must be positive or null")
+				}
+				grepOptions.MaxCount = count
+				grepOptions.Uncapped = false
+			}
 		}
-		result, err := options.Backend.Grep(ctx, input.Pattern, dabackend.GrepOptions{Path: validatedPath, Glob: globPattern, MaxCount: maxCount})
+		result, err := options.Backend.Grep(ctx, input.Pattern, grepOptions)
 		if err != nil {
-			return "", err
+			return datool.Result{}, err
 		}
 		backendHadMatches := len(result.Matches) > 0
 		result.Matches = filterGrepMatches(options.Permissions, FilesystemRead, result.Matches)
 		text := formatGrep(result, input.OutputMode, input.Pattern, backendHadMatches)
-		return text, nil
-	})
+		status := damessage.ToolStatusSuccess
+		if result.Error != "" {
+			status = damessage.ToolStatusError
+		}
+		return datool.Result{Status: status, Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: text}}}, nil
+	}, datool.WithPropertySchema("max_count", map[string]any{
+		"anyOf": []any{
+			map[string]any{"type": "integer", "minimum": 1},
+			map[string]any{"type": "null"},
+		},
+		"default": func() any {
+			if options.GrepUncapped {
+				return nil
+			}
+			return options.GrepLimit
+		}(),
+		"description": "Optional cap on matches across all files. Leave unset to use the configured default; use null for no cap.",
+	}))
 	if sandbox, ok := dabackend.SandboxOf(options.Backend); ok {
 		values["execute"] = datool.MustNew("execute", filesystemExecuteDescription(true, true), func(ctx context.Context, input filesystemExecuteInput) (datool.Result, error) {
 			if input.Timeout != nil && *input.Timeout > options.MaxExecuteTimeout {
@@ -988,7 +1064,10 @@ func makeFilesystemTools(options FilesystemOptions) map[string]datool.Tool {
 			if err != nil {
 				return datool.Result{}, err
 			}
-			artifact, _ := json.Marshal(map[string]any{"exit_code": result.ExitCode, "truncated": result.Truncated})
+			artifact := json.RawMessage(`{}`)
+			if result.ExitCode != nil {
+				artifact, _ = json.Marshal(map[string]any{"exit_code": *result.ExitCode})
+			}
 			text := result.Output
 			if result.ExitCode != nil {
 				status := "succeeded"
@@ -1036,6 +1115,9 @@ func filesystemPermissionWrapper(options FilesystemOptions) dagent.ToolWrapper {
 		if request.Call.Name != "ls" && request.Call.Name != "glob" && request.Call.Name != "grep" && request.Call.Name != "read_file" && request.Call.Name != "edit_file" && request.Call.Name != "write_file" && request.Call.Name != "delete" && options.toolResultLimit > 0 && len(response.Result.Content) > 0 {
 			total := 0
 			for _, block := range response.Result.Content {
+				if block.Type != damessage.BlockText {
+					continue
+				}
 				if options.toolResultBytes {
 					total += len(block.Text)
 				} else {
@@ -1043,14 +1125,28 @@ func filesystemPermissionWrapper(options FilesystemOptions) dagent.ToolWrapper {
 				}
 			}
 			if total > options.toolResultLimit {
-				var combined strings.Builder
+				texts := make([]string, 0, len(response.Result.Content))
 				for _, block := range response.Result.Content {
-					combined.WriteString(block.Text)
+					if block.Type == damessage.BlockText {
+						texts = append(texts, block.Text)
+					}
 				}
-				artifactPath := path.Join(options.ArtifactsRoot, request.Call.ID+".txt")
-				if _, writeErr := options.Backend.Write(ctx, artifactPath, combined.String()); writeErr == nil {
-					preview := previewText(combined.String(), 2000)
-					response.Result.Content = []damessage.ContentBlock{{Type: damessage.BlockText, Text: fmt.Sprintf("Result saved to %s. Preview:\n%s", artifactPath, preview)}}
+				combined := strings.Join(texts, "\n")
+				artifactName := sanitizeToolCallID(request.Call.ID)
+				if artifactName == "" {
+					artifactName = "unknown"
+				}
+				artifactPath := path.Join(options.ArtifactsRoot, artifactName)
+				if _, writeErr := options.Backend.Write(ctx, artifactPath, combined); writeErr == nil {
+					preview := previewText(combined, 2000)
+					blocks := make([]damessage.ContentBlock, 0, len(response.Result.Content)+1)
+					blocks = append(blocks, damessage.ContentBlock{Type: damessage.BlockText, Text: fmt.Sprintf("Result saved to %s. Preview:\n%s", artifactPath, preview)})
+					for _, block := range response.Result.Content {
+						if block.Type != damessage.BlockText {
+							blocks = append(blocks, block)
+						}
+					}
+					response.Result.Content = blocks
 				}
 			}
 		}
@@ -1628,9 +1724,9 @@ func binaryFileBytes(ctx context.Context, value dabackend.Backend, filePath stri
 }
 
 func videoResult(ctx context.Context, options FilesystemOptions, filePath string, data *dabackend.FileData, offset, limit int) (datool.Result, error) {
-	raw, err := binaryFileBytes(ctx, options.Backend, filePath, data)
+	raw, err := base64.StdEncoding.Strict().DecodeString(data.Content)
 	if err != nil {
-		return datool.Result{}, err
+		return datool.Result{}, fmt.Errorf("binary content for %s is not valid base64: %w", filePath, err)
 	}
 	if len(raw) > options.MaxVideoBytes {
 		return datool.Result{}, fmt.Errorf("error reading video %s: video payload exceeds maximum input size of %d bytes", filePath, options.MaxVideoBytes)
@@ -1687,6 +1783,15 @@ func isVideoPath(filePath string) bool {
 }
 
 func formatGrep(result dabackend.GrepResult, mode, pattern string, backendHadMatches bool) string {
+	if result.Error != "" {
+		failure := previewText(result.Error, 8_000)
+		partial := result
+		partial.Error = ""
+		if len(partial.Matches) == 0 {
+			return failure
+		}
+		return failure + "\n\nPartial matches:\n" + formatGrep(partial, mode, pattern, backendHadMatches)
+	}
 	if mode == "" {
 		mode = "files_with_matches"
 	}

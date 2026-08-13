@@ -1,6 +1,6 @@
 {
   "generated": true,
-  "source_sha256": "1c069df28a18165b9ec6d0463a2d2cbebfaf83b485a6dad5531b9debeca375c2",
+  "source_sha256": "17ee709a5a61cb569f4ec2a381fc9ac071b19c177092fe374feeadad16551d9a",
   "contract": {
     "checkpoint": {
       "channel_values": {
@@ -13,14 +13,6 @@
       "ts": "2026-01-01T00:00:00Z",
       "v": 4,
       "versions_seen": {}
-    },
-    "command": {
-      "goto": [
-        "model"
-      ],
-      "update": {
-        "status": "ready"
-      }
     },
     "message": {
       "content": [
@@ -53,11 +45,31 @@
         "role": "assistant"
       }
     },
-    "provenance": {
-      "deepagents": "libs/deepagents/tests/unit_tests/test_deepagents.py",
-      "langchain": "libs/langchain_v1/tests/unit_tests/agents/test_factory.py",
-      "langgraph": "libs/langgraph/tests/test_pregel.py"
-    },
+    "provenance": [
+      {
+        "path": "libs/deepagents/tests/integration_tests/test_deepagents.py",
+        "source": "deepagents-python",
+        "test_selectors": [
+          "TestDeepAgents::test_deep_agent_with_subagents"
+        ]
+      },
+      {
+        "path": "libs/langchain_v1/tests/unit_tests/agents/test_state_schema.py",
+        "source": "langchain-python",
+        "test_selectors": [
+          "test_state_schema_single_custom_field"
+        ]
+      },
+      {
+        "path": "libs/langgraph/tests/test_pregel.py",
+        "source": "langgraph-python",
+        "test_selectors": [
+          "test_invoke_checkpoint_two",
+          "test_pydantic_state_update_command",
+          "test_stream_subgraphs_during_execution"
+        ]
+      }
+    ],
     "schema_version": 1,
     "state_update": {
       "messages": [

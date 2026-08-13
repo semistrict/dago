@@ -1,10 +1,26 @@
 {
   "schema_version": 1,
-  "provenance": {
-    "deepagents": "libs/deepagents/tests/unit_tests/test_deepagents.py",
-    "langchain": "libs/langchain_v1/tests/unit_tests/agents/test_factory.py",
-    "langgraph": "libs/langgraph/tests/test_pregel.py"
-  },
+  "provenance": [
+    {
+      "source": "deepagents-python",
+      "path": "libs/deepagents/tests/integration_tests/test_deepagents.py",
+      "test_selectors": ["TestDeepAgents::test_deep_agent_with_subagents"]
+    },
+    {
+      "source": "langchain-python",
+      "path": "libs/langchain_v1/tests/unit_tests/agents/test_state_schema.py",
+      "test_selectors": ["test_state_schema_single_custom_field"]
+    },
+    {
+      "source": "langgraph-python",
+      "path": "libs/langgraph/tests/test_pregel.py",
+      "test_selectors": [
+        "test_invoke_checkpoint_two",
+        "test_pydantic_state_update_command",
+        "test_stream_subgraphs_during_execution"
+      ]
+    }
+  ],
   "message": {
     "id": "assistant-1",
     "role": "assistant",
@@ -20,7 +36,6 @@
     "message": {"id": "assistant-2", "role": "assistant", "content": [{"type": "text", "text": "Complete."}]}
   },
   "state_update": {"messages": [{"role": "human", "content": [{"type": "text", "text": "Continue"}]}]},
-  "command": {"update": {"status": "ready"}, "goto": ["model"]},
   "checkpoint": {
     "v": 4,
     "id": "00000000-0000-6000-8000-000000000001",

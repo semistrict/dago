@@ -507,6 +507,36 @@ func TestToolWrapperNestingAndErrorMessage(t *testing.T) {
 	}
 }
 
+func TestInvalidToolArgumentsRemainRecoverable(t *testing.T) {
+	type weatherInput struct {
+		City string `json:"city"`
+	}
+	weather := datool.MustNew("weather", "Get weather", func(context.Context, weatherInput) (string, error) {
+		return "sunny", nil
+	})
+	script := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "bad-args", Name: "weather", Arguments: json.RawMessage(`{"city":`)}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
+			last := request.Messages[len(request.Messages)-1]
+			if last.Role != damessage.RoleTool || last.ToolStatus != damessage.ToolStatusError || last.ToolCallID != "bad-args" {
+				return fmt.Errorf("invalid argument result = %#v", last)
+			}
+			return nil
+		}, Response: damodel.Response{Message: damessage.Assistant("recovered")}},
+	)
+	compiled, err := New(Options{Model: script, Tools: []datool.Tool{weather}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "recovered" {
+		t.Fatalf("result = %#v", result.Messages)
+	}
+}
+
 func TestStructuredOutputProviderAndToolStrategies(t *testing.T) {
 	provider := modeltest.New(damodel.Profile{StructuredOutput: true}, modeltest.Step{
 		Check: func(request damodel.Request) error {

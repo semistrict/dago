@@ -4,9 +4,16 @@ package dabackend
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path"
+	"strings"
 	"time"
 )
+
+// ErrPayloadTooLarge identifies a bounded read rejected before its payload was
+// allocated or returned.
+var ErrPayloadTooLarge = errors.New("payload too large")
 
 type Encoding string
 
@@ -70,6 +77,9 @@ type GlobResult struct {
 type GrepResult struct {
 	Matches   []GrepMatch `json:"matches"`
 	Truncated bool        `json:"truncated,omitempty"`
+	// Error reports a bounded or partial-search failure without discarding
+	// matches collected before the failure.
+	Error string `json:"error,omitempty"`
 }
 type WriteResult struct {
 	Path string `json:"path"`
@@ -101,6 +111,37 @@ type GrepOptions struct {
 	Glob         string
 	MaxCount     int
 	ContextLines int
+	// Uncapped disables both MaxCount and a backend's default result cap.
+	Uncapped bool
+}
+
+const MaxGrepErrorBytes = 8_000
+
+// ValidateGrepOptions rejects ambiguous negative limits. Uncapped is the only
+// supported way to disable result limiting.
+func ValidateGrepOptions(options GrepOptions) error {
+	if options.MaxCount < 0 {
+		return fmt.Errorf("grep max count cannot be negative")
+	}
+	if options.ContextLines < 0 {
+		return fmt.Errorf("grep context lines cannot be negative")
+	}
+	return nil
+}
+
+// AppendGrepError joins diagnostics while enforcing the backend wire bound.
+func AppendGrepError(existing, next string) string {
+	if next == "" {
+		return existing
+	}
+	if existing != "" {
+		next = existing + "\n" + next
+	}
+	if len(next) <= MaxGrepErrorBytes {
+		return next
+	}
+	marker := "\n...[grep errors truncated]"
+	return strings.TrimSpace(next[:MaxGrepErrorBytes-len(marker)]) + marker
 }
 
 // Backend is the uniform synchronous-by-contract, context-aware file API.
@@ -114,6 +155,12 @@ type Backend interface {
 	Grep(context.Context, string, GrepOptions) (GrepResult, error)
 	Upload(context.Context, []Upload) []UploadResult
 	Download(context.Context, []string) []DownloadResult
+}
+
+// BoundedBinaryReader is an optional extension used for video reads. It must
+// reject a payload larger than maxBytes before allocating or returning it.
+type BoundedBinaryReader interface {
+	ReadBinary(context.Context, string, int64) (ReadResult, error)
 }
 
 type ExecuteResult struct {

@@ -54,14 +54,15 @@ type Command struct {
 
 // Runtime contains task-scoped values.
 type Runtime struct {
-	Deps     any
-	Config   dacheckpoint.Config
-	Store    dastore.Store
-	Cache    dacache.Cache
-	Previous dastate.Values
-	TaskID   string
-	Resume   any
-	Writer   EventWriter
+	Deps         any
+	Config       dacheckpoint.Config
+	Configurable map[string]any
+	Store        dastore.Store
+	Cache        dacache.Cache
+	Previous     dastate.Values
+	TaskID       string
+	Resume       any
+	Writer       EventWriter
 }
 
 // RetryPolicy controls whole-node retries. Attempts includes the initial call.
@@ -102,9 +103,15 @@ type EventWriter interface {
 
 // Invocation starts or resumes one thread.
 type Invocation struct {
-	Config          dacheckpoint.Config
-	State           dastate.Values
-	Resume          any
+	Config dacheckpoint.Config
+	State  dastate.Values
+	Resume any
+	// Deps overrides CompileOptions.Deps for this invocation when non-nil.
+	// It is runtime-only and is never persisted in graph state or checkpoints.
+	Deps any
+	// Configurable contains immutable, runtime-only invocation settings. Values
+	// are not persisted or emitted in stream records.
+	Configurable    map[string]any
 	SkipValueEvents bool
 }
 
@@ -337,6 +344,8 @@ func (graph *Compiled) executeTasks(
 	tasks []task,
 	config dacheckpoint.Config,
 	resume any,
+	runtimeDeps any,
+	configurable map[string]any,
 	step int,
 ) []taskResult {
 	results := make([]taskResult, len(tasks))
@@ -372,7 +381,7 @@ func (graph *Compiled) executeTasks(
 				values[key] = value
 			}
 			runtime := Runtime{
-				Deps: graph.options.Deps, Config: config,
+				Deps: runtimeDeps, Config: config, Configurable: configurable,
 				Store: graph.options.Store, Cache: graph.options.Cache,
 				Previous: previous, TaskID: tasks[index].id, Resume: resume,
 				Writer: graph.options.Writer,

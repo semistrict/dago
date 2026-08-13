@@ -330,6 +330,12 @@ func TestRuntimeProvidesStoreCacheAndPreOverlayState(t *testing.T) {
 		if runtime.Store != memoryStore || runtime.Cache != memoryCache {
 			return Command{}, errors.New("runtime dependencies not propagated")
 		}
+		if runtime.Deps != "invocation" {
+			return Command{}, fmt.Errorf("runtime deps = %v", runtime.Deps)
+		}
+		if runtime.Configurable["response_mode"] != "concise" {
+			return Command{}, fmt.Errorf("runtime configurable = %#v", runtime.Configurable)
+		}
 		if values["overlay"] != "send" {
 			return Command{}, errors.New("send overlay missing")
 		}
@@ -341,8 +347,11 @@ func TestRuntimeProvidesStoreCacheAndPreOverlayState(t *testing.T) {
 	mustAddEdge(t, builder, Start, "sender")
 	mustAddEdge(t, builder, "sender", End)
 	mustAddEdge(t, builder, "receiver", End)
-	graph := mustCompile(t, builder, CompileOptions{Store: memoryStore, Cache: memoryCache})
-	result, err := graph.Invoke(context.Background(), Invocation{Config: dacheckpoint.Config{ThreadID: "runtime"}})
+	graph := mustCompile(t, builder, CompileOptions{Store: memoryStore, Cache: memoryCache, Deps: "compiled"})
+	result, err := graph.Invoke(context.Background(), Invocation{
+		Config: dacheckpoint.Config{ThreadID: "runtime"}, Deps: "invocation",
+		Configurable: map[string]any{"response_mode": "concise"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

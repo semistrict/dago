@@ -2,6 +2,7 @@ package dago
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -114,6 +115,57 @@ func TestMediaOffloadFailureUsesBoundedPlaceholder(t *testing.T) {
 	old := damessage.Message{Role: damessage.RoleHuman, Content: []damessage.ContentBlock{{Type: damessage.BlockImage, MIMEType: "image/png", Data: []byte("secret-inline-data")}}}
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{old, damessage.Human("recent")}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSummaryMediaOffloadsDataURLsAndPreservesRemoteReferences(t *testing.T) {
+	memory, _ := dabackend.NewMemory(nil)
+	options := SummarizationOptions{Backend: memory, MediaRoot: "/conversation_history/media"}
+	messages := []damessage.Message{{Role: damessage.RoleHuman, Content: []damessage.ContentBlock{
+		{Type: damessage.BlockImage, URL: "data:image/png,diagram%20bytes", Name: "diagram.png"},
+		{Type: damessage.BlockAudio, URL: "https://media.example/audio.mp3", MIMEType: "audio/mpeg"},
+		{Type: damessage.BlockVideo, URL: "https://media.example/video.mp4", MIMEType: "video/mp4"},
+		{Type: damessage.BlockFile, URL: "https://media.example/report.pdf", MIMEType: "application/pdf", Name: "report.pdf"},
+	}}}
+
+	got := offloadSummaryMedia(context.Background(), messages, options)
+	if got[0].Content[0].Type != damessage.BlockText || !strings.Contains(got[0].Content[0].Text, "/conversation_history/media/") {
+		t.Fatalf("data URL block = %#v", got[0].Content[0])
+	}
+	for index := 1; index < len(got[0].Content); index++ {
+		if got[0].Content[index].URL != messages[0].Content[index].URL {
+			t.Fatalf("remote block %d = %#v", index, got[0].Content[index])
+		}
+	}
+	files, err := memory.Glob(context.Background(), "**/*.png", "/conversation_history/media")
+	if err != nil || len(files.Matches) != 1 {
+		t.Fatalf("offloaded data URL = %#v, %v", files, err)
+	}
+	read, err := memory.Read(context.Background(), files.Matches[0].Path, 0, 10)
+	if err != nil || read.Data == nil || read.Data.Encoding != dabackend.EncodingBase64 || read.Data.Content != base64.StdEncoding.EncodeToString([]byte("diagram bytes")) {
+		t.Fatalf("decoded data URL = %#v, %v", read, err)
+	}
+	history := renderHistory(got)
+	for _, reference := range []string{
+		"https://media.example/audio.mp3",
+		"https://media.example/video.mp4",
+		"https://media.example/report.pdf",
+		"/conversation_history/media/",
+	} {
+		if !strings.Contains(history, reference) {
+			t.Fatalf("history lost %q: %s", reference, history)
+		}
+	}
+}
+
+func TestSummaryMediaUsesBoundedPlaceholderForMalformedDataURL(t *testing.T) {
+	memory, _ := dabackend.NewMemory(nil)
+	got := offloadSummaryMedia(context.Background(), []damessage.Message{{
+		Role:    damessage.RoleHuman,
+		Content: []damessage.ContentBlock{{Type: damessage.BlockImage, URL: "data:image/png;base64,%%%"}},
+	}}, SummarizationOptions{Backend: memory, MediaRoot: "/media"})
+	if block := got[0].Content[0]; block.Type != damessage.BlockText || block.Text != "<image error=\"failed_to_offload\" />" || strings.Contains(block.Text, "%%") {
+		t.Fatalf("malformed data URL placeholder = %#v", block)
 	}
 }
 

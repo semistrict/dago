@@ -37,14 +37,15 @@ var (
 
 // Runtime is the immutable execution context exposed to middleware.
 type Runtime struct {
-	Deps     any
-	Config   dacheckpoint.Config
-	Store    dastore.Store
-	Cache    dacache.Cache
-	Previous dastate.Values
-	TaskID   string
-	Resume   any
-	Writer   EventWriter
+	Deps         any
+	Config       dacheckpoint.Config
+	Configurable datool.Configurable
+	Store        dastore.Store
+	Cache        dacache.Cache
+	Previous     dastate.Values
+	TaskID       string
+	Resume       any
+	Writer       EventWriter
 }
 
 // EventWriter emits JSON-safe custom progress records.

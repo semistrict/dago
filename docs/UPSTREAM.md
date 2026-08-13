@@ -24,6 +24,8 @@ not make the normal suite machine-specific.
 ## Provenance rules
 
 - Port observable contracts and intended behavior, not source structure.
-- Cite the upstream file and test in generated compatibility fixtures.
+- Cite the upstream project, repository-relative file, and test selector in
+  generated compatibility fixtures. When the matching pinned checkout is
+  configured, generation validates all three against that exact revision.
 - Preserve license notices when source or fixture data is copied substantially.
 - Treat experiments as non-normative until pinned sources establish a behavior.

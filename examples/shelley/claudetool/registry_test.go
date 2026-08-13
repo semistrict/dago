@@ -80,7 +80,7 @@ func TestNewToolSetDisableAllTools(t *testing.T) {
 	for _, tool := range ts.Tools() {
 		names = append(names, tool.Name)
 	}
-	if len(names) != 1 || names[0] != "bash" {
-		t.Fatalf("expected only bash, got %v", names)
+	if len(names) != 2 || names[0] != "read_file" || names[1] != "bash" {
+		t.Fatalf("expected mandatory read_file plus bash, got %v", names)
 	}
 }

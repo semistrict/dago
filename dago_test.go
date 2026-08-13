@@ -574,6 +574,143 @@ func TestSubagentTaskUsesIsolatedInput(t *testing.T) {
 	}
 }
 
+func TestDeclarativeSubagentTodoStateIsIsolated(t *testing.T) {
+	checkedInitialState := false
+	guard := dagent.Middleware{Name: "todo_isolation_guard", BeforeModel: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
+		if !checkedInitialState {
+			checkedInitialState = true
+		} else {
+			return nil, nil
+		}
+		if _, exists := values["todos"]; exists {
+			return nil, errors.New("parent todos leaked to child")
+		}
+		return nil, nil
+	}}
+	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
+			ID: "child-todo", Name: "write_todos", Arguments: json.RawMessage(`{"todos":[{"content":"child plan","status":"in_progress"}]}`),
+		}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child done")}},
+	)
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
+			ID: "todo-task", Name: "task", Arguments: json.RawMessage(`{"description":"plan separately","subagent_type":"planner"}`),
+		}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent done")}},
+	)
+	compiled, err := New(Options{
+		Model: parentModel, EnableTodo: true, DisableSummary: true,
+		Subagents: []Subagent{{
+			Name: "planner", Description: "Plans", SystemPrompt: "Plan independently.", Model: childModel,
+			Middleware: []dagent.Middleware{dagent.TodoList(), guard},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("delegate")},
+		State:    dastate.Values{"todos": []dagent.Todo{{Content: "parent plan", Status: "in_progress"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result.State["todos"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `[{"content":"parent plan","status":"in_progress"}]` {
+		t.Fatalf("parent todos = %s", encoded)
+	}
+}
+
+func TestSubagentReceivesInvocationScopedDeps(t *testing.T) {
+	inspect := datool.Func{
+		Spec: datool.Definition{Name: "inspect_deps", Description: "Inspect dependencies", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(_ context.Context, _ json.RawMessage, runtime datool.Runtime) (datool.Result, error) {
+			value, ok := runtime.Deps.(map[string]string)
+			if !ok || value["user"] != "request-user" {
+				return datool.Result{}, fmt.Errorf("subagent deps = %#v", runtime.Deps)
+			}
+			return datool.TextResult("context ok"), nil
+		},
+	}
+	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "inspect", Name: "inspect_deps", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child done")}},
+	)
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "context-task", Name: "task", Arguments: json.RawMessage(`{"description":"inspect","subagent_type":"worker"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent done")}},
+	)
+	compiled, err := New(Options{
+		Model: parentModel, Deps: map[string]string{"user": "compiled-user"}, DisableSummary: true, DisableTodo: true,
+		Subagents: []Subagent{{Name: "worker", Description: "Inspects", SystemPrompt: "Inspect context.", Model: childModel, Tools: []datool.Tool{inspect}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = compiled.Invoke(context.Background(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("go")}, Deps: map[string]string{"user": "request-user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSubagentReceivesInvocationConfigurableSettings(t *testing.T) {
+	inspect := datool.Func{
+		Spec: datool.Definition{Name: "inspect_config", Description: "Inspect runtime settings", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(_ context.Context, _ json.RawMessage, runtime datool.Runtime) (datool.Result, error) {
+			value, ok := runtime.Configurable.Get("tenant")
+			if !ok || value != "request-tenant" {
+				return datool.Result{}, fmt.Errorf("subagent configurable tenant = %#v", value)
+			}
+			return datool.TextResult("config ok"), nil
+		},
+	}
+	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "inspect", Name: "inspect_config", Arguments: json.RawMessage(`{}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child done")}},
+	)
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "config-task", Name: "task", Arguments: json.RawMessage(`{"description":"inspect","subagent_type":"worker"}`)}}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent done")}},
+	)
+	compiled, err := New(Options{
+		Model: parentModel, DisableSummary: true, DisableTodo: true,
+		Subagents: []Subagent{{Name: "worker", Description: "Inspects", SystemPrompt: "Inspect settings.", Model: childModel, Tools: []datool.Tool{inspect}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = compiled.Invoke(t.Context(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("go")}, Configurable: map[string]any{"tenant": "request-tenant"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSubagentOperationalFailurePropagates(t *testing.T) {
+	childModel := modeltest.New(damodel.Profile{}, modeltest.Step{Error: errors.New("child model unavailable")})
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{
+		Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "failing-task", Name: "task", Arguments: json.RawMessage(`{"description":"work","subagent_type":"worker"}`)}},
+	}}})
+	compiled, err := New(Options{
+		Model: parentModel, DisableSummary: true, DisableTodo: true,
+		Subagents: []Subagent{{Name: "worker", Description: "Fails", SystemPrompt: "Try the task.", Model: childModel}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}})
+	if err == nil || !strings.Contains(err.Error(), "child model unavailable") {
+		t.Fatalf("Invoke() error = %v, want child failure", err)
+	}
+}
+
 func TestDeclarativeSubagentInheritsToolsAndUsesOwnModelAndPrompt(t *testing.T) {
 	lookup := datool.Func{Spec: datool.Definition{Name: "lookup", Description: "look up a value", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
 		return datool.TextResult("lookup result"), nil
@@ -738,6 +875,192 @@ func TestDeclarativeSubagentStructuredResponseWinsAndEmptyToolsOverrideInheritan
 	}
 }
 
+func TestDeclarativeSubagentUsesTaskScopedResponseFormat(t *testing.T) {
+	childModel := modeltest.New(damodel.Profile{StructuredOutput: true}, modeltest.Step{Check: func(request damodel.Request) error {
+		if request.ResponseFormat == nil || request.ResponseFormat.Name != "person" {
+			return fmt.Errorf("response format = %#v", request.ResponseFormat)
+		}
+		return nil
+	}, Response: damodel.Response{
+		Message: damessage.Assistant("fallback"), Structured: json.RawMessage(`{"name":"Maya","age":29}`),
+	}})
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
+			ID: "dynamic-task", Name: "task", Arguments: json.RawMessage(`{"description":"make a person","subagent_type":"worker"}`),
+		}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
+			if request.Messages[len(request.Messages)-1].TextContent() != `{"name":"Maya","age":29}` {
+				return fmt.Errorf("task result = %q", request.Messages[len(request.Messages)-1].TextContent())
+			}
+			return nil
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
+	)
+	compiled, err := New(Options{
+		Model: parentModel, DisableSummary: true, DisableTodo: true,
+		Subagents: []Subagent{{Name: "worker", Description: "Creates records", SystemPrompt: "Return the requested record.", Model: childModel}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := compiled.Invoke(context.Background(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("go")},
+		Configurable: map[string]any{SubagentResponseFormatConfigKey: dagent.StructuredOutput{
+			Name: "person", Description: "A person", Schema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"],"additionalProperties":false}`),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].TextContent() != "done" {
+		t.Fatalf("messages = %#v", result.Messages)
+	}
+}
+
+func TestTaskScopedResponseFormatRejectsInvalidStructuredResult(t *testing.T) {
+	childModel := modeltest.New(damodel.Profile{StructuredOutput: true}, modeltest.Step{Response: damodel.Response{
+		Message: damessage.Assistant("fallback"), Structured: json.RawMessage(`{"age":"not-an-integer"}`),
+	}})
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{
+		Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "invalid-dynamic", Name: "task", Arguments: json.RawMessage(`{"description":"make a person","subagent_type":"worker"}`)}},
+	}}})
+	compiled, err := New(Options{
+		Model: parentModel, DisableSummary: true, DisableTodo: true,
+		Subagents: []Subagent{{Name: "worker", Description: "Creates records", SystemPrompt: "Return a record.", Model: childModel}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = compiled.Invoke(context.Background(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("go")},
+		Configurable: map[string]any{SubagentResponseFormatConfigKey: dagent.StructuredOutput{
+			Name: "person", Schema: json.RawMessage(`{"type":"object","properties":{"age":{"type":"integer"}},"required":["age"],"additionalProperties":false}`),
+		}},
+	})
+	if err == nil || !errors.Is(err, dagent.ErrStructuredValidation) {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+}
+
+func TestTaskScopedResponseFormatRejectsCompiledSubagent(t *testing.T) {
+	child, err := dagent.New(dagent.Options{Model: modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child")}})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{
+		Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "compiled-task", Name: "task", Arguments: json.RawMessage(`{"description":"work","subagent_type":"worker"}`)}},
+	}}})
+	compiled, err := New(Options{
+		Model: parentModel, DisableSummary: true, DisableTodo: true,
+		Subagents: []Subagent{{Name: "worker", Description: "Works", Runnable: child}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = compiled.Invoke(context.Background(), dagent.Input{
+		Messages: []damessage.Message{damessage.Human("go")},
+		Configurable: map[string]any{SubagentResponseFormatConfigKey: dagent.StructuredOutput{
+			Name: "answer", Schema: json.RawMessage(`{"type":"object"}`),
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "task-scoped formats require a declarative subagent") {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+}
+
+func TestTaskScopedResponseFormatSurvivesInterruptResume(t *testing.T) {
+	completedRuns := 0
+	pausing := datool.Func{
+		Spec: datool.Definition{Name: "pausing", Description: "Pause once", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Run: func(_ context.Context, _ json.RawMessage, runtime datool.Runtime) (datool.Result, error) {
+			if runtime.Resume == nil {
+				return datool.Result{Interrupt: &datool.Interrupt{ID: "child-pause", Value: "continue"}}, nil
+			}
+			if runtime.Resume != "continue" {
+				return datool.Result{}, fmt.Errorf("resume value = %#v", runtime.Resume)
+			}
+			completedRuns++
+			return datool.TextResult("continued"), nil
+		},
+	}
+	childModel := modeltest.New(damodel.Profile{ToolCalling: true, StructuredOutput: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
+			ID: "child-pause-call", Name: "pausing", Arguments: json.RawMessage(`{}`),
+		}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
+			if request.ResponseFormat == nil || request.ResponseFormat.Name != "approval_result" {
+				return fmt.Errorf("resumed response format = %#v", request.ResponseFormat)
+			}
+			return nil
+		}, Response: damodel.Response{
+			Message: damessage.Assistant("fallback"), Structured: json.RawMessage(`{"approved":true}`),
+		}},
+	)
+	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
+			ID: "resume-format-task", Name: "task", Arguments: json.RawMessage(`{"description":"perform action","subagent_type":"operator"}`),
+		}}}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
+			if request.Messages[len(request.Messages)-1].TextContent() != `{"approved":true}` {
+				return fmt.Errorf("resumed task result = %q", request.Messages[len(request.Messages)-1].TextContent())
+			}
+			return nil
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
+	)
+	saver, err := checkpointsqlite.Open(filepath.Join(t.TempDir(), "task-response-format.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer saver.Close()
+	compiled, err := New(Options{
+		Model: parentModel, Saver: saver, DisableSummary: true, DisableTodo: true,
+		Subagents: []Subagent{{
+			Name: "operator", Description: "Performs resumable actions", SystemPrompt: "Perform the action.",
+			Model: childModel, Tools: []datool.Tool{pausing},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := dacheckpoint.Config{ThreadID: "task-response-format-resume"}
+	format := dagent.StructuredOutput{
+		Name: "approval_result", Schema: json.RawMessage(`{"type":"object","properties":{"approved":{"type":"boolean"}},"required":["approved"],"additionalProperties":false}`),
+	}
+	paused, err := compiled.Invoke(context.Background(), dagent.Input{
+		Config: config, Messages: []damessage.Message{damessage.Human("go")},
+		Configurable: map[string]any{SubagentResponseFormatConfigKey: format},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paused.Interrupts) != 1 || completedRuns != 0 {
+		t.Fatalf("paused = %#v, completed runs = %d", paused.Interrupts, completedRuns)
+	}
+	if _, leaked := paused.State[taskResponseFormatsKey]; leaked {
+		t.Fatalf("task response format metadata leaked: %#v", paused.State)
+	}
+	_, err = compiled.Invoke(context.Background(), dagent.Input{
+		Config: config, Resume: "continue",
+		Configurable: map[string]any{SubagentResponseFormatConfigKey: dagent.StructuredOutput{
+			Name: "different", Schema: json.RawMessage(`{"type":"object"}`),
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match its interrupted task") {
+		t.Fatalf("mismatched resume error = %v", err)
+	}
+	resumed, err := compiled.Invoke(context.Background(), dagent.Input{
+		Config: config, Resume: "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completedRuns != 1 || resumed.Messages[len(resumed.Messages)-1].TextContent() != "done" {
+		t.Fatalf("completed runs = %d, messages = %#v", completedRuns, resumed.Messages)
+	}
+	if _, leaked := resumed.State[taskResponseFormatsKey]; leaked {
+		t.Fatalf("task response format metadata leaked: %#v", resumed.State)
+	}
+}
+
 func TestSubagentInvocationPropagatesCancellation(t *testing.T) {
 	childModel := &blockingChat{started: make(chan struct{})}
 	parentModel := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "cancel-task", Name: "task", Arguments: json.RawMessage(`{"description":"block","subagent_type":"worker"}`)}}}}})
@@ -751,12 +1074,19 @@ func TestSubagentInvocationPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	done := make(chan error, 1)
 	go func() {
-		_, err := compiled.Invoke(ctx, dagent.Input{Messages: []damessage.Message{damessage.Human("go")}})
+		_, err := compiled.Invoke(ctx, dagent.Input{
+			Messages: []damessage.Message{damessage.Human("go")},
+			Configurable: map[string]any{SubagentResponseFormatConfigKey: dagent.StructuredOutput{
+				Name: "answer", Description: "An answer", Schema: json.RawMessage(`{"type":"object"}`),
+			}},
+		})
 		done <- err
 	}()
 	select {
 	case <-childModel.started:
 		cancel()
+	case err := <-done:
+		t.Fatalf("child exited before starting: %v", err)
 	case <-ctx.Done():
 		t.Fatal("child model did not start")
 	}
