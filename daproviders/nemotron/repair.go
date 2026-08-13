@@ -3,6 +3,7 @@ package nemotron
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -180,10 +181,17 @@ func ModelRateLimitRetry(delays ...time.Duration) dagent.Middleware {
 			if err == nil || attempt >= len(delays) || !nemotronRateLimitError(err) {
 				return response, err
 			}
-			if delays[attempt] <= 0 {
+			delay := delays[attempt]
+			event := damodel.RetryEvent{Attempt: attempt + 1, Delay: delay, Retryable: true, Err: err.Error()}
+			var reporter damodel.RetryReporter
+			if errors.As(err, &reporter) {
+				event = reporter.RetryEvent(attempt+1, delay)
+			}
+			damodel.ReportRetry(ctx, event)
+			if delay <= 0 {
 				continue
 			}
-			timer := time.NewTimer(delays[attempt])
+			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
 			case <-ctx.Done():
@@ -203,7 +211,8 @@ func nemotronRateLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if reporter, ok := err.(damodel.RetryReporter); ok {
+	var reporter damodel.RetryReporter
+	if errors.As(err, &reporter) {
 		if event := reporter.RetryEvent(1, 0); event.Status == 429 {
 			return true
 		}

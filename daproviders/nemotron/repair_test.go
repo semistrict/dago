@@ -7,12 +7,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
-	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/datool"
 )
 
@@ -118,34 +118,58 @@ func TestNemotronModelRateLimitRetry(t *testing.T) {
 	}
 }
 
-func TestNemotronModelRateLimitRetryWithFakeTime(t *testing.T) {
-	modeltest.TestWithFakeTime(t, func(t *testing.T) {
-		middleware := ModelRateLimitRetry(time.Hour)
+func TestNemotronModelRateLimitRetrySchedule(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		middleware := ModelRateLimitRetry(500*time.Millisecond, 1500*time.Millisecond)
 		calls := 0
-		started := time.Now()
-		_, err := middleware.WrapModelCall(t.Context(), dagent.ModelRequest{}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
-			calls++
-			if calls == 1 {
-				return dagent.ModelResponse{}, retryStatusError{status: 429}
-			}
-			return dagent.ModelResponse{}, nil
+		var events []damodel.RetryEvent
+		ctx := damodel.WithRetryObserver(t.Context(), func(_ context.Context, event damodel.RetryEvent) {
+			events = append(events, event)
 		})
-		if err != nil || calls != 2 || time.Since(started) != time.Hour {
-			t.Fatalf("calls=%d elapsed=%s error=%v", calls, time.Since(started), err)
+		started := time.Now()
+		_, err := middleware.WrapModelCall(ctx, dagent.ModelRequest{}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
+			calls++
+			return dagent.ModelResponse{}, retryStatusError{status: 429}
+		})
+		if err == nil || calls != 3 || time.Since(started) != 2*time.Second {
+			t.Fatalf("calls=%d elapsed=%s error=%v; want final failure after 3 calls in 2s", calls, time.Since(started), err)
+		}
+		if len(events) != 2 ||
+			events[0].Attempt != 1 || events[0].Delay != 500*time.Millisecond || events[0].Status != 429 || !events[0].Retryable ||
+			events[1].Attempt != 2 || events[1].Delay != 1500*time.Millisecond || events[1].Status != 429 || !events[1].Retryable {
+			t.Fatalf("retry events = %#v", events)
 		}
 	})
 }
 
 func TestNemotronModelRateLimitRetryHonorsCancellation(t *testing.T) {
-	middleware := ModelRateLimitRetry(time.Hour)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := middleware.WrapModelCall(ctx, dagent.ModelRequest{}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
-		return dagent.ModelResponse{}, retryStatusError{status: 429}
+	synctest.Test(t, func(t *testing.T) {
+		middleware := ModelRateLimitRetry(500 * time.Millisecond)
+		ctx, cancel := context.WithCancel(t.Context())
+		calls := 0
+		started := time.Now()
+		done := make(chan error, 1)
+		go func() {
+			_, err := middleware.WrapModelCall(ctx, dagent.ModelRequest{}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
+				calls++
+				return dagent.ModelResponse{}, retryStatusError{status: 429}
+			})
+			done <- err
+		}()
+
+		synctest.Wait()
+		if calls != 1 || time.Since(started) != 0 {
+			t.Fatalf("before cancel: calls=%d elapsed=%s; want one call and active backoff", calls, time.Since(started))
+		}
+		cancel()
+		synctest.Wait()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+		if calls != 1 || time.Since(started) != 0 {
+			t.Fatalf("after cancel: calls=%d elapsed=%s; want no retry or clock advance", calls, time.Since(started))
+		}
 	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v", err)
-	}
 }
 
 func TestNemotronReasoningTagCleanup(t *testing.T) {
@@ -210,6 +234,6 @@ func TestNemotronFilesystemRetryIsScoped(t *testing.T) {
 type retryStatusError struct{ status int }
 
 func (err retryStatusError) Error() string { return "throttled" }
-func (err retryStatusError) RetryEvent(_ int, _ time.Duration) damodel.RetryEvent {
-	return damodel.RetryEvent{Status: err.status}
+func (err retryStatusError) RetryEvent(attempt int, delay time.Duration) damodel.RetryEvent {
+	return damodel.RetryEvent{Attempt: attempt, Delay: delay, Retryable: true, Err: err.Error(), Status: err.status}
 }

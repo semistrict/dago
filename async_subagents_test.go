@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/semistrict/dago/dacheckpoint"
@@ -93,53 +94,74 @@ func TestAsyncSubagentTaskStatePersistsAcrossAgentTurns(t *testing.T) {
 }
 
 func TestAsyncSubagentManagementTools(t *testing.T) {
-	runner := &asyncRunnerStub{}
-	clock := func() time.Time { return time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC) }
-	middleware := AsyncSubagentsWithOptions(
-		AsyncSubagentsOptions{Now: clock},
-		AsyncSubagent{Name: "worker", Description: "Works", GraphID: "worker-graph", Runner: runner},
-	)
-	byName := map[string]datool.Tool{}
-	for _, value := range middleware.Tools {
-		byName[value.Definition().Name] = value
-	}
-	tasks := map[string]any{}
-	execute := func(name, arguments string) datool.Result {
-		t.Helper()
-		result, err := byName[name].Execute(context.Background(), json.RawMessage(arguments), datool.Runtime{CallID: name, State: dastate.Values{AsyncTasksKey: tasks}})
-		if err != nil {
-			t.Fatal(err)
+	synctest.Test(t, func(t *testing.T) {
+		runner := &asyncRunnerStub{}
+		middleware := AsyncSubagentsWithOptions(
+			AsyncSubagentsOptions{},
+			AsyncSubagent{Name: "worker", Description: "Works", GraphID: "worker-graph", Runner: runner},
+		)
+		byName := map[string]datool.Tool{}
+		for _, value := range middleware.Tools {
+			byName[value.Definition().Name] = value
 		}
-		if update, exists := result.Update[AsyncTasksKey]; exists {
-			merged, err := reduceAsyncTasks(tasks, []any{update})
+		tasks := map[string]any{}
+		execute := func(name, arguments string) datool.Result {
+			t.Helper()
+			result, err := byName[name].Execute(t.Context(), json.RawMessage(arguments), datool.Runtime{CallID: name, State: dastate.Values{AsyncTasksKey: tasks}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			tasks = merged.(map[string]any)
+			if update, exists := result.Update[AsyncTasksKey]; exists {
+				merged, err := reduceAsyncTasks(tasks, []any{update})
+				if err != nil {
+					t.Fatal(err)
+				}
+				tasks = merged.(map[string]any)
+			}
+			return result
 		}
-		return result
-	}
-	if text := execute("start_async_task", `{"description":"work","subagent_type":"worker"}`).Content[0].Text; !strings.Contains(text, "task-1") {
-		t.Fatal(text)
-	}
-	if text := execute("check_async_task", `{"task_id":"task-1"}`).Content[0].Text; !strings.Contains(text, `"status":"running"`) {
-		t.Fatal(text)
-	}
-	if text := execute("update_async_task", `{"task_id":"task-1","message":"more"}`).Content[0].Text; !strings.Contains(text, "Updated") {
-		t.Fatal(text)
-	}
-	if text := execute("list_async_tasks", `{}`).Content[0].Text; !strings.Contains(text, "run") || !strings.Contains(text, "task-1") {
-		t.Fatal(text)
-	}
-	if text := execute("cancel_async_task", `{"task_id":"task-1"}`).Content[0].Text; !strings.Contains(text, "Cancelled") {
-		t.Fatal(text)
-	}
-	if task := decodeAsyncTasks(tasks)["task-1"]; task.Status != "cancelled" || task.RunID != "run-2" {
-		t.Fatalf("task = %#v", task)
-	}
-	if runner.starts != 1 || runner.updates != 1 || runner.cancellations != 1 {
-		t.Fatalf("runner = %#v", runner)
-	}
+		if text := execute("start_async_task", `{"description":"work","subagent_type":"worker"}`).Content[0].Text; !strings.Contains(text, "task-1") {
+			t.Fatal(text)
+		}
+		if task := decodeAsyncTasks(tasks)["task-1"]; task.CreatedAt != "2000-01-01T00:00:00Z" || task.LastCheckedAt != task.CreatedAt || task.LastUpdatedAt != task.CreatedAt {
+			t.Fatalf("started task = %#v", task)
+		}
+		time.Sleep(2 * time.Second)
+		if text := execute("check_async_task", `{"task_id":"task-1"}`).Content[0].Text; !strings.Contains(text, `"status":"running"`) {
+			t.Fatal(text)
+		}
+		if task := decodeAsyncTasks(tasks)["task-1"]; task.LastCheckedAt != "2000-01-01T00:00:02Z" || task.LastUpdatedAt != "2000-01-01T00:00:00Z" {
+			t.Fatalf("checked task = %#v", task)
+		}
+		time.Sleep(3 * time.Second)
+		if text := execute("update_async_task", `{"task_id":"task-1","message":"more"}`).Content[0].Text; !strings.Contains(text, "Updated") {
+			t.Fatal(text)
+		}
+		if task := decodeAsyncTasks(tasks)["task-1"]; task.LastCheckedAt != "2000-01-01T00:00:02Z" || task.LastUpdatedAt != "2000-01-01T00:00:05Z" {
+			t.Fatalf("updated task = %#v", task)
+		}
+		time.Sleep(4 * time.Second)
+		if text := execute("list_async_tasks", `{}`).Content[0].Text; !strings.Contains(text, "run") || !strings.Contains(text, "task-1") {
+			t.Fatal(text)
+		}
+		if task := decodeAsyncTasks(tasks)["task-1"]; task.LastCheckedAt != "2000-01-01T00:00:09Z" || task.LastUpdatedAt != "2000-01-01T00:00:05Z" {
+			t.Fatalf("listed task = %#v", task)
+		}
+		time.Sleep(time.Second)
+		if text := execute("cancel_async_task", `{"task_id":"task-1"}`).Content[0].Text; !strings.Contains(text, "Cancelled") {
+			t.Fatal(text)
+		}
+		task := decodeAsyncTasks(tasks)["task-1"]
+		if task.Status != "cancelled" || task.RunID != "run-2" ||
+			task.CreatedAt != "2000-01-01T00:00:00Z" ||
+			task.LastCheckedAt != "2000-01-01T00:00:10Z" ||
+			task.LastUpdatedAt != "2000-01-01T00:00:10Z" {
+			t.Fatalf("task = %#v", task)
+		}
+		if runner.starts != 1 || runner.updates != 1 || runner.cancellations != 1 {
+			t.Fatalf("runner = %#v", runner)
+		}
+	})
 }
 
 func TestAsyncCheckPreservesAnIntentionallyEmptyFinalMessage(t *testing.T) {

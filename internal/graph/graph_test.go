@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/semistrict/dago/dacache"
@@ -253,40 +254,61 @@ func TestCompiledContainsNodePanic(t *testing.T) {
 }
 
 func TestCompiledRetriesWholeNodeAndHonorsPolicy(t *testing.T) {
-	builder := NewBuilder(Schema{Fields: map[string]Field{"value": LastValue(identityClone)}})
-	var calls atomic.Int32
-	mustAddNode(t, builder, "retry", func(context.Context, dastate.Values, Runtime) (Command, error) {
-		if calls.Add(1) < 3 {
-			return Command{}, errors.New("transient")
+	synctest.Test(t, func(t *testing.T) {
+		builder := NewBuilder(Schema{Fields: map[string]Field{"value": LastValue(identityClone)}})
+		var calls atomic.Int32
+		mustAddNode(t, builder, "retry", func(context.Context, dastate.Values, Runtime) (Command, error) {
+			if calls.Add(1) < 3 {
+				return Command{}, errors.New("transient")
+			}
+			return Command{Update: dastate.Values{"value": "done"}}, nil
+		})
+		mustAddEdge(t, builder, Start, "retry")
+		mustAddEdge(t, builder, "retry", End)
+		graph := mustCompile(t, builder, CompileOptions{Retry: RetryPolicy{Attempts: 3, Backoff: 500 * time.Millisecond}})
+		started := time.Now()
+		result, err := graph.Invoke(t.Context(), Invocation{Config: dacheckpoint.Config{ThreadID: "retry"}})
+		if err != nil {
+			t.Fatal(err)
 		}
-		return Command{Update: dastate.Values{"value": "done"}}, nil
+		assertStateValue(t, result.State, "value", "done")
+		if calls.Load() != 3 || time.Since(started) != time.Second {
+			t.Fatalf("calls = %d, elapsed = %s; want 3 calls in 1s", calls.Load(), time.Since(started))
+		}
 	})
-	mustAddEdge(t, builder, Start, "retry")
-	mustAddEdge(t, builder, "retry", End)
-	graph := mustCompile(t, builder, CompileOptions{Retry: RetryPolicy{Attempts: 3}})
-	result, err := graph.Invoke(context.Background(), Invocation{Config: dacheckpoint.Config{ThreadID: "retry"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertStateValue(t, result.State, "value", "done")
-	if calls.Load() != 3 {
-		t.Fatalf("calls = %d, want 3", calls.Load())
-	}
 }
 
 func TestCompiledRetryBackoffIsCancelable(t *testing.T) {
-	builder := NewBuilder(Schema{})
-	mustAddNode(t, builder, "retry", func(context.Context, dastate.Values, Runtime) (Command, error) {
-		return Command{}, errors.New("transient")
+	synctest.Test(t, func(t *testing.T) {
+		builder := NewBuilder(Schema{})
+		var calls atomic.Int32
+		mustAddNode(t, builder, "retry", func(context.Context, dastate.Values, Runtime) (Command, error) {
+			calls.Add(1)
+			return Command{}, errors.New("transient")
+		})
+		mustAddEdge(t, builder, Start, "retry")
+		graph := mustCompile(t, builder, CompileOptions{Retry: RetryPolicy{Attempts: 3, Backoff: 500 * time.Millisecond}})
+		ctx, cancel := context.WithCancel(t.Context())
+		started := time.Now()
+		done := make(chan error, 1)
+		go func() {
+			_, err := graph.Invoke(ctx, Invocation{Config: dacheckpoint.Config{ThreadID: "cancel-retry"}})
+			done <- err
+		}()
+
+		synctest.Wait()
+		if calls.Load() != 1 || time.Since(started) != 0 {
+			t.Fatalf("before cancel: calls=%d elapsed=%s; want one call and active backoff", calls.Load(), time.Since(started))
+		}
+		cancel()
+		synctest.Wait()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("Invoke() error = %v, want canceled", err)
+		}
+		if calls.Load() != 1 || time.Since(started) != 0 {
+			t.Fatalf("after cancel: calls=%d elapsed=%s; want no retry or clock advance", calls.Load(), time.Since(started))
+		}
 	})
-	mustAddEdge(t, builder, Start, "retry")
-	graph := mustCompile(t, builder, CompileOptions{Retry: RetryPolicy{Attempts: 100, Backoff: time.Hour}})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := graph.Invoke(ctx, Invocation{Config: dacheckpoint.Config{ThreadID: "cancel-retry"}})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Invoke() error = %v, want canceled", err)
-	}
 }
 
 func TestEphemeralValueLivesForOneSuperstep(t *testing.T) {

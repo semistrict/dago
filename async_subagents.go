@@ -93,7 +93,6 @@ type AsyncTask struct {
 // AsyncSubagentsOptions configures background-agent middleware.
 type AsyncSubagentsOptions struct {
 	SystemPrompt string
-	Now          func() time.Time
 }
 
 // AsyncSubagents adds tools for starting and managing durable background tasks.
@@ -114,9 +113,6 @@ func AsyncSubagentsWithOptions(options AsyncSubagentsOptions, first AsyncSubagen
 func newAsyncSubagents(options AsyncSubagentsOptions, subagents []AsyncSubagent) (dagent.Middleware, error) {
 	if len(subagents) == 0 {
 		return dagent.Middleware{}, fmt.Errorf("at least one async subagent is required")
-	}
-	if options.Now == nil {
-		options.Now = time.Now
 	}
 	byName := make(map[string]AsyncSubagent, len(subagents))
 	for _, value := range subagents {
@@ -142,11 +138,11 @@ func newAsyncSubagents(options AsyncSubagentsOptions, subagents []AsyncSubagent)
 	}
 	available := strings.Join(lines, "\n")
 	tools := []datool.Tool{
-		asyncStartTool(byName, names, available, options.Now),
-		asyncCheckTool(byName, options.Now),
-		asyncUpdateTool(byName, options.Now),
-		asyncCancelTool(byName, options.Now),
-		asyncListTool(byName, options.Now),
+		asyncStartTool(byName, names, available),
+		asyncCheckTool(byName),
+		asyncUpdateTool(byName),
+		asyncCancelTool(byName),
+		asyncListTool(byName),
 	}
 	middleware := dagent.Middleware{
 		Name: "async_subagents", SerializedName: "AsyncSubAgentMiddleware",
@@ -166,7 +162,7 @@ func newAsyncSubagents(options AsyncSubagentsOptions, subagents []AsyncSubagent)
 	return middleware, nil
 }
 
-func asyncStartTool(byName map[string]AsyncSubagent, names []string, available string, now func() time.Time) datool.Tool {
+func asyncStartTool(byName map[string]AsyncSubagent, names []string, available string) datool.Tool {
 	description := `Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.
 
 Available async agent types:
@@ -198,13 +194,13 @@ Available async agent types:
 		if run.ThreadID == "" || run.RunID == "" {
 			return datool.Result{}, fmt.Errorf("async subagent %q returned an empty thread or run id", input.Type)
 		}
-		stamp := asyncTimestamp(now())
+		stamp := asyncTimestamp()
 		task := AsyncTask{TaskID: run.ThreadID, AgentName: input.Type, ThreadID: run.ThreadID, RunID: run.RunID, Status: "running", CreatedAt: stamp, LastCheckedAt: stamp, LastUpdatedAt: stamp}
 		return asyncTaskResult("Launched async subagent. task_id: "+task.TaskID, task), nil
 	}, datool.WithPropertyEnum("subagent_type", names...))
 }
 
-func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) datool.Tool {
+func asyncCheckTool(byName map[string]AsyncSubagent) datool.Tool {
 	return datool.MustNew("check_async_task", "Check the status of an async subagent task. Returns the current status and, if complete, the result. Statuses shown earlier in the conversation are always stale, so call this to get the current status rather than reporting a status from a previous tool result.", func(ctx context.Context, input asyncTaskIDInput) (any, error) {
 		runtime, _ := datool.RuntimeFromContext(ctx)
 		task, result := asyncTaskFromRuntime(strings.TrimSpace(input.TaskID), runtime)
@@ -219,7 +215,7 @@ func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) datoo
 		if err != nil {
 			return "Failed to get run status: " + err.Error(), nil
 		}
-		stamp := asyncTimestamp(now())
+		stamp := asyncTimestamp()
 		if run.Status != "" && run.Status != task.Status {
 			task.Status = run.Status
 			task.LastUpdatedAt = stamp
@@ -245,7 +241,7 @@ func asyncCheckTool(byName map[string]AsyncSubagent, now func() time.Time) datoo
 	})
 }
 
-func asyncUpdateTool(byName map[string]AsyncSubagent, now func() time.Time) datool.Tool {
+func asyncUpdateTool(byName map[string]AsyncSubagent) datool.Tool {
 	type input struct {
 		TaskID  string `json:"task_id"`
 		Message string `json:"message"`
@@ -269,12 +265,12 @@ func asyncUpdateTool(byName map[string]AsyncSubagent, now func() time.Time) dato
 		}
 		task.RunID = run.RunID
 		task.Status = "running"
-		task.LastUpdatedAt = asyncTimestamp(now())
+		task.LastUpdatedAt = asyncTimestamp()
 		return asyncTaskResult("Updated async subagent. task_id: "+task.TaskID, task), nil
 	})
 }
 
-func asyncCancelTool(byName map[string]AsyncSubagent, now func() time.Time) datool.Tool {
+func asyncCancelTool(byName map[string]AsyncSubagent) datool.Tool {
 	return datool.MustNew("cancel_async_task", "Cancel a running async subagent task. Use this to stop a task that is no longer needed.", func(ctx context.Context, input asyncTaskIDInput) (any, error) {
 		runtime, _ := datool.RuntimeFromContext(ctx)
 		task, result := asyncTaskFromRuntime(strings.TrimSpace(input.TaskID), runtime)
@@ -288,13 +284,13 @@ func asyncCancelTool(byName map[string]AsyncSubagent, now func() time.Time) dato
 		if err := spec.Runner.Cancel(ctx, AsyncCancelRequest{ThreadID: task.ThreadID, RunID: task.RunID}); err != nil {
 			return "Failed to cancel run: " + err.Error(), nil
 		}
-		stamp := asyncTimestamp(now())
+		stamp := asyncTimestamp()
 		task.Status, task.LastCheckedAt, task.LastUpdatedAt = "cancelled", stamp, stamp
 		return asyncTaskResult("Cancelled async subagent task: "+task.TaskID, task), nil
 	})
 }
 
-func asyncListTool(byName map[string]AsyncSubagent, now func() time.Time) datool.Tool {
+func asyncListTool(byName map[string]AsyncSubagent) datool.Tool {
 	type input struct {
 		Status string `json:"status_filter,omitempty" jsonschema:"enum=running|success|error|cancelled|all"`
 	}
@@ -314,7 +310,7 @@ func asyncListTool(byName map[string]AsyncSubagent, now func() time.Time) datool
 		if len(ids) == 0 {
 			return "No async subagent tasks tracked.", nil
 		}
-		stamp := asyncTimestamp(now())
+		stamp := asyncTimestamp()
 		updates := map[string]any{}
 		lines := make([]string, 0, len(ids))
 		for _, id := range ids {
@@ -429,7 +425,7 @@ func stringValue(value any) string {
 	return text
 }
 
-func asyncTimestamp(value time.Time) string { return value.UTC().Format("2006-01-02T15:04:05Z") }
+func asyncTimestamp() string { return time.Now().UTC().Format("2006-01-02T15:04:05Z") }
 
 func asyncTerminalStatus(value string) bool {
 	switch value {

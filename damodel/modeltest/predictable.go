@@ -29,7 +29,9 @@ type PredictableOptions struct {
 	Profile         *damodel.Profile
 	DefaultResponse string
 	HistoryLimit    int
-	ResponseDelay   time.Duration
+	// ResponseDelay is cancellable and works inside testing/synctest bubbles,
+	// allowing realistic model latency without slowing tests.
+	ResponseDelay time.Duration
 }
 
 // Predictable is a prompt-driven model double for agent examples, integration

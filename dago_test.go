@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/semistrict/dago/dabackend"
@@ -1017,42 +1018,70 @@ func TestTaskScopedResponseFormatSurvivesInterruptResume(t *testing.T) {
 }
 
 func TestSubagentInvocationPropagatesCancellation(t *testing.T) {
-	childModel := &blockingChat{started: make(chan struct{})}
+	synctest.Test(t, func(t *testing.T) {
+		childModel := &blockingChat{}
+		compiled := newBlockingSubagentAgent(childModel)
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			_, err := invokeBlockingSubagent(ctx, compiled)
+			done <- err
+		}()
+
+		synctest.Wait()
+		if !childModel.started {
+			t.Fatal("child model did not start")
+		}
+		cancel()
+		synctest.Wait()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+	})
+}
+
+func TestSubagentInvocationPropagatesDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		childModel := &blockingChat{}
+		compiled := newBlockingSubagentAgent(childModel)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		started := time.Now()
+		_, err := invokeBlockingSubagent(ctx, compiled)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+		}
+		if elapsed := time.Since(started); elapsed != 5*time.Second {
+			t.Fatalf("elapsed = %s, want 5s", elapsed)
+		}
+		if !childModel.started {
+			t.Fatal("child model did not start")
+		}
+	})
+}
+
+func newBlockingSubagentAgent(childModel damodel.Chat) *dagent.Agent {
 	parentModel := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "cancel-task", Name: "task", Arguments: json.RawMessage(`{"description":"block","subagent_type":"worker"}`)}}}}})
-	compiled := New(
+	return New(
 		parentModel, Options{
 			DisableSummary: true,
 			Subagents:      []Subagent{{Name: "worker", Description: "Blocks", SystemPrompt: "Wait.", Model: childModel}},
 		})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	done := make(chan error, 1)
-	go func() {
-		_, err := compiled.Invoke(ctx, dagent.Input{
-			Messages: []damessage.Message{damessage.Human("go")},
-			Configurable: map[string]any{SubagentResponseFormatConfigKey: dagent.StructuredOutput{
-				Name: "answer", Description: "An answer", Schema: json.RawMessage(`{"type":"object"}`),
-			}},
-		})
-		done <- err
-	}()
-	select {
-	case <-childModel.started:
-		cancel()
-	case err := <-done:
-		t.Fatalf("child exited before starting: %v", err)
-	case <-ctx.Done():
-		t.Fatal("child model did not start")
-	}
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v", err)
-	}
 }
 
-type blockingChat struct{ started chan struct{} }
+func invokeBlockingSubagent(ctx context.Context, compiled *dagent.Agent) (dagent.Result, error) {
+	return compiled.Invoke(ctx, dagent.Input{
+		Messages: []damessage.Message{damessage.Human("go")},
+		Configurable: map[string]any{SubagentResponseFormatConfigKey: dagent.StructuredOutput{
+			Name: "answer", Description: "An answer", Schema: json.RawMessage(`{"type":"object"}`),
+		}},
+	})
+}
+
+type blockingChat struct{ started bool }
 
 func (chat *blockingChat) Invoke(ctx context.Context, _ damodel.Request) (damodel.Response, error) {
-	close(chat.started)
+	chat.started = true
 	<-ctx.Done()
 	return damodel.Response{}, ctx.Err()
 }

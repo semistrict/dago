@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/semistrict/dago/dacheckpoint"
@@ -289,60 +290,66 @@ func TestPrivateStateIsAvailableInternallyButHiddenFromResultsAndStreams(t *test
 }
 
 func TestAgentCancelClearsPendingToolsAndPreservesState(t *testing.T) {
-	started := make(chan struct{})
-	blocking := datool.Func{
-		Spec: datool.Definition{Name: "blocking", Description: "Block until cancelled", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		Run: func(ctx context.Context, _ json.RawMessage, _ datool.Runtime) (datool.Result, error) {
-			close(started)
-			<-ctx.Done()
-			return datool.Result{}, ctx.Err()
-		},
-	}
-	script := modeltest.New(damodel.Profile{ToolCalling: true},
-		modeltest.Step{Response: damodel.Response{Message: damessage.Message{
-			ID: "assistant-tool", Role: damessage.RoleAssistant,
-			ToolCalls: []damessage.ToolCall{{ID: "call-1", Name: "blocking", Arguments: json.RawMessage(`{}`)}},
-		}}},
-		modeltest.Step{Check: func(request damodel.Request) error {
-			last := request.Messages[len(request.Messages)-1]
-			if last.Role != damessage.RoleHuman || last.TextContent() != "after cancel" {
-				return fmt.Errorf("last message = %#v", last)
-			}
-			return nil
-		}, Response: damodel.Response{Message: damessage.Assistant("resumed")}},
-	)
-	saver := dacheckpoint.NewMemorySaver()
-	compiled := New(script, Options{Tools: []datool.Tool{blocking}, Saver: saver, MaxConcurrency: 1})
+	synctest.Test(t, func(t *testing.T) {
+		started := false
+		blocking := datool.Func{
+			Spec: datool.Definition{Name: "blocking", Description: "Block until cancelled", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			Run: func(ctx context.Context, _ json.RawMessage, _ datool.Runtime) (datool.Result, error) {
+				started = true
+				<-ctx.Done()
+				return datool.Result{}, ctx.Err()
+			},
+		}
+		script := modeltest.New(damodel.Profile{ToolCalling: true},
+			modeltest.Step{Response: damodel.Response{Message: damessage.Message{
+				ID: "assistant-tool", Role: damessage.RoleAssistant,
+				ToolCalls: []damessage.ToolCall{{ID: "call-1", Name: "blocking", Arguments: json.RawMessage(`{}`)}},
+			}}},
+			modeltest.Step{Check: func(request damodel.Request) error {
+				last := request.Messages[len(request.Messages)-1]
+				if last.Role != damessage.RoleHuman || last.TextContent() != "after cancel" {
+					return fmt.Errorf("last message = %#v", last)
+				}
+				return nil
+			}, Response: damodel.Response{Message: damessage.Assistant("resumed")}},
+		)
+		saver := dacheckpoint.NewMemorySaver()
+		compiled := New(script, Options{Tools: []datool.Tool{blocking}, Saver: saver, MaxConcurrency: 1})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := compiled.Invoke(ctx, Input{Config: dacheckpoint.Config{ThreadID: "cancel"}, Messages: []damessage.Message{damessage.Human("start")}})
-		done <- err
-	}()
-	<-started
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("Invoke() error = %v", err)
-	}
-	cancelled := damessage.Tool("call-1", "Tool execution cancelled by user")
-	cancelled.Name = "blocking"
-	cancelled.ToolStatus = damessage.ToolStatusError
-	if _, err := compiled.Cancel(context.Background(), Input{
-		Config:   dacheckpoint.Config{ThreadID: "cancel"},
-		Messages: []damessage.Message{cancelled, damessage.Assistant("[Operation cancelled]")},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	result, err := compiled.Invoke(context.Background(), Input{
-		Config: dacheckpoint.Config{ThreadID: "cancel"}, Messages: []damessage.Message{damessage.Human("after cancel")},
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			_, err := compiled.Invoke(ctx, Input{Config: dacheckpoint.Config{ThreadID: "cancel"}, Messages: []damessage.Message{damessage.Human("start")}})
+			done <- err
+		}()
+		synctest.Wait()
+		if !started {
+			t.Fatal("blocking tool did not start")
+		}
+		cancel()
+		synctest.Wait()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("Invoke() error = %v", err)
+		}
+		cancelled := damessage.Tool("call-1", "Tool execution cancelled by user")
+		cancelled.Name = "blocking"
+		cancelled.ToolStatus = damessage.ToolStatusError
+		if _, err := compiled.Cancel(t.Context(), Input{
+			Config:   dacheckpoint.Config{ThreadID: "cancel"},
+			Messages: []damessage.Message{cancelled, damessage.Assistant("[Operation cancelled]")},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := compiled.Invoke(t.Context(), Input{
+			Config: dacheckpoint.Config{ThreadID: "cancel"}, Messages: []damessage.Message{damessage.Human("after cancel")},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := result.Messages[len(result.Messages)-1].TextContent(); got != "resumed" {
+			t.Fatalf("last response = %q", got)
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := result.Messages[len(result.Messages)-1].TextContent(); got != "resumed" {
-		t.Fatalf("last response = %q", got)
-	}
 }
 
 func TestMiddlewareLifecycleAndWrapperNesting(t *testing.T) {
@@ -975,51 +982,66 @@ func TestToolInterruptCheckpointsCompletedSiblingBeforeResume(t *testing.T) {
 }
 
 func TestToolRetryAndTodoMiddleware(t *testing.T) {
-	var calls atomic.Int32
-	flaky := datool.Func{
-		Spec: datool.Definition{Name: "flaky", Description: "Flaky", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
-			if calls.Add(1) < 3 {
-				return datool.Result{}, errors.New("retry")
-			}
-			return datool.TextResult("ok"), nil
-		},
-	}
-	script := modeltest.New(damodel.Profile{ToolCalling: true},
-		modeltest.Step{Check: func(request damodel.Request) error {
-			if len(request.Tools) != 2 {
-				return errors.New("todo tool missing")
-			}
-			return nil
-		}, Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "f", Name: "flaky", Arguments: json.RawMessage(`{}`)}}}}},
-		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
-	)
-	compiled := New(script, Options{Tools: []datool.Tool{flaky}, Middleware: []Middleware{
-		ToolRetry(ToolRetryOptions{Name: "retry", Attempts: 3, Backoff: time.Nanosecond}), TodoList(),
-	}})
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		flaky := datool.Func{
+			Spec: datool.Definition{Name: "flaky", Description: "Flaky", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+				if calls.Add(1) < 3 {
+					return datool.Result{}, errors.New("retry")
+				}
+				return datool.TextResult("ok"), nil
+			},
+		}
+		script := modeltest.New(damodel.Profile{ToolCalling: true},
+			modeltest.Step{Check: func(request damodel.Request) error {
+				if len(request.Tools) != 2 {
+					return errors.New("todo tool missing")
+				}
+				return nil
+			}, Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "f", Name: "flaky", Arguments: json.RawMessage(`{}`)}}}}},
+			modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
+		)
+		compiled := New(script, Options{Tools: []datool.Tool{flaky}, Middleware: []Middleware{
+			ToolRetry(ToolRetryOptions{Name: "retry", Attempts: 3, Backoff: 500 * time.Millisecond}), TodoList(),
+		}})
 
-	if _, err := compiled.Invoke(context.Background(), Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 3 {
-		t.Fatalf("tool calls = %d, want 3", calls.Load())
-	}
+		started := time.Now()
+		if _, err := compiled.Invoke(t.Context(), Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+			t.Fatal(err)
+		}
+		if calls.Load() != 3 || time.Since(started) != time.Second {
+			t.Fatalf("tool calls = %d, elapsed = %s; want 3 calls in 1s", calls.Load(), time.Since(started))
+		}
+	})
 }
 
-func TestToolRetryBackoffWithFakeTime(t *testing.T) {
-	modeltest.TestWithFakeTime(t, func(t *testing.T) {
-		middleware := ToolRetry(ToolRetryOptions{Name: "retry", Attempts: 2, Backoff: time.Hour})
+func TestToolRetryBackoffHonorsCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		middleware := ToolRetry(ToolRetryOptions{Name: "retry", Attempts: 3, Backoff: 500 * time.Millisecond})
+		ctx, cancel := context.WithCancel(t.Context())
 		calls := 0
 		started := time.Now()
-		_, err := middleware.WrapToolCall(t.Context(), ToolCallRequest{}, func(context.Context, ToolCallRequest) (ToolCallResponse, error) {
-			calls++
-			if calls == 1 {
+		done := make(chan error, 1)
+		go func() {
+			_, err := middleware.WrapToolCall(ctx, ToolCallRequest{}, func(context.Context, ToolCallRequest) (ToolCallResponse, error) {
+				calls++
 				return ToolCallResponse{}, errors.New("retry")
-			}
-			return ToolCallResponse{}, nil
-		})
-		if err != nil || calls != 2 || time.Since(started) != time.Hour {
-			t.Fatalf("calls=%d elapsed=%s error=%v", calls, time.Since(started), err)
+			})
+			done <- err
+		}()
+
+		synctest.Wait()
+		if calls != 1 || time.Since(started) != 0 {
+			t.Fatalf("before cancel: calls=%d elapsed=%s; want one call and active backoff", calls, time.Since(started))
+		}
+		cancel()
+		synctest.Wait()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("after cancel: error = %v, want context.Canceled", err)
+		}
+		if calls != 1 || time.Since(started) != 0 {
+			t.Fatalf("after cancel: calls=%d elapsed=%s; want no retry or clock advance", calls, time.Since(started))
 		}
 	})
 }

@@ -2,13 +2,12 @@ package server
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
-
-	"github.com/semistrict/dago/damodel/modeltest"
 )
 
-func TestSubagentIdlePollingWithFakeTime(t *testing.T) {
-	modeltest.TestWithFakeTime(t, func(t *testing.T) {
+func TestSubagentIdlePollingWithSynctest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		manager := &ConversationManager{agentWorking: true}
 		runner := &SubagentRunner{}
 		started := time.Now()

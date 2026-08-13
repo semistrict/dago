@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/semistrict/dago/dabackend"
@@ -518,25 +519,35 @@ func TestFilesystemSearchResultsUseStableModelFacingShapes(t *testing.T) {
 }
 
 func TestFilesystemGlobBoundsUnresponsiveBackends(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	release := make(chan struct{})
-	defer close(release)
-	glob := filesystemTool(t, blockingGlobBackend{Backend: memory, release: release}, Filesystem{
-		GlobTimeout: 10 * time.Millisecond,
-	}, "glob")
-	for index := 0; index < 4; index++ {
-		_, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), datool.Runtime{})
-		if err == nil || !strings.Contains(err.Error(), "glob timed out after 10ms") {
-			t.Fatalf("timeout %d error = %v", index, err)
+	synctest.Test(t, func(t *testing.T) {
+		memory, err := dabackend.NewMemory(nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	_, err = glob.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*"}`), datool.Runtime{})
-	if err == nil || !strings.Contains(err.Error(), "too many glob calls") {
-		t.Fatalf("overload error = %v", err)
-	}
+		release := make(chan struct{})
+		defer close(release)
+		glob := filesystemTool(t, blockingGlobBackend{Backend: memory, release: release}, Filesystem{
+			GlobTimeout: 500 * time.Millisecond,
+		}, "glob")
+		started := time.Now()
+		for index := 0; index < 4; index++ {
+			_, err := glob.Execute(t.Context(), json.RawMessage(`{"pattern":"**/*"}`), datool.Runtime{})
+			if err == nil || !strings.Contains(err.Error(), "glob timed out after 500ms") {
+				t.Fatalf("timeout %d error = %v", index, err)
+			}
+			wantElapsed := time.Duration(index+1) * 500 * time.Millisecond
+			if elapsed := time.Since(started); elapsed != wantElapsed {
+				t.Fatalf("timeout %d elapsed = %s, want %s", index, elapsed, wantElapsed)
+			}
+		}
+		_, err = glob.Execute(t.Context(), json.RawMessage(`{"pattern":"**/*"}`), datool.Runtime{})
+		if err == nil || !strings.Contains(err.Error(), "too many glob calls") {
+			t.Fatalf("overload error = %v", err)
+		}
+		if elapsed := time.Since(started); elapsed != 2*time.Second {
+			t.Fatalf("overload elapsed = %s, want 2s", elapsed)
+		}
+	})
 }
 
 func TestFilesystemGlobPreservesBackendTimeoutErrors(t *testing.T) {

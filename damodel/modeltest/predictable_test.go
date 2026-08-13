@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/semistrict/dago/damessage"
@@ -94,6 +95,25 @@ func TestPredictableErrorsAndCancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled Invoke() = %v", err)
 	}
+}
+
+func TestPredictableResponseDelayWithSynctest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		predictable := NewPredictable(PredictableOptions{ResponseDelay: 2 * time.Second})
+		started := time.Now()
+		response, err := predictable.Invoke(t.Context(), damodel.Request{
+			Messages: []damessage.Message{damessage.Human("hello")},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Message.TextContent() != "Well, hi there!" {
+			t.Fatalf("response = %#v", response.Message)
+		}
+		if elapsed := time.Since(started); elapsed != 2*time.Second {
+			t.Fatalf("elapsed = %s, want 2s", elapsed)
+		}
+	})
 }
 
 func TestPredictableHistoryIsBoundedAndIsolated(t *testing.T) {
