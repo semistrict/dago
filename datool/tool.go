@@ -66,6 +66,20 @@ type StateReader interface {
 	Get(key string) (any, bool)
 }
 
+// StateAs reads one typed state value. It accepts both its live Go form and the
+// plain-data form produced by a checkpoint round trip.
+func StateAs[T any](state StateReader, key string) (T, bool) {
+	var zero T
+	if state == nil {
+		return zero, false
+	}
+	value, ok := state.Get(key)
+	if !ok {
+		return zero, false
+	}
+	return decodeRuntimeValue[T](value)
+}
+
 // StreamWriter emits custom tool progress events.
 type StreamWriter interface {
 	Write(ctx context.Context, value json.RawMessage) error
@@ -112,7 +126,16 @@ type Runtime struct {
 	State        StateReader
 	Store        dastore.Store
 	Stream       StreamWriter
-	Context      any
+	Deps         any
+}
+
+// ResumeAs decodes a live or checkpoint-restored resume value as T.
+func ResumeAs[T any](runtime Runtime) (T, bool) { return decodeRuntimeValue[T](runtime.Resume) }
+
+// DepsAs returns typed application dependencies.
+func DepsAs[T any](runtime Runtime) (T, bool) {
+	typed, ok := runtime.Deps.(T)
+	return typed, ok
 }
 
 // Interrupt pauses the containing agent before a tool result is committed.
@@ -120,6 +143,30 @@ type Runtime struct {
 type Interrupt struct {
 	ID    string
 	Value any
+}
+
+// InterruptAs decodes a live or checkpoint-restored interrupt value as T.
+func InterruptAs[T any](interrupt Interrupt) (T, bool) {
+	return decodeRuntimeValue[T](interrupt.Value)
+}
+
+func decodeRuntimeValue[T any](value any) (T, bool) {
+	var zero T
+	if value == nil {
+		return zero, false
+	}
+	if typed, ok := value.(T); ok {
+		return typed, true
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return zero, false
+	}
+	var decoded T
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return zero, false
+	}
+	return decoded, true
 }
 
 // Handoff asks the enclosing orchestrator to continue at Destination after the

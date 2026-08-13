@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"io"
+	"iter"
 	"os"
 	"strconv"
 	"sync"
@@ -66,7 +67,7 @@ func (service *PredictableService) Stream(ctx context.Context, request damodel.R
 	if err != nil {
 		return nil, err
 	}
-	return &predictableStream{chunk: damodel.Chunk{
+	return &predictableStream{ctx: ctx, chunk: damodel.Chunk{
 		MessageDelta: response.Message,
 		Structured:   response.Structured,
 		Done:         true,
@@ -74,8 +75,13 @@ func (service *PredictableService) Stream(ctx context.Context, request damodel.R
 }
 
 type predictableStream struct {
+	ctx   context.Context
 	chunk damodel.Chunk
 	done  bool
+}
+
+func (stream *predictableStream) Chunks() iter.Seq2[damodel.Chunk, error] {
+	return damodel.Chunks(stream.ctx, stream)
 }
 
 func (stream *predictableStream) Next(ctx context.Context) (damodel.Chunk, error) {

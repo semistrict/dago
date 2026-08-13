@@ -97,6 +97,22 @@ interrupt, and handoff; strings become text results and other values become JSON
 Runtime schema details can be layered onto the generated schema with functional
 options such as `WithPropertyType`, `WithPropertyEnum`, `WithPropertyValue`,
 `WithPropertySchema`, `WithoutProperty`, or the lower-level `WithTransformSchema`.
+
+Typed adapters keep the state and checkpoint wire formats flexible without
+requiring application assertions. Use `dagent.Field` with a
+`dagent.FieldSpec[T]` to declare typed reducers, `datool.StateAs[T]` for tool
+state, and `dagent.DepsAs[T]` or `datool.DepsAs[T]` for application dependencies
+supplied through `Options.Deps`. `dagent.ResumeAs[T]` accepts both live Go values
+and checkpoint-restored plain JSON values. Structured results can be declared
+with `dagent.StructuredOutputFor[T]` and decoded with
+`dagent.StructuredAs[T]`; the latter validates against the schema derived from T.
+`damessage.MetadataAs[T]` and `damessage.SetMetadata` provide the same typed
+boundary for raw JSON metadata maps.
+
+Owned agent streams support `for event, err := range stream.Events()`. Model
+streams support `for chunk, err := range stream.Chunks()`. Both iterators close
+their stream on completion, error, or early loop exit; `Next` and `Close` remain
+available for explicit control.
 They receive the standard filesystem, compaction, repair, profile, and prompt-cache
 stack; optional skills, permissions, structured output, and approval rules are
 configured on the subagent specification. Precompiled `Runnable` subagents remain

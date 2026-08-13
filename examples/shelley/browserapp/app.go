@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/url"
 	"sort"
 	"strings"
@@ -2020,7 +2021,7 @@ func (model *uniqueIDModel) Stream(ctx context.Context, request damodel.Request)
 	if err != nil {
 		return nil, err
 	}
-	return &uniqueIDStream{Stream: stream, model: model}, nil
+	return &uniqueIDStream{Stream: stream, model: model, ctx: ctx}, nil
 }
 
 func (model *uniqueIDModel) rewrite(message *damessage.Message) {
@@ -2037,6 +2038,11 @@ func (model *uniqueIDModel) rewrite(message *damessage.Message) {
 type uniqueIDStream struct {
 	damodel.Stream
 	model *uniqueIDModel
+	ctx   context.Context
+}
+
+func (stream *uniqueIDStream) Chunks() iter.Seq2[damodel.Chunk, error] {
+	return damodel.Chunks(stream.ctx, stream)
 }
 
 func (stream *uniqueIDStream) Next(ctx context.Context) (damodel.Chunk, error) {

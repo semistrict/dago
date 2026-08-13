@@ -37,7 +37,7 @@ var (
 
 // Runtime is the immutable execution context exposed to middleware.
 type Runtime struct {
-	Context  any
+	Deps     any
 	Config   dacheckpoint.Config
 	Store    dastore.Store
 	Cache    dacache.Cache
@@ -181,6 +181,56 @@ type StateField struct {
 	Reduce            func(any, []any) (any, error)
 	Clone             func(any) any
 	SnapshotFrequency uint64
+}
+
+// FieldSpec is the typed construction form of StateField. Field erases T only
+// after installing the reducer and cloner adapters required by the graph.
+type FieldSpec[T any] struct {
+	Kind              FieldKind
+	Contract          string
+	Private           bool
+	Initial           func() T
+	Reduce            func(T, []T) (T, error)
+	Clone             func(T) T
+	SnapshotFrequency uint64
+}
+
+// Field constructs an erased state-field declaration from typed functions.
+func Field[T any](spec FieldSpec[T]) StateField {
+	field := StateField{
+		Kind: spec.Kind, Contract: spec.Contract, Private: spec.Private,
+		SnapshotFrequency: spec.SnapshotFrequency,
+	}
+	if spec.Initial != nil {
+		field.Initial = func() any { return spec.Initial() }
+	}
+	if spec.Reduce != nil {
+		field.Reduce = func(current any, updates []any) (any, error) {
+			typedCurrent, ok := decodeFieldValue[T](current)
+			if !ok {
+				return nil, fmt.Errorf("state field %q current value has type %T", spec.Contract, current)
+			}
+			typedUpdates := make([]T, len(updates))
+			for index, update := range updates {
+				var decoded bool
+				typedUpdates[index], decoded = decodeFieldValue[T](update)
+				if !decoded {
+					return nil, fmt.Errorf("state field %q update %d has type %T", spec.Contract, index, update)
+				}
+			}
+			return spec.Reduce(typedCurrent, typedUpdates)
+		}
+	}
+	if spec.Clone != nil {
+		field.Clone = func(value any) any {
+			typed, ok := decodeFieldValue[T](value)
+			if !ok {
+				panic(fmt.Sprintf("state field %q clone value has type %T", spec.Contract, value))
+			}
+			return spec.Clone(typed)
+		}
+	}
+	return field
 }
 
 func (field StateField) validate(name string) error {

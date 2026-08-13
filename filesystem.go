@@ -1117,9 +1117,9 @@ func filesystemApprovalHook(value dabackend.Backend, rules []FilesystemPermissio
 		if request.Runtime.Resume == nil {
 			return dagent.ToolBatchResponse{Interrupt: &dagent.Interrupt{ID: "filesystem_approval", Value: pending}}, nil
 		}
-		resume, ok := request.Runtime.Resume.(dagent.ApprovalResponse)
+		resume, ok := dagent.ResumeAs[dagent.ApprovalResponse](request.Runtime)
 		if !ok {
-			return dagent.ToolBatchResponse{}, fmt.Errorf("filesystem approval resume has type %T", request.Runtime.Resume)
+			return dagent.ToolBatchResponse{}, fmt.Errorf("filesystem approval resume cannot decode from type %T", request.Runtime.Resume)
 		}
 		calls := make([]damessage.ToolCall, 0, len(request.Calls))
 		var rejected []damessage.Message

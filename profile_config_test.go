@@ -14,7 +14,7 @@ func TestHarnessProfileConfigJSONAndYAMLRoundTrip(t *testing.T) {
 	enabled := false
 	description := "Focused worker."
 	config := HarnessProfileConfig{
-		BaseSystemPrompt: stringPointer("base"), SystemPromptSuffix: stringPointer("suffix"),
+		BaseSystemPrompt: new("base"), SystemPromptSuffix: new("suffix"),
 		ToolDescriptionOverrides: map[string]string{"ls": "List files."},
 		ExcludedTools:            []string{"z", "a", "a"}, ExcludedMiddleware: []string{"summary", "memory"},
 		GeneralPurposeSubagent: &GeneralPurposeSubagentProfile{Enabled: &enabled, Description: &description},
@@ -105,7 +105,7 @@ func TestHarnessProfileConfigRejectsInvalidAndRuntimeOnlyValues(t *testing.T) {
 
 func TestRegisterHarnessProfileConfig(t *testing.T) {
 	name := "config-registration-test"
-	if err := RegisterHarnessProfileConfig(name, HarnessProfileConfig{SystemPromptSuffix: stringPointer("configured")}); err != nil {
+	if err := RegisterHarnessProfileConfig(name, HarnessProfileConfig{SystemPromptSuffix: new("configured")}); err != nil {
 		t.Fatal(err)
 	}
 	profile, exists := LookupProfile(name)

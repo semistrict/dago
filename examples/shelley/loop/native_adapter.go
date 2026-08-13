@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	dmessage "github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
@@ -257,11 +256,11 @@ func purposedUsageFromNative(items []dmessage.PurposedUsage) []llm.PurposedUsage
 			Model:                    item.Model,
 			URL:                      item.URL,
 		}
-		if started, err := time.Parse(time.RFC3339Nano, item.StartedAt); err == nil {
-			usage.StartTime = &started
+		if !item.StartedAt.IsZero() {
+			usage.StartTime = new(item.StartedAt)
 		}
-		if finished, err := time.Parse(time.RFC3339Nano, item.FinishedAt); err == nil {
-			usage.EndTime = &finished
+		if !item.FinishedAt.IsZero() {
+			usage.EndTime = new(item.FinishedAt)
 		}
 		result = append(result, llm.PurposedUsage{Purpose: item.Purpose, Usage: usage})
 	}

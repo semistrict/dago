@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"mime"
 	"path"
 	"reflect"
@@ -344,12 +343,7 @@ func invokeSubagent(ctx context.Context, selected Subagent, invocation dagent.In
 		return dagent.Result{}, err
 	}
 	stream := streaming.Stream(ctx, invocation, 16)
-	defer stream.Close()
-	for {
-		event, err := stream.Next(ctx)
-		if err == io.EOF {
-			break
-		}
+	for event, err := range stream.Events() {
 		if err != nil {
 			failed := base
 			failed.Phase = dagent.ChildFailed
@@ -855,7 +849,7 @@ func SummarizationToolMiddleware(toolOptions SummarizationToolOptions) (dagent.M
 				return "Nothing to compact yet — conversation is within the token budget.", nil
 			}
 			view, compactErr := summarizeForModel(ctx, effective, previousEvent, dagent.Runtime{
-				Context: runtime.Context, TaskID: runtime.CallID,
+				Deps: runtime.Deps, TaskID: runtime.CallID,
 				Config: dacheckpoint.Config{ThreadID: runtime.ThreadID, Namespace: runtime.Namespace, CheckpointID: runtime.CheckpointID},
 			}, runtime.State, options, false)
 			if compactErr != nil {

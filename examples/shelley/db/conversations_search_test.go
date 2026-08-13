@@ -15,7 +15,7 @@ func TestSearchConversationsFTS(t *testing.T) {
 	defer cancel()
 
 	// Active conversation with a message mentioning "pelican"
-	active, err := db.CreateConversation(ctx, stringPtr("active-bird"), true, nil, nil, ConversationOptions{})
+	active, err := db.CreateConversation(ctx, new("active-bird"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("create active: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestSearchConversationsFTS(t *testing.T) {
 	}
 
 	// Archived conversation with a message mentioning "pelican" too
-	archived, err := db.CreateConversation(ctx, stringPtr("old-notes"), true, nil, nil, ConversationOptions{})
+	archived, err := db.CreateConversation(ctx, new("old-notes"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("create archived: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestSearchConversationsFTS(t *testing.T) {
 	}
 
 	// Decoy conversation with no matching content.
-	if _, err := db.CreateConversation(ctx, stringPtr("decoy"), true, nil, nil, ConversationOptions{}); err != nil {
+	if _, err := db.CreateConversation(ctx, new("decoy"), true, nil, nil, ConversationOptions{}); err != nil {
 		t.Fatalf("create decoy: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestSearchConversationsFTSStripsCitationMarkers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conv, err := db.CreateConversation(ctx, stringPtr("cited"), true, nil, nil, ConversationOptions{})
+	conv, err := db.CreateConversation(ctx, new("cited"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}

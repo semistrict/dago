@@ -244,13 +244,14 @@ func (r *SubagentRunner) waitForIdle(ctx context.Context, manager *ConversationM
 		if !manager.IsAgentWorking() {
 			return true, nil
 		}
-		if time.Now().After(deadline) {
+		if !time.Now().Before(deadline) {
 			return false, nil
 		}
+		wait := minDuration(pollInterval, time.Until(deadline))
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
-		case <-time.After(pollInterval):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -280,7 +281,7 @@ func (r *SubagentRunner) waitForResponse(ctx context.Context, manager *Conversat
 		default:
 		}
 
-		if time.Now().After(deadline) {
+		if !time.Now().Before(deadline) {
 			// Timeout reached: we return only a progress summary, not the final
 			// answer. Release the slot as a non-delivery; if the subagent has
 			// already finished (its onDone was suppressed while we held the
@@ -319,11 +320,12 @@ func (r *SubagentRunner) waitForResponse(ctx context.Context, manager *Conversat
 		}
 
 		// Wait before polling again
+		wait := minDuration(pollInterval, time.Until(deadline))
 		select {
 		case <-ctx.Done():
 			r.endWait(manager, conversationID, false)
 			return "", ctx.Err()
-		case <-time.After(pollInterval):
+		case <-time.After(wait):
 		}
 
 		// Don't hog the conversation manager mutex
@@ -333,6 +335,13 @@ func (r *SubagentRunner) waitForResponse(ctx context.Context, manager *Conversat
 		}
 		s.mu.Unlock()
 	}
+}
+
+func minDuration(left, right time.Duration) time.Duration {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 // dropStaleParentNotification removes any queued subagent-done notification

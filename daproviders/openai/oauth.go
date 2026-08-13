@@ -34,7 +34,7 @@ type OAuthTokens struct {
 	RefreshToken string    `json:"refresh_token"`
 	IDToken      string    `json:"id_token,omitempty"`
 	AccountID    string    `json:"account_id,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitzero"`
 }
 
 // OAuthOptions configures an authorization-code flow with PKCE.

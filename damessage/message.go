@@ -5,6 +5,7 @@ package damessage
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // Role identifies the source or control purpose of a message.
@@ -87,8 +88,8 @@ type Usage struct {
 	Model         string         `json:"model,omitempty"`
 	URL           string         `json:"url,omitempty"`
 	CostUSD       float64        `json:"cost_usd,omitempty"`
-	StartedAt     string         `json:"started_at,omitempty"`
-	FinishedAt    string         `json:"finished_at,omitempty"`
+	StartedAt     time.Time      `json:"started_at,omitzero"`
+	FinishedAt    time.Time      `json:"finished_at,omitzero"`
 }
 
 // PurposedUsage accounts for a nested model call made while producing another

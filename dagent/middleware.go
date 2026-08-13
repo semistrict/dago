@@ -109,7 +109,9 @@ func TodoListWithOptions(options TodoListOptions) Middleware {
 	)
 	return Middleware{
 		Name: "todo_list", SerializedName: "TodoListMiddleware", Tools: []datool.Tool{write},
-		Fields: map[string]StateField{"todos": {Kind: FieldLast, Contract: "dago.todos.v1", Clone: cloneTodoState}},
+		Fields: map[string]StateField{"todos": Field(FieldSpec[todoState]{
+			Kind: FieldLast, Contract: "dago.todos.v1", Clone: cloneTodoRecords,
+		})},
 		WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
 			if options.SystemPrompt != "" {
 				appendModelSystem(&request, options.SystemPrompt)
@@ -151,6 +153,8 @@ func TodoListWithOptions(options TodoListOptions) Middleware {
 	}
 }
 
+type todoState []map[string]any
+
 func todosToState(values []Todo) []map[string]any {
 	result := make([]map[string]any, len(values))
 	for index, item := range values {
@@ -180,7 +184,9 @@ func todosFromState(value any) []Todo {
 	return result
 }
 
-func cloneTodoState(value any) any { return todosToState(todosFromState(value)) }
+func cloneTodoRecords(value todoState) todoState {
+	return todoState(todosToState(todosFromState(value)))
+}
 
 func appendModelSystem(request *ModelRequest, text string) {
 	if request.SystemMessage == nil {
@@ -327,9 +333,9 @@ func HumanApproval(rules []ApprovalRule) Middleware {
 			}
 			return ToolBatchResponse{Interrupt: &Interrupt{ID: "human_approval", Value: value}}, nil
 		}
-		resume, ok := request.Runtime.Resume.(ApprovalResponse)
+		resume, ok := ResumeAs[ApprovalResponse](request.Runtime)
 		if !ok {
-			return ToolBatchResponse{}, fmt.Errorf("human approval resume has type %T", request.Runtime.Resume)
+			return ToolBatchResponse{}, fmt.Errorf("human approval resume cannot decode from type %T", request.Runtime.Resume)
 		}
 		calls := make([]damessage.ToolCall, 0, len(request.Calls))
 		var rejected []damessage.Message

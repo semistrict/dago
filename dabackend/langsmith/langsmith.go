@@ -181,8 +181,8 @@ func sliceRemoteRead(data dabackend.FileData, offset, limit int) (dabackend.Read
 		page += dabackend.SandboxReadTruncationMessage
 	}
 	data.Content = page
-	start, end := offset+1, offset+returnedLines
-	result := dabackend.ReadResult{Data: &data, TotalLines: intPointer(len(lines)), StartLine: &start, EndLine: &end}
+	end := offset + returnedLines
+	result := dabackend.ReadResult{Data: &data, TotalLines: new(len(lines)), StartLine: new(offset + 1), EndLine: new(end)}
 	if end < len(lines) {
 		result.NextOffset = &end
 	}
@@ -199,8 +199,6 @@ func validUTF8Prefix(value string, limit int) string {
 	}
 	return value
 }
-
-func intPointer(value int) *int { return &value }
 
 func (remote *Backend) Write(ctx context.Context, filePath, content string) (dabackend.WriteResult, error) {
 	filePath, err := cleanPath(filePath)

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -34,6 +35,58 @@ type Filesystem struct {
 	virtual     bool
 	maxFileSize int64
 	maxResults  int
+}
+
+type filesystemPath struct {
+	root *os.Root
+	name string
+	host string
+}
+
+func (value filesystemPath) Close() {
+	if value.root != nil {
+		_ = value.root.Close()
+	}
+}
+
+func (backend *Filesystem) openPath(value string) (filesystemPath, error) {
+	if strings.ContainsRune(value, '\x00') || value == "" {
+		return filesystemPath{}, fmt.Errorf("invalid path %q", value)
+	}
+	rootName, err := backend.currentRoot()
+	if err != nil {
+		return filesystemPath{}, err
+	}
+	if !backend.virtual {
+		host := value
+		if !filepath.IsAbs(host) {
+			host = filepath.Join(rootName, host)
+		}
+		return filesystemPath{host: filepath.Clean(host)}, nil
+	}
+	if strings.HasPrefix(value, "~") {
+		return filesystemPath{}, fmt.Errorf("invalid virtual path %q", value)
+	}
+	name := strings.TrimLeft(filepath.ToSlash(value), "/")
+	if name == "" {
+		name = "."
+	}
+	root, err := os.OpenRoot(rootName)
+	if err != nil {
+		return filesystemPath{}, fmt.Errorf("filesystem root: %w", err)
+	}
+	return filesystemPath{root: root, name: filepath.FromSlash(name)}, nil
+}
+
+func (backend *Filesystem) displayPath(value filesystemPath, name string) string {
+	if value.root == nil {
+		return name
+	}
+	clean := path.Clean(filepath.ToSlash(name))
+	if clean == "." {
+		return "/"
+	}
+	return "/" + strings.TrimPrefix(clean, "/")
 }
 
 func (backend *Filesystem) localHostRoot() string {
@@ -93,11 +146,22 @@ func NewFilesystem(options FilesystemOptions) (*Filesystem, error) {
 }
 
 func (backend *Filesystem) List(ctx context.Context, path string) (ListResult, error) {
-	resolved, err := backend.resolve(path, false)
+	opened, err := backend.openPath(path)
 	if err != nil {
 		return ListResult{}, err
 	}
-	entries, err := os.ReadDir(resolved)
+	defer opened.Close()
+	var entries []os.DirEntry
+	if opened.root != nil {
+		directory, openErr := opened.root.Open(opened.name)
+		if openErr != nil {
+			return ListResult{}, normalizeFileError(path, openErr)
+		}
+		entries, err = directory.ReadDir(-1)
+		_ = directory.Close()
+	} else {
+		entries, err = os.ReadDir(opened.host)
+	}
 	if err != nil {
 		return ListResult{}, normalizeFileError(path, err)
 	}
@@ -110,8 +174,11 @@ func (backend *Filesystem) List(ctx context.Context, path string) (ListResult, e
 		if err != nil {
 			return ListResult{}, err
 		}
-		name := filepath.Join(resolved, entry.Name())
-		display := backend.display(name)
+		name := filepath.Join(opened.name, entry.Name())
+		if opened.root == nil {
+			name = filepath.Join(opened.host, entry.Name())
+		}
+		display := backend.displayPath(opened, name)
 		if info.IsDir() {
 			display += "/"
 		}
@@ -122,11 +189,12 @@ func (backend *Filesystem) List(ctx context.Context, path string) (ListResult, e
 }
 
 func (backend *Filesystem) Read(ctx context.Context, path string, offset, limit int) (ReadResult, error) {
-	resolved, err := backend.resolve(path, false)
+	opened, err := backend.openPath(path)
 	if err != nil {
 		return ReadResult{}, err
 	}
-	data, info, err := readFile(ctx, resolved, backend.maxFileSize)
+	defer opened.Close()
+	data, info, err := readFilesystemFile(ctx, opened, backend.maxFileSize)
 	if err != nil {
 		return ReadResult{}, normalizeFileError(path, err)
 	}
@@ -145,28 +213,42 @@ func (backend *Filesystem) Write(ctx context.Context, path, content string) (Wri
 	if err := ctx.Err(); err != nil {
 		return WriteResult{}, err
 	}
-	resolved, err := backend.resolve(path, true)
+	opened, err := backend.openPath(path)
 	if err != nil {
 		return WriteResult{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+	defer opened.Close()
+	if opened.root != nil {
+		err = opened.root.MkdirAll(filepath.Dir(opened.name), 0o755)
+		if err == nil {
+			err = opened.root.WriteFile(opened.name, []byte(content), 0o644)
+		}
+	} else {
+		err = os.MkdirAll(filepath.Dir(opened.host), 0o755)
+		if err == nil {
+			err = os.WriteFile(opened.host, []byte(content), 0o644)
+		}
+	}
+	if err != nil {
 		return WriteResult{}, normalizeFileError(path, err)
 	}
-	if err := os.WriteFile(resolved, []byte(content), 0o644); err != nil {
-		return WriteResult{}, normalizeFileError(path, err)
+	name := opened.name
+	if opened.root == nil {
+		name = opened.host
 	}
-	return WriteResult{Path: backend.display(resolved)}, nil
+	return WriteResult{Path: backend.displayPath(opened, name)}, nil
 }
 
 func (backend *Filesystem) Edit(ctx context.Context, path, old, replacement string, replaceAll bool) (EditResult, error) {
 	if old == "" || old == replacement {
 		return EditResult{}, fmt.Errorf("edit %q: old string must be non-empty and differ from replacement", path)
 	}
-	resolved, err := backend.resolve(path, false)
+	opened, err := backend.openPath(path)
 	if err != nil {
 		return EditResult{}, err
 	}
-	data, info, err := readFile(ctx, resolved, backend.maxFileSize)
+	defer opened.Close()
+	data, info, err := readFilesystemFile(ctx, opened, backend.maxFileSize)
 	if err != nil {
 		return EditResult{}, normalizeFileError(path, err)
 	}
@@ -177,60 +259,85 @@ func (backend *Filesystem) Edit(ctx context.Context, path, old, replacement stri
 	if err != nil {
 		return EditResult{}, err
 	}
-	if err := os.WriteFile(resolved, []byte(updated), info.Mode().Perm()); err != nil {
+	if opened.root != nil {
+		err = opened.root.WriteFile(opened.name, []byte(updated), info.Mode().Perm())
+	} else {
+		err = os.WriteFile(opened.host, []byte(updated), info.Mode().Perm())
+	}
+	if err != nil {
 		return EditResult{}, normalizeFileError(path, err)
 	}
-	return EditResult{Path: backend.display(resolved), Occurrences: count}, nil
+	name := opened.name
+	if opened.root == nil {
+		name = opened.host
+	}
+	return EditResult{Path: backend.displayPath(opened, name), Occurrences: count}, nil
 }
 
 func (backend *Filesystem) Delete(ctx context.Context, path string) (DeleteResult, error) {
 	if err := ctx.Err(); err != nil {
 		return DeleteResult{}, err
 	}
-	resolved, err := backend.resolveDelete(path)
+	opened, err := backend.openPath(path)
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	root, rootErr := backend.currentRoot()
-	if rootErr != nil {
-		return DeleteResult{}, rootErr
-	}
-	if backend.virtual && resolved == root {
+	defer opened.Close()
+	if opened.root != nil && opened.name == "." {
 		return DeleteResult{}, fmt.Errorf("delete virtual root is not allowed")
 	}
-	if _, err := os.Lstat(resolved); err != nil {
+	if opened.root != nil {
+		_, err = opened.root.Lstat(opened.name)
+	} else {
+		_, err = os.Lstat(opened.host)
+	}
+	if err != nil {
 		return DeleteResult{}, normalizeFileError(path, err)
 	}
-	if err := os.RemoveAll(resolved); err != nil {
+	if opened.root != nil {
+		err = opened.root.RemoveAll(opened.name)
+	} else {
+		err = os.RemoveAll(opened.host)
+	}
+	if err != nil {
 		return DeleteResult{}, normalizeFileError(path, err)
 	}
-	return DeleteResult{Path: backend.display(resolved)}, nil
+	name := opened.name
+	if opened.root == nil {
+		name = opened.host
+	}
+	return DeleteResult{Path: backend.displayPath(opened, name)}, nil
 }
 
 func (backend *Filesystem) Glob(ctx context.Context, pattern, base string) (GlobResult, error) {
 	if base == "" {
 		base = "/"
 	}
-	root, err := backend.resolve(base, false)
+	opened, err := backend.openPath(base)
 	if err != nil {
 		return GlobResult{}, err
 	}
+	defer opened.Close()
 	matcher, err := compileGlob(pattern)
 	if err != nil {
 		return GlobResult{}, err
 	}
 	result := GlobResult{}
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	walkRoot := opened.host
+	if opened.root != nil {
+		walkRoot = filepath.ToSlash(opened.name)
+	}
+	err = walkFilesystem(opened, walkRoot, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if path == root {
+		if filePath == walkRoot {
 			return nil
 		}
-		relative, _ := filepath.Rel(root, path)
+		relative, _ := filepath.Rel(walkRoot, filePath)
 		if !matcher.MatchString(filepath.ToSlash(relative)) {
 			return nil
 		}
@@ -242,7 +349,7 @@ func (backend *Filesystem) Glob(ctx context.Context, pattern, base string) (Glob
 		if err != nil {
 			return err
 		}
-		display := backend.display(path)
+		display := backend.displayPath(opened, filePath)
 		if info.IsDir() {
 			display += "/"
 		}
@@ -264,10 +371,11 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 	if base == "" {
 		base = "/"
 	}
-	root, err := backend.resolve(base, false)
+	opened, err := backend.openPath(base)
 	if err != nil {
 		return GrepResult{}, err
 	}
+	defer opened.Close()
 	var matcher *regexp.Regexp
 	if options.Glob != "" {
 		matcher, err = compileIncludeGlob(options.Glob)
@@ -280,7 +388,11 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 		limit = backend.maxResults
 	}
 	result := GrepResult{}
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	walkRoot := opened.host
+	if opened.root != nil {
+		walkRoot = filepath.ToSlash(opened.name)
+	}
+	err = walkFilesystem(opened, walkRoot, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -290,11 +402,12 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 		if entry.IsDir() {
 			return nil
 		}
-		relative, _ := filepath.Rel(root, path)
+		relative, _ := filepath.Rel(walkRoot, filePath)
 		if matcher != nil && !matchIncludeGlob(matcher, options.Glob, filepath.ToSlash(relative)) {
 			return nil
 		}
-		data, _, err := readFile(ctx, path, backend.maxFileSize)
+		file := filesystemPath{root: opened.root, name: filepath.FromSlash(filePath), host: filePath}
+		data, _, err := readFilesystemFile(ctx, file, backend.maxFileSize)
 		if err != nil || !utf8.Valid(data) {
 			return nil
 		}
@@ -311,7 +424,7 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 				result.Truncated = true
 				return fs.SkipAll
 			}
-			item := GrepMatch{Path: backend.display(path), Line: index + 1, Text: lines[index]}
+			item := GrepMatch{Path: backend.displayPath(opened, filePath), Line: index + 1, Text: lines[index]}
 			if options.ContextLines > 0 {
 				for before := max(0, index-options.ContextLines); before < index; before++ {
 					if !matched[before] {
@@ -340,44 +453,6 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 	return result, nil
 }
 
-func (backend *Filesystem) resolveDelete(value string) (string, error) {
-	if strings.ContainsRune(value, '\x00') || value == "" {
-		return "", fmt.Errorf("invalid path %q", value)
-	}
-	root, err := backend.currentRoot()
-	if err != nil {
-		return "", err
-	}
-	if !backend.virtual {
-		if filepath.IsAbs(value) {
-			return filepath.Clean(value), nil
-		}
-		return filepath.Join(root, value), nil
-	}
-	if strings.HasPrefix(value, "~") {
-		return "", fmt.Errorf("invalid virtual path %q", value)
-	}
-	for _, segment := range strings.FieldsFunc(filepath.ToSlash(value), func(r rune) bool { return r == '/' }) {
-		if segment == ".." {
-			return "", fmt.Errorf("path traversal is not allowed: %q", value)
-		}
-	}
-	clean := filepath.Clean("/" + filepath.ToSlash(value))
-	candidate := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(clean, "/")))
-	if candidate == root {
-		return candidate, nil
-	}
-	parent, err := filepath.EvalSymlinks(filepath.Dir(candidate))
-	if err != nil {
-		return "", normalizeFileError(value, err)
-	}
-	relative, err := filepath.Rel(root, parent)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes virtual root", value)
-	}
-	return filepath.Join(parent, filepath.Base(candidate)), nil
-}
-
 func (backend *Filesystem) Upload(ctx context.Context, uploads []Upload) []UploadResult {
 	result := make([]UploadResult, len(uploads))
 	for index, upload := range uploads {
@@ -386,13 +461,21 @@ func (backend *Filesystem) Upload(ctx context.Context, uploads []Upload) []Uploa
 			result[index].Error = err.Error()
 			continue
 		}
-		resolved, err := backend.resolve(upload.Path, true)
+		opened, err := backend.openPath(upload.Path)
 		if err == nil {
-			err = os.MkdirAll(filepath.Dir(resolved), 0o755)
+			if opened.root != nil {
+				err = opened.root.MkdirAll(filepath.Dir(opened.name), 0o755)
+				if err == nil {
+					err = opened.root.WriteFile(opened.name, upload.Content, 0o644)
+				}
+			} else {
+				err = os.MkdirAll(filepath.Dir(opened.host), 0o755)
+				if err == nil {
+					err = os.WriteFile(opened.host, upload.Content, 0o644)
+				}
+			}
 		}
-		if err == nil {
-			err = os.WriteFile(resolved, upload.Content, 0o644)
-		}
+		opened.Close()
 		if err != nil {
 			result[index].Error = normalizedCode(err)
 		}
@@ -408,18 +491,28 @@ func (backend *Filesystem) Download(ctx context.Context, paths []string) []Downl
 			result[index].Error = err.Error()
 			continue
 		}
-		resolved, err := backend.resolve(path, false)
+		opened, err := backend.openPath(path)
 		var info os.FileInfo
 		if err == nil {
-			info, err = os.Stat(resolved)
+			if opened.root != nil {
+				info, err = opened.root.Stat(opened.name)
+			} else {
+				info, err = os.Stat(opened.host)
+			}
 		}
 		if err == nil && info.IsDir() {
 			result[index].Error = "is_directory"
+			opened.Close()
 			continue
 		}
 		if err == nil {
-			result[index].Content, err = os.ReadFile(resolved)
+			if opened.root != nil {
+				result[index].Content, err = opened.root.ReadFile(opened.name)
+			} else {
+				result[index].Content, err = os.ReadFile(opened.host)
+			}
 		}
+		opened.Close()
 		if err != nil {
 			result[index].Error = normalizedCode(err)
 		}
@@ -427,105 +520,17 @@ func (backend *Filesystem) Download(ctx context.Context, paths []string) []Downl
 	return result
 }
 
-func (backend *Filesystem) resolve(value string, allowMissing bool) (string, error) {
-	if strings.ContainsRune(value, '\x00') || value == "" {
-		return "", fmt.Errorf("invalid path %q", value)
-	}
-	root, err := backend.currentRoot()
-	if err != nil {
-		return "", err
-	}
-	if !backend.virtual {
-		if filepath.IsAbs(value) {
-			return filepath.Clean(value), nil
-		}
-		return filepath.Join(root, value), nil
-	}
-	if strings.HasPrefix(value, "~") {
-		return "", fmt.Errorf("invalid virtual path %q", value)
-	}
-	for _, segment := range strings.FieldsFunc(filepath.ToSlash(value), func(r rune) bool { return r == '/' }) {
-		if segment == ".." {
-			return "", fmt.Errorf("path traversal is not allowed: %q", value)
-		}
-	}
-	clean := filepath.Clean("/" + filepath.ToSlash(value))
-	candidate := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(clean, "/")))
-	if allowMissing {
-		if info, statErr := os.Lstat(candidate); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(candidate)
-			if err != nil {
-				return "", normalizeFileError(value, err)
-			}
-			candidate = resolved
-			relative, relErr := filepath.Rel(root, candidate)
-			if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-				return "", fmt.Errorf("path %q escapes virtual root", value)
-			}
-			return candidate, nil
-		}
-		if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
-			candidate = resolved
-			relative, relErr := filepath.Rel(root, candidate)
-			if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-				return "", fmt.Errorf("path %q escapes virtual root", value)
-			}
-			return candidate, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", normalizeFileError(value, err)
-		}
-	}
-	verified := candidate
-	if allowMissing {
-		verified = filepath.Dir(candidate)
-	}
-	for {
-		resolved, err := filepath.EvalSymlinks(verified)
-		if err == nil {
-			if allowMissing {
-				relative, _ := filepath.Rel(verified, candidate)
-				candidate = filepath.Join(resolved, relative)
-			} else {
-				candidate = resolved
-			}
-			break
-		}
-		if !allowMissing || !errors.Is(err, os.ErrNotExist) {
-			return "", normalizeFileError(value, err)
-		}
-		parent := filepath.Dir(verified)
-		if parent == verified {
-			return "", err
-		}
-		verified = parent
-	}
-	relative, err := filepath.Rel(root, candidate)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes virtual root", value)
-	}
-	return candidate, nil
-}
-
-func (backend *Filesystem) display(path string) string {
-	if !backend.virtual {
-		return path
-	}
-	root, rootErr := backend.currentRoot()
-	if rootErr != nil {
-		return path
-	}
-	relative, err := filepath.Rel(root, path)
-	if err != nil || relative == "." {
-		return "/"
-	}
-	return "/" + filepath.ToSlash(relative)
-}
-
-func readFile(ctx context.Context, path string, maxSize int64) ([]byte, os.FileInfo, error) {
+func readFilesystemFile(ctx context.Context, file filesystemPath, maxSize int64) ([]byte, os.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	info, err := os.Stat(path)
+	var info os.FileInfo
+	var err error
+	if file.root != nil {
+		info, err = file.root.Stat(file.name)
+	} else {
+		info, err = os.Stat(file.host)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -535,8 +540,28 @@ func readFile(ctx context.Context, path string, maxSize int64) ([]byte, os.FileI
 	if info.Size() > maxSize {
 		return nil, nil, fmt.Errorf("file exceeds %d bytes", maxSize)
 	}
-	data, err := os.ReadFile(path)
+	var data []byte
+	if file.root != nil {
+		opened, openErr := file.root.Open(file.name)
+		if openErr != nil {
+			return nil, nil, openErr
+		}
+		data, err = io.ReadAll(io.LimitReader(opened, maxSize+1))
+		_ = opened.Close()
+	} else {
+		data, err = os.ReadFile(file.host)
+	}
+	if err == nil && int64(len(data)) > maxSize {
+		return nil, nil, fmt.Errorf("file exceeds %d bytes", maxSize)
+	}
 	return data, info, err
+}
+
+func walkFilesystem(file filesystemPath, root string, walk fs.WalkDirFunc) error {
+	if file.root != nil {
+		return fs.WalkDir(file.root.FS(), root, walk)
+	}
+	return filepath.WalkDir(root, walk)
 }
 
 func splitLines(value string) []string {

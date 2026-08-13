@@ -1,13 +1,16 @@
 # Security boundaries
 
-Filesystem backends normalize absolute virtual paths and reject traversal and
-symlink escape. Ordered allow, deny, and ask rules are enforced in code before tool
-execution. Delete rules must cover the target and descendants. Prompts and tool names
-cannot grant authority.
+The local filesystem backend performs confined operations through `os.Root`.
+Traversal and symlink escapes are rejected by the rooted operating-system API rather
+than path-prefix checks. Ordered allow, deny, and ask rules are enforced in code
+before tool execution. Delete rules must cover the target and descendants. Prompts
+and tool names cannot grant authority.
 
 `dabackend.LocalShell` executes trusted host commands and is not a sandbox. Applications
 must opt into it explicitly and should prefer Docker or a remote sandbox for untrusted
-work. Command output and duration are bounded, but those limits are not isolation.
+work. Its inherited file methods use `os.Root`, but `os.Root` cannot confine an
+arbitrary subprocess: shell commands may use absolute paths or leave the working
+directory. Command output and duration are bounded, but those limits are not isolation.
 
 `dabackend/docker` creates and owns a container from an explicitly selected local
 image. Its defaults disable networking, drop all Linux capabilities, enable

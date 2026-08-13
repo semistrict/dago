@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -387,7 +388,7 @@ func (model *agentBenchmarkModel) Stream(ctx context.Context, request damodel.Re
 	if err != nil {
 		return nil, err
 	}
-	return &agentBenchmarkStream{chunk: damodel.Chunk{MessageDelta: response.Message, Done: true}}, nil
+	return &agentBenchmarkStream{ctx: ctx, chunk: damodel.Chunk{MessageDelta: response.Message, Done: true}}, nil
 }
 
 func (model *agentBenchmarkModel) release() {
@@ -428,8 +429,13 @@ func agentBenchmarkLastHumanText(request damodel.Request) string {
 }
 
 type agentBenchmarkStream struct {
+	ctx   context.Context
 	chunk damodel.Chunk
 	done  bool
+}
+
+func (stream *agentBenchmarkStream) Chunks() iter.Seq2[damodel.Chunk, error] {
+	return damodel.Chunks(stream.ctx, stream)
 }
 
 func (stream *agentBenchmarkStream) Next(context.Context) (damodel.Chunk, error) {

@@ -5,6 +5,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Surface | Status | Evidence or boundary |
 |---|---|---|
 | Explicit model and custom tool construction | verified | `dagent/agent_test.go`, `dago_test.go` |
+| Typed state fields, reads, dependencies, metadata, resume, and structured output | verified | typed adapter, checkpoint-shaped decode, approval-resume, metadata, and schema-validation tests |
 | Middleware order and wrapper nesting | verified | `dagent/agent_test.go` |
 | Parallel tool calls and deterministic reduction | verified | agent and graph tests |
 | Provider and synthetic-tool structured output | verified | schema validation and retry tests |
@@ -16,6 +17,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Safe checkpoint payload subset | verified | serde round trips and rejection tests |
 | Bidirectional Python payload fixtures | verified | SQLite and PostgreSQL are generated, read, and continued in both directions |
 | State, memory, store, filesystem, composite, local shell | verified | shared backend and thread-scoped delta-state tests |
+| Rooted local filesystem confinement | verified | `os.Root` operations plus traversal, symlink-escape, write, delete, glob, grep, upload, and download tests |
 | LangSmith remote sandbox | verified | SDK adapter tests; live test is credential-gated |
 | Docker local sandbox | implemented | hardened creation, workspace confinement, execution, cancellation restart, cleanup, and opt-in live-container tests |
 | Context Hub persistent agent repository | verified | lazy pull, commit chaining, linked entries, cache recovery, batch transfer, and LangSmith SDK transport tests |
@@ -25,6 +27,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
 | Skills and memory prompt injection | verified | safe YAML, deterministic discovery, warning, ordering, and prompt tests |
 | Provider and harness profiles | verified | built-in Anthropic and Nemotron harness overlays plus OpenAI/NVIDIA/OpenRouter construction defaults; active repair, retry, budget, policy, entity, follow-up, and final-answer contracts; additive registration and override tests |
 | Token/update/task/interrupt/custom streaming | verified | graph, agent, and provider stream tests |
+| Agent-event and model-chunk iterators | verified | completion, terminal-error, and early-break closure tests while retaining explicit `Next`/`Close` |
 | API-key and subscription OAuth model access | verified | request, PKCE, refresh, persistence, and stream tests |
 | Tracing/evaluation integration | deferred | optional; not needed by the local execution contract |
 | Asynchronous hosted-subagent lifecycle and durable task state | verified | provider-neutral runner and five management-tool tests |

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -363,6 +364,10 @@ type loggingStream struct {
 	started time.Time
 	usage   *dmessage.Usage
 	done    bool
+}
+
+func (stream *loggingStream) Chunks() iter.Seq2[damodel.Chunk, error] {
+	return damodel.Chunks(stream.ctx, stream)
 }
 
 func (stream *loggingStream) Next(ctx context.Context) (damodel.Chunk, error) {

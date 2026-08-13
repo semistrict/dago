@@ -25,10 +25,10 @@ func (usage Usage) Add(other Usage) Usage {
 	} else if other.URL != "" && result.URL != other.URL {
 		result.URL = ""
 	}
-	if result.StartedAt == "" || (other.StartedAt != "" && other.StartedAt < result.StartedAt) {
+	if result.StartedAt.IsZero() || (!other.StartedAt.IsZero() && other.StartedAt.Before(result.StartedAt)) {
 		result.StartedAt = other.StartedAt
 	}
-	if other.FinishedAt > result.FinishedAt {
+	if other.FinishedAt.After(result.FinishedAt) {
 		result.FinishedAt = other.FinishedAt
 	}
 	return result

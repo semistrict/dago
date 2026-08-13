@@ -15,7 +15,7 @@ func nativePurposedUsage(purpose string, chat damodel.Chat, tokens *dmessage.Usa
 	profile := chat.Profile()
 	usage.Provider = profile.Provider
 	usage.Model = profile.Model
-	usage.StartedAt = started.UTC().Format(time.RFC3339Nano)
-	usage.FinishedAt = finished.UTC().Format(time.RFC3339Nano)
+	usage.StartedAt = started.UTC()
+	usage.FinishedAt = finished.UTC()
 	return []dmessage.PurposedUsage{{Purpose: purpose, Usage: usage}}
 }

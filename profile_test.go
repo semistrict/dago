@@ -24,7 +24,7 @@ func TestProfileRegistrationMergeToolOverrideAndExclusion(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RegisterProfile(Profile{Name: name, Kind: ProfileHarness, SystemPromptSuffix: stringPointer("later suffix")}); err != nil {
+	if err := RegisterProfile(Profile{Name: name, Kind: ProfileHarness, SystemPromptSuffix: new("later suffix")}); err != nil {
 		t.Fatal(err)
 	}
 	kept := datool.Func{Spec: datool.Definition{Name: "kept", Description: "old", InputSchema: json.RawMessage(`{"type":"object"}`)}, Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
@@ -177,16 +177,15 @@ func TestProfilesResolveFromModelAndMergeProviderWithExactModel(t *testing.T) {
 	modelID := "profile-auto-model"
 	if err := RegisterProfile(Profile{
 		Name: provider, Kind: ProfileHarness,
-		BaseSystemPrompt: stringPointer("provider base"), SystemPromptSuffix: stringPointer("provider suffix"),
+		BaseSystemPrompt: new("provider base"), SystemPromptSuffix: new("provider suffix"),
 		ExcludeTools: []string{"glob"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	disabled := false
 	if err := RegisterProfile(Profile{
 		Name: provider + ":" + modelID, Kind: ProfileHarness,
-		SystemPromptSuffix: stringPointer("model suffix"), ExcludeTools: []string{"grep"},
-		GeneralPurpose: &GeneralPurposeSubagentProfile{Enabled: &disabled},
+		SystemPromptSuffix: new("model suffix"), ExcludeTools: []string{"grep"},
+		GeneralPurpose: &GeneralPurposeSubagentProfile{Enabled: new(false)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -221,9 +220,7 @@ func TestProfilePromptPreservesExplicitEmptySlots(t *testing.T) {
 	if got := applyProfilePrompt(Profile{BaseSystemPrompt: &base, SystemPromptSuffix: &empty}, "", "ignored"); got != "base\n\n" {
 		t.Fatalf("empty suffix = %q", got)
 	}
-	if got := applyProfilePrompt(Profile{SystemPromptSuffix: stringPointer("suffix")}, "user", ""); got != "user\n\nsuffix" {
+	if got := applyProfilePrompt(Profile{SystemPromptSuffix: new("suffix")}, "user", ""); got != "user\n\nsuffix" {
 		t.Fatalf("user and suffix = %q", got)
 	}
 }
-
-func stringPointer(value string) *string { return &value }

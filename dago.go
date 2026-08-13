@@ -61,7 +61,7 @@ type Options struct {
 	RetainThreadState bool
 	Store             dastore.Store
 	Cache             dacache.Cache
-	Context           any
+	Deps              any
 	RecursionLimit    int
 	MaxConcurrency    int
 	FailOnToolError   bool
@@ -236,7 +236,7 @@ func New(options Options) (*DeepAgent, error) {
 		Name: options.Name, Model: options.Model, Tools: options.Tools, SystemPrompt: options.SystemPrompt,
 		SystemMessage: options.SystemMessage,
 		Middleware:    middleware, StateFields: options.StateFields, StructuredOutput: options.StructuredOutput,
-		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Context: options.Context,
+		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 		RetainThreadState: options.RetainThreadState,
 		RecursionLimit:    options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
@@ -365,7 +365,7 @@ func buildDeclarativeSubagents(options Options, inheritedTools []datool.Tool) ([
 			Name: spec.Name, Model: chat, Tools: tools,
 			SystemPrompt: applyProfilePrompt(profile, "", spec.SystemPrompt), Middleware: middleware,
 			StateFields: options.StateFields, StructuredOutput: spec.StructuredOutput, Saver: options.Saver,
-			Store: options.Store, Cache: options.Cache, Context: options.Context,
+			Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 			RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 			FailOnToolError: options.FailOnToolError,
 			Metadata:        mergeAgentMetadata(options.Metadata, spec.Name), Tags: options.Tags, Debug: options.Debug,
@@ -489,7 +489,7 @@ func buildGeneralSubagent(options Options, filesystem dagent.Middleware, profile
 	return dagent.New(dagent.Options{
 		Name: "general-purpose", Model: options.Model, Tools: options.Tools,
 		SystemPrompt: prompt, Middleware: middleware, StateFields: options.StateFields,
-		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Context: options.Context,
+		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
 		Metadata:        mergeAgentMetadata(options.Metadata, "general-purpose"), Tags: options.Tags, Debug: options.Debug,

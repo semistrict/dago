@@ -54,7 +54,7 @@ type Command struct {
 
 // Runtime contains task-scoped values.
 type Runtime struct {
-	Context  any
+	Deps     any
 	Config   dacheckpoint.Config
 	Store    dastore.Store
 	Cache    dacache.Cache
@@ -134,7 +134,7 @@ type CompileOptions struct {
 	RetainThreadState bool
 	RecursionLimit    int
 	MaxConcurrency    int
-	Context           any
+	Deps              any
 	Store             dastore.Store
 	Cache             dacache.Cache
 	Writer            EventWriter
@@ -372,7 +372,7 @@ func (graph *Compiled) executeTasks(
 				values[key] = value
 			}
 			runtime := Runtime{
-				Context: graph.options.Context, Config: config,
+				Deps: graph.options.Deps, Config: config,
 				Store: graph.options.Store, Cache: graph.options.Cache,
 				Previous: previous, TaskID: tasks[index].id, Resume: resume,
 				Writer: graph.options.Writer,

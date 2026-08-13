@@ -21,7 +21,7 @@ func TestConversationListParticipants(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
 
-	conversation, err := database.CreateConversation(context.Background(), strPtr("participants"), true, nil, nil, db.ConversationOptions{})
+	conversation, err := database.CreateConversation(context.Background(), new("participants"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

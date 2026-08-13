@@ -1,6 +1,11 @@
 package damessage
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestAggregateUsageIncludesNestedCalls(t *testing.T) {
 	direct := Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5, CostUSD: 0.2, InputDetails: map[string]int{"cached": 1}, Provider: "openai", Model: "gpt"}
@@ -32,5 +37,21 @@ func TestLastUsageAndToolUseCounts(t *testing.T) {
 	counts := ToolUseCounts(messages)
 	if counts["bash"] != 2 || counts["read_file"] != 1 {
 		t.Fatalf("ToolUseCounts() = %#v", counts)
+	}
+}
+
+func TestUsageTimeRangeAndZeroOmission(t *testing.T) {
+	started := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	finished := started.Add(time.Minute)
+	combined := (Usage{StartedAt: started.Add(time.Second), FinishedAt: started}).Add(Usage{StartedAt: started, FinishedAt: finished})
+	if combined.StartedAt != started || combined.FinishedAt != finished {
+		t.Fatalf("Add() time range = %s to %s", combined.StartedAt, combined.FinishedAt)
+	}
+	raw, err := json.Marshal(Usage{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "started_at") || strings.Contains(string(raw), "finished_at") {
+		t.Fatalf("zero usage timestamps were not omitted: %s", raw)
 	}
 }

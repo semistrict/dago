@@ -23,7 +23,7 @@ func TestConversationStreamFlushesEarlyHeartbeat(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
 
-	conv, err := database.CreateConversation(context.Background(), strPtr("early-hb"), true, nil, nil, db.ConversationOptions{})
+	conv, err := database.CreateConversation(context.Background(), new("early-hb"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

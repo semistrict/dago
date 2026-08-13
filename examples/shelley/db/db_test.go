@@ -163,7 +163,7 @@ func TestDB_WithTx(t *testing.T) {
 	err := db.WithTx(ctx, func(q *generated.Queries) error {
 		_, err := q.CreateConversation(ctx, generated.CreateConversationParams{
 			ConversationID: "test-conv-1",
-			Slug:           stringPtr("test-slug"),
+			Slug:           new("test-slug"),
 			UserInitiated:  true,
 			Model:          nil,
 		})
@@ -189,10 +189,6 @@ func TestDB_WithTx(t *testing.T) {
 }
 
 // stringPtr returns a pointer to the given string
-func stringPtr(s string) *string {
-	return &s
-}
-
 func TestDB_ForeignKeyConstraints(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -274,7 +270,7 @@ func TestNewTestDB_IsolatedCopies(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := db1.CreateConversation(ctx, stringPtr("only-in-db1"), true, nil, nil, ConversationOptions{})
+	_, err := db1.CreateConversation(ctx, new("only-in-db1"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create conversation in first test db: %v", err)
 	}
@@ -315,7 +311,7 @@ func TestDropMessageTypeCheckMigrationPreservesSearch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conv, err := database.CreateConversation(ctx, stringPtr("migration-fts"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("migration-fts"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
@@ -564,7 +560,7 @@ func TestCreateMessageWithExplicitCreatedAt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conv, err := database.CreateConversation(ctx, stringPtr("created-at"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("created-at"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
@@ -611,7 +607,7 @@ func TestCreateMessages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conv, err := database.CreateConversation(ctx, stringPtr("bulk"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("bulk"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
@@ -670,7 +666,7 @@ func TestCreateMessages(t *testing.T) {
 	}
 
 	// Mixed conversations are rejected.
-	other, err := database.CreateConversation(ctx, stringPtr("other"), true, nil, nil, ConversationOptions{})
+	other, err := database.CreateConversation(ctx, new("other"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation other: %v", err)
 	}
@@ -693,7 +689,7 @@ func TestCreateMessageFoldsAgentWorkingAndTimestamp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conv, err := database.CreateConversation(ctx, stringPtr("fold"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("fold"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}

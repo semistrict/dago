@@ -174,7 +174,7 @@ func TestStoreBackendResolvesNamespaceAndStorePerRuntime(t *testing.T) {
 		if runtime == nil {
 			return nil, fmt.Errorf("runtime is required")
 		}
-		user, ok := runtime.Context.(string)
+		user, ok := DepsAs[string](runtime)
 		if !ok || user == "" {
 			return nil, fmt.Errorf("runtime user is required")
 		}
@@ -187,11 +187,11 @@ func TestStoreBackendResolvesNamespaceAndStorePerRuntime(t *testing.T) {
 		t.Fatal("runtime-dependent Store.Write succeeded outside a bound run")
 	}
 
-	alice, err := BindRuntime(context.Background(), persistent, nil, Runtime{Context: "alice", Store: values})
+	alice, err := BindRuntime(context.Background(), persistent, nil, Runtime{Deps: "alice", Store: values})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := BindRuntime(context.Background(), persistent, nil, Runtime{Context: "bob", Store: values})
+	bob, err := BindRuntime(context.Background(), persistent, nil, Runtime{Deps: "bob", Store: values})
 	if err != nil {
 		t.Fatal(err)
 	}

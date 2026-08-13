@@ -19,7 +19,7 @@ func TestGetLatestActionableMessageIgnoresSlugMarkers(t *testing.T) {
 	defer database.Close()
 	ctx := context.Background()
 
-	conv, err := database.CreateConversation(ctx, stringPtr("latest-vs-slug"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("latest-vs-slug"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestSlugMarkerDoesNotBreakWarningRun(t *testing.T) {
 	defer database.Close()
 	ctx := context.Background()
 
-	conv, err := database.CreateConversation(ctx, stringPtr("warn-vs-slug"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("warn-vs-slug"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestListMessagesTailCountsVisibleMessages(t *testing.T) {
 	defer database.Close()
 	ctx := context.Background()
 
-	conv, err := database.CreateConversation(ctx, stringPtr("tail-vs-slug"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("tail-vs-slug"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestForkGenerationIgnoresSlugMarker(t *testing.T) {
 	defer database.Close()
 	ctx := context.Background()
 
-	conv, err := database.CreateConversation(ctx, stringPtr("fork-gen-vs-slug"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("fork-gen-vs-slug"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

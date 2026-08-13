@@ -12,6 +12,7 @@ import (
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/datool"
 )
 
@@ -115,6 +116,24 @@ func TestNemotronModelRateLimitRetry(t *testing.T) {
 	if err == nil || calls != 1 {
 		t.Fatalf("calls = %d, error = %v", calls, err)
 	}
+}
+
+func TestNemotronModelRateLimitRetryWithFakeTime(t *testing.T) {
+	modeltest.TestWithFakeTime(t, func(t *testing.T) {
+		middleware := NemotronModelRateLimitRetry(time.Hour)
+		calls := 0
+		started := time.Now()
+		_, err := middleware.WrapModelCall(t.Context(), dagent.ModelRequest{}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
+			calls++
+			if calls == 1 {
+				return dagent.ModelResponse{}, retryStatusError{status: 429}
+			}
+			return dagent.ModelResponse{}, nil
+		})
+		if err != nil || calls != 2 || time.Since(started) != time.Hour {
+			t.Fatalf("calls=%d elapsed=%s error=%v", calls, time.Since(started), err)
+		}
+	})
 }
 
 func TestNemotronModelRateLimitRetryHonorsCancellation(t *testing.T) {

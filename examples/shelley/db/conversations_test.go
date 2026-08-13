@@ -25,7 +25,7 @@ func TestConversationService_Create(t *testing.T) {
 	}{
 		{
 			name: "with slug",
-			slug: stringPtr("test-conversation"),
+			slug: new("test-conversation"),
 		},
 		{
 			name: "without slug",
@@ -75,7 +75,7 @@ func TestConversationService_GetByID(t *testing.T) {
 	defer cancel()
 
 	// Create a test conversation
-	created, err := db.CreateConversation(ctx, stringPtr("test-conversation"), true, nil, nil, ConversationOptions{})
+	created, err := db.CreateConversation(ctx, new("test-conversation"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestConversationService_GetBySlug(t *testing.T) {
 	defer cancel()
 
 	// Create a test conversation with slug
-	created, err := db.CreateConversation(ctx, stringPtr("test-slug"), true, nil, nil, ConversationOptions{})
+	created, err := db.CreateConversation(ctx, new("test-slug"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestConversationService_List(t *testing.T) {
 
 	// Create multiple test conversations
 	for i := range 5 {
-		slug := stringPtr("conversation-" + string(rune('a'+i)))
+		slug := new("conversation-" + string(rune('a'+i)))
 		_, err := db.CreateConversation(ctx, slug, true, nil, nil, ConversationOptions{})
 		if err != nil {
 			t.Fatalf("Failed to create test conversation %d: %v", i, err)
@@ -211,7 +211,7 @@ func TestConversationService_Search(t *testing.T) {
 	// Create test conversations with different slugs
 	testCases := []string{"project-alpha", "project-beta", "work-task", "personal-note"}
 	for _, slug := range testCases {
-		_, err := db.CreateConversation(ctx, stringPtr(slug), true, nil, nil, ConversationOptions{})
+		_, err := db.CreateConversation(ctx, new(slug), true, nil, nil, ConversationOptions{})
 		if err != nil {
 			t.Fatalf("Failed to create test conversation with slug %s: %v", slug, err)
 		}
@@ -245,7 +245,7 @@ func TestConversationService_Touch(t *testing.T) {
 	defer cancel()
 
 	// Create a test conversation
-	created, err := db.CreateConversation(ctx, stringPtr("test-conversation"), true, nil, nil, ConversationOptions{})
+	created, err := db.CreateConversation(ctx, new("test-conversation"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestConversationService_Delete(t *testing.T) {
 	defer cancel()
 
 	// Create a test conversation
-	created, err := db.CreateConversation(ctx, stringPtr("test-conversation"), true, nil, nil, ConversationOptions{})
+	created, err := db.CreateConversation(ctx, new("test-conversation"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestConversationService_Count(t *testing.T) {
 
 	// Create test conversations
 	for i := range 3 {
-		_, err := db.CreateConversation(ctx, stringPtr("conversation-"+string(rune('a'+i))), true, nil, nil, ConversationOptions{})
+		_, err := db.CreateConversation(ctx, new("conversation-"+string(rune('a'+i))), true, nil, nil, ConversationOptions{})
 		if err != nil {
 			t.Fatalf("Failed to create test conversation %d: %v", i, err)
 		}
@@ -391,14 +391,14 @@ func TestConversationService_SlugUniquenessWhenNotNull(t *testing.T) {
 	defer cancel()
 
 	// Create first conversation with a slug
-	_, err := db.CreateConversation(ctx, stringPtr("unique-slug"), true, nil, nil, ConversationOptions{})
+	_, err := db.CreateConversation(ctx, new("unique-slug"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Errorf("Create() first conversation error = %v", err)
 		return
 	}
 
 	// Try to create second conversation with the same slug - this should fail
-	_, err = db.CreateConversation(ctx, stringPtr("unique-slug"), true, nil, nil, ConversationOptions{})
+	_, err = db.CreateConversation(ctx, new("unique-slug"), true, nil, nil, ConversationOptions{})
 	if err == nil {
 		t.Error("Expected error when creating conversation with duplicate slug")
 		return
@@ -418,7 +418,7 @@ func TestConversationService_ArchiveUnarchive(t *testing.T) {
 	defer cancel()
 
 	// Create a test conversation
-	conv, err := db.CreateConversation(ctx, stringPtr("test-conversation"), true, nil, nil, ConversationOptions{})
+	conv, err := db.CreateConversation(ctx, new("test-conversation"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation: %v", err)
 	}
@@ -465,12 +465,12 @@ func TestConversationService_ListArchivedConversations(t *testing.T) {
 	defer cancel()
 
 	// Create test conversations
-	conv1, err := db.CreateConversation(ctx, stringPtr("test-conversation-1"), true, nil, nil, ConversationOptions{})
+	conv1, err := db.CreateConversation(ctx, new("test-conversation-1"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation 1: %v", err)
 	}
 
-	conv2, err := db.CreateConversation(ctx, stringPtr("test-conversation-2"), true, nil, nil, ConversationOptions{})
+	conv2, err := db.CreateConversation(ctx, new("test-conversation-2"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation 2: %v", err)
 	}
@@ -513,12 +513,12 @@ func TestConversationService_SearchArchivedConversations(t *testing.T) {
 	defer cancel()
 
 	// Create test conversations
-	conv1, err := db.CreateConversation(ctx, stringPtr("test-conversation-search-1"), true, nil, nil, ConversationOptions{})
+	conv1, err := db.CreateConversation(ctx, new("test-conversation-search-1"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation 1: %v", err)
 	}
 
-	conv2, err := db.CreateConversation(ctx, stringPtr("another-conversation"), true, nil, nil, ConversationOptions{})
+	conv2, err := db.CreateConversation(ctx, new("another-conversation"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation 2: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestConversationService_DeleteConversation(t *testing.T) {
 	defer cancel()
 
 	// Create a test conversation
-	conv, err := db.CreateConversation(ctx, stringPtr("test-conversation-to-delete"), true, nil, nil, ConversationOptions{})
+	conv, err := db.CreateConversation(ctx, new("test-conversation-to-delete"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation: %v", err)
 	}
@@ -595,7 +595,7 @@ func TestConversationService_UpdateConversationCwd(t *testing.T) {
 	defer cancel()
 
 	// Create a test conversation
-	conv, err := db.CreateConversation(ctx, stringPtr("test-conversation-cwd"), true, nil, nil, ConversationOptions{})
+	conv, err := db.CreateConversation(ctx, new("test-conversation-cwd"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test conversation: %v", err)
 	}
@@ -635,15 +635,15 @@ func TestArchivedConversations_SortedByUpdatedAt_NotArchiveTime(t *testing.T) {
 	defer cancel()
 
 	// Create three conversations
-	convA, err := db.CreateConversation(ctx, stringPtr("conv-oldest-activity"), true, nil, nil, ConversationOptions{})
+	convA, err := db.CreateConversation(ctx, new("conv-oldest-activity"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create conversation A: %v", err)
 	}
-	convB, err := db.CreateConversation(ctx, stringPtr("conv-newest-activity"), true, nil, nil, ConversationOptions{})
+	convB, err := db.CreateConversation(ctx, new("conv-newest-activity"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create conversation B: %v", err)
 	}
-	convC, err := db.CreateConversation(ctx, stringPtr("conv-middle-activity"), true, nil, nil, ConversationOptions{})
+	convC, err := db.CreateConversation(ctx, new("conv-middle-activity"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create conversation C: %v", err)
 	}
@@ -729,7 +729,7 @@ func TestArchiveDoesNotChangeUpdatedAt(t *testing.T) {
 	defer cancel()
 
 	// Create a conversation
-	conv, err := db.CreateConversation(ctx, stringPtr("test-archive-timestamp"), true, nil, nil, ConversationOptions{})
+	conv, err := db.CreateConversation(ctx, new("test-archive-timestamp"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create conversation: %v", err)
 	}
@@ -773,15 +773,15 @@ func TestUnarchivePreservesSortOrder(t *testing.T) {
 	defer cancel()
 
 	// Create three conversations with known activity times
-	convOld, err := db.CreateConversation(ctx, stringPtr("conv-old"), true, nil, nil, ConversationOptions{})
+	convOld, err := db.CreateConversation(ctx, new("conv-old"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create conv-old: %v", err)
 	}
-	convMid, err := db.CreateConversation(ctx, stringPtr("conv-mid"), true, nil, nil, ConversationOptions{})
+	convMid, err := db.CreateConversation(ctx, new("conv-mid"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create conv-mid: %v", err)
 	}
-	convNew, err := db.CreateConversation(ctx, stringPtr("conv-new"), true, nil, nil, ConversationOptions{})
+	convNew, err := db.CreateConversation(ctx, new("conv-new"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create conv-new: %v", err)
 	}
@@ -865,7 +865,7 @@ func TestQueuedMessages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conv, err := db.CreateConversation(ctx, stringPtr("queued-test"), true, nil, nil, ConversationOptions{})
+	conv, err := db.CreateConversation(ctx, new("queued-test"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
@@ -925,7 +925,7 @@ func TestCreateMessageRemoveQueuedIDAtomic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conv, err := db.CreateConversation(ctx, stringPtr("atomic-drain"), true, nil, nil, ConversationOptions{})
+	conv, err := db.CreateConversation(ctx, new("atomic-drain"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
@@ -982,7 +982,7 @@ func TestQueuedMessagesMutationStrictOnCorruptColumn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conv, err := db.CreateConversation(ctx, stringPtr("corrupt-queue"), true, nil, nil, ConversationOptions{})
+	conv, err := db.CreateConversation(ctx, new("corrupt-queue"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
@@ -1104,7 +1104,7 @@ func TestListConversationsParticipants(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	shared, err := db.CreateConversation(ctx, stringPtr("shared"), true, nil, nil, ConversationOptions{})
+	shared, err := db.CreateConversation(ctx, new("shared"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("create shared: %v", err)
 	}
@@ -1134,7 +1134,7 @@ func TestListConversationsParticipants(t *testing.T) {
 	}
 
 	// A conversation whose only message has no author has no participants.
-	anon, err := db.CreateConversation(ctx, stringPtr("anon"), true, nil, nil, ConversationOptions{})
+	anon, err := db.CreateConversation(ctx, new("anon"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatalf("create anon: %v", err)
 	}

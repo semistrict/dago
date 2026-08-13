@@ -190,14 +190,14 @@ func TestToolCallInfoFromContext(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{toolCall("call-17", "inspect")}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := dagent.New(dagent.Options{Model: script, Tools: []datool.Tool{inspect}, Context: "trusted", Saver: dacheckpoint.NewMemorySaver()})
+	compiled, err := dagent.New(dagent.Options{Model: script, Tools: []datool.Tool{inspect}, Deps: "trusted", Saver: dacheckpoint.NewMemorySaver()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := compiled.Invoke(context.Background(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "runtime"}, Messages: []damessage.Message{damessage.Human("inspect")}}); err != nil {
 		t.Fatal(err)
 	}
-	if got.CallID != "call-17" || got.ThreadID != "runtime" || got.Context != "trusted" {
+	if got.CallID != "call-17" || got.ThreadID != "runtime" || got.Deps != "trusted" {
 		t.Fatalf("tool runtime = %#v", got)
 	}
 }
@@ -246,7 +246,7 @@ func TestNewToolUseContext(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{toolCall("ctx-call", "inspect")}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := dagent.New(dagent.Options{Model: script, Tools: []datool.Tool{inspect}, Context: map[string]string{"scope": "conversation"}})
+	compiled, err := dagent.New(dagent.Options{Model: script, Tools: []datool.Tool{inspect}, Deps: map[string]string{"scope": "conversation"}})
 	if err != nil {
 		t.Fatal(err)
 	}

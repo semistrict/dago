@@ -16,6 +16,13 @@ blocking operation, a stable JSON representation for persisted or streamed data,
 and a documented compatibility row. Errors wrap stable sentinel errors where a
 caller can reasonably recover. Secret values are never included in error text.
 
+The modules target Go 1.26. For optional scalar fields that genuinely need
+unset-versus-zero semantics, use `new(expr)` at construction sites instead of
+adding one-off pointer helpers. Use `omitzero` for zero-value omission, especially
+for `time.Time`; retain pointers only for genuine tri-state contracts. Timer-driven
+tests should use `damodel/modeltest.TestWithFakeTime` when they can remain entirely
+inside a `testing/synctest` bubble.
+
 Persistent envelopes and stream records begin at version 1. Additive fields are
 allowed within a major module version. Removing or reinterpreting a field requires a
 new envelope version and a migration. Unknown versions fail explicitly.

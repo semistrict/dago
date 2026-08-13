@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"iter"
 	"time"
 
 	"github.com/semistrict/dago/damessage"
@@ -89,28 +90,17 @@ func SetOutcome(value *damessage.Message, reason FinishReason, refusal *Refusal)
 		value.ResponseMetadata = map[string]json.RawMessage{}
 	}
 	if reason != "" {
-		raw, _ := json.Marshal(reason)
-		value.ResponseMetadata[FinishReasonMetadataKey] = raw
+		_ = damessage.SetMetadata(value.ResponseMetadata, FinishReasonMetadataKey, reason)
 	}
 	if refusal != nil {
-		raw, _ := json.Marshal(refusal)
-		value.ResponseMetadata[RefusalMetadataKey] = raw
+		_ = damessage.SetMetadata(value.ResponseMetadata, RefusalMetadataKey, refusal)
 	}
 }
 
 // Outcome reads normalized model outcome metadata from a message.
 func Outcome(value damessage.Message) (FinishReason, *Refusal) {
-	var reason FinishReason
-	if raw := value.ResponseMetadata[FinishReasonMetadataKey]; len(raw) > 0 {
-		_ = json.Unmarshal(raw, &reason)
-	}
-	var refusal *Refusal
-	if raw := value.ResponseMetadata[RefusalMetadataKey]; len(raw) > 0 {
-		var decoded Refusal
-		if json.Unmarshal(raw, &decoded) == nil {
-			refusal = &decoded
-		}
-	}
+	reason, _ := damessage.MetadataAs[FinishReason](value.ResponseMetadata, FinishReasonMetadataKey)
+	refusal, _ := damessage.MetadataAs[*Refusal](value.ResponseMetadata, RefusalMetadataKey)
 	return reason, refusal
 }
 
@@ -180,6 +170,34 @@ type Chunk struct {
 type Stream interface {
 	Next(ctx context.Context) (Chunk, error)
 	Close() error
+	Chunks() iter.Seq2[Chunk, error]
+}
+
+// Chunks adapts a Next/Close stream into an iterator that always closes the
+// stream, including when the consumer breaks early.
+func Chunks(ctx context.Context, stream Stream) iter.Seq2[Chunk, error] {
+	return func(yield func(Chunk, error) bool) {
+		if stream == nil {
+			return
+		}
+		defer stream.Close()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		for {
+			chunk, err := stream.Next(ctx)
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				yield(Chunk{}, err)
+				return
+			}
+			if !yield(chunk, nil) {
+				return
+			}
+		}
+	}
 }
 
 // Chat is the minimal model contract consumed by the agent factory.
@@ -278,3 +296,6 @@ type EmptyStream struct{}
 
 func (EmptyStream) Next(context.Context) (Chunk, error) { return Chunk{}, io.EOF }
 func (EmptyStream) Close() error                        { return nil }
+func (stream EmptyStream) Chunks() iter.Seq2[Chunk, error] {
+	return Chunks(context.Background(), stream)
+}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"sort"
 	"strings"
@@ -38,7 +37,7 @@ type Options struct {
 	RetainThreadState bool
 	Store             dastore.Store
 	Cache             dacache.Cache
-	Context           any
+	Deps              any
 	RecursionLimit    int
 	MaxConcurrency    int
 	FailOnToolError   bool
@@ -158,7 +157,7 @@ func New(options Options) (*Agent, error) {
 		return nil, err
 	}
 	runtimeGraph, err := builder.Compile(graph.CompileOptions{
-		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Context: options.Context,
+		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 		RetainThreadState: options.RetainThreadState,
 		RecursionLimit:    options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		Writer: debugGraphWriter(options.Debug),
@@ -520,13 +519,8 @@ func invokeModelStream(ctx context.Context, chat damodel.Chat, request damodel.R
 	if err != nil {
 		return damodel.Response{}, err
 	}
-	defer stream.Close()
 	response := damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant}}
-	for {
-		chunk, nextErr := stream.Next(ctx)
-		if nextErr == io.EOF {
-			break
-		}
+	for chunk, nextErr := range stream.Chunks() {
 		if nextErr != nil {
 			return damodel.Response{}, nextErr
 		}
@@ -873,7 +867,7 @@ func (compiler *compiler) executeTool(ctx context.Context, call damessage.ToolCa
 			CheckpointID: runtime.Config.CheckpointID,
 			Resume:       request.Runtime.Resume,
 			State:        request.State, Store: runtime.Store,
-			Stream: toolWriter{writer: runtime.Writer}, Context: runtime.Context,
+			Stream: toolWriter{writer: runtime.Writer}, Deps: runtime.Deps,
 		})
 		return ToolCallResponse{Result: output}, err
 	}
@@ -1221,7 +1215,7 @@ func convertRuntime(runtime graph.Runtime) Runtime {
 		writer = eventWriter{writer: runtime.Writer}
 	}
 	return Runtime{
-		Context: runtime.Context, Config: runtime.Config,
+		Deps: runtime.Deps, Config: runtime.Config,
 		Store: runtime.Store, Cache: runtime.Cache,
 		Previous: runtime.Previous.Clone(), TaskID: runtime.TaskID, Resume: runtime.Resume,
 		Writer: writer,

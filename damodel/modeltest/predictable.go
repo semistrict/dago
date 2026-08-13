@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"strconv"
 	"strings"
 	"sync"
@@ -166,7 +167,7 @@ func (predictable *Predictable) Stream(ctx context.Context, request damodel.Requ
 	if err != nil {
 		return nil, err
 	}
-	return &predictableStream{chunk: damodel.Chunk{
+	return &predictableStream{ctx: ctx, chunk: damodel.Chunk{
 		MessageDelta: response.Message.Clone(),
 		Structured:   append(json.RawMessage(nil), response.Structured...),
 		Done:         true,
@@ -391,9 +392,14 @@ func cloneRawMap(value map[string]json.RawMessage) map[string]json.RawMessage {
 
 type predictableStream struct {
 	mu     sync.Mutex
+	ctx    context.Context
 	chunk  damodel.Chunk
 	sent   bool
 	closed bool
+}
+
+func (stream *predictableStream) Chunks() iter.Seq2[damodel.Chunk, error] {
+	return damodel.Chunks(stream.ctx, stream)
 }
 
 func (stream *predictableStream) Next(ctx context.Context) (damodel.Chunk, error) {

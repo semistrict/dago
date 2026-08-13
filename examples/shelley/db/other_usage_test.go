@@ -17,7 +17,7 @@ func TestMessageOtherUsageRoundTrip(t *testing.T) {
 	defer database.Close()
 
 	ctx := context.Background()
-	conv, err := database.CreateConversation(ctx, stringPtr("other-usage-round-trip"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("other-usage-round-trip"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestCreateSlugMessage(t *testing.T) {
 	defer database.Close()
 
 	ctx := context.Background()
-	conv, err := database.CreateConversation(ctx, stringPtr("slug-usage"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("slug-usage"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestForkDoesNotCopySlugMarker(t *testing.T) {
 	defer database.Close()
 	ctx := context.Background()
 
-	conv, err := database.CreateConversation(ctx, stringPtr("fork-slug-src"), true, nil, nil, ConversationOptions{})
+	conv, err := database.CreateConversation(ctx, new("fork-slug-src"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestGetSubagentOtherUsage(t *testing.T) {
 	defer database.Close()
 
 	ctx := context.Background()
-	parent, err := database.CreateConversation(ctx, stringPtr("other-usage-parent"), true, nil, nil, ConversationOptions{})
+	parent, err := database.CreateConversation(ctx, new("other-usage-parent"), true, nil, nil, ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

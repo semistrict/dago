@@ -101,7 +101,7 @@ func TestDeepAgentAddsConstructionMetadataAndTags(t *testing.T) {
 func TestDeepAgentBindsRuntimeScopedStoreBackend(t *testing.T) {
 	values := dastore.NewMemory()
 	files, err := dabackend.NewStoreWithOptions(dabackend.StoreOptions{Namespace: func(runtime *dabackend.Runtime) (dastore.Namespace, error) {
-		user, _ := runtime.Context.(string)
+		user, _ := dabackend.DepsAs[string](runtime)
 		return dastore.Namespace{"files", user}, nil
 	}})
 	if err != nil {
@@ -111,7 +111,7 @@ func TestDeepAgentBindsRuntimeScopedStoreBackend(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/note.txt","content":"private"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled, err := New(Options{Model: script, Backend: files, Store: values, Context: "alice", DisableSubagents: true, DisableSummary: true})
+	compiled, err := New(Options{Model: script, Backend: files, Store: values, Deps: "alice", DisableSubagents: true, DisableSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}

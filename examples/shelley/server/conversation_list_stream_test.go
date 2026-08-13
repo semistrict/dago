@@ -365,11 +365,11 @@ func TestConversationStreamIncludesListPatchInitialReset(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
 
-	conversation, err := database.CreateConversation(context.Background(), strPtr("current"), true, nil, nil, db.ConversationOptions{})
+	conversation, err := database.CreateConversation(context.Background(), new("current"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateConversation(context.Background(), strPtr("other"), true, nil, nil, db.ConversationOptions{}); err != nil {
+	if _, err := database.CreateConversation(context.Background(), new("other"), true, nil, nil, db.ConversationOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -401,7 +401,7 @@ func TestConversationStreamListPatchReplaysFromHash(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
 
-	conversation, err := database.CreateConversation(context.Background(), strPtr("current"), true, nil, nil, db.ConversationOptions{})
+	conversation, err := database.CreateConversation(context.Background(), new("current"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestConversationStreamListPatchReplaysFromHash(t *testing.T) {
 	}()
 	initial := waitForPatchEventAfter(t, patchRec, "")
 	for _, slug := range []string{"one", "two"} {
-		if _, err := database.CreateConversation(context.Background(), strPtr(slug), true, nil, nil, db.ConversationOptions{}); err != nil {
+		if _, err := database.CreateConversation(context.Background(), new(slug), true, nil, nil, db.ConversationOptions{}); err != nil {
 			t.Fatal(err)
 		}
 		server.publishConversationListUpdate(ConversationListUpdate{Type: "update"})
@@ -454,7 +454,7 @@ func TestConversationStreamListPatchCurrentHashSkipsInitialAndStreamsLive(t *tes
 	t.Parallel()
 	server, database, _ := newTestServer(t)
 
-	conversation, err := database.CreateConversation(context.Background(), strPtr("current"), true, nil, nil, db.ConversationOptions{})
+	conversation, err := database.CreateConversation(context.Background(), new("current"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +490,7 @@ func TestConversationStreamListPatchCurrentHashSkipsInitialAndStreamsLive(t *tes
 		currentHash = ev.NewHash
 	}
 
-	if _, err := database.CreateConversation(context.Background(), strPtr("newer"), true, nil, nil, db.ConversationOptions{}); err != nil {
+	if _, err := database.CreateConversation(context.Background(), new("newer"), true, nil, nil, db.ConversationOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	server.publishConversationListUpdate(ConversationListUpdate{Type: "update"})

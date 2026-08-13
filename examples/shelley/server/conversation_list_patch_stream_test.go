@@ -206,11 +206,11 @@ func TestConversationListPatchStreamWorkingState(t *testing.T) {
 func TestConversationListPatchStreamRemovesAndReorders(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
-	a, err := database.CreateConversation(context.Background(), strPtr("a"), true, nil, nil, db.ConversationOptions{})
+	a, err := database.CreateConversation(context.Background(), new("a"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateConversation(context.Background(), strPtr("b"), true, nil, nil, db.ConversationOptions{}); err != nil {
+	if _, err := database.CreateConversation(context.Background(), new("b"), true, nil, nil, db.ConversationOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -259,11 +259,11 @@ func TestConversationListPatchStreamRapidReordersApplyCleanly(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	ctx := context.Background()
 
-	convA, err := database.CreateConversation(ctx, strPtr("a"), true, nil, nil, db.ConversationOptions{})
+	convA, err := database.CreateConversation(ctx, new("a"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	convB, err := database.CreateConversation(ctx, strPtr("b"), true, nil, nil, db.ConversationOptions{})
+	convB, err := database.CreateConversation(ctx, new("b"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,8 +401,6 @@ func verifyHash(t *testing.T, state []ConversationWithState, want string) {
 	}
 }
 
-func strPtr(s string) *string { return &s }
-
 // TestConversationListPatchStreamSurvivesHistoryTrim is a regression test:
 // once history fills up and starts being trimmed, an active subscriber must
 // keep observing new events. A prior implementation tracked the subscriber's
@@ -432,7 +430,7 @@ func TestConversationListPatchStreamSurvivesHistoryTrim(t *testing.T) {
 	// Cycle the working state on a single conversation enough times to
 	// overflow the history ring. We need the subscriber to be actively
 	// draining so the cap is enforced.
-	conv, err := database.CreateConversation(context.Background(), strPtr("trim-test"), true, nil, nil, db.ConversationOptions{})
+	conv, err := database.CreateConversation(context.Background(), new("trim-test"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +489,7 @@ func TestConversationListPatchStreamOverrunSendsReset(t *testing.T) {
 	// subscriber's stalled startIdx, which is the stream end after connect.
 	// On an empty server, connect's recompute appends the empty-list event,
 	// so startIdx is 1.
-	conv, err := database.CreateConversation(context.Background(), strPtr("overrun-test"), true, nil, nil, db.ConversationOptions{})
+	conv, err := database.CreateConversation(context.Background(), new("overrun-test"), true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

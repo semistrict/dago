@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"iter"
 
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
@@ -69,6 +70,7 @@ type Event struct {
 // Stream is an owned, bounded agent execution stream.
 type Stream struct {
 	graph              *graph.Stream
+	ctx                context.Context
 	private            map[string]bool
 	discardResultState bool
 }
@@ -101,7 +103,35 @@ func (agent *Agent) Stream(ctx context.Context, input Input, buffer int) *Stream
 		graph: agent.graph.Stream(ctx, graph.Invocation{
 			Config: input.Config, State: values, Resume: input.Resume, SkipValueEvents: input.SkipValueEvents,
 		}, buffer),
-		private: agent.private, discardResultState: input.DiscardResultState,
+		ctx: ctx, private: agent.private, discardResultState: input.DiscardResultState,
+	}
+}
+
+// Events iterates execution events and closes the owned stream on completion,
+// error, or an early break by the consumer.
+func (stream *Stream) Events() iter.Seq2[Event, error] {
+	return func(yield func(Event, error) bool) {
+		if stream == nil {
+			return
+		}
+		defer stream.Close()
+		ctx := stream.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		for {
+			event, err := stream.Next(ctx)
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				yield(Event{}, err)
+				return
+			}
+			if !yield(event, nil) {
+				return
+			}
+		}
 	}
 }
 

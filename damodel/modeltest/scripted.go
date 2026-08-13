@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"sync"
 
 	"github.com/semistrict/dago/damodel"
@@ -55,7 +56,7 @@ func (script *Scripted) Stream(ctx context.Context, request damodel.Request) (da
 	if step.Error != nil {
 		return nil, step.Error
 	}
-	return &stream{chunks: append([]damodel.Chunk(nil), step.Chunks...)}, nil
+	return &stream{ctx: ctx, chunks: append([]damodel.Chunk(nil), step.Chunks...)}, nil
 }
 
 func (script *Scripted) Profile() damodel.Profile { return script.profile }
@@ -84,9 +85,14 @@ func (script *Scripted) take(request damodel.Request) (Step, error) {
 
 type stream struct {
 	mu     sync.Mutex
+	ctx    context.Context
 	chunks []damodel.Chunk
 	next   int
 	closed bool
+}
+
+func (stream *stream) Chunks() iter.Seq2[damodel.Chunk, error] {
+	return damodel.Chunks(stream.ctx, stream)
 }
 
 func (stream *stream) Next(ctx context.Context) (damodel.Chunk, error) {

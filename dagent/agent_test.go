@@ -1022,6 +1022,24 @@ func TestToolRetryAndTodoMiddleware(t *testing.T) {
 	}
 }
 
+func TestToolRetryBackoffWithFakeTime(t *testing.T) {
+	modeltest.TestWithFakeTime(t, func(t *testing.T) {
+		middleware := ToolRetry("retry", 2, time.Hour, nil)
+		calls := 0
+		started := time.Now()
+		_, err := middleware.WrapToolCall(t.Context(), ToolCallRequest{}, func(context.Context, ToolCallRequest) (ToolCallResponse, error) {
+			calls++
+			if calls == 1 {
+				return ToolCallResponse{}, errors.New("retry")
+			}
+			return ToolCallResponse{}, nil
+		})
+		if err != nil || calls != 2 || time.Since(started) != time.Hour {
+			t.Fatalf("calls=%d elapsed=%s error=%v", calls, time.Since(started), err)
+		}
+	})
+}
+
 func TestAgentRestartsFromSQLiteDeltaMessages(t *testing.T) {
 	saver, err := checkpointsqlite.Open(filepath.Join(t.TempDir(), "agent.db"))
 	if err != nil {

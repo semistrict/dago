@@ -27,15 +27,15 @@ const SandboxReadTruncationMessage = "\n\n[Output was truncated due to size limi
 type FileData struct {
 	Content    string    `json:"content"`
 	Encoding   Encoding  `json:"encoding"`
-	CreatedAt  time.Time `json:"created_at,omitempty"`
-	ModifiedAt time.Time `json:"modified_at,omitempty"`
+	CreatedAt  time.Time `json:"created_at,omitzero"`
+	ModifiedAt time.Time `json:"modified_at,omitzero"`
 }
 
 type FileInfo struct {
 	Path       string    `json:"path"`
 	IsDir      bool      `json:"is_dir,omitempty"`
 	Size       int64     `json:"size,omitempty"`
-	ModifiedAt time.Time `json:"modified_at,omitempty"`
+	ModifiedAt time.Time `json:"modified_at,omitzero"`
 }
 
 type ContextLine struct {

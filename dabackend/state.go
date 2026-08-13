@@ -26,15 +26,25 @@ type StateField struct {
 }
 
 // Runtime contains the invocation values a backend may use to select durable
-// resources. Context is application-defined and is the usual source for a
+// resources. Deps is application-defined and is the usual source for a
 // per-user or per-assistant namespace.
 type Runtime struct {
-	Context      any
+	Deps         any
 	ThreadID     string
 	Namespace    string
 	CheckpointID string
 	TaskID       string
 	Store        dastore.Store
+}
+
+// DepsAs returns typed application dependencies.
+func DepsAs[T any](runtime *Runtime) (T, bool) {
+	var zero T
+	if runtime == nil {
+		return zero, false
+	}
+	typed, ok := runtime.Deps.(T)
+	return typed, ok
 }
 
 type backendRuntimeKey struct{}

@@ -18,7 +18,6 @@ import (
 
 func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "checkpoints.sqlite")
-	limit := 4
 	lines := make([]string, 20)
 	for index := range lines {
 		lines[index] = fmt.Sprintf("line-%02d-%s", index+1, strings.Repeat("x", 40))
@@ -47,7 +46,7 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 		t.Fatal(err)
 	}
 	firstAgent, err := New(Options{
-		Model: firstModel, Saver: firstSaver, HumanMessageTokenLimit: &limit,
+		Model: firstModel, Saver: firstSaver, HumanMessageTokenLimit: new(4),
 		DisableSubagents: true, DisableSummary: true,
 	})
 	if err != nil {
@@ -101,7 +100,7 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 	}
 	defer secondSaver.Close()
 	secondAgent, err := New(Options{
-		Model: secondModel, Saver: secondSaver, HumanMessageTokenLimit: &limit,
+		Model: secondModel, Saver: secondSaver, HumanMessageTokenLimit: new(4),
 		DisableSubagents: true, DisableSummary: true,
 	})
 	if err != nil {
@@ -131,9 +130,8 @@ func TestFilesystemEvictionLimitsCanBeDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	zero := 0
 	middleware, err := FilesystemMiddleware(FilesystemOptions{
-		Backend: memory, ToolResultTokenLimit: &zero, HumanMessageTokenLimit: &zero,
+		Backend: memory, ToolResultTokenLimit: new(0), HumanMessageTokenLimit: new(0),
 	})
 	if err != nil {
 		t.Fatal(err)

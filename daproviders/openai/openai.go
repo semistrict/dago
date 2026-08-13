@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"strings"
 	"time"
@@ -222,13 +223,8 @@ func (client *Client) invokeSubscription(ctx context.Context, request damodel.Re
 	if err != nil {
 		return damodel.Response{}, err
 	}
-	defer stream.Close()
 	response := damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant}}
-	for {
-		chunk, nextErr := stream.Next(ctx)
-		if nextErr == io.EOF {
-			break
-		}
+	for chunk, nextErr := range stream.Chunks() {
 		if nextErr != nil {
 			return damodel.Response{}, nextErr
 		}
@@ -344,7 +340,7 @@ func (client *Client) Stream(ctx context.Context, request damodel.Request) (damo
 			}
 			continue
 		}
-		return newResponseStream(response.Body), nil
+		return newResponseStream(ctx, response.Body), nil
 	}
 }
 
@@ -981,6 +977,7 @@ func apiErrorValue(value *apiError, status int) error {
 }
 
 type responseStream struct {
+	ctx              context.Context
 	body             io.ReadCloser
 	scanner          *bufio.Scanner
 	queued           []damodel.Chunk
@@ -993,13 +990,17 @@ type responseStream struct {
 	emittedServer    map[string]struct{}
 }
 
-func newResponseStream(body io.ReadCloser) *responseStream {
+func newResponseStream(ctx context.Context, body io.ReadCloser) *responseStream {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 2<<20)
 	return &responseStream{
-		body: body, scanner: scanner, calls: map[string]responseOutput{},
+		ctx: ctx, body: body, scanner: scanner, calls: map[string]responseOutput{},
 		emittedCalls: map[string]struct{}{}, emittedReasoning: map[string]string{}, emittedServer: map[string]struct{}{},
 	}
+}
+
+func (stream *responseStream) Chunks() iter.Seq2[damodel.Chunk, error] {
+	return damodel.Chunks(stream.ctx, stream)
 }
 
 func (stream *responseStream) Next(ctx context.Context) (damodel.Chunk, error) {
