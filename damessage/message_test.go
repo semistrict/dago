@@ -36,6 +36,41 @@ func TestMessageValidate(t *testing.T) {
 	}
 }
 
+func TestMessageFrom(t *testing.T) {
+	original := Assistant("done")
+	tests := []struct {
+		name  string
+		value any
+		role  Role
+		text  string
+	}{
+		{name: "message", value: original, role: RoleAssistant, text: "done"},
+		{name: "message pointer", value: &original, role: RoleAssistant, text: "done"},
+		{name: "string", value: "hello", role: RoleHuman, text: "hello"},
+		{name: "object", value: struct {
+			Question string `json:"question"`
+		}{Question: "hello"}, role: RoleHuman, text: `{"question":"hello"}`},
+		{name: "nil message pointer", value: (*Message)(nil), role: RoleHuman, text: "null"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message, err := MessageFrom(test.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message.Role != test.role || message.TextContent() != test.text {
+				t.Fatalf("MessageFrom() = %#v", message)
+			}
+		})
+	}
+}
+
+func TestMessageFromRejectsNonJSONValue(t *testing.T) {
+	if _, err := MessageFrom(func() {}); err == nil || !strings.Contains(err.Error(), "convert message to JSON") {
+		t.Fatalf("MessageFrom() error = %v", err)
+	}
+}
+
 func TestApproximateTokensIsStableAndNonzero(t *testing.T) {
 	messages := []Message{
 		System("You are helpful."),

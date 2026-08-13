@@ -153,6 +153,29 @@ func Tool(callID, text string) Message {
 	return message
 }
 
+// MessageFrom normalizes a user-supplied message value. Message values pass
+// through unchanged, strings become human text, and all other values are
+// JSON-encoded as human text.
+func MessageFrom(value any) (Message, error) {
+	if message, ok := value.(Message); ok {
+		return message, nil
+	}
+	if message, ok := value.(*Message); ok {
+		if message == nil {
+			return Human("null"), nil
+		}
+		return *message, nil
+	}
+	if text, ok := value.(string); ok {
+		return Human(text), nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return Message{}, fmt.Errorf("convert message to JSON: %w", err)
+	}
+	return Human(string(encoded)), nil
+}
+
 // Remove creates a message tombstone for an existing ID.
 func Remove(id string) Message {
 	return Message{ID: id, Role: RoleRemove}

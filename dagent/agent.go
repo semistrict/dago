@@ -79,6 +79,28 @@ type Result struct {
 	Steps      int
 }
 
+// String returns all model-visible response text in message order. It preserves
+// every assistant message and includes structured output or a direct-tool result.
+func (result Result) String() string {
+	parts := []string{}
+	for _, message := range result.Messages {
+		if message.Role == damessage.RoleAssistant {
+			if text := message.TextContent(); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	if len(result.Structured) > 0 {
+		parts = append(parts, string(result.Structured))
+	} else if len(result.Messages) > 0 {
+		message := result.Messages[len(result.Messages)-1]
+		if message.Role == damessage.RoleTool && message.TextContent() != "" {
+			parts = append(parts, message.TextContent())
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 // Interrupt is a language-neutral pause request.
 type Interrupt = datool.Interrupt
 
@@ -203,7 +225,32 @@ func (debugEventWriter) Write(ctx context.Context, event graph.Event) error {
 	return nil
 }
 
-func (agent *Agent) Invoke(ctx context.Context, input Input) (Result, error) {
+func normalizeInput(value any) (Input, error) {
+	switch input := value.(type) {
+	case Input:
+		return input, nil
+	case *Input:
+		if input == nil {
+			return Input{}, fmt.Errorf("agent input is nil")
+		}
+		return *input, nil
+	default:
+		message, err := damessage.MessageFrom(value)
+		if err != nil {
+			return Input{}, err
+		}
+		return Input{Messages: []damessage.Message{message}}, nil
+	}
+}
+
+// Invoke starts or resumes an agent. Input values expose the complete stateful
+// invocation API; strings become human messages, Message values pass through
+// unchanged, and other values are JSON-encoded as human messages.
+func (agent *Agent) Invoke(ctx context.Context, value any) (Result, error) {
+	input, err := normalizeInput(value)
+	if err != nil {
+		return Result{}, err
+	}
 	if input.Config.ThreadID == "" {
 		input.Config.ThreadID = "default"
 	}

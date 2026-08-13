@@ -84,8 +84,6 @@ import (
 	"os"
 
 	"github.com/semistrict/dago"
-	"github.com/semistrict/dago/dagent"
-	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/daproviders/openai"
 	"github.com/semistrict/dago/datool"
 )
@@ -114,13 +112,11 @@ func main() {
 		dago.WithSystemPrompt("Use tools when they help answer accurately."),
 		dago.WithTools(add),
 	)
-	result, err := agent.Invoke(context.Background(), dagent.Input{
-		Messages: []damessage.Message{damessage.Human("What is 17 plus 25?")},
-	})
+	result, err := agent.Invoke(context.Background(), "What is 17 plus 25?")
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(result.Messages[len(result.Messages)-1].TextContent())
+	fmt.Println(result)
 }
 ```
 

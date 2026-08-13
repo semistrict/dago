@@ -29,7 +29,7 @@ import (
 
 // Runnable is the small invocation contract accepted by compiled subagents.
 type Runnable interface {
-	Invoke(context.Context, dagent.Input) (dagent.Result, error)
+	Invoke(context.Context, any) (dagent.Result, error)
 }
 
 // StreamingRunnable lets a compiled subagent project its nested lifecycle onto

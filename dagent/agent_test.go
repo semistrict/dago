@@ -30,6 +30,49 @@ func TestNewPanicsOnNilModel(t *testing.T) {
 	requirePanicContaining(t, "model is nil", func() { New(nil, Options{}) })
 }
 
+func TestAgentInvokeNormalizesMessage(t *testing.T) {
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{
+		Check: func(request damodel.Request) error {
+			if len(request.Messages) != 1 || request.Messages[0].Role != damessage.RoleHuman || request.Messages[0].TextContent() != `{"question":"hello"}` {
+				return fmt.Errorf("messages = %#v", request.Messages)
+			}
+			return nil
+		},
+		Response: damodel.Response{Message: damessage.Assistant("answer")},
+	})
+	agent := New(script, Options{})
+	result, err := agent.Invoke(t.Context(), struct {
+		Question string `json:"question"`
+	}{Question: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.String(); got != "answer" {
+		t.Fatalf("Invoke() response = %q", got)
+	}
+}
+
+func TestResultString(t *testing.T) {
+	tests := []struct {
+		name   string
+		result Result
+		want   string
+	}{
+		{name: "assistant", result: Result{Messages: []damessage.Message{damessage.Human("question"), damessage.Assistant("first"), damessage.Assistant("second")}}, want: "first\nsecond"},
+		{name: "direct tool", result: Result{Messages: []damessage.Message{damessage.Human("question"), damessage.Tool("call", "result")}}, want: "result"},
+		{name: "assistant then direct tool", result: Result{Messages: []damessage.Message{damessage.Human("question"), damessage.Assistant("working"), damessage.Tool("call", "result")}}, want: "working\nresult"},
+		{name: "structured", result: Result{Messages: []damessage.Message{damessage.Assistant("fallback")}, Structured: json.RawMessage(`{"answer":42}`)}, want: "fallback\n" + `{"answer":42}`},
+		{name: "empty", result: Result{}, want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.result.String(); got != test.want {
+				t.Fatalf("String() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 type retryReporterError struct{}
 
 func (retryReporterError) Error() string { return "transient model failure" }
