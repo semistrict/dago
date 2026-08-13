@@ -223,11 +223,11 @@ func (client *Client) dialWebSocket(ctx context.Context) (*websocket.Conn, error
 			header.Add(key, value)
 		}
 	}
-	connection, response, err := websocket.Dial(ctx, client.options.BaseURL+"/responses", &websocket.DialOptions{
-		HTTPClient:      client.options.HTTPClient,
-		HTTPHeader:      header,
-		CompressionMode: websocket.CompressionContextTakeover,
-	})
+	connection, response, err := websocket.Dial(
+		ctx,
+		client.options.BaseURL+"/responses",
+		websocketDialOptions(client.options.HTTPClient, header),
+	)
 	if err != nil {
 		if response != nil {
 			if responseErr := responseError(response); responseErr != nil {
