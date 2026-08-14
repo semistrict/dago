@@ -831,6 +831,89 @@ func TestResponsesWebSocketReusesConnectionWithIncrementalInput(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSocketAnswersPingWhileIdle(t *testing.T) {
+	idle := make(chan struct{})
+	pongReceived := make(chan struct{})
+	serverErrors := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := websocket.Accept(writer, request, nil)
+		if err != nil {
+			serverErrors <- err
+			return
+		}
+		defer connection.CloseNow()
+
+		if _, _, err := connection.Read(request.Context()); err != nil {
+			serverErrors <- err
+			return
+		}
+		firstEvent := `{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"first"}]}]}}`
+		if err := connection.Write(request.Context(), websocket.MessageText, []byte(firstEvent)); err != nil {
+			serverErrors <- err
+			return
+		}
+
+		<-idle
+		secondRequest := make(chan error, 1)
+		go func() {
+			_, _, err := connection.Read(request.Context())
+			secondRequest <- err
+		}()
+		pingContext, cancelPing := context.WithTimeout(request.Context(), time.Second)
+		defer cancelPing()
+		if err := connection.Ping(pingContext); err != nil {
+			serverErrors <- fmt.Errorf("idle ping: %w", err)
+			return
+		}
+		close(pongReceived)
+
+		if err := <-secondRequest; err != nil {
+			serverErrors <- err
+			return
+		}
+		secondEvent := `{"type":"response.completed","response":{"id":"resp-2","status":"completed","output":[{"type":"message","id":"msg-2","role":"assistant","content":[{"type":"output_text","text":"second"}]}]}}`
+		if err := connection.Write(request.Context(), websocket.MessageText, []byte(secondEvent)); err != nil {
+			serverErrors <- err
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewAPIKey("secret", Options{
+		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := damessage.Human("hello")
+	first, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{human}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(idle)
+	select {
+	case <-pongReceived:
+	case err := <-serverErrors:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("client did not answer websocket ping while connection was idle")
+	}
+
+	second, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{
+		human, first.Message, damessage.Human("again"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Message.TextContent() != "second" {
+		t.Fatalf("second response = %#v", second)
+	}
+	select {
+	case err := <-serverErrors:
+		t.Fatal(err)
+	default:
+	}
+}
+
 func TestResponsesWebSocketReadCancellationClosesConnection(t *testing.T) {
 	requestReceived := make(chan struct{})
 	connectionClosed := make(chan struct{})

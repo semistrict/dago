@@ -228,6 +228,52 @@ func TestSkillsCatalogUsesApplicationActivationAndFilesystemOverrides(t *testing
 	}
 }
 
+func TestSkillsCatalogBodySuppliesActivationAndFilesystemOverridesIt(t *testing.T) {
+	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/project/herdr/SKILL.md": {Content: "---\nname: herdr\ndescription: project\n---\nproject body", Encoding: dabackend.EncodingUTF8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware := mustSkills(memory, Skills{
+		Sources: []string{"/project"},
+		Catalog: []Skill{
+			{Name: "herdr", Description: "catalog", Body: "Run the catalog command."},
+			{Name: "builtin", Description: "embedded", Body: "Follow the embedded instructions."},
+		},
+	})
+
+	update, err := middleware.BeforeAgent(context.Background(), map[string]any{}, dagent.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serde.New(serde.Limits{}).Encode(update["skills"]); err != nil {
+		t.Fatalf("skills checkpoint state is not language-neutral: %v", err)
+	}
+	stateSkills := skillsFromState(update["skills"])
+	if len(stateSkills) != 2 || stateSkills[0].Name != "builtin" || stateSkills[0].Body != "Follow the embedded instructions." || stateSkills[1].Name != "herdr" || stateSkills[1].Body != "" {
+		t.Fatalf("skills = %#v", stateSkills)
+	}
+
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
+		prompt := request.Messages[0].TextContent()
+		for _, expected := range []string{"**builtin**: embedded", "Follow the embedded instructions.", "**herdr**: project", "Read `/project/herdr/SKILL.md` for full instructions"} {
+			if !strings.Contains(prompt, expected) {
+				return &skillTestError{"missing " + expected}
+			}
+		}
+		if strings.Contains(prompt, "Run the catalog command.") {
+			return &skillTestError{"overridden catalog body remained"}
+		}
+		return nil
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
+	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
+
+	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type skillTestError struct{ text string }
 
 func (value *skillTestError) Error() string { return value.text }

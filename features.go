@@ -1448,8 +1448,8 @@ type Skills struct {
 	// name.
 	Catalog []Skill
 	// Activate returns the progressive-disclosure instruction for a skill. The
-	// default tells the agent to read the skill file through the filesystem
-	// tools.
+	// default uses a catalog skill's Body, then falls back to telling the agent
+	// to read the skill file through the filesystem tools.
 	Activate     func(Skill) string
 	SystemPrompt PromptTemplate
 	MaxFileBytes int
@@ -1484,8 +1484,8 @@ func newSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, er
 		if item.Name == "" || item.Description == "" {
 			return dagent.Middleware{}, fmt.Errorf("catalog skill %d requires a name and description", index)
 		}
-		if item.Path == "" && options.Activate == nil {
-			return dagent.Middleware{}, fmt.Errorf("catalog skill %q requires a path or activation function", item.Name)
+		if item.Path == "" && strings.TrimSpace(item.Body) == "" && options.Activate == nil {
+			return dagent.Middleware{}, fmt.Errorf("catalog skill %q requires a path, body, or activation function", item.Name)
 		}
 	}
 	if options.MaxFileBytes <= 0 {
@@ -1632,9 +1632,11 @@ func newSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, er
 				if len(skill.AllowedTools) > 0 {
 					lines = append(lines, "  -> Allowed tools: "+strings.Join(skill.AllowedTools, ", "))
 				}
-				activation := "Read `" + skill.Path + "` for full instructions"
+				activation := strings.TrimSpace(skill.Body)
 				if options.Activate != nil {
 					activation = strings.TrimSpace(options.Activate(skill))
+				} else if activation == "" && skill.Path != "" {
+					activation = "Read `" + skill.Path + "` for full instructions"
 				}
 				if activation != "" {
 					lines = append(lines, "  -> "+activation)
@@ -1729,7 +1731,7 @@ func skillsToState(skills []Skill) []map[string]any {
 		}
 		result[index] = map[string]any{
 			"name": item.Name, "description": item.Description, "path": item.Path,
-			"license": item.License, "compatibility": item.Compatibility,
+			"license": item.License, "compatibility": item.Compatibility, "body": item.Body,
 			"metadata": metadata, "allowed_tools": append([]string(nil), item.AllowedTools...),
 		}
 	}
@@ -1753,8 +1755,8 @@ func skillsFromState(value any) []Skill {
 		item := Skill{
 			Name: stringStateValue(record["name"]), Description: stringStateValue(record["description"]),
 			Path: stringStateValue(record["path"]), License: stringStateValue(record["license"]),
-			Compatibility: stringStateValue(record["compatibility"]),
-			Metadata:      map[string]string{},
+			Compatibility: stringStateValue(record["compatibility"]), Body: stringStateValue(record["body"]),
+			Metadata: map[string]string{},
 		}
 		if metadata, ok := record["metadata"].(map[string]any); ok {
 			for key, raw := range metadata {

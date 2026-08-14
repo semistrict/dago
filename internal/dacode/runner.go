@@ -237,8 +237,7 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 	}
 
 	memory, guidanceSummary := workspaceContext(options.WorkingDir)
-	skillSources := existingVirtualDirectories(options.WorkingDir,
-		".agents/skills", ".claude/skills", ".deepagents/skills")
+	skills := workspaceSkills(options.WorkingDir, os.Getenv("HERDR_ENV"))
 
 	systemText := `You are dacode, an interactive coding agent. Work as a careful senior engineer inside the configured workspace. Filesystem tool paths are virtual: use / for the workspace root and never pass a host filesystem path. Inspect relevant files before making claims, use the available filesystem and shell tools to complete requested work, preserve unrelated user changes, and verify edits with focused tests. Keep final responses concise and concrete.`
 	systemText += guidanceSummary
@@ -251,7 +250,7 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 		dago.WithBackend(backend),
 		dago.WithTools(options.Tools...),
 		dago.WithFilesystem(filesystem),
-		dago.WithSkills(dago.Skills{Sources: skillSources}),
+		dago.WithSkills(skills),
 		dago.WithMemory(memory),
 		dago.WithTodo(),
 		dago.WithMiddleware(dagoal.Middleware(goalOptions)),
@@ -356,6 +355,21 @@ func existingVirtualDirectories(root string, names ...string) []string {
 		}
 	}
 	return result
+}
+
+func workspaceSkills(root, herdrEnvironment string) dago.Skills {
+	options := dago.Skills{Sources: existingVirtualDirectories(root,
+		".agents/skills", ".claude/skills", ".deepagents/skills")}
+	if herdrEnvironment != "1" {
+		return options
+	}
+	options.Catalog = []dago.Skill{{
+		Name:        "herdr",
+		Description: "Control Herdr, a terminal multiplexer for coding agents. Use only when the user explicitly mentions Herdr or asks to use Herdr to inspect or control panes, tabs, workspaces, commands, or another agent. Do not use merely because a task could benefit from a background terminal, delegation, or parallel work. Requires HERDR_ENV=1.",
+		License:     "Apache-2.0",
+		Body:        "Run `herdr --skill` with the shell, read its complete output, and follow those release-matched instructions before using Herdr.",
+	}}
+	return options
 }
 
 func newThreadID() (string, error) {

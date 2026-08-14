@@ -36,8 +36,81 @@ func (pool *responsesWebSocketPool) disable() {
 
 type responsesWebSocketConnection struct {
 	conn         *websocket.Conn
+	inbox        *responsesWebSocketInbox
 	busy         bool
 	continuation *responsesContinuation
+}
+
+type responsesWebSocketMessage struct {
+	messageType websocket.MessageType
+	data        []byte
+	err         error
+}
+
+// responsesWebSocketInbox is an unbounded queue so the connection reader never
+// stops processing control frames while an application stream is idle or slow.
+type responsesWebSocketInbox struct {
+	mu     sync.Mutex
+	queued []responsesWebSocketMessage
+	ready  chan struct{}
+}
+
+func newResponsesWebSocketInbox() *responsesWebSocketInbox {
+	return &responsesWebSocketInbox{ready: make(chan struct{}, 1)}
+}
+
+func (inbox *responsesWebSocketInbox) push(message responsesWebSocketMessage) {
+	inbox.mu.Lock()
+	inbox.queued = append(inbox.queued, message)
+	inbox.mu.Unlock()
+	select {
+	case inbox.ready <- struct{}{}:
+	default:
+	}
+}
+
+func (inbox *responsesWebSocketInbox) next(ctx context.Context) (responsesWebSocketMessage, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return responsesWebSocketMessage{}, err
+		}
+		inbox.mu.Lock()
+		if len(inbox.queued) > 0 {
+			message := inbox.queued[0]
+			inbox.queued[0] = responsesWebSocketMessage{}
+			inbox.queued = inbox.queued[1:]
+			more := len(inbox.queued) > 0
+			inbox.mu.Unlock()
+			if more {
+				select {
+				case inbox.ready <- struct{}{}:
+				default:
+				}
+			}
+			return message, nil
+		}
+		inbox.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return responsesWebSocketMessage{}, ctx.Err()
+		case <-inbox.ready:
+		}
+	}
+}
+
+func startResponsesWebSocketReader(connection *websocket.Conn) *responsesWebSocketInbox {
+	inbox := newResponsesWebSocketInbox()
+	go func() {
+		for {
+			messageType, data, err := connection.Read(context.Background())
+			inbox.push(responsesWebSocketMessage{messageType: messageType, data: data, err: err})
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return inbox
 }
 
 type responsesContinuation struct {
@@ -88,6 +161,7 @@ func (client *Client) startWebSocketStream(ctx context.Context, request response
 		if err != nil {
 			return nil, err
 		}
+		connection.inbox = startResponsesWebSocketReader(connection.conn)
 	}
 	payload := responsesWebSocketRequest{
 		Type:               "response.create",
@@ -113,6 +187,7 @@ func (client *Client) startWebSocketStream(ctx context.Context, request response
 		client:     client,
 		pool:       client.websockets,
 		connection: connection,
+		inbox:      connection.inbox,
 		request:    request,
 		parser:     newResponseEventParser(ctx),
 	}, nil
@@ -166,6 +241,7 @@ func (pool *responsesWebSocketPool) release(connection *responsesWebSocketConnec
 			_ = connection.conn.CloseNow()
 		}
 		connection.conn = nil
+		connection.inbox = nil
 		connection.continuation = nil
 	} else {
 		connection.continuation = continuation
@@ -245,6 +321,7 @@ type websocketResponseStream struct {
 	client      *Client
 	pool        *responsesWebSocketPool
 	connection  *responsesWebSocketConnection
+	inbox       *responsesWebSocketInbox
 	request     responsesRequest
 	parser      *responseStream
 	releaseOnce sync.Once
@@ -271,19 +348,23 @@ func (stream *websocketResponseStream) Next(ctx context.Context) (damodel.Chunk,
 		return damodel.Chunk{}, io.EOF
 	}
 	for {
-		messageType, data, err := stream.connection.conn.Read(ctx)
+		message, err := stream.inbox.next(ctx)
 		if err != nil {
+			stream.invalidate()
+			return damodel.Chunk{}, err
+		}
+		if message.err != nil {
 			stream.invalidate()
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return damodel.Chunk{}, ctxErr
 			}
-			return damodel.Chunk{}, fmt.Errorf("openai: read websocket response: %w", err)
+			return damodel.Chunk{}, fmt.Errorf("openai: read websocket response: %w", message.err)
 		}
-		if messageType != websocket.MessageText {
+		if message.messageType != websocket.MessageText {
 			stream.invalidate()
 			return damodel.Chunk{}, fmt.Errorf("openai: unexpected binary websocket event")
 		}
-		chunk, emit, err := stream.parser.event(data)
+		chunk, emit, err := stream.parser.event(message.data)
 		if err != nil {
 			stream.invalidate()
 			return damodel.Chunk{}, stream.client.decorateError(err)

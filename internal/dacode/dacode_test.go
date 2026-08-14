@@ -1099,6 +1099,41 @@ func TestExistingVirtualDirectoriesUseSharedFiltering(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSkillsExposeHerdrOnlyInsideHerdr(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".agents", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := workspaceSkills(root, "")
+	if len(outside.Catalog) != 0 || outside.Activate != nil {
+		t.Fatalf("outside Herdr = %#v", outside)
+	}
+	if len(outside.Sources) != 1 || outside.Sources[0] != "/.agents/skills" {
+		t.Fatalf("outside sources = %#v", outside.Sources)
+	}
+	for _, value := range []string{"true", "0", " 1 "} {
+		if catalog := workspaceSkills(root, value).Catalog; len(catalog) != 0 {
+			t.Fatalf("HERDR_ENV=%q catalog = %#v", value, catalog)
+		}
+	}
+
+	inside := workspaceSkills(root, "1")
+	if len(inside.Catalog) != 1 || inside.Catalog[0].Name != "herdr" || inside.Catalog[0].License != "Apache-2.0" {
+		t.Fatalf("inside Herdr = %#v", inside)
+	}
+	wantDescription := "Control Herdr, a terminal multiplexer for coding agents. Use only when the user explicitly mentions Herdr or asks to use Herdr to inspect or control panes, tabs, workspaces, commands, or another agent. Do not use merely because a task could benefit from a background terminal, delegation, or parallel work. Requires HERDR_ENV=1."
+	if inside.Catalog[0].Description != wantDescription {
+		t.Fatalf("inside description = %q", inside.Catalog[0].Description)
+	}
+	if inside.Activate != nil {
+		t.Fatal("inside activation callback is set")
+	}
+	if !strings.Contains(inside.Catalog[0].Body, "herdr --skill") {
+		t.Fatalf("inside body = %q", inside.Catalog[0].Body)
+	}
+}
+
 func TestThreadIDIsStableHex(t *testing.T) {
 	first, err := newThreadID()
 	if err != nil {
