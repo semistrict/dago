@@ -20,7 +20,7 @@ func TestInterpreterPersistsBindingsAndCallsPTCTools(t *testing.T) {
 	}) (string, error) {
 		return "echo:" + input.Value, nil
 	})
-	middleware, err := newInterpreter(Interpreter{PTC: []string{"echo_value"}})
+	middleware, err := compileInterpreter(Interpreter{PTC: []string{"echo_value"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestInterpreterPersistsBindingsAndCallsPTCTools(t *testing.T) {
 func TestInterpreterRejectsPTCNameCollisions(t *testing.T) {
 	first := datool.MustNew("foo_bar", "first", func(context.Context, struct{}) (string, error) { return "", nil })
 	second := datool.MustNew("foo-bar", "second", func(context.Context, struct{}) (string, error) { return "", nil })
-	middleware, err := newInterpreter(Interpreter{PTC: []string{"foo_bar", "foo-bar"}})
+	middleware, err := compileInterpreter(Interpreter{PTC: []string{"foo_bar", "foo-bar"}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -89,7 +89,6 @@ type GraphRegistration struct {
 
 // Options configures an Agent Server instance.
 type Options struct {
-	Graphs         []GraphRegistration
 	Saver          dacheckpoint.Saver
 	Store          dastore.Store
 	Deps           any

@@ -25,7 +25,7 @@ import (
 
 func prepareInterpreterTest(t *testing.T, options Interpreter, thread string, tools ...datool.Tool) (dagent.Middleware, datool.Tool, string) {
 	t.Helper()
-	middleware, err := newInterpreter(options)
+	middleware, err := compileInterpreter(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestInterpreterRejectsInvalidLimits(t *testing.T) {
 		{MaxPTCCalls: -1},
 	}
 	for _, options := range tests {
-		if _, err := newInterpreter(options); err == nil {
+		if _, err := compileInterpreter(options); err == nil {
 			t.Fatalf("options %#v accepted", options)
 		}
 	}

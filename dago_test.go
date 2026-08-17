@@ -86,7 +86,7 @@ func TestNewSubagentAcceptsAgentOptionSlice(t *testing.T) {
 }
 
 func TestAgentDefaultVerticalSlice(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	script := modeltest.New(damodel.Profile{ToolCalling: true, ContextWindow: 10000},
 		modeltest.Step{Check: func(request damodel.Request) error {
 			names := map[string]bool{}
@@ -157,13 +157,11 @@ func TestAgentPreservesExplicitConstructionMetadataAndTags(t *testing.T) {
 
 func TestAgentBindsRuntimeScopedStoreBackend(t *testing.T) {
 	values := dastore.NewMemory()
-	files, err := dabackend.NewStoreWithOptions(dabackend.StoreOptions{Namespace: func(runtime *dabackend.Runtime) (dastore.Namespace, error) {
+	files := dabackend.NewStoreWithOptions(func(runtime *dabackend.Runtime) (dastore.Namespace, error) {
 		user, _ := dabackend.DepsAs[string](runtime)
 		return dastore.Namespace{"files", user}, nil
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	})
+
 	script := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/note.txt","content":"private"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
@@ -357,12 +355,10 @@ func TestAgentInterruptOnWiresHumanApproval(t *testing.T) {
 }
 
 func TestExplicitApprovalOverridesFilesystemPermissionApproval(t *testing.T) {
-	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/secret.txt": {Content: "backend secret", Encoding: dabackend.EncodingUTF8},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	script := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/secret.txt"}`)}}}}},
 		modeltest.Step{Check: func(request damodel.Request) error {
@@ -434,7 +430,7 @@ func TestDefaultStateBackendPersistsParallelWritesPerThread(t *testing.T) {
 }
 
 func TestFilesystemPermissionDenyAndApproval(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	_, _ = memory.Write(context.Background(), "/public.txt", "public")
 	_, _ = memory.Write(context.Background(), "/secret.txt", "secret")
 	script := modeltest.New(damodel.Profile{ToolCalling: true},
@@ -472,7 +468,7 @@ func TestFilesystemPermissionDenyAndApproval(t *testing.T) {
 }
 
 func TestMemoryAndSkillsPromptInjection(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	_, _ = memory.Write(context.Background(), "/AGENTS.md", "<!-- hidden -->Remember blue.")
 	_, _ = memory.Write(context.Background(), "/skills/research/SKILL.md", "---\nname: research\ndescription: Research carefully\nallowed-tools: read_file, grep\n---\nInstructions")
 	script := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
@@ -777,10 +773,8 @@ func TestDeclarativeSubagentInheritsToolsAndUsesOwnModelAndPrompt(t *testing.T) 
 }
 
 func TestDeclarativeSubagentPropagatesNonMessageState(t *testing.T) {
-	files, err := dabackend.NewState("", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	files := dabackend.NewState("", nil)
+
 	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "declarative-write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/declarative.txt","content":"from declarative child"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("created")}},
@@ -1165,10 +1159,8 @@ func TestApprovalConfigurationRequiresCheckpointer(t *testing.T) {
 }
 
 func TestSubagentCanPropagateSelectedStateWithoutMessageLeak(t *testing.T) {
-	files, err := dabackend.NewState("", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	files := dabackend.NewState("", nil)
+
 	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Check: func(request damodel.Request) error {
 			if len(request.Messages) != 1 || request.Messages[0].TextContent() != "create child file" {
@@ -1204,7 +1196,7 @@ func TestSubagentCanPropagateSelectedStateWithoutMessageLeak(t *testing.T) {
 }
 
 func TestSummarizationPreservesRawHistoryAndOffloads(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{ContextWindow: 100}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("facts")}})
 	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "conversation that has been summarized") {
@@ -1235,7 +1227,7 @@ func TestSummarizationEventSurvivesSQLiteReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer saver.Close()
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("durable summary")}})
 	firstModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "durable summary") {
@@ -1272,7 +1264,7 @@ func TestSummarizationEventSurvivesSQLiteReplay(t *testing.T) {
 }
 
 func TestSummarizationOffloadsLargeOldMedia(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "/conversation_history/media/") {
 			return errors.New("large old media was not replaced with a reference")
@@ -1297,7 +1289,7 @@ func TestSummarizationOffloadsLargeOldMedia(t *testing.T) {
 }
 
 func TestSummarizationRetriesContextOverflowWithCompactedHistory(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("fallback facts")}})
 	mainModel := modeltest.New(damodel.Profile{},
 		modeltest.Step{Error: damodel.ErrContextOverflow},
@@ -1325,7 +1317,7 @@ func TestSummarizationRetriesContextOverflowWithCompactedHistory(t *testing.T) {
 }
 
 func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("summary")}})
 	mainModel := modeltest.New(damodel.Profile{},
 		modeltest.Step{Error: damodel.ErrContextOverflow},
@@ -1372,10 +1364,8 @@ func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
 }
 
 func TestSummarizationPersistsOverflowArtifactsInStateBackend(t *testing.T) {
-	files, err := dabackend.NewState("", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	files := dabackend.NewState("", nil)
+
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("summary")}})
 	mainModel := modeltest.New(damodel.Profile{},
 		modeltest.Step{Error: damodel.ErrContextOverflow},
@@ -1419,7 +1409,7 @@ func TestSummarizationPersistsOverflowArtifactsInStateBackend(t *testing.T) {
 }
 
 func TestOverflowClipKeepsReadFileAtOriginalPath(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	content := strings.Repeat("content line\n", 2_000)
 	call := damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
 		ID: "read-one", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/source.txt"}`),

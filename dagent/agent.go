@@ -18,6 +18,7 @@ import (
 	"github.com/semistrict/dago/dastore"
 	"github.com/semistrict/dago/datool"
 	graph "github.com/semistrict/dago/internal/graph"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // Options configures a generic tool-calling agent.
@@ -106,15 +107,16 @@ type Interrupt = datool.Interrupt
 
 // New compiles a model/tool graph. It panics when static construction options
 // violate an invariant; invocation and dependency failures remain errors on Agent methods.
-func New(model damodel.Chat, options Options) *Agent {
-	agent, err := newAgent(model, options)
+func New(model damodel.Chat, optionValues ...Options) *Agent {
+	options := optionvalue.Resolve("agent", optionValues)
+	agent, err := compileAgent(model, options)
 	if err != nil {
 		panic(err)
 	}
 	return agent
 }
 
-func newAgent(model damodel.Chat, options Options) (*Agent, error) {
+func compileAgent(model damodel.Chat, options Options) (*Agent, error) {
 	if model == nil {
 		return nil, fmt.Errorf("create agent: model is nil")
 	}

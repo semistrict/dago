@@ -8,6 +8,7 @@ import (
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // BudgetUpdate distinguishes keeping, setting, and clearing a token budget.
@@ -38,10 +39,11 @@ type Service struct {
 	options Options
 }
 
-func NewService(agent *dagent.Agent, options Options) *Service {
+func NewService(agent *dagent.Agent, optionValues ...Options) *Service {
 	if agent == nil {
 		panic("goal service requires an agent")
 	}
+	options := optionvalue.Resolve("goal service", optionValues)
 	return &Service{agent: agent, options: options.configured()}
 }
 

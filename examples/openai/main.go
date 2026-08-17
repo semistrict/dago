@@ -20,10 +20,7 @@ func main() {
 	if modelName == "" {
 		modelName = "gpt-5"
 	}
-	chat, err := openai.NewAPIKey(key, openai.Options{Model: modelName, ContextWindow: 128_000})
-	if err != nil {
-		log.Fatal(err)
-	}
+	chat := openai.NewAPIKey(key, modelName, openai.Options{ContextWindow: 128_000})
 	workspace, err := dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: "."})
 	if err != nil {
 		log.Fatal(err)

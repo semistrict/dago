@@ -47,10 +47,8 @@ func (fake *fakeSandbox) Run(_ context.Context, params ls.SandboxBoxRunParams, _
 
 func TestBackendConformsAndUsesNativeFileTransfer(t *testing.T) {
 	fake := &fakeSandbox{files: map[string][]byte{"/work/a.txt": []byte("one\r\ntwo\rthree\n")}}
-	remote, err := newBackend("sandbox", fake, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	remote := newBackend("sandbox", fake, Options{})
+
 	var _ dabackend.Sandbox = remote
 	read, err := remote.Read(context.Background(), "/work/a.txt", 1, 1)
 	if err != nil {
@@ -75,6 +73,15 @@ func TestBackendConformsAndUsesNativeFileTransfer(t *testing.T) {
 	}
 }
 
+func TestNewPanicsForNilSandbox(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil sandbox did not panic")
+		}
+	}()
+	New(nil)
+}
+
 func TestListParsesNULTerminatedMetadata(t *testing.T) {
 	fake := &fakeSandbox{run: func(command string) (*ls.SandboxExecutionResult, error) {
 		if !strings.HasPrefix(command, "find '/work'") {
@@ -82,7 +89,7 @@ func TestListParsesNULTerminatedMetadata(t *testing.T) {
 		}
 		return &ls.SandboxExecutionResult{Stdout: "f\t12\t10.500000000\t/work/z.txt\x00d\t0\t9.000000000\t/work/a\x00"}, nil
 	}}
-	remote, _ := newBackend("sandbox", fake, Options{})
+	remote := newBackend("sandbox", fake, Options{})
 	result, err := remote.List(context.Background(), "/work")
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +103,7 @@ func TestExecuteCombinesOutputAndBoundsIt(t *testing.T) {
 	fake := &fakeSandbox{run: func(command string) (*ls.SandboxExecutionResult, error) {
 		return &ls.SandboxExecutionResult{Stdout: "12345", Stderr: "error", ExitCode: 7}, nil
 	}}
-	remote, _ := newBackend("sandbox", fake, Options{MaxOutput: 8})
+	remote := newBackend("sandbox", fake, Options{MaxOutput: 8})
 	result, err := remote.Execute(context.Background(), "false", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +115,7 @@ func TestExecuteCombinesOutputAndBoundsIt(t *testing.T) {
 
 func TestExecutePreservesOmittedAndZeroTimeouts(t *testing.T) {
 	fake := &fakeSandbox{}
-	remote, _ := newBackend("sandbox", fake, Options{})
+	remote := newBackend("sandbox", fake, Options{})
 	if _, err := remote.ExecuteWithOptions(context.Background(), "true", dabackend.ExecuteOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +139,7 @@ func TestExecutePreservesOmittedAndZeroTimeouts(t *testing.T) {
 }
 
 func TestRemotePathsRejectTraversalAndRootDelete(t *testing.T) {
-	remote, _ := newBackend("sandbox", &fakeSandbox{}, Options{})
+	remote := newBackend("sandbox", &fakeSandbox{}, Options{})
 	if _, err := remote.Read(context.Background(), "../secret", 0, 1); err == nil {
 		t.Fatal("relative traversal should fail")
 	}
@@ -150,7 +157,7 @@ func TestBinaryReadAndSizeLimit(t *testing.T) {
 		"/large":     []byte("large"),
 		"/ascii.mkv": []byte("plain text bytes"),
 	}}
-	remote, _ := newBackend("sandbox", fake, Options{MaxFileSize: 4})
+	remote := newBackend("sandbox", fake, Options{MaxFileSize: 4})
 	result, err := remote.Read(context.Background(), "/binary", 0, 10)
 	if err != nil || result.Data.Encoding != dabackend.EncodingBase64 || result.Data.Content != "/wA=" {
 		t.Fatalf("binary result = %#v, %v", result, err)
@@ -158,7 +165,7 @@ func TestBinaryReadAndSizeLimit(t *testing.T) {
 	if _, err := remote.Read(context.Background(), "/large", 0, 10); err == nil {
 		t.Fatal("large read should fail")
 	}
-	remote, _ = newBackend("sandbox", fake, Options{})
+	remote = newBackend("sandbox", fake, Options{})
 	result, err = remote.Read(context.Background(), "/ascii.mkv", 99, 0)
 	if err != nil || result.Data.Encoding != dabackend.EncodingBase64 || result.NoLinesRequested {
 		t.Fatalf("extension-routed binary result = %#v, %v", result, err)
@@ -171,7 +178,7 @@ func TestReadBoundsBinaryPreviewsAndTextPages(t *testing.T) {
 		"/over.png":  bytes.Repeat([]byte{0}, dabackend.MaxSandboxBinaryPreviewBytes+1),
 		"/big.txt":   []byte(strings.Repeat("x", 100_000) + "\n" + strings.Repeat("y", 100_000) + "\n" + strings.Repeat("z", 400_000) + "\ntail"),
 	}}
-	remote, _ := newBackend("sandbox", fake, Options{})
+	remote := newBackend("sandbox", fake, Options{})
 	exact, err := remote.Read(context.Background(), "/exact.png", 0, 1)
 	if err != nil || exact.Data == nil || exact.Data.Encoding != dabackend.EncodingBase64 {
 		t.Fatalf("exact binary read = %#v, %v", exact, err)
@@ -193,7 +200,7 @@ func TestReadBoundsBinaryPreviewsAndTextPages(t *testing.T) {
 
 func TestReadNormalizesRemotePaginationWithoutTrailingNewline(t *testing.T) {
 	fake := &fakeSandbox{files: map[string][]byte{"/lines.txt": []byte("one\r\ntwo\rthree\n")}}
-	remote, _ := newBackend("sandbox", fake, Options{})
+	remote := newBackend("sandbox", fake, Options{})
 	page, err := remote.Read(context.Background(), "/lines.txt", 1, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +215,7 @@ func TestReadAndEditUseSharedTextSemantics(t *testing.T) {
 		"/blank.txt": []byte(" \r\n\t"),
 		"/eof.txt":   []byte("one\r\ntwo"),
 	}}
-	remote, _ := newBackend("sandbox", fake, Options{})
+	remote := newBackend("sandbox", fake, Options{})
 
 	blank, err := remote.Read(context.Background(), "/blank.txt", 100, 0)
 	if err != nil || blank.Data.Content != "" || !blank.NoLinesRequested {

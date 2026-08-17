@@ -19,7 +19,7 @@ func BenchmarkMemoryTrackingOverhead(b *testing.B) {
 			}
 			b.Run(fmt.Sprintf("%s/%s", benchmarkSizeName(writeBytes), name), func(b *testing.B) {
 				ctx := context.Background()
-				engine, err := New(ctx, Options{}, nil)
+				engine, err := New(ctx, nil)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -50,7 +50,7 @@ func BenchmarkMemoryTrackingOverhead(b *testing.B) {
 func BenchmarkSnapshotCapture(b *testing.B) {
 	const heapBytes = 8 << 20
 	ctx := context.Background()
-	engine, err := New(ctx, Options{}, nil)
+	engine, err := New(ctx, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func BenchmarkDirtyBitmapScan(b *testing.B) {
 	for _, heapBytes := range []int{1 << 20, 8 << 20, 32 << 20} {
 		b.Run(benchmarkSizeName(heapBytes), func(b *testing.B) {
 			ctx := context.Background()
-			engine, err := New(ctx, Options{}, nil)
+			engine, err := New(ctx, nil)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -165,7 +165,7 @@ func BenchmarkDirtyBitmapScan(b *testing.B) {
 func BenchmarkApplyDirtySnapshot(b *testing.B) {
 	const heapBytes = 8 << 20
 	ctx := context.Background()
-	seed, err := New(ctx, Options{}, nil)
+	seed, err := New(ctx, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func BenchmarkApplyDirtySnapshot(b *testing.B) {
 	}
 
 	for _, writeBytes := range []int{4 << 10, 256 << 10, 4 << 20} {
-		engine, err := New(ctx, Options{}, anchor)
+		engine, err := New(ctx, anchor)
 		if err != nil {
 			b.Fatal(err)
 		}

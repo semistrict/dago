@@ -16,6 +16,16 @@ Normative source revisions are pinned in
 checkouts are selected with the environment variables documented in
 [`docs/UPSTREAM.md`](docs/UPSTREAM.md); never embed machine-specific checkout paths.
 
+Constructors must not return errors solely for static input validation. Put required
+dependencies and values in positional parameters rather than option structs, and
+panic when a runtime check is truly necessary to reject a programmer mistake. Keep
+constructor errors for external configuration, I/O, remote operations, and runtime
+setup failures that callers can meaningfully handle.
+
+Constructor option structs are optional zero-or-one variadic tail parameters, such
+as `options ...Options`; resolve them with `internal/optionvalue`. Do not put required
+values in those structs.
+
 The repository contains two Go modules:
 
 - The root module contains the dago library, adapters, conformance fixtures, and

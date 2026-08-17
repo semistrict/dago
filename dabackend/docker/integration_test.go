@@ -17,7 +17,7 @@ func TestDockerSandboxLive(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	backend, err := New(ctx, Options{Image: image})
+	backend, err := New(ctx, image)
 	if err != nil {
 		t.Fatal(err)
 	}

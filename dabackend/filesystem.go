@@ -16,6 +16,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 type FilesystemOptions struct {
@@ -136,7 +138,8 @@ func (backend *Filesystem) currentRoot() (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
-func NewFilesystem(options FilesystemOptions) (*Filesystem, error) {
+func NewFilesystem(optionValues ...FilesystemOptions) (*Filesystem, error) {
+	options := optionvalue.Resolve("filesystem", optionValues)
 	root := options.Root
 	if options.GetRoot != nil {
 		root = options.GetRoot()

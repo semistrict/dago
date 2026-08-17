@@ -65,14 +65,14 @@ type Backend struct {
 	commitHash string
 }
 
-func New(identifier string, client Client) (*Backend, error) {
+func New(identifier string, client Client) *Backend {
 	if strings.TrimSpace(identifier) == "" {
-		return nil, fmt.Errorf("context hub backend: identifier is required")
+		panic("context hub backend: identifier is required")
 	}
 	if client == nil {
-		return nil, fmt.Errorf("context hub backend: client is required")
+		panic("context hub backend: client is required")
 	}
-	return &Backend{identifier: identifier, client: client}, nil
+	return &Backend{identifier: identifier, client: client}
 }
 
 func (remote *Backend) loadLocked(ctx context.Context) error {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/semistrict/dago"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const maxAgentProtocolResponse = 8 << 20
@@ -33,17 +34,18 @@ type Runner struct {
 	client  *http.Client
 }
 
-func New(rawURL string, options Options) (*Runner, error) {
+func New(rawURL string, optionValues ...Options) *Runner {
+	options := optionvalue.Resolve("agent protocol", optionValues)
 	baseURL, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" || (baseURL.Scheme != "http" && baseURL.Scheme != "https") {
-		return nil, fmt.Errorf("agent protocol: valid http(s) URL is required")
+		panic("agent protocol: valid http(s) URL is required")
 	}
 	baseURL.RawQuery, baseURL.Fragment = "", ""
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
 	headers := make(http.Header, len(options.Headers)+3)
 	for name, value := range options.Headers {
 		if strings.EqualFold(name, "x-api-key") {
-			return nil, fmt.Errorf("agent protocol: x-api-key is reserved; use APIKey")
+			panic("agent protocol: x-api-key is reserved; use APIKey")
 		}
 		headers.Set(name, value)
 	}
@@ -68,7 +70,7 @@ func New(rawURL string, options Options) (*Runner, error) {
 	}
 	clientCopy := *client
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Runner{baseURL: baseURL, headers: headers, client: &clientCopy}, nil
+	return &Runner{baseURL: baseURL, headers: headers, client: &clientCopy}
 }
 
 func (runner *Runner) Start(ctx context.Context, request dago.AsyncStartRequest) (dago.AsyncRun, error) {

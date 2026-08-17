@@ -55,12 +55,10 @@ func TestAgentProtocolRunnerLifecycle(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	runner, err := New(server.URL+"/api/", Options{
+	runner := New(server.URL+"/api/", Options{
 		APIKey: "test-api-key", Headers: map[string]string{"X-Custom": "yes"}, HTTPClient: server.Client(),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	ctx := context.Background()
 	started, err := runner.Start(ctx, dago.AsyncStartRequest{GraphID: "research", Description: "find it"})
 	if err != nil || started.ThreadID != "thread/1" || started.RunID != "run/1" || started.Status != "running" {
@@ -111,7 +109,7 @@ func TestAgentProtocolCheckErrorAndMissingOutput(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"values":{}}`))
 	}))
 	defer server.Close()
-	runner, _ := New(server.URL, Options{APIKey: "none", HTTPClient: server.Client()})
+	runner := New(server.URL, Options{APIKey: "none", HTTPClient: server.Client()})
 	failed, err := runner.Check(context.Background(), dago.AsyncCheckRequest{ThreadID: "thread", RunID: "run"})
 	failure, ok := failed.Outcome.(dago.AsyncFailure)
 	if err != nil || !ok || failure.Message != `{"message":"broken"}` {
@@ -135,7 +133,7 @@ func TestAgentProtocolCheckIgnoresThreadFetchFailure(t *testing.T) {
 		http.Error(writer, "down", http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
-	runner, _ := New(server.URL, Options{APIKey: "none", HTTPClient: server.Client()})
+	runner := New(server.URL, Options{APIKey: "none", HTTPClient: server.Client()})
 	result, err := runner.Check(context.Background(), dago.AsyncCheckRequest{ThreadID: "thread", RunID: "run"})
 	success, ok := result.Outcome.(dago.AsyncSuccess)
 	if err != nil || !ok || success.Value != nil {
@@ -153,7 +151,7 @@ func TestAgentProtocolPreservesStructuredMessageContent(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"values":{"messages":[{"content":[{"type":"text","text":"report"}]}]}}`))
 	}))
 	defer server.Close()
-	runner, _ := New(server.URL, Options{APIKey: "none", HTTPClient: server.Client()})
+	runner := New(server.URL, Options{APIKey: "none", HTTPClient: server.Client()})
 	result, err := runner.Check(context.Background(), dago.AsyncCheckRequest{ThreadID: "thread", RunID: "run"})
 	success, ok := result.Outcome.(dago.AsyncSuccess)
 	parts, partsOK := success.Value.([]any)
@@ -170,7 +168,7 @@ func TestAgentProtocolDoesNotFollowRedirectsWithCredentials(t *testing.T) {
 		http.Redirect(writer, request, target.URL, http.StatusTemporaryRedirect)
 	}))
 	defer server.Close()
-	runner, _ := New(server.URL, Options{APIKey: "test-api-key", HTTPClient: server.Client()})
+	runner := New(server.URL, Options{APIKey: "test-api-key", HTTPClient: server.Client()})
 	if _, err := runner.Start(context.Background(), dago.AsyncStartRequest{GraphID: "graph", Description: "task"}); err == nil {
 		t.Fatal("redirect succeeded")
 	}
@@ -181,18 +179,24 @@ func TestAgentProtocolDoesNotFollowRedirectsWithCredentials(t *testing.T) {
 
 func TestAgentProtocolConfigurationValidationAndEnvironmentKey(t *testing.T) {
 	for _, value := range []string{"", "localhost:8123", "ftp://example.com"} {
-		if _, err := New(value, Options{}); err == nil {
-			t.Fatalf("URL %q accepted", value)
-		}
+		requirePanic(t, func() { New(value) })
 	}
-	if _, err := New("https://example.com", Options{Headers: map[string]string{"X-API-Key": "bad"}}); err == nil {
-		t.Fatal("reserved header accepted")
-	}
+	requirePanic(t, func() { New("https://example.com", Options{Headers: map[string]string{"X-API-Key": "bad"}}) })
 	t.Setenv("LANGGRAPH_API_KEY", " test-env-api-key ")
-	runner, err := New("https://example.com", Options{})
-	if err != nil || runner.headers.Get("x-api-key") != "test-env-api-key" {
-		t.Fatalf("key = %q, err = %v", runner.headers.Get("x-api-key"), err)
+	runner := New("https://example.com")
+	if runner.headers.Get("x-api-key") != "test-env-api-key" {
+		t.Fatalf("key = %q", runner.headers.Get("x-api-key"))
 	}
+}
+
+func requirePanic(t *testing.T, call func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("call did not panic")
+		}
+	}()
+	call()
 }
 
 func TestAsyncSubagentRequiresRunner(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,14 +52,13 @@ func TestInvokeMapsOpenRouterResponsesRequest(t *testing.T) {
 		AllowFallbacks: &noFallbacks, RequireParameters: &requireParameters,
 		DataCollection: "deny", Sort: "throughput",
 	}
-	client, err := New("secret", Options{
-		Model: "anthropic/claude-sonnet-4.6", BaseURL: server.URL + "/responses", HTTPClient: server.Client(),
-		AppURL: "https://example.test/agent", AppTitle: "Example Agent", Routing: routing,
-		ContextWindow: 200_000, MaxOutputTokens: 32_000, RetryBackoff: []time.Duration{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := New("secret",
+		"anthropic/claude-sonnet-4.6", Options{
+			BaseURL: server.URL + "/responses", HTTPClient: server.Client(),
+			AppURL: "https://example.test/agent", AppTitle: "Example Agent", Routing: routing,
+			ContextWindow: 200_000, MaxOutputTokens: 32_000, RetryBackoff: []time.Duration{},
+		})
+
 	routing.Order[0] = "mutated-after-construction"
 
 	response, err := client.Invoke(context.Background(), damodel.Request{
@@ -100,10 +100,8 @@ func TestStreamIgnoresOpenRouterKeepaliveComments(t *testing.T) {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n")
 	}))
 	defer server.Close()
-	client, err := New("secret", Options{Model: "openai/gpt-5", BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := New("secret", "openai/gpt-5", Options{BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{}})
+
 	stream, err := client.Stream(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)
@@ -126,11 +124,9 @@ func TestErrorUsesOpenRouterIdentityAndContextOverflowType(t *testing.T) {
 		_, _ = io.WriteString(writer, `{"error_type":"context_length_exceeded","error":{"code":"invalid_prompt","message":"too long"}}`)
 	}))
 	defer server.Close()
-	client, err := New("secret", Options{Model: "google/gemini-3.1-pro", BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
+	client := New("secret", "google/gemini-3.1-pro", Options{BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{}})
+
+	_, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if !errors.Is(err, damodel.ErrContextOverflow) {
 		t.Fatalf("error = %v, want context overflow", err)
 	}
@@ -155,13 +151,12 @@ func TestRetryEventUsesOpenRouterIdentity(t *testing.T) {
 		_, _ = io.WriteString(writer, `{"id":"r","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
-	client, err := New("secret", Options{
-		Model: "meta-llama/llama-3.3-70b-instruct", BaseURL: server.URL, HTTPClient: server.Client(),
-		RetryBackoff: []time.Duration{time.Nanosecond},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := New("secret",
+		"meta-llama/llama-3.3-70b-instruct", Options{
+			BaseURL: server.URL, HTTPClient: server.Client(),
+			RetryBackoff: []time.Duration{time.Nanosecond},
+		})
+
 	var events []damodel.RetryEvent
 	ctx := damodel.WithRetryObserver(context.Background(), func(_ context.Context, event damodel.RetryEvent) {
 		events = append(events, event)
@@ -188,10 +183,13 @@ func TestRoutingValidation(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := New("secret", Options{Model: "model", Routing: &test.routing})
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
+			defer func() {
+				value := recover()
+				if value == nil || !strings.Contains(fmt.Sprint(value), test.want) {
+					t.Fatalf("panic = %v, want %q", value, test.want)
+				}
+			}()
+			New("secret", "model", Options{Routing: &test.routing})
 		})
 	}
 }

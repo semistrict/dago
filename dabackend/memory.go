@@ -33,7 +33,15 @@ func (memory *Memory) Snapshot() map[string]FileData {
 	return result
 }
 
-func NewMemory(initial map[string]FileData) (*Memory, error) {
+func NewMemory(initial map[string]FileData) *Memory {
+	result, err := restoreMemory(initial)
+	if err != nil {
+		panic(err)
+	}
+	return result
+}
+
+func restoreMemory(initial map[string]FileData) (*Memory, error) {
 	result := &Memory{files: map[string]FileData{}, now: time.Now}
 	for name, data := range initial {
 		normalized, err := normalizeVirtual(name)

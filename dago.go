@@ -64,14 +64,14 @@ func NewAgent(model damodel.Chat, options ...Option) *dagent.Agent {
 		}
 		current.apply(&config)
 	}
-	agent, err := newAgent(model, config)
+	agent, err := compileAgent(model, config)
 	if err != nil {
 		panic(err)
 	}
 	return agent
 }
 
-func newAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
+func compileAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
 	if model == nil {
 		return nil, fmt.Errorf("create deep agent: model is nil")
 	}
@@ -82,10 +82,7 @@ func newAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
 		return nil, fmt.Errorf("human approval requires a checkpointer")
 	}
 	if options.Backend == nil {
-		memory, err := dabackend.NewState("", nil)
-		if err != nil {
-			return nil, err
-		}
+		memory := dabackend.NewState("", nil)
 		options.Backend = memory
 	}
 	profile, err := resolveProfiles(model, options.Profiles)
@@ -108,7 +105,7 @@ func newAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
 		}
 	}
 	options.Tools = applyToolProfile(options.Tools, profile.ToolDescriptions, nil)
-	filesystem, err := newFilesystem(options.Backend, configuredFilesystem(options, nil), options.InterruptOn)
+	filesystem, err := compileFilesystem(options.Backend, configuredFilesystem(options, nil), options.InterruptOn)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +115,7 @@ func newAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
 		core = append(core, dagent.TodoList())
 	}
 	if options.Skills.Sources != nil || options.Skills.LabeledSources != nil || options.Skills.Catalog != nil {
-		middleware, err := newSkills(options.Backend, options.Skills)
+		middleware, err := compileSkills(options.Backend, options.Skills)
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +123,7 @@ func newAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
 	}
 	core = append(core, filesystem)
 	if options.Interpreter != nil {
-		interpreter, err := newInterpreter(*options.Interpreter)
+		interpreter, err := compileInterpreter(*options.Interpreter)
 		if err != nil {
 			return nil, err
 		}
@@ -167,7 +164,7 @@ func newAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
 	}
 	if !options.DisableSummary {
 		summaryModel := options.Summarization.modelFor(model)
-		middleware, err := newSummarization(summaryModel, options.Backend, options.Summarization)
+		middleware, err := compileSummarization(summaryModel, options.Backend, options.Summarization)
 		if err != nil {
 			return nil, err
 		}
@@ -195,7 +192,7 @@ func newAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
 			sort.Strings(sources)
 		}
 		memory.Sources = sources
-		middleware, err := newMemory(options.Backend, memory, true)
+		middleware, err := compileMemory(options.Backend, memory, true)
 		if err != nil {
 			return nil, err
 		}
@@ -272,7 +269,7 @@ func buildDeclarativeSubagents(parentModel damodel.Chat, options agentConfig, in
 		compile := func(output *dagent.StructuredOutput) (Runnable, error) {
 			current := compiledConfig
 			current.StructuredOutput = output
-			return newAgent(chat, current)
+			return compileAgent(chat, current)
 		}
 		compiled, err := compile(compiledConfig.StructuredOutput)
 		if err != nil {
@@ -328,14 +325,14 @@ func buildGeneralSubagent(model damodel.Chat, options agentConfig, filesystem da
 	middleware := []dagent.Middleware{}
 	middleware = append(middleware, filesystem)
 	if options.Interpreter != nil {
-		interpreter, err := newInterpreter(*options.Interpreter)
+		interpreter, err := compileInterpreter(*options.Interpreter)
 		if err != nil {
 			return nil, err
 		}
 		middleware = append(middleware, interpreter)
 	}
 	if !options.DisableSummary {
-		compact, err := newSummarization(options.Summarization.modelFor(model), options.Backend, options.Summarization)
+		compact, err := compileSummarization(options.Summarization.modelFor(model), options.Backend, options.Summarization)
 		if err != nil {
 			return nil, err
 		}
@@ -343,7 +340,7 @@ func buildGeneralSubagent(model damodel.Chat, options agentConfig, filesystem da
 	}
 	middleware = append(middleware, PatchToolCalls())
 	if options.Skills.Sources != nil || options.Skills.LabeledSources != nil || options.Skills.Catalog != nil {
-		skills, err := newSkills(options.Backend, options.Skills)
+		skills, err := compileSkills(options.Backend, options.Skills)
 		if err != nil {
 			return nil, err
 		}

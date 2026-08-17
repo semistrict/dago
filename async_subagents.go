@@ -103,14 +103,14 @@ func AsyncSubagents(first AsyncSubagent, rest ...AsyncSubagent) dagent.Middlewar
 // AsyncSubagentsWithOptions adds background-task tools with explicit options.
 func AsyncSubagentsWithOptions(options AsyncSubagentsOptions, first AsyncSubagent, rest ...AsyncSubagent) dagent.Middleware {
 	values := append([]AsyncSubagent{first}, rest...)
-	middleware, err := newAsyncSubagents(options, values)
+	middleware, err := compileAsyncSubagents(options, values)
 	if err != nil {
 		panic(err)
 	}
 	return middleware
 }
 
-func newAsyncSubagents(options AsyncSubagentsOptions, subagents []AsyncSubagent) (dagent.Middleware, error) {
+func compileAsyncSubagents(options AsyncSubagentsOptions, subagents []AsyncSubagent) (dagent.Middleware, error) {
 	if len(subagents) == 0 {
 		return dagent.Middleware{}, fmt.Errorf("at least one async subagent is required")
 	}

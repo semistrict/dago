@@ -109,7 +109,7 @@ func benchmarkInterpreterToolOutput(b *testing.B, tool datool.Tool, payloadBytes
 
 func newInterpreterBenchmark(b *testing.B, options Interpreter, thread string, tools ...datool.Tool) (dagent.Middleware, datool.Tool) {
 	b.Helper()
-	middleware, err := newInterpreter(options)
+	middleware, err := compileInterpreter(options)
 	if err != nil {
 		b.Fatal(err)
 	}

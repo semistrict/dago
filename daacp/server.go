@@ -11,6 +11,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -69,7 +70,8 @@ type Server struct {
 
 // New constructs an ACP server. It panics when runner is nil because a server
 // without an execution target can never serve a prompt.
-func New(runner Runner, options Options) *Server {
+func New(runner Runner, optionValues ...Options) *Server {
+	options := optionvalue.Resolve("ACP server", optionValues)
 	if runner == nil && options.SessionFactory == nil {
 		panic("ACP server: runner or session factory is required")
 	}

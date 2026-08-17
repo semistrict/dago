@@ -10,31 +10,36 @@ import (
 
 	"github.com/semistrict/dago/browser/jsbridge"
 	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // Options configures the stable JavaScript bridge names and model profile.
 type Options struct {
 	Profile         damodel.Profile
-	InvokeGlobal    string
 	InterruptGlobal string
 }
 
 // Chat implements damodel.Chat through an async JavaScript inference function.
 type Chat struct {
-	options Options
+	invokeGlobal string
+	options      Options
 }
 
 // New constructs a browser WebGPU chat adapter.
-func New(options Options) *Chat {
-	return &Chat{options: options}
+func New(invokeGlobal string, optionValues ...Options) *Chat {
+	if invokeGlobal == "" {
+		panic("WebGPU invoke global is required")
+	}
+	options := optionvalue.Resolve("WebGPU chat", optionValues)
+	return &Chat{invokeGlobal: invokeGlobal, options: options}
 }
 
 func (chat *Chat) Profile() damodel.Profile { return chat.options.Profile }
 
 func (chat *Chat) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
-	invoke := js.Global().Get(chat.options.InvokeGlobal)
+	invoke := js.Global().Get(chat.invokeGlobal)
 	if invoke.Type() != js.TypeFunction {
-		return damodel.Response{}, fmt.Errorf("WebGPU model bridge %q is unavailable", chat.options.InvokeGlobal)
+		return damodel.Response{}, fmt.Errorf("WebGPU model bridge %q is unavailable", chat.invokeGlobal)
 	}
 	encoded, err := json.Marshal(request)
 	if err != nil {

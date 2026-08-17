@@ -119,16 +119,14 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 }
 
 func TestFilesystemEvictionLimitsCanBeDisabled(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := dabackend.NewMemory(nil)
+
 	middleware := mustFilesystem(
 		memory, Filesystem{
 			ToolResultLimit: ContentLimit{Unit: ContentTokens, Amount: -1}, HumanMessageTokenLimit: -1,
 		})
 	request := dagent.ModelRequest{Messages: []damessage.Message{damessage.Human(strings.Repeat("x", 1000))}}
-	_, err = middleware.WrapModelCall(context.Background(), request, func(_ context.Context, got dagent.ModelRequest) (dagent.ModelResponse, error) {
+	_, err := middleware.WrapModelCall(context.Background(), request, func(_ context.Context, got dagent.ModelRequest) (dagent.ModelResponse, error) {
 		if got.Messages[0].TextContent() != request.Messages[0].TextContent() {
 			return dagent.ModelResponse{}, fmt.Errorf("disabled human eviction changed request")
 		}

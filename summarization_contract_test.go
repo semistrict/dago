@@ -19,7 +19,7 @@ import (
 )
 
 func mustSummarization(model damodel.Chat, backend dabackend.Backend, options Summarization) dagent.Middleware {
-	middleware, err := newSummarization(options.modelFor(model), backend, options)
+	middleware, err := compileSummarization(options.modelFor(model), backend, options)
 	if err != nil {
 		panic(err)
 	}
@@ -43,7 +43,7 @@ func (failingMediaBackend) Upload(_ context.Context, values []dabackend.Upload) 
 }
 
 func TestHistoryOffloadAppendsPerThreadAndFiltersSyntheticSummaries(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	options := summarizationRuntime{Summarization: Summarization{HistoryRoot: "/conversation_history"}, backend: memory}
 	previous := damessage.Human("old synthetic summary")
 	previous.Metadata = map[string]json.RawMessage{"lc_source": json.RawMessage(`"summarization"`)}
@@ -70,7 +70,7 @@ func TestHistoryOffloadAppendsPerThreadAndFiltersSyntheticSummaries(t *testing.T
 }
 
 func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("durable facts")}})
 	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[0].TextContent(), "durable facts") || strings.Contains(request.Messages[0].TextContent(), "has been saved") {
@@ -101,7 +101,7 @@ func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
 }
 
 func TestMediaOffloadFailureUsesBoundedPlaceholder(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[len(request.Messages)-1].TextContent(), "failed_to_offload") {
 			return errors.New("media placeholder missing")
@@ -123,7 +123,7 @@ func TestMediaOffloadFailureUsesBoundedPlaceholder(t *testing.T) {
 }
 
 func TestSummaryMediaOffloadsDataURLsAndPreservesRemoteReferences(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	options := summarizationRuntime{Summarization: Summarization{MediaRoot: "/conversation_history/media"}, backend: memory}
 	messages := []damessage.Message{{Role: damessage.RoleHuman, Content: []damessage.ContentBlock{
 		{Type: damessage.BlockImage, URL: "data:image/png,diagram%20bytes", Name: "diagram.png"},
@@ -163,7 +163,7 @@ func TestSummaryMediaOffloadsDataURLsAndPreservesRemoteReferences(t *testing.T) 
 }
 
 func TestSummaryMediaUsesBoundedPlaceholderForMalformedDataURL(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	got := offloadSummaryMedia(context.Background(), []damessage.Message{{
 		Role:    damessage.RoleHuman,
 		Content: []damessage.ContentBlock{{Type: damessage.BlockImage, URL: "data:image/png;base64,%%%"}},
@@ -223,7 +223,7 @@ func TestSummarizationSupportsMessageTriggersAndTokenKeepWindows(t *testing.T) {
 	if cutoff != 3 {
 		t.Fatalf("token keep cutoff = %d", cutoff)
 	}
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("summary")}})
 	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[0].TextContent(), "summary") {
@@ -245,7 +245,7 @@ func TestSummarizationSupportsMessageTriggersAndTokenKeepWindows(t *testing.T) {
 
 func TestSummarizationTriggerClausesUseAndWithinOrAcross(t *testing.T) {
 	chat := modeltest.New(damodel.Profile{ContextWindow: 1_000})
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	options, err := normalizeSummarization(chat, memory, Summarization{
 		TriggerClauses: []SummarizationTriggerClause{
 			{Messages: 10, Tokens: 400},
@@ -276,7 +276,7 @@ func TestSummarizationTriggerClausesUseAndWithinOrAcross(t *testing.T) {
 
 func TestSummarizationFractionsRequireKnownContextWindow(t *testing.T) {
 	chat := modeltest.New(damodel.Profile{})
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	_, err := normalizeSummarization(chat, memory, Summarization{
 		TriggerClauses: []SummarizationTriggerClause{{Fraction: 0.8}}, KeepMessages: 1,
 	})
@@ -286,7 +286,7 @@ func TestSummarizationFractionsRequireKnownContextWindow(t *testing.T) {
 }
 
 func TestSummarizationTriggerCountsSystemPrompt(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("system-aware summary")}})
 	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[1].TextContent(), "system-aware summary") {
@@ -309,7 +309,7 @@ func TestSummarizationTriggerCountsSystemPrompt(t *testing.T) {
 }
 
 func TestManualSummarizationToolIsOptInAndSharesEventState(t *testing.T) {
-	memory, _ := dabackend.NewMemory(nil)
+	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("manual summary")}})
 	automatic := mustSummarization(summaryModel, memory, Summarization{TriggerClauses: []SummarizationTriggerClause{{Messages: 4}}, KeepMessages: 2})
 

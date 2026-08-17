@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,14 +18,12 @@ import (
 )
 
 func TestMemoryGrepCappedResultsAreDeterministic(t *testing.T) {
-	memory, err := NewMemory(map[string]FileData{
+	memory := NewMemory(map[string]FileData{
 		"/z.txt": {Content: "needle", Encoding: EncodingUTF8},
 		"/a.txt": {Content: "needle", Encoding: EncodingUTF8},
 		"/m.txt": {Content: "needle", Encoding: EncodingUTF8},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	for range 50 {
 		result, err := memory.Grep(t.Context(), "needle", GrepOptions{Path: "/", MaxCount: 2})
 		if err != nil {
@@ -101,10 +100,8 @@ func TestStoreMutationsOnlyPersistTargetedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorded := &recordingStore{Store: values}
-	backend, err := NewStore(recorded, namespace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	backend := NewStore(recorded, namespace)
+
 	if _, err := backend.Write(ctx, "/new.txt", "new"); err != nil {
 		t.Fatal(err)
 	}
@@ -138,10 +135,8 @@ func TestStoreMutationLocksAreKeyScopedPrefixAwareAndCancelable(t *testing.T) {
 		started: make(chan struct{}),
 		unblock: make(chan struct{}),
 	}
-	backend, err := NewStore(values, dastore.Namespace{"files"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	backend := NewStore(values, dastore.Namespace{"files"})
+
 	var unblockOnce sync.Once
 	unblock := func() { unblockOnce.Do(func() { close(values.unblock) }) }
 	defer unblock()
@@ -316,10 +311,8 @@ func TestFilesystemGrepPreservesMatchesAndReportsReadFailures(t *testing.T) {
 func TestBinaryPathsEncodeValidUTF8Bytes(t *testing.T) {
 	ctx := t.Context()
 	want := base64.StdEncoding.EncodeToString([]byte("ascii-image"))
-	memory, err := NewMemory(map[string]FileData{"/image.png": {Content: "ascii-image", Encoding: EncodingUTF8}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := NewMemory(map[string]FileData{"/image.png": {Content: "ascii-image", Encoding: EncodingUTF8}})
+
 	read, err := memory.Read(ctx, "/image.png", 0, 1)
 	if err != nil || read.Data == nil || read.Data.Encoding != EncodingBase64 || read.Data.Content != want {
 		t.Fatalf("Memory.Read = %#v, %v", read, err)
@@ -329,10 +322,8 @@ func TestBinaryPathsEncodeValidUTF8Bytes(t *testing.T) {
 	if err := values.Put(ctx, namespace, "/image.png", fileDataMap(FileData{Content: "ascii-image", Encoding: EncodingUTF8})); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(values, namespace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := NewStore(values, namespace)
+
 	read, err = store.Read(ctx, "/image.png", 0, 1)
 	if err != nil || read.Data == nil || read.Data.Encoding != EncodingBase64 || read.Data.Content != want {
 		t.Fatalf("Store.Read = %#v, %v", read, err)
@@ -357,14 +348,10 @@ func (backend *overReturningBackend) Grep(context.Context, string, GrepOptions) 
 }
 
 func TestCompositeEnforcesGlobalGrepCapAndErrorBound(t *testing.T) {
-	memory, err := NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	composite, err := NewComposite(&overReturningBackend{Memory: memory}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := NewMemory(nil)
+
+	composite := NewComposite(&overReturningBackend{Memory: memory}, nil)
+
 	result, err := composite.Grep(t.Context(), "hit", GrepOptions{MaxCount: 1})
 	if err != nil || len(result.Matches) != 1 || !result.Truncated || len(result.Error) > MaxGrepErrorBytes || !strings.Contains(result.Error, "truncated") {
 		t.Fatalf("Composite.Grep = %#v, %v", result, err)
@@ -372,15 +359,11 @@ func TestCompositeEnforcesGlobalGrepCapAndErrorBound(t *testing.T) {
 }
 
 func TestCompositeBoundsTargetedAndUncappedGrepErrors(t *testing.T) {
-	memory, err := NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := NewMemory(nil)
+
 	bad := &overReturningBackend{Memory: memory}
-	composite, err := NewComposite(bad, map[string]Backend{"/mounted": bad})
-	if err != nil {
-		t.Fatal(err)
-	}
+	composite := NewComposite(bad, map[string]Backend{"/mounted": bad})
+
 	for name, options := range map[string]GrepOptions{
 		"targeted": {Path: "/mounted"},
 		"uncapped": {Uncapped: true},
@@ -395,21 +378,21 @@ func TestCompositeBoundsTargetedAndUncappedGrepErrors(t *testing.T) {
 }
 
 func TestCompositeRejectsBackendWithoutStableBatchIdentity(t *testing.T) {
-	memory, err := NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := NewMemory(nil)
+
 	backend := nonComparableBackend{Memory: memory, marker: []string{"not comparable"}}
-	if _, err := NewComposite(backend, nil); err == nil || !strings.Contains(err.Error(), "stable identity") {
-		t.Fatalf("NewComposite() error = %v", err)
-	}
+	defer func() {
+		value := recover()
+		if value == nil || !strings.Contains(fmt.Sprint(value), "stable identity") {
+			t.Fatalf("NewComposite() panic = %v", value)
+		}
+	}()
+	NewComposite(backend, nil)
 }
 
 func TestBuiltInGrepRejectsNegativeLimits(t *testing.T) {
-	memory, err := NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := NewMemory(nil)
+
 	for name, options := range map[string]GrepOptions{
 		"max_count":     {MaxCount: -1},
 		"context_lines": {ContextLines: -1},
@@ -424,10 +407,8 @@ func TestBuiltInGrepRejectsNegativeLimits(t *testing.T) {
 
 func newBatchingBackend(t *testing.T) *batchingBackend {
 	t.Helper()
-	memory, err := NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := NewMemory(nil)
+
 	return &batchingBackend{Memory: memory}
 }
 
@@ -452,10 +433,8 @@ func (backend *batchingBackend) Download(_ context.Context, paths []string) []Do
 func TestCompositeBatchesTransfersByRouteAndRestoresRequestOrder(t *testing.T) {
 	root := newBatchingBackend(t)
 	mounted := newBatchingBackend(t)
-	composite, err := NewComposite(root, map[string]Backend{"/mounted/": mounted, "/also-mounted/": mounted})
-	if err != nil {
-		t.Fatal(err)
-	}
+	composite := NewComposite(root, map[string]Backend{"/mounted/": mounted, "/also-mounted/": mounted})
+
 	uploads := []Upload{{Path: "/root-a", Content: []byte("a")}, {Path: "/mounted/a", Content: []byte("b")}, {Path: "/root-b", Content: []byte("c")}, {Path: "/also-mounted/b", Content: []byte("d")}}
 	uploadResults := composite.Upload(t.Context(), uploads)
 	if len(root.uploads) != 1 || len(root.uploads[0]) != 2 || len(mounted.uploads) != 1 || len(mounted.uploads[0]) != 2 {

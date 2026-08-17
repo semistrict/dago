@@ -83,21 +83,18 @@ type State struct {
 // NewState constructs a thread-scoped state backend. An empty key selects the
 // standard "files" field. Initial values use the same plain-data records that
 // are persisted in checkpoints.
-func NewState(key string, initial map[string]any) (*State, error) {
+func NewState(key string, initial map[string]any) *State {
 	if key == "" {
 		key = "files"
-	}
-	if key == "" {
-		return nil, fmt.Errorf("state backend key is required")
 	}
 	value := &State{key: key}
 	value.session.owner = value
 	cloned, err := cloneStateFiles(initial)
 	if err != nil {
-		return nil, fmt.Errorf("state backend initial files: %w", err)
+		panic(fmt.Errorf("state backend initial files: %w", err))
 	}
 	value.initial = cloned
-	return value, nil
+	return value
 }
 
 func (backend *State) BindRuntime(ctx context.Context, reader StateReader) (context.Context, error) {
@@ -115,7 +112,7 @@ func (backend *State) BindRuntime(ctx context.Context, reader StateReader) (cont
 	if err != nil {
 		return nil, err
 	}
-	memory, err := NewMemory(decoded)
+	memory, err := restoreMemory(decoded)
 	if err != nil {
 		return nil, err
 	}

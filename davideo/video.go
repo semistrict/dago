@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -62,7 +63,8 @@ type FFmpegExtractor struct {
 	decodeTimeout   time.Duration
 }
 
-func NewFFmpeg(options FFmpegOptions) *FFmpegExtractor {
+func NewFFmpeg(optionValues ...FFmpegOptions) *FFmpegExtractor {
+	options := optionvalue.Resolve("FFmpeg extractor", optionValues)
 	if options.Executable == "" {
 		options.Executable = "ffmpeg"
 	}

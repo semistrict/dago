@@ -17,7 +17,7 @@ import (
 
 func mustMemory(backend dabackend.Backend, options Memory, addCacheControl ...bool) dagent.Middleware {
 	cacheControl := len(addCacheControl) > 0 && addCacheControl[0]
-	middleware, err := newMemory(backend, options, cacheControl)
+	middleware, err := compileMemory(backend, options, cacheControl)
 	if err != nil {
 		panic(err)
 	}
@@ -41,13 +41,11 @@ func (value *recordingDownloadBackend) Download(ctx context.Context, paths []str
 }
 
 func TestMemoryLoadsOnceInOneBatchAndFormatsSourcesInOrder(t *testing.T) {
-	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/base/AGENTS.md":    {Content: "base\n<!-- private author note -->\n", Encoding: dabackend.EncodingUTF8},
 		"/project/AGENTS.md": {Content: "project", Encoding: dabackend.EncodingUTF8},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	recording := &recordingDownloadBackend{Backend: memory}
 	middleware := mustMemory(
 		recording, Memory{
@@ -93,12 +91,10 @@ func TestMemoryLoadsOnceInOneBatchAndFormatsSourcesInOrder(t *testing.T) {
 }
 
 func TestMemoryPreloadedContentsArePortableAndSurviveCheckpointDecode(t *testing.T) {
-	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/disk/AGENTS.md": {Content: "disk", Encoding: dabackend.EncodingUTF8},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	recording := &recordingDownloadBackend{Backend: memory}
 	middleware := mustMemory(
 		recording, Memory{
@@ -139,10 +135,8 @@ func TestMemoryPreloadedContentsArePortableAndSurviveCheckpointDecode(t *testing
 }
 
 func TestMemoryMissingIsEmptyAndOtherDownloadErrorsFail(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := dabackend.NewMemory(nil)
+
 	middleware := mustMemory(memory, Memory{Sources: []string{"/missing"}})
 
 	update, err := middleware.BeforeAgent(context.Background(), dastate.Values{}, dagent.Runtime{})
@@ -162,10 +156,8 @@ func TestMemoryMissingIsEmptyAndOtherDownloadErrorsFail(t *testing.T) {
 }
 
 func TestMemoryPromptCanBeCustomizedOrDisabled(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := dabackend.NewMemory(nil)
+
 	invalid := "memory without a slot"
 	requirePanicContaining(t, "{agent_memory}", func() {
 		mustMemory(memory, Memory{SystemPrompt: PromptTemplate{Mode: PromptCustom, Text: invalid}})
@@ -173,7 +165,7 @@ func TestMemoryPromptCanBeCustomizedOrDisabled(t *testing.T) {
 
 	middleware := mustMemory(memory, Memory{SystemPrompt: PromptTemplate{Mode: PromptDisabled}})
 
-	_, err = middleware.WrapModelCall(context.Background(), dagent.ModelRequest{
+	_, err := middleware.WrapModelCall(context.Background(), dagent.ModelRequest{
 		Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"memory_contents": map[string]string{}},
 	}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
 		if request.SystemMessage != nil {
@@ -187,15 +179,13 @@ func TestMemoryPromptCanBeCustomizedOrDisabled(t *testing.T) {
 }
 
 func TestMemoryAddsProviderCacheHintToLastSystemBlock(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := dabackend.NewMemory(nil)
+
 	middleware := mustMemory(memory, Memory{SystemPrompt: PromptTemplate{Mode: PromptDisabled}}, true)
 
 	provider := modeltest.New(damodel.Profile{Provider: "anthropic"})
 	system := damessage.System("static")
-	_, err = middleware.WrapModelCall(context.Background(), dagent.ModelRequest{Model: provider, SystemMessage: &system}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
+	_, err := middleware.WrapModelCall(context.Background(), dagent.ModelRequest{Model: provider, SystemMessage: &system}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
 		raw := request.SystemMessage.Content[0].Extra["cache_control"]
 		var hint map[string]string
 		if json.Unmarshal(raw, &hint) != nil || hint["type"] != "ephemeral" {

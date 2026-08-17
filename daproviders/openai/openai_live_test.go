@@ -58,15 +58,14 @@ func TestLiveResponsesWebSocketOAuthEndToEnd(t *testing.T) {
 	if model == "" {
 		model = liveOpenAIDefaultModel
 	}
-	client, err := NewSubscription(liveOAuthFileSource{path: authFile}, Options{
-		Model: model, ContextWindow: 272000,
-		DefaultReasoning: &damodel.Reasoning{Effort: "low", Summary: "auto"},
-		RetryBackoff:     []time.Duration{time.Second, 2 * time.Second},
-		Headers:          map[string][]string{"originator": {"dago-live-test"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewSubscription(liveOAuthFileSource{path: authFile},
+		model, Options{
+			ContextWindow:    272000,
+			DefaultReasoning: &damodel.Reasoning{Effort: "low", Summary: "auto"},
+			RetryBackoff:     []time.Duration{time.Second, 2 * time.Second},
+			Headers:          map[string][]string{"originator": {"dago-live-test"}},
+		})
+
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
@@ -192,15 +191,14 @@ func TestLiveResponsesRemoteCompactionOAuthEndToEnd(t *testing.T) {
 	if model == "" {
 		model = liveOpenAIDefaultModel
 	}
-	client, err := NewSubscription(liveOAuthFileSource{path: authFile}, Options{
-		Model: model, ContextWindow: 272000, CompactionThreshold: 1,
-		DefaultReasoning: &damodel.Reasoning{Effort: "low", Summary: "auto"},
-		RetryBackoff:     []time.Duration{time.Second, 2 * time.Second},
-		Headers:          map[string][]string{"originator": {"dago-live-test"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewSubscription(liveOAuthFileSource{path: authFile},
+		model, Options{
+			ContextWindow: 272000, CompactionThreshold: 1,
+			DefaultReasoning: &damodel.Reasoning{Effort: "low", Summary: "auto"},
+			RetryBackoff:     []time.Duration{time.Second, 2 * time.Second},
+			Headers:          map[string][]string{"originator": {"dago-live-test"}},
+		})
+
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 

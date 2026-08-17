@@ -13,7 +13,7 @@ import (
 
 func TestEvalMarshalsValuesAndUnwrapsPromises(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{}, nil)
+	engine, err := New(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestEvalMarshalsValuesAndUnwrapsPromises(t *testing.T) {
 
 func TestNewEnablesMemoryTrackingByDefault(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{}, nil)
+	engine, err := New(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestNewEnablesMemoryTrackingByDefault(t *testing.T) {
 
 func TestEvalPromiseErrorsAndSideEffects(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{}, nil)
+	engine, err := New(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestEvalPromiseErrorsAndSideEffects(t *testing.T) {
 
 func TestEvalConsoleCaptureIsBoundedAndResets(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{MaxStdout: 10}, nil)
+	engine, err := New(ctx, nil, Options{MaxStdout: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,13 +104,15 @@ func TestEvalConsoleCaptureIsBoundedAndResets(t *testing.T) {
 
 func TestHostFunctionsMarshalNativeValuesAndOmitUndefinedProperties(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
-		"list": func(context.Context, []any) (any, error) { return []any{1, "two", nil}, nil },
-		"object": func(context.Context, []any) (any, error) {
-			return map[string]any{"id": 21, "tags": []any{"admin", "ops"}}, nil
-		},
-		"echo": func(_ context.Context, arguments []any) (any, error) { return arguments[0], nil },
-	}}, nil)
+	engine, err := New(ctx,
+
+		nil, Options{HostFunctions: map[string]HostFunction{
+			"list": func(context.Context, []any) (any, error) { return []any{1, "two", nil}, nil },
+			"object": func(context.Context, []any) (any, error) {
+				return map[string]any{"id": 21, "tags": []any{"admin", "ops"}}, nil
+			},
+			"echo": func(_ context.Context, arguments []any) (any, error) { return arguments[0], nil },
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,9 +133,11 @@ func TestHostFunctionsMarshalNativeValuesAndOmitUndefinedProperties(t *testing.T
 func TestHostFunctionFailureCanBeCaughtOrPropagated(t *testing.T) {
 	ctx := context.Background()
 	boom := errors.New("tool exploded")
-	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
-		"fail": func(context.Context, []any) (any, error) { return nil, boom },
-	}}, nil)
+	engine, err := New(ctx,
+
+		nil, Options{HostFunctions: map[string]HostFunction{
+			"fail": func(context.Context, []any) (any, error) { return nil, boom },
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +155,7 @@ func TestHostFunctionFailureCanBeCaughtOrPropagated(t *testing.T) {
 
 func TestEvalDetectsPromiseDeadlock(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{}, nil)
+	engine, err := New(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +168,7 @@ func TestEvalDetectsPromiseDeadlock(t *testing.T) {
 
 func TestEvalPersistsThroughWholeMemorySnapshot(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{MemoryLimit: 64 << 20, Timeout: time.Second}, nil)
+	engine, err := New(ctx, nil, Options{MemoryLimit: 64 << 20, Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +187,7 @@ func TestEvalPersistsThroughWholeMemorySnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, err := New(ctx, Options{Timeout: time.Second}, snapshot)
+	restored, err := New(ctx, snapshot, Options{Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +203,7 @@ func TestEvalPersistsThroughWholeMemorySnapshot(t *testing.T) {
 
 func TestEvalPersistsThroughDirtyPageSnapshot(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{MemoryLimit: 64 << 20}, nil)
+	engine, err := New(ctx, nil, Options{MemoryLimit: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +216,7 @@ func TestEvalPersistsThroughDirtyPageSnapshot(t *testing.T) {
 	}
 	engine.Close(ctx)
 
-	restored, err := New(ctx, Options{MemoryLimit: 64 << 20}, base)
+	restored, err := New(ctx, base, Options{MemoryLimit: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +248,7 @@ func TestEvalPersistsThroughDirtyPageSnapshot(t *testing.T) {
 	if _, err := ApplyDirtySnapshot(invalidBase, delta, 64<<20); err == nil {
 		t.Fatal("invalid base snapshot was accepted")
 	}
-	final, err := New(ctx, Options{MemoryLimit: 64 << 20}, updated)
+	final, err := New(ctx, updated, Options{MemoryLimit: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,15 +261,17 @@ func TestEvalPersistsThroughDirtyPageSnapshot(t *testing.T) {
 
 func TestEvalDrivesConcurrentHostPromises(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
-		"lookup": func(_ context.Context, args []any) (any, error) {
-			input, ok := args[0].(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("input = %T", args[0])
-			}
-			return "found:" + input["query"].(string), nil
-		},
-	}}, nil)
+	engine, err := New(ctx,
+
+		nil, Options{HostFunctions: map[string]HostFunction{
+			"lookup": func(_ context.Context, args []any) (any, error) {
+				input, ok := args[0].(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("input = %T", args[0])
+				}
+				return "found:" + input["query"].(string), nil
+			},
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,12 +288,14 @@ func TestEvalDrivesConcurrentHostPromises(t *testing.T) {
 
 func TestHostWaitDoesNotConsumeJavaScriptTimeout(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
-		"slow": func(context.Context, []any) (any, error) {
-			time.Sleep(650 * time.Millisecond)
-			return 42, nil
-		},
-	}}, nil)
+	engine, err := New(ctx,
+
+		nil, Options{HostFunctions: map[string]HostFunction{
+			"slow": func(context.Context, []any) (any, error) {
+				time.Sleep(650 * time.Millisecond)
+				return 42, nil
+			},
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +311,7 @@ func TestHostWaitDoesNotConsumeJavaScriptTimeout(t *testing.T) {
 
 func TestSnapshotAfterExceptionPreservesPriorMutations(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{}, nil)
+	engine, err := New(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +323,7 @@ func TestSnapshotAfterExceptionPreservesPriorMutations(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine.Close(ctx)
-	restored, err := New(ctx, Options{}, snapshot)
+	restored, err := New(ctx, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +336,7 @@ func TestSnapshotAfterExceptionPreservesPriorMutations(t *testing.T) {
 
 func TestEvalInterruptsLoop(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{Timeout: 20 * time.Millisecond}, nil)
+	engine, err := New(ctx, nil, Options{Timeout: 20 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +348,7 @@ func TestEvalInterruptsLoop(t *testing.T) {
 }
 
 func TestEvalCancellationInterruptsLoop(t *testing.T) {
-	engine, err := New(context.Background(), Options{}, nil)
+	engine, err := New(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +367,7 @@ func TestEvalCancellationInterruptsLoop(t *testing.T) {
 
 func TestValidateSnapshotRejectsCorruptionAndBounds(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{}, nil)
+	engine, err := New(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,9 +407,11 @@ func TestValidateSnapshotRejectsCorruptionAndBounds(t *testing.T) {
 
 func BenchmarkEvalPTCAndConsole(b *testing.B) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
-		"echo": func(_ context.Context, arguments []any) (any, error) { return arguments[0], nil },
-	}}, nil)
+	engine, err := New(ctx,
+
+		nil, Options{HostFunctions: map[string]HostFunction{
+			"echo": func(_ context.Context, arguments []any) (any, error) { return arguments[0], nil },
+		}})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -417,7 +427,7 @@ func BenchmarkEvalPTCAndConsole(b *testing.B) {
 
 func BenchmarkSnapshotRestoreTurns(b *testing.B) {
 	ctx := context.Background()
-	engine, err := New(ctx, Options{}, nil)
+	engine, err := New(ctx, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -433,7 +443,7 @@ func BenchmarkSnapshotRestoreTurns(b *testing.B) {
 	b.ReportMetric(float64(len(snapshot)), "anchor-bytes")
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
-		engine, err = New(ctx, Options{}, snapshot)
+		engine, err = New(ctx, snapshot)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -457,7 +467,7 @@ func BenchmarkConcurrentEngineMemoryWorkload(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			engine, err := New(ctx, Options{MaxStdout: 4_000}, nil)
+			engine, err := New(ctx, nil, Options{MaxStdout: 4_000})
 			if err != nil {
 				b.Error(err)
 				return

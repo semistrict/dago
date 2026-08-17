@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/semistrict/dago/internal/optionvalue"
 	"github.com/semistrict/dago/internal/quickjswasm"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -114,7 +115,8 @@ type hostCompletion struct {
 }
 
 // New creates an isolated VM and optionally restores a whole-memory snapshot.
-func New(ctx context.Context, options Options, snapshot []byte) (*Engine, error) {
+func New(ctx context.Context, snapshot []byte, optionValues ...Options) (*Engine, error) {
+	options := optionvalue.Resolve("QuickJS engine", optionValues)
 	e := &Engine{
 		maxStdout: options.MaxStdout, hostFunctions: options.HostFunctions,
 		pending: make(chan hostCompletion, 64),

@@ -202,7 +202,7 @@ func describeFilesystemTools(values []datool.Tool, custom map[string]string) []d
 	return applyToolProfile(values, descriptions, nil)
 }
 
-func newFilesystem(backend dabackend.Backend, config Filesystem, approvalOverrides []dagent.ApprovalRule) (dagent.Middleware, error) {
+func compileFilesystem(backend dabackend.Backend, config Filesystem, approvalOverrides []dagent.ApprovalRule) (dagent.Middleware, error) {
 	if backend == nil {
 		return dagent.Middleware{}, fmt.Errorf("filesystem backend is nil")
 	}

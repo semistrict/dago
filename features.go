@@ -695,7 +695,7 @@ const summarizationEventKey = "_summarization_event"
 // message log. A private event records the summary and absolute cutoff; model
 // calls reconstruct the compacted view from that event. It panics when static
 // options violate an invariant.
-func newSummarization(model damodel.Chat, backend dabackend.Backend, config Summarization) (dagent.Middleware, error) {
+func compileSummarization(model damodel.Chat, backend dabackend.Backend, config Summarization) (dagent.Middleware, error) {
 	if backend == nil {
 		return dagent.Middleware{}, fmt.Errorf("summarization backend is nil")
 	}
@@ -1136,14 +1136,14 @@ type SummarizationToolOptions struct {
 // the private event format used by Summarization but never compacts in the
 // background. It panics when static options violate an invariant.
 func SummarizationTool(model damodel.Chat, backend dabackend.Backend, toolOptions SummarizationToolOptions) dagent.Middleware {
-	middleware, err := newSummarizationTool(toolOptions.Summarization.modelFor(model), backend, toolOptions)
+	middleware, err := compileSummarizationTool(toolOptions.Summarization.modelFor(model), backend, toolOptions)
 	if err != nil {
 		panic(err)
 	}
 	return middleware
 }
 
-func newSummarizationTool(model damodel.Chat, backend dabackend.Backend, toolOptions SummarizationToolOptions) (dagent.Middleware, error) {
+func compileSummarizationTool(model damodel.Chat, backend dabackend.Backend, toolOptions SummarizationToolOptions) (dagent.Middleware, error) {
 	if backend == nil {
 		return dagent.Middleware{}, fmt.Errorf("summarization backend is nil")
 	}
@@ -1356,7 +1356,7 @@ Persist durable user preferences, corrections, useful identifiers, and recurring
 // Memory loads configured Markdown files once per checkpointed session
 // and appends their comment-stripped contents at model-call time. It panics
 // when static options violate an invariant.
-func newMemory(backend dabackend.Backend, options Memory, addCacheControl bool) (dagent.Middleware, error) {
+func compileMemory(backend dabackend.Backend, options Memory, addCacheControl bool) (dagent.Middleware, error) {
 	if backend == nil {
 		return dagent.Middleware{}, fmt.Errorf("memory backend is nil")
 	}
@@ -1476,7 +1476,7 @@ Use skills through progressive disclosure: recognize when a skill applies, follo
 // Skills discovers SKILL.md metadata and advertises stable on-demand
 // locations without loading the full instructions into every request. It
 // panics when static options violate an invariant.
-func newSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, error) {
+func compileSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, error) {
 	if backend == nil {
 		return dagent.Middleware{}, fmt.Errorf("skills backend is nil")
 	}

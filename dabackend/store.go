@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/semistrict/dago/dastore"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // Store persists virtual files in a namespaced runtime Store.
@@ -102,8 +103,7 @@ type NamespaceFactory func(*Runtime) (dastore.Namespace, error)
 
 type StoreOptions struct {
 	// Store may be omitted when the agent runtime supplies one.
-	Store     dastore.Store
-	Namespace NamespaceFactory
+	Store dastore.Store
 }
 
 type storeSessionKey struct{ owner *Store }
@@ -112,28 +112,29 @@ type storeSession struct {
 	namespace dastore.Namespace
 }
 
-func NewStore(values dastore.Store, namespace dastore.Namespace) (*Store, error) {
+func NewStore(values dastore.Store, namespace dastore.Namespace) *Store {
 	if values == nil {
-		return nil, fmt.Errorf("backend store is required")
+		panic("backend store is required")
 	}
 	if err := namespace.Validate(); err != nil {
-		return nil, err
+		panic(err)
 	}
 	fixed := append(dastore.Namespace(nil), namespace...)
-	return NewStoreWithOptions(StoreOptions{Store: values, Namespace: func(*Runtime) (dastore.Namespace, error) {
+	return NewStoreWithOptions(func(*Runtime) (dastore.Namespace, error) {
 		return append(dastore.Namespace(nil), fixed...), nil
-	}})
+	}, StoreOptions{Store: values})
 }
 
 // NewStoreWithOptions constructs a persistent backend whose namespace and,
 // optionally, store are resolved from each agent invocation.
-func NewStoreWithOptions(options StoreOptions) (*Store, error) {
-	if options.Namespace == nil {
-		return nil, fmt.Errorf("backend store namespace factory is required")
+func NewStoreWithOptions(namespace NamespaceFactory, optionValues ...StoreOptions) *Store {
+	if namespace == nil {
+		panic("backend store namespace factory is required")
 	}
-	result := &Store{store: options.Store, namespaceFactory: options.Namespace, locks: newStorePathLocks()}
+	options := optionvalue.Resolve("store backend", optionValues)
+	result := &Store{store: options.Store, namespaceFactory: namespace, locks: newStorePathLocks()}
 	result.session.owner = result
-	return result, nil
+	return result
 }
 
 func (backend *Store) resolve(ctx context.Context) (dastore.Store, dastore.Namespace, error) {
@@ -205,7 +206,7 @@ func (backend *Store) snapshot(ctx context.Context) (*Memory, error) {
 		}
 		files[item.Key] = data
 	}
-	return NewMemory(files)
+	return restoreMemory(files)
 }
 
 func (backend *Store) loadFile(ctx context.Context, name string) (dastore.Store, dastore.Namespace, FileData, bool, error) {

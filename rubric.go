@@ -81,14 +81,14 @@ var rubricResponseSchema = json.RawMessage(`{"type":"object","properties":{"resu
 // actionable feedback before routing back to the model. It panics when static
 // options violate an invariant.
 func Rubric(model damodel.Chat, options RubricOptions) dagent.Middleware {
-	middleware, err := newRubric(model, options)
+	middleware, err := compileRubric(model, options)
 	if err != nil {
 		panic(err)
 	}
 	return middleware
 }
 
-func newRubric(model damodel.Chat, options RubricOptions) (dagent.Middleware, error) {
+func compileRubric(model damodel.Chat, options RubricOptions) (dagent.Middleware, error) {
 	if model == nil {
 		return dagent.Middleware{}, fmt.Errorf("rubric model is nil")
 	}

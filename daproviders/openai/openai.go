@@ -18,6 +18,7 @@ import (
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -47,7 +48,6 @@ func (source staticCredentials) Credentials(context.Context) (Credentials, error
 
 // Options configures a Responses API model.
 type Options struct {
-	Model           string
 	BaseURL         string
 	HTTPClient      *http.Client
 	Organization    string
@@ -88,6 +88,7 @@ type Options struct {
 // Client is a Responses API-backed chat model.
 type Client struct {
 	options      Options
+	model        string
 	credentials  CredentialSource
 	boundTools   []datool.Definition
 	subscription bool
@@ -96,8 +97,8 @@ type Client struct {
 }
 
 // NewAPIKey creates a model authenticated with an API key.
-func NewAPIKey(apiKey string, options Options) (*Client, error) {
-	return newAPIKey(apiKey, "openai", options)
+func NewAPIKey(apiKey, model string, options ...Options) *Client {
+	return newAPIKey(apiKey, model, "openai", optionvalue.Resolve("openai", options))
 }
 
 // NewCompatibleAPIKey creates a model for a service that implements the OpenAI
@@ -105,29 +106,30 @@ func NewAPIKey(apiKey string, options Options) (*Client, error) {
 // errors, and retry events. Provider-specific adapters should normally expose
 // their own options and constructor instead of asking applications to call this
 // function directly.
-func NewCompatibleAPIKey(apiKey, provider string, options Options) (*Client, error) {
+func NewCompatibleAPIKey(apiKey, provider, model string, options ...Options) *Client {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
-		return nil, fmt.Errorf("openai: compatible provider is required")
+		panic("openai: compatible provider is required")
 	}
-	return newAPIKey(apiKey, provider, options)
+	return newAPIKey(apiKey, model, provider, optionvalue.Resolve("openai", options))
 }
 
-func newAPIKey(apiKey, provider string, options Options) (*Client, error) {
+func newAPIKey(apiKey, model, provider string, options Options) *Client {
 	if strings.TrimSpace(apiKey) == "" {
-		return nil, fmt.Errorf("%s: API key is required", provider)
+		panic(fmt.Sprintf("%s: API key is required", provider))
 	}
-	return newClient(staticCredentials{Credentials{AccessToken: apiKey}}, options, provider)
+	return newClient(staticCredentials{Credentials{AccessToken: apiKey}}, model, options, provider)
 }
 
 // NewOAuth creates a model authenticated by a caller-owned OAuth session. Callers
 // choose the endpoint explicitly; NewSubscription configures the subscription API.
-func NewOAuth(source CredentialSource, options Options) (*Client, error) {
-	return newClient(source, options, "openai")
+func NewOAuth(source CredentialSource, model string, options ...Options) *Client {
+	return newClient(source, model, optionvalue.Resolve("openai", options), "openai")
 }
 
 // NewSubscription creates a model for the subscription-backed Responses endpoint.
-func NewSubscription(source CredentialSource, options Options) (*Client, error) {
+func NewSubscription(source CredentialSource, model string, optionValues ...Options) *Client {
+	options := optionvalue.Resolve("openai", optionValues)
 	if options.BaseURL == "" {
 		// Kept split so repository-facing text does not couple the package to a
 		// product-specific route name.
@@ -141,23 +143,21 @@ func NewSubscription(source CredentialSource, options Options) (*Client, error) 
 	}
 	store := false
 	options.Store = &store
-	client, err := newClient(source, options, "openai")
-	if err != nil {
-		return nil, err
-	}
+	client := newClient(source, model, options, "openai")
 	client.subscription = true
-	return client, nil
+	return client
 }
 
-func newClient(source CredentialSource, options Options, provider string) (*Client, error) {
+func newClient(source CredentialSource, model string, options Options, provider string) *Client {
 	if source == nil {
-		return nil, fmt.Errorf("%s: credential source is required", provider)
+		panic(fmt.Sprintf("%s: credential source is required", provider))
 	}
-	if strings.TrimSpace(options.Model) == "" {
-		return nil, fmt.Errorf("%s: model is required", provider)
+	model = strings.TrimSpace(model)
+	if model == "" {
+		panic(fmt.Sprintf("%s: model is required", provider))
 	}
 	if options.CompactionThreshold < 0 {
-		return nil, fmt.Errorf("openai: compaction threshold must not be negative")
+		panic("openai: compaction threshold must not be negative")
 	}
 	standardEndpoint := options.BaseURL == "" || strings.TrimRight(options.BaseURL, "/") == defaultAPIBaseURL
 	if options.BaseURL == "" {
@@ -180,7 +180,7 @@ func newClient(source CredentialSource, options Options, provider string) (*Clie
 	} else {
 		options.RetryBackoff = append([]time.Duration(nil), options.RetryBackoff...)
 	}
-	client := &Client{options: options, credentials: source, provider: provider}
+	client := &Client{options: options, model: model, credentials: source, provider: provider}
 	websocketEnabled := standardEndpoint
 	if options.ResponsesWebSocket != nil {
 		websocketEnabled = *options.ResponsesWebSocket
@@ -208,7 +208,7 @@ func newClient(source CredentialSource, options Options, provider string) (*Clie
 		}
 	}
 	client.options = options
-	return client, nil
+	return client
 }
 
 // BindTools returns an independent client with the supplied tool definitions.
@@ -229,7 +229,7 @@ func (client *Client) Profile() damodel.Profile {
 		defaultReasoning = client.options.DefaultReasoning.Effort
 	}
 	return damodel.Profile{
-		Provider: client.provider, Model: client.options.Model,
+		Provider: client.provider, Model: client.model,
 		ContextWindow: client.options.ContextWindow, MaxOutputTokens: client.options.MaxOutputTokens,
 		ToolCalling: true, ParallelToolCalls: true, StructuredOutput: true,
 		NativeStreaming: true, SupportsPromptCaching: true, SupportsSeparateSystemMessage: true, SupportsReasoning: true,
@@ -493,7 +493,7 @@ func (client *Client) waitRetry(ctx context.Context, attempt int, retryErr error
 	if errors.As(retryErr, &providerErr) && providerErr.RetryAfter > delay {
 		delay = providerErr.RetryAfter
 	}
-	event := damodel.RetryEvent{Attempt: attempt + 1, Delay: delay, Retryable: true, Err: retryErr.Error(), Provider: client.provider, Model: client.options.Model}
+	event := damodel.RetryEvent{Attempt: attempt + 1, Delay: delay, Retryable: true, Err: retryErr.Error(), Provider: client.provider, Model: client.model}
 	var reporter damodel.RetryReporter
 	if errors.As(retryErr, &reporter) {
 		event = reporter.RetryEvent(attempt+1, delay)
@@ -516,7 +516,7 @@ func (client *Client) decorateError(err error) error {
 	var providerErr *Error
 	if errors.As(err, &providerErr) {
 		providerErr.Provider = client.provider
-		providerErr.Model = client.options.Model
+		providerErr.Model = client.model
 		providerErr.URL = client.options.BaseURL + "/responses"
 	}
 	return err
@@ -656,7 +656,7 @@ func (client *Client) requestPayload(request damodel.Request, stream bool) (resp
 		maxOutputTokens = 0
 	}
 	payload := responsesRequest{
-		Model: client.options.Model, Instructions: strings.Join(instructions, "\n\n"), Input: input, Tools: tools, Stream: stream,
+		Model: client.model, Instructions: strings.Join(instructions, "\n\n"), Input: input, Tools: tools, Stream: stream,
 		MaxOutputTokens: maxOutputTokens, ParallelToolCalls: len(tools) > 0,
 		Store: client.options.Store,
 	}

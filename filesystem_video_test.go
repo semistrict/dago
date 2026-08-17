@@ -36,12 +36,10 @@ func (backend *boundedVideoBackend) ReadBinary(_ context.Context, _ string, maxB
 
 func TestReadFileExtractsVideoWindow(t *testing.T) {
 	raw := []byte{0xff, 0x00, 0x01}
-	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/movie.mp4": {Content: base64.StdEncoding.EncodeToString(raw), Encoding: dabackend.EncodingBase64},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	var gotContent []byte
 	var gotWindow davideo.Window
 	extractor := davideo.ExtractorFunc(func(_ context.Context, content []byte, window davideo.Window) ([]damessage.ContentBlock, error) {
@@ -114,10 +112,8 @@ func TestReadFileEnforcesVideoInputCap(t *testing.T) {
 }
 
 func TestReadFileUsesBackendVideoGuardBeforePayloadAllocation(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := dabackend.NewMemory(nil)
+
 	backend := &boundedVideoBackend{Backend: memory, result: dabackend.ReadResult{Data: &dabackend.FileData{
 		Content: base64.StdEncoding.EncodeToString([]byte{0xff}), Encoding: dabackend.EncodingBase64,
 	}}}
@@ -167,10 +163,8 @@ func TestReadFileLeavesVideoOpaqueWithoutExtractor(t *testing.T) {
 }
 
 func TestReadFileAdvertisesVideoOnlyWhenConfigured(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := dabackend.NewMemory(nil)
+
 	plain := filesystemTool(t, memory, Filesystem{}, "read_file").Definition()
 	video := filesystemTool(t, memory, Filesystem{VideoExtractor: davideo.ExtractorFunc(func(context.Context, []byte, davideo.Window) ([]damessage.ContentBlock, error) {
 		return nil, nil
@@ -191,12 +185,10 @@ func testJPEGBytes(payload string) []byte {
 
 func videoMemory(t *testing.T, name string, raw []byte) *dabackend.Memory {
 	t.Helper()
-	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		name: {Content: base64.StdEncoding.EncodeToString(raw), Encoding: dabackend.EncodingBase64},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	return memory
 }
 
@@ -217,7 +209,7 @@ func mustFilesystem(backend dabackend.Backend, options Filesystem, approvalOverr
 	if len(approvalOverrides) > 0 {
 		rules = approvalOverrides[0]
 	}
-	middleware, err := newFilesystem(backend, options, rules)
+	middleware, err := compileFilesystem(backend, options, rules)
 	if err != nil {
 		panic(err)
 	}

@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 type route struct {
@@ -27,7 +29,6 @@ func (composite *Composite) resolveSandbox() (Sandbox, bool) {
 func (composite *Composite) backendArtifactsRoot() string { return composite.artifactsRoot }
 
 type CompositeOptions struct {
-	Default       Backend
 	Routes        map[string]Backend
 	ArtifactsRoot string
 }
@@ -105,16 +106,17 @@ func mergeStatePatches(left, right any) any {
 	return result
 }
 
-func NewComposite(defaultBackend Backend, routes map[string]Backend) (*Composite, error) {
-	return NewCompositeWithOptions(CompositeOptions{Default: defaultBackend, Routes: routes})
+func NewComposite(defaultBackend Backend, routes map[string]Backend) *Composite {
+	return NewCompositeWithOptions(defaultBackend, CompositeOptions{Routes: routes})
 }
 
-func NewCompositeWithOptions(options CompositeOptions) (*Composite, error) {
-	if options.Default == nil {
-		return nil, fmt.Errorf("composite default backend is required")
+func NewCompositeWithOptions(defaultBackend Backend, optionValues ...CompositeOptions) *Composite {
+	options := optionvalue.Resolve("composite backend", optionValues)
+	if defaultBackend == nil {
+		panic("composite default backend is required")
 	}
-	if !reflect.TypeOf(options.Default).Comparable() {
-		return nil, fmt.Errorf("composite default backend %T must be comparable so transfer batching has stable identity", options.Default)
+	if !reflect.TypeOf(defaultBackend).Comparable() {
+		panic(fmt.Sprintf("composite default backend %T must be comparable so transfer batching has stable identity", defaultBackend))
 	}
 	artifactsRoot := options.ArtifactsRoot
 	if artifactsRoot == "" {
@@ -122,22 +124,22 @@ func NewCompositeWithOptions(options CompositeOptions) (*Composite, error) {
 	}
 	artifactsRoot, err := normalizeVirtual(artifactsRoot)
 	if err != nil {
-		return nil, fmt.Errorf("composite artifacts root: %w", err)
+		panic(fmt.Errorf("composite artifacts root: %w", err))
 	}
-	result := &Composite{defaultBackend: options.Default, artifactsRoot: strings.TrimSuffix(artifactsRoot, "/")}
+	result := &Composite{defaultBackend: defaultBackend, artifactsRoot: strings.TrimSuffix(artifactsRoot, "/")}
 	if result.artifactsRoot == "" {
 		result.artifactsRoot = "/"
 	}
 	for prefix, value := range options.Routes {
 		if value == nil || !strings.HasPrefix(prefix, "/") {
-			return nil, fmt.Errorf("composite route %q is invalid", prefix)
+			panic(fmt.Sprintf("composite route %q is invalid", prefix))
 		}
 		if !reflect.TypeOf(value).Comparable() {
-			return nil, fmt.Errorf("composite route %q backend %T must be comparable so transfer batching has stable identity", prefix, value)
+			panic(fmt.Sprintf("composite route %q backend %T must be comparable so transfer batching has stable identity", prefix, value))
 		}
 		normalized, err := normalizeVirtual(prefix)
 		if err != nil || normalized == "/" {
-			return nil, fmt.Errorf("composite route %q is invalid", prefix)
+			panic(fmt.Sprintf("composite route %q is invalid", prefix))
 		}
 		result.routes = append(result.routes, route{prefix: strings.TrimSuffix(normalized, "/") + "/", backend: value})
 	}
@@ -147,7 +149,7 @@ func NewCompositeWithOptions(options CompositeOptions) (*Composite, error) {
 		}
 		return result.routes[i].prefix < result.routes[j].prefix
 	})
-	return result, nil
+	return result
 }
 
 func (composite *Composite) selectBackend(value string) (Backend, string, string) {

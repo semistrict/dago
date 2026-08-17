@@ -24,6 +24,28 @@ import (
 	"github.com/semistrict/dago/datool"
 )
 
+func requireConstructorPanic(t *testing.T, call func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("constructor did not panic")
+		}
+	}()
+	call()
+}
+
+func TestConstructorsPanicForMissingRequiredValues(t *testing.T) {
+	tests := map[string]func(){
+		"API key":           func() { NewAPIKey("", "model") },
+		"model":             func() { NewAPIKey("secret", "") },
+		"credential source": func() { NewOAuth(nil, "model") },
+		"provider":          func() { NewCompatibleAPIKey("secret", "", "model") },
+	}
+	for name, call := range tests {
+		t.Run(name, func(t *testing.T) { requireConstructorPanic(t, call) })
+	}
+}
+
 func TestInvokeMapsResponsesAPI(t *testing.T) {
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -48,10 +70,8 @@ func TestInvokeMapsResponsesAPI(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewAPIKey("secret", Options{Model: "test-model", BaseURL: server.URL, HTTPClient: server.Client(), MaxOutputTokens: 4096})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "test-model", Options{BaseURL: server.URL, HTTPClient: server.Client(), MaxOutputTokens: 4096})
+
 	response, err := client.Invoke(context.Background(), damodel.Request{
 		Messages:    []damessage.Message{damessage.System("be useful"), damessage.Human("hello")},
 		Tools:       []datool.Definition{{Name: "lookup", Description: "look up a value", InputSchema: json.RawMessage(`{"type":"object"}`), Strict: true}},
@@ -102,12 +122,10 @@ func TestRequestUsesInstructionsAndOmitsEmptySystemMessages(t *testing.T) {
 		_, _ = io.WriteString(writer, `{"id":"r","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
+
 	separate := damessage.System("separate")
-	_, err = client.Invoke(context.Background(), damodel.Request{
+	_, err := client.Invoke(context.Background(), damodel.Request{
 		SystemMessage: &separate,
 		Messages: []damessage.Message{
 			damessage.System("first"), damessage.System("  "), damessage.System("second"), damessage.Human("hello"),
@@ -126,10 +144,8 @@ func TestRequestUsesInstructionsAndOmitsEmptySystemMessages(t *testing.T) {
 }
 
 func TestProfileReportsReasoningLevelsAndDefault(t *testing.T) {
-	client, err := NewAPIKey("secret", Options{Model: "m", DefaultReasoning: &damodel.Reasoning{Effort: "medium", Summary: "auto"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "m", Options{DefaultReasoning: &damodel.Reasoning{Effort: "medium", Summary: "auto"}})
+
 	profile := client.Profile()
 	if profile.DefaultReasoningLevel != "medium" || len(profile.ReasoningLevels) != 5 || profile.ReasoningLevels[4] != "xhigh" || !profile.SupportsSeparateSystemMessage {
 		t.Fatalf("profile = %#v", profile)
@@ -137,75 +153,60 @@ func TestProfileReportsReasoningLevelsAndDefault(t *testing.T) {
 }
 
 func TestResponsesWebSocketDefaultsAndOverrides(t *testing.T) {
-	standard, err := NewAPIKey("secret", Options{Model: "m"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	standard := NewAPIKey("secret", "m")
+
 	if standard.websockets == nil {
 		t.Fatal("standard API client did not enable websocket transport")
 	}
 	if standard.options.ServerCompaction == nil || !*standard.options.ServerCompaction || standard.options.CompactionThreshold != defaultServerCompactionThreshold {
 		t.Fatalf("standard compaction options = enabled %#v, threshold %d", standard.options.ServerCompaction, standard.options.CompactionThreshold)
 	}
-	knownWindow, err := NewAPIKey("secret", Options{Model: "m", ContextWindow: 1000})
-	if err != nil {
-		t.Fatal(err)
-	}
+	knownWindow := NewAPIKey("secret", "m", Options{ContextWindow: 1000})
+
 	if knownWindow.options.CompactionThreshold != 900 {
 		t.Fatalf("derived compaction threshold = %d, want 900", knownWindow.options.CompactionThreshold)
 	}
-	clampedWindow, err := NewAPIKey("secret", Options{Model: "m", ContextWindow: 1000, CompactionThreshold: 950})
-	if err != nil {
-		t.Fatal(err)
-	}
+	clampedWindow := NewAPIKey("secret", "m", Options{ContextWindow: 1000, CompactionThreshold: 950})
+
 	if clampedWindow.options.CompactionThreshold != 900 {
 		t.Fatalf("clamped compaction threshold = %d, want 900", clampedWindow.options.CompactionThreshold)
 	}
-	httpOnly, err := NewAPIKey("secret", Options{Model: "m", ResponsesWebSocket: new(false)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	httpOnly := NewAPIKey("secret", "m", Options{ResponsesWebSocket: new(false)})
+
 	if httpOnly.websockets != nil {
 		t.Fatal("explicit websocket disable was ignored")
 	}
-	custom, err := NewAPIKey("secret", Options{Model: "m", BaseURL: "https://provider.example/v1"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	custom := NewAPIKey("secret", "m", Options{BaseURL: "https://provider.example/v1"})
+
 	if custom.websockets != nil {
 		t.Fatal("custom endpoint enabled websocket transport without an explicit capability")
 	}
 	if custom.options.ServerCompaction == nil || *custom.options.ServerCompaction {
 		t.Fatal("custom endpoint enabled server compaction without an explicit capability")
 	}
-	customCompaction, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: "https://provider.example/v1", CompactionThreshold: 100,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	customCompaction := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: "https://provider.example/v1", CompactionThreshold: 100,
+		})
+
 	if customCompaction.options.ServerCompaction == nil || !*customCompaction.options.ServerCompaction || customCompaction.options.CompactionThreshold != 100 {
 		t.Fatalf("custom compaction opt-in = enabled %#v, threshold %d", customCompaction.options.ServerCompaction, customCompaction.options.CompactionThreshold)
 	}
 	disabled := false
-	customDisabled, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: "https://provider.example/v1", ServerCompaction: &disabled, CompactionThreshold: 100,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	customDisabled := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: "https://provider.example/v1", ServerCompaction: &disabled, CompactionThreshold: 100,
+		})
+
 	if customDisabled.options.ServerCompaction == nil || *customDisabled.options.ServerCompaction {
 		t.Fatal("explicit server compaction disable was ignored")
 	}
-	if _, err := NewAPIKey("secret", Options{Model: "m", CompactionThreshold: -1}); err == nil {
-		t.Fatal("negative compaction threshold was accepted")
-	}
-	customWebSocket, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: "https://provider.example/v1", ResponsesWebSocket: new(true),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireConstructorPanic(t, func() { NewAPIKey("secret", "m", Options{CompactionThreshold: -1}) })
+	customWebSocket := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: "https://provider.example/v1", ResponsesWebSocket: new(true),
+		})
+
 	if customWebSocket.websockets == nil {
 		t.Fatal("custom endpoint websocket opt-in was ignored")
 	}
@@ -251,13 +252,12 @@ func TestResponsesRemoteCompactionV2TriggerRetentionAndReplay(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(),
-		ResponsesWebSocket: new(true), ServerCompaction: new(true), CompactionThreshold: 1000,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: server.URL, HTTPClient: server.Client(),
+			ResponsesWebSocket: new(true), ServerCompaction: new(true), CompactionThreshold: 1000,
+		})
+
 	setup := damessage.Human("set up the conversation")
 	firstResponse, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{setup}})
 	if err != nil {
@@ -394,10 +394,8 @@ func TestInvokeMapsIncompleteAndRefusalOutcomes(t *testing.T) {
 				_, _ = io.WriteString(writer, test.body)
 			}))
 			defer server.Close()
-			client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
-			if err != nil {
-				t.Fatal(err)
-			}
+			client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
+
 			response, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 			if err != nil {
 				t.Fatal(err)
@@ -429,10 +427,8 @@ func TestInvokeMapsProviderWebSearch(t *testing.T) {
         }`)
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), WebSearch: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client(), WebSearch: true})
+
 	response, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("search")}})
 	if err != nil {
 		t.Fatal(err)
@@ -475,10 +471,8 @@ func TestInvokeReplaysProviderWebSearchOutput(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), WebSearch: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client(), WebSearch: true})
+
 	first, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("weather in NYC")}})
 	if err != nil {
 		t.Fatal(err)
@@ -520,10 +514,8 @@ func TestInvokeOmitsLegacyDisplayOnlyServerToolBlock(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), WebSearch: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client(), WebSearch: true})
+
 	legacy := damessage.Message{Role: damessage.RoleAssistant, Content: []damessage.ContentBlock{
 		{Type: damessage.BlockServerTool, ID: "search_legacy", Name: "web_search", Extra: map[string]json.RawMessage{"arguments": json.RawMessage(`{"query":"NYC weather"}`)}},
 		{Type: damessage.BlockText, Text: "Cloudy."},
@@ -546,7 +538,7 @@ func TestInvokeMapsToolHistoryAndStructuredOutput(t *testing.T) {
 		_, _ = io.WriteString(writer, `{"id":"r","output":[{"type":"message","content":[{"type":"output_text","text":"{\"answer\":42}"}]}]}`)
 	}))
 	defer server.Close()
-	client, _ := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
 	assistant := damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "c", Name: "calculate", Arguments: json.RawMessage(`{"x":40}`)}}}
 	response, err := client.Invoke(context.Background(), damodel.Request{
 		Messages:       []damessage.Message{assistant, damessage.Tool("c", "42")},
@@ -584,7 +576,7 @@ func TestInvokePreservesAndReplaysEncryptedReasoning(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, _ := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
 	first, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("look it up")}})
 	if err != nil {
 		t.Fatal(err)
@@ -631,7 +623,7 @@ func TestReplayReasoningWithoutSummaryUsesEmptyArray(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, _ := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
 	first, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("think")}})
 	if err != nil {
 		t.Fatal(err)
@@ -655,7 +647,7 @@ func TestStreamPreservesReasoningSummaryAndOpaqueState(t *testing.T) {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{}}\n\n")
 	}))
 	defer server.Close()
-	client, _ := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
 	stream, err := client.Stream(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)
@@ -686,7 +678,7 @@ func TestStreamYieldsTextToolCallUsageAndDone(t *testing.T) {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n")
 	}))
 	defer server.Close()
-	client, _ := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
 	stream, err := client.Stream(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)
@@ -756,12 +748,11 @@ func TestResponsesWebSocketReusesConnectionWithIncrementalInput(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+		})
+
 	human := damessage.Human("hello")
 	first, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{human}})
 	if err != nil {
@@ -878,12 +869,11 @@ func TestResponsesWebSocketAnswersPingWhileIdle(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+		})
+
 	human := damessage.Human("hello")
 	first, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{human}})
 	if err != nil {
@@ -931,12 +921,11 @@ func TestResponsesWebSocketReadCancellationClosesConnection(t *testing.T) {
 		close(connectionClosed)
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+		})
+
 	stream, err := client.Stream(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)
@@ -987,12 +976,11 @@ func TestResponsesWebSocketPrewarmChainsFirstGeneratedTurn(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+		})
+
 	if err := client.Prewarm(context.Background(), damodel.Request{SystemMessage: new(damessage.System("be concise"))}); err != nil {
 		t.Fatal(err)
 	}
@@ -1039,12 +1027,11 @@ func TestResponsesWebSocketHandshakeFailureFallsBackToHTTP(t *testing.T) {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-http\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"http\"}]}]}}\n\n")
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: server.URL, HTTPClient: server.Client(), ResponsesWebSocket: new(true),
+		})
+
 	response, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)
@@ -1065,7 +1052,7 @@ func TestContextOverflowIsTyped(t *testing.T) {
 		http.Error(writer, `{"error":{"message":"too long","code":"context_length_exceeded"}}`, http.StatusBadRequest)
 	}))
 	defer server.Close()
-	client, _ := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
 	_, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if !errors.Is(err, damodel.ErrContextOverflow) {
 		t.Fatalf("error = %v", err)
@@ -1198,10 +1185,8 @@ func TestSubscriptionAddsAccountHeader(t *testing.T) {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
 	}))
 	defer server.Close()
-	client, err := NewSubscription(staticCredentials{Credentials{AccessToken: "token", AccountID: "workspace"}}, Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), MaxOutputTokens: 4096})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewSubscription(staticCredentials{Credentials{AccessToken: "token", AccountID: "workspace"}}, "m", Options{BaseURL: server.URL, HTTPClient: server.Client(), MaxOutputTokens: 4096})
+
 	response, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil || account != "workspace" || payload["store"] != false {
 		t.Fatalf("account = %q, store = %#v, error = %v", account, payload["store"], err)
@@ -1254,13 +1239,12 @@ func TestInvokeRetriesTransientResponsesFailures(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewAPIKey("secret", Options{
-		Model: "m", BaseURL: server.URL, HTTPClient: server.Client(),
-		RetryBackoff: []time.Duration{0, 0},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret",
+		"m", Options{
+			BaseURL: server.URL, HTTPClient: server.Client(),
+			RetryBackoff: []time.Duration{0, 0},
+		})
+
 	var retries []damodel.RetryEvent
 	ctx := damodel.WithRetryObserver(context.Background(), func(_ context.Context, event damodel.RetryEvent) {
 		retries = append(retries, event)
@@ -1297,10 +1281,8 @@ func TestInvokeRetriesEmptyOrTruncatedJSON(t *testing.T) {
 				_, _ = io.WriteString(writer, `{"id":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`)
 			}))
 			defer server.Close()
-			client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{0}})
-			if err != nil {
-				t.Fatal(err)
-			}
+			client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{0}})
+
 			response, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 			if err != nil {
 				t.Fatal(err)
@@ -1320,11 +1302,9 @@ func TestInvokeDoesNotRetryClientErrorsAndBoundsBody(t *testing.T) {
 		_, _ = io.WriteString(writer, "useful prefix: "+strings.Repeat("x", 64<<10))
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{0, 0}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{0, 0}})
+
+	_, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err == nil || !strings.Contains(err.Error(), "useful prefix") {
 		t.Fatalf("error = %v", err)
 	}
@@ -1344,10 +1324,8 @@ func TestInvokeMapsCachedAndReasoningUsage(t *testing.T) {
 		}`)
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
+
 	response, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)
@@ -1368,10 +1346,8 @@ func TestStreamParsesMultilineSSEAndNoTrailingNewline(t *testing.T) {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{}}")
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
+
 	stream, err := client.Stream(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)
@@ -1393,10 +1369,8 @@ func TestStreamRejectsTruncatedResponse(t *testing.T) {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
+
 	stream, err := client.Stream(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)
@@ -1419,10 +1393,8 @@ func TestStreamCompletedResponseRestoresCitationsAndReasoningState(t *testing.T)
 		_, _ = io.WriteString(writer, `data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"think"}],"encrypted_content":"opaque"},{"type":"web_search_call","id":"search_1","action":{"queries":["Go"]}},{"type":"message","content":[{"type":"output_text","text":"answer","annotations":[{"type":"url_citation","url":"https://example.test","title":"Example","start_index":0,"end_index":6}]}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`+"\n\n")
 	}))
 	defer server.Close()
-	client, err := NewAPIKey("secret", Options{Model: "m", BaseURL: server.URL, HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
+
 	stream, err := client.Stream(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)

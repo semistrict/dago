@@ -12,6 +12,7 @@ import (
 
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dastore"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // Server is an embeddable local Agent Server compatible with LangSmith Studio.
@@ -42,10 +43,11 @@ type Server struct {
 
 // New validates graph registrations, restores local metadata, and starts the
 // in-process development run queue.
-func New(options Options) (*Server, error) {
-	if len(options.Graphs) == 0 {
-		return nil, fmt.Errorf("Agent Server requires at least one graph")
+func New(graphs []GraphRegistration, optionValues ...Options) (*Server, error) {
+	if len(graphs) == 0 {
+		panic("Agent Server requires at least one graph")
 	}
+	options := optionvalue.Resolve("Agent Server", optionValues)
 	if options.Saver == nil {
 		options.Saver = dacheckpoint.NewMemorySaver()
 	}
@@ -73,7 +75,7 @@ func New(options Options) (*Server, error) {
 			server.origins[origin] = true
 		}
 	}
-	for _, registration := range options.Graphs {
+	for _, registration := range graphs {
 		if err := validateRegistration(&registration); err != nil {
 			cancel()
 			return nil, err

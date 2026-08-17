@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // LocalShell is an explicitly constructed host process capability rooted at a
@@ -37,7 +39,8 @@ type LocalShellOptions struct {
 	InheritEnv bool
 }
 
-func NewLocalShell(options LocalShellOptions) (*LocalShell, error) {
+func NewLocalShell(optionValues ...LocalShellOptions) (*LocalShell, error) {
+	options := optionvalue.Resolve("local shell", optionValues)
 	filesystem, err := NewFilesystem(options.Filesystem)
 	if err != nil {
 		return nil, err

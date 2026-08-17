@@ -94,13 +94,9 @@ type addInput struct {
 }
 
 func main() {
-	chat, err := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), openai.Options{
-		Model:         "gpt-5",
+	chat := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), "gpt-5", openai.Options{
 		ContextWindow: 128_000,
 	})
-	if err != nil {
-		log.Fatal(err)
-	}
 	add, err := datool.New("add", "Add two integers.", func(_ context.Context, input addInput) (int, error) {
 		return input.A + input.B, nil
 	})
@@ -265,8 +261,7 @@ turn. Set `ServerCompaction` to `new(false)` to disable it or set
 `CompactionThreshold` to override the trigger point.
 
 ```go
-chat, err := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), openai.Options{
-	Model: "gpt-5",
+chat := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), "gpt-5", openai.Options{
 	ContextWindow: 128_000,
 })
 ```
@@ -282,8 +277,7 @@ and streaming contracts as the OpenAI adapter. It also supports optional app
 attribution and provider routing:
 
 ```go
-chat, err := openrouter.New(os.Getenv("OPENROUTER_API_KEY"), openrouter.Options{
-	Model:    "anthropic/claude-sonnet-4.6",
+chat := openrouter.New(os.Getenv("OPENROUTER_API_KEY"), "anthropic/claude-sonnet-4.6", openrouter.Options{
 	AppURL:   "https://example.com/my-agent",
 	AppTitle: "My Agent",
 	Routing: &openrouter.ProviderRouting{
@@ -441,9 +435,7 @@ available to the local Docker daemon. It never pulls an image implicitly. The
 image must provide `/bin/sh` and `sleep`.
 
 ```go
-sandbox, err := docker.New(ctx, docker.Options{
-	Image: "my-agent-sandbox:local",
-})
+sandbox, err := docker.New(ctx, "my-agent-sandbox:local")
 if err != nil {
 	log.Fatal(err)
 }

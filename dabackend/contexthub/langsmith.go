@@ -22,22 +22,19 @@ type LangSmithClient struct {
 // NewLangSmith constructs a Context Hub backend using LangSmith's standard
 // environment/profile authentication. Supplying a client permits custom SDK
 // options; a nil client uses ls.NewClient().
-func NewLangSmith(identifier string, client *ls.Client) (*Backend, error) {
+func NewLangSmith(identifier string, client *ls.Client) *Backend {
 	if client == nil {
 		client = ls.NewClient()
 	}
-	transport, err := NewLangSmithClient(client)
-	if err != nil {
-		return nil, err
-	}
+	transport := NewLangSmithClient(client)
 	return New(identifier, transport)
 }
 
-func NewLangSmithClient(client *ls.Client) (*LangSmithClient, error) {
+func NewLangSmithClient(client *ls.Client) *LangSmithClient {
 	if client == nil {
-		return nil, fmt.Errorf("context hub client: LangSmith client is required")
+		panic("context hub client: LangSmith client is required")
 	}
-	return &LangSmithClient{client: client}, nil
+	return &LangSmithClient{client: client}
 }
 
 func (client *LangSmithClient) Pull(ctx context.Context, identifier string) (Tree, error) {

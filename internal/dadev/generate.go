@@ -117,7 +117,7 @@ func generateMain(graphs []resolvedGraph, output string) error {
 		fmt.Fprintf(&source, "{ID: %q, Description: %q, Factory: daserver.AdaptFactory(%s.%s)},\n", graph.ID, graph.Description, graph.Alias, graph.Symbol)
 	}
 	source.WriteString("}\n")
-	source.WriteString("err = daserver.ListenAndServe(ctx, os.Getenv(\"DAGO_DEV_ADDRESS\"), daserver.Options{Graphs: graphs, Saver: saver, Store: store, StatePath: filepath.Join(stateDir, \"server.json\"), QueueWorkers: workers})\nif err != nil { log.Fatal(err) }\n}\n")
+	source.WriteString("err = daserver.ListenAndServe(ctx, os.Getenv(\"DAGO_DEV_ADDRESS\"), graphs, daserver.Options{Saver: saver, Store: store, StatePath: filepath.Join(stateDir, \"server.json\"), QueueWorkers: workers})\nif err != nil { log.Fatal(err) }\n}\n")
 	formatted, err := format.Source(source.Bytes())
 	if err != nil {
 		return fmt.Errorf("format generated server: %w\n%s", err, source.String())

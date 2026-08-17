@@ -77,14 +77,14 @@ func resolveAuthentication(ctx context.Context, apiKey, stateDirectory string, s
 	return modelAuthentication{credentials: session, subscription: true}, nil
 }
 
-func (authentication modelAuthentication) newModel(model, baseURL string) (damodel.Chat, error) {
-	options := openai.Options{Model: model, ContextWindow: 128_000}
+func (authentication modelAuthentication) model(model, baseURL string) damodel.Chat {
+	options := openai.Options{ContextWindow: 128_000}
 	if authentication.subscription {
 		options.ContextWindow = 272_000
-		return openai.NewSubscription(authentication.credentials, options)
+		return openai.NewSubscription(authentication.credentials, model, options)
 	}
 	options.BaseURL = baseURL
-	return openai.NewAPIKey(authentication.apiKey, options)
+	return openai.NewAPIKey(authentication.apiKey, model, options)
 }
 
 func openExternalURL(target string) error {

@@ -45,7 +45,7 @@ type interpreterInput struct {
 	Code string `json:"code" description:"JavaScript to evaluate. Top-level await is supported and bindings persist for this thread."`
 }
 
-func newInterpreter(options Interpreter) (dagent.Middleware, error) {
+func compileInterpreter(options Interpreter) (dagent.Middleware, error) {
 	if options.ToolName == "" {
 		options.ToolName = "js_eval"
 	}
@@ -197,10 +197,10 @@ func (runtime *interpreterRuntime) evaluate(ctx context.Context, input interpret
 		}
 		bindings = append(bindings, fmt.Sprintf("%s:(input={})=>%s(input)", jsIdentifier(name), hostName))
 	}
-	engine, err := quickjs.New(ctx, quickjs.Options{
+	engine, err := quickjs.New(ctx, snapshot, quickjs.Options{
 		MemoryLimit: runtime.options.MemoryLimit, StackLimit: runtime.options.StackLimit,
 		MaxStdout: runtime.options.MaxStdoutChars, HostFunctions: hostFunctions,
-	}, snapshot)
+	})
 	if err != nil {
 		return datool.Result{}, err
 	}

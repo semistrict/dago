@@ -23,6 +23,7 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	engineclient "github.com/moby/moby/client"
 	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -37,10 +38,6 @@ const (
 
 // Options controls a Docker sandbox created and owned by New or NewWithClient.
 type Options struct {
-	// Image is required and must already exist in the Engine. Neither
-	// constructor performs an image pull. The image must provide /bin/sh and
-	// sleep.
-	Image string
 	// Name optionally assigns a container name. Docker generates one otherwise.
 	Name string
 	// Workspace optionally supplies the host directory mounted at Workdir. When
@@ -110,12 +107,14 @@ type commandResult struct {
 // New connects to Docker using the standard environment variables and API
 // version negotiation, then creates and starts one owned container. Closing the
 // backend also closes the Engine client created by this function.
-func New(ctx context.Context, options Options) (*Backend, error) {
+func New(ctx context.Context, image string, optionValues ...Options) (*Backend, error) {
+	image = requiredImage(image)
+	options := optionvalue.Resolve("docker sandbox", optionValues)
 	engine, err := engineclient.New(engineclient.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("docker sandbox: create Engine client: %w", err)
 	}
-	backend, err := newBackend(ctx, options, engine, engine.Close)
+	backend, err := newBackend(ctx, image, options, engine, engine.Close)
 	if err != nil {
 		_ = engine.Close()
 		return nil, err
@@ -125,20 +124,26 @@ func New(ctx context.Context, options Options) (*Backend, error) {
 
 // NewWithClient creates an owned container using a caller-managed Engine
 // client. Closing the backend removes the container but does not close client.
-func NewWithClient(ctx context.Context, client *engineclient.Client, options Options) (*Backend, error) {
+func NewWithClient(ctx context.Context, client *engineclient.Client, image string, optionValues ...Options) (*Backend, error) {
 	if client == nil {
-		return nil, fmt.Errorf("docker sandbox: Engine client is required")
+		panic("docker sandbox: Engine client is required")
 	}
-	return newBackend(ctx, options, client, nil)
+	return newBackend(ctx, requiredImage(image), optionvalue.Resolve("docker sandbox", optionValues), client, nil)
 }
 
-func newBackend(ctx context.Context, options Options, engine engineAPI, closeEngine func() error) (*Backend, error) {
+func requiredImage(image string) string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		panic("docker sandbox: image is required")
+	}
+	return image
+}
+
+func newBackend(ctx context.Context, image string, options Options, engine engineAPI, closeEngine func() error) (*Backend, error) {
 	if engine == nil {
-		return nil, fmt.Errorf("docker sandbox: Engine client is required")
+		panic("docker sandbox: Engine client is required")
 	}
-	if strings.TrimSpace(options.Image) == "" {
-		return nil, fmt.Errorf("docker sandbox: image is required")
-	}
+	image = requiredImage(image)
 	if options.Workdir == "" {
 		options.Workdir = defaultContainerWorkdir
 	}
@@ -199,7 +204,7 @@ func newBackend(ctx context.Context, options Options, engine engineAPI, closeEng
 			return nil, err
 		}
 	}
-	created, err := engine.ContainerCreate(ctx, createOptions(options, workspace, containerUser))
+	created, err := engine.ContainerCreate(ctx, createOptions(image, options, workspace, containerUser))
 	if err != nil {
 		cleanupWorkspace()
 		return nil, fmt.Errorf("docker sandbox: create container: %w", err)
@@ -224,7 +229,7 @@ func newBackend(ctx context.Context, options Options, engine engineAPI, closeEng
 	}, nil
 }
 
-func createOptions(options Options, workspace, containerUser string) engineclient.ContainerCreateOptions {
+func createOptions(image string, options Options, workspace, containerUser string) engineclient.ContainerCreateOptions {
 	environment := make(map[string]string, len(options.Env)+1)
 	for name, value := range options.Env {
 		environment[name] = value
@@ -246,7 +251,7 @@ func createOptions(options Options, workspace, containerUser string) engineclien
 	return engineclient.ContainerCreateOptions{
 		Name: options.Name,
 		Config: &container.Config{
-			Image: options.Image, User: containerUser, Env: variables,
+			Image: image, User: containerUser, Env: variables,
 			WorkingDir: options.Workdir, Entrypoint: []string{"/bin/sh"},
 			Cmd:             []string{"-c", "while :; do sleep 3600; done"},
 			NetworkDisabled: options.Network == "none",

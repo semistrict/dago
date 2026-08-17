@@ -15,7 +15,7 @@ import (
 )
 
 func mustSkills(backend dabackend.Backend, options Skills) dagent.Middleware {
-	middleware, err := newSkills(backend, options)
+	middleware, err := compileSkills(backend, options)
 	if err != nil {
 		panic(err)
 	}
@@ -40,14 +40,12 @@ func TestParseSkillYAMLMetadata(t *testing.T) {
 }
 
 func TestSkillsLaterSourceWinsAndWarningsAreUntrusted(t *testing.T) {
-	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/base/research/SKILL.md":    {Content: "---\nname: research\ndescription: base\n---\nbody", Encoding: dabackend.EncodingUTF8},
 		"/project/research/SKILL.md": {Content: "---\nname: research\ndescription: project\n---\nbody", Encoding: dabackend.EncodingUTF8},
 		"/project/broken/SKILL.md":   {Content: "not yaml", Encoding: dabackend.EncodingUTF8},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	var observedWarnings []string
 	middleware := mustSkills(memory, Skills{Sources: []string{"/base", "/project"}, Warn: func(value string) {
 		observedWarnings = append(observedWarnings, value)
@@ -84,12 +82,10 @@ func (partial partialSkillsBackend) List(context.Context, string) (dabackend.Lis
 }
 
 func TestSkillsRetainPartialListingResults(t *testing.T) {
-	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/skills/research/SKILL.md": {Content: "---\nname: research\ndescription: found despite warning\n---\nbody", Encoding: dabackend.EncodingUTF8},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	partial := partialSkillsBackend{
 		Backend: memory,
 		listing: dabackend.ListResult{Entries: []dabackend.FileInfo{{Path: "/skills/research/", IsDir: true}}},
@@ -109,10 +105,8 @@ func TestSkillsRetainPartialListingResults(t *testing.T) {
 }
 
 func TestSkillsSkipDiscoveryWhenCheckpointedMetadataExists(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := dabackend.NewMemory(nil)
+
 	middleware := mustSkills(memory, Skills{Sources: []string{"/skills"}})
 
 	update, err := middleware.BeforeAgent(context.Background(), map[string]any{"skills": []Skill{}}, dagent.Runtime{})
@@ -125,10 +119,8 @@ func TestSkillsSkipDiscoveryWhenCheckpointedMetadataExists(t *testing.T) {
 }
 
 func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := dabackend.NewMemory(nil)
+
 	middleware := mustSkills(
 		memory, Skills{
 
@@ -172,10 +164,8 @@ func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
 }
 
 func TestSkillsCustomPromptRequiresProgressiveDisclosureSlots(t *testing.T) {
-	memory, err := dabackend.NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := dabackend.NewMemory(nil)
+
 	invalid := "{skills_list}"
 	requirePanicContaining(t, "missing required slot", func() {
 		mustSkills(memory, Skills{SystemPrompt: PromptTemplate{Mode: PromptCustom, Text: invalid}})
@@ -185,12 +175,10 @@ func TestSkillsCustomPromptRequiresProgressiveDisclosureSlots(t *testing.T) {
 }
 
 func TestSkillsCatalogUsesApplicationActivationAndFilesystemOverrides(t *testing.T) {
-	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/project/research/SKILL.md": {Content: "---\nname: research\ndescription: project\n---\nbody", Encoding: dabackend.EncodingUTF8},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	middleware := mustSkills(
 		memory, Skills{
 
@@ -229,12 +217,10 @@ func TestSkillsCatalogUsesApplicationActivationAndFilesystemOverrides(t *testing
 }
 
 func TestSkillsCatalogBodySuppliesActivationAndFilesystemOverridesIt(t *testing.T) {
-	memory, err := dabackend.NewMemory(map[string]dabackend.FileData{
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/project/herdr/SKILL.md": {Content: "---\nname: herdr\ndescription: project\n---\nproject body", Encoding: dabackend.EncodingUTF8},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	middleware := mustSkills(memory, Skills{
 		Sources: []string{"/project"},
 		Catalog: []Skill{

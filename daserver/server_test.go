@@ -19,7 +19,7 @@ import (
 
 func testServer(t *testing.T, delay time.Duration) (*Server, *http.Client, string) {
 	t.Helper()
-	server, err := New(Options{Graphs: []GraphRegistration{{
+	server, err := New([]GraphRegistration{{
 		ID: "agent", Description: "Test agent",
 		Factory: func(_ context.Context, runtime Runtime) (Graph, error) {
 			return dagent.New(
@@ -28,7 +28,7 @@ func testServer(t *testing.T, delay time.Duration) (*Server, *http.Client, strin
 					Saver: runtime.Saver, Store: runtime.Store,
 				}), nil
 		},
-	}}})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

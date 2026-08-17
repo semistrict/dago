@@ -8,6 +8,6 @@ import (
 	"github.com/semistrict/dago/dagent"
 )
 
-func newInterpreter(Interpreter) (dagent.Middleware, error) {
+func compileInterpreter(Interpreter) (dagent.Middleware, error) {
 	return dagent.Middleware{}, fmt.Errorf("JavaScript interpreter is unavailable in TinyGo builds")
 }

@@ -132,11 +132,11 @@ func (fake *fakeEngine) snapshot() (creates []engineclient.ContainerCreateOption
 
 func newTestBackend(t *testing.T, engine *fakeEngine, mutate func(*Options)) *Backend {
 	t.Helper()
-	options := Options{Image: "example:local", Workspace: t.TempDir(), User: "1000:1000"}
+	options := Options{Workspace: t.TempDir(), User: "1000:1000"}
 	if mutate != nil {
 		mutate(&options)
 	}
-	backend, err := newBackend(context.Background(), options, engine, nil)
+	backend, err := newBackend(context.Background(), "example:local", options, engine, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,10 +151,11 @@ func TestNewCreatesHardenedOwnedContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := &fakeEngine{}
-	backend, err := newBackend(context.Background(), Options{
-		Image: "example:local", Workspace: workspace, User: "123:456", Name: "sandbox-name",
-		Env: map[string]string{"ZED": "last", "ALPHA": "first"},
-	}, engine, nil)
+	backend, err := newBackend(context.Background(),
+		"example:local", Options{
+			Workspace: workspace, User: "123:456", Name: "sandbox-name",
+			Env: map[string]string{"ZED": "last", "ALPHA": "first"},
+		}, engine, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +304,7 @@ func TestParentCancellationRestartsContainerAndReturnsCancellation(t *testing.T)
 
 func TestCloseRemovesOwnedContainerWorkspaceAndOwnedClient(t *testing.T) {
 	engine := &fakeEngine{}
-	backend, err := newBackend(context.Background(), Options{Image: "example:local", User: "1000:1000"}, engine, engine.Close)
+	backend, err := newBackend(context.Background(), "example:local", Options{User: "1000:1000"}, engine, engine.Close)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +330,7 @@ func TestCloseRemovesOwnedContainerWorkspaceAndOwnedClient(t *testing.T) {
 func TestClosePreservesCallerWorkspaceAndClient(t *testing.T) {
 	workspace := t.TempDir()
 	engine := &fakeEngine{}
-	backend, err := newBackend(context.Background(), Options{Image: "example:local", Workspace: workspace, User: "1000:1000"}, engine, nil)
+	backend, err := newBackend(context.Background(), "example:local", Options{Workspace: workspace, User: "1000:1000"}, engine, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,20 +363,19 @@ func TestShutdownHonorsContextWhileAnotherOperationOwnsSandbox(t *testing.T) {
 
 func TestInvalidOptionsFailBeforeContainerCreation(t *testing.T) {
 	tests := []Options{
-		{},
-		{Image: "image", Workdir: "relative"},
-		{Image: "image", Workdir: "/"},
-		{Image: "image", Workdir: "/tmp"},
-		{Image: "image", Workdir: "/work/../escape"},
-		{Image: "image", DefaultTimeout: -time.Second},
-		{Image: "image", MemoryBytes: -1},
-		{Image: "image", Env: map[string]string{"BAD=NAME": "value"}},
+		{Workdir: "relative"},
+		{Workdir: "/"},
+		{Workdir: "/tmp"},
+		{Workdir: "/work/../escape"},
+		{DefaultTimeout: -time.Second},
+		{MemoryBytes: -1},
+		{Env: map[string]string{"BAD=NAME": "value"}},
 	}
 	for _, options := range tests {
 		options.Workspace = t.TempDir()
 		options.User = "1000:1000"
 		engine := &fakeEngine{}
-		if _, err := newBackend(context.Background(), options, engine, nil); err == nil {
+		if _, err := newBackend(context.Background(), "image", options, engine, nil); err == nil {
 			t.Fatalf("options %#v unexpectedly succeeded", options)
 		}
 		creates, _, _, _, _, _ := engine.snapshot()
@@ -385,10 +385,24 @@ func TestInvalidOptionsFailBeforeContainerCreation(t *testing.T) {
 	}
 }
 
+func TestEmptyImagePanicsBeforeContainerCreation(t *testing.T) {
+	engine := &fakeEngine{}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("empty image did not panic")
+		}
+		creates, _, _, _, _, _ := engine.snapshot()
+		if len(creates) != 0 {
+			t.Fatalf("empty image invoked Engine: %#v", creates)
+		}
+	}()
+	_, _ = newBackend(context.Background(), "", Options{}, engine, nil)
+}
+
 func TestCreateAndStartFailuresCleanUp(t *testing.T) {
 	t.Run("create", func(t *testing.T) {
 		engine := &fakeEngine{createError: errors.New("bad image")}
-		backend, err := newBackend(context.Background(), Options{Image: "example:local", User: "1000:1000"}, engine, nil)
+		backend, err := newBackend(context.Background(), "example:local", Options{User: "1000:1000"}, engine, nil)
 		if err == nil || backend != nil {
 			t.Fatalf("backend = %#v, error = %v", backend, err)
 		}
@@ -399,7 +413,7 @@ func TestCreateAndStartFailuresCleanUp(t *testing.T) {
 	})
 	t.Run("start", func(t *testing.T) {
 		engine := &fakeEngine{startError: errors.New("cannot start")}
-		backend, err := newBackend(context.Background(), Options{Image: "example:local", User: "1000:1000"}, engine, nil)
+		backend, err := newBackend(context.Background(), "example:local", Options{User: "1000:1000"}, engine, nil)
 		if err == nil || backend != nil {
 			t.Fatalf("backend = %#v, error = %v", backend, err)
 		}

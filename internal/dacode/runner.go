@@ -198,10 +198,8 @@ type runnerOptions struct {
 }
 
 func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
-	model, err := options.Authentication.newModel(options.Model, options.BaseURL)
-	if err != nil {
-		return nil, nil, err
-	}
+	model := options.Authentication.model(options.Model, options.BaseURL)
+	var err error
 
 	var backend dabackend.Backend
 	if options.Shell {
@@ -264,11 +262,8 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 		goals: dagoal.NewService(agent, goalOptions),
 	}
 	if options.AutoReview {
-		reviewModel, reviewErr := options.Authentication.newModel(options.ReviewModel, options.BaseURL)
-		if reviewErr != nil {
-			_ = database.Close()
-			return nil, nil, reviewErr
-		}
+		reviewModel := options.Authentication.model(options.ReviewModel, options.BaseURL)
+		var reviewErr error
 		readOnly, reviewErr := dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: options.WorkingDir})
 		if reviewErr != nil {
 			_ = database.Close()

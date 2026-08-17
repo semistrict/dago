@@ -27,10 +27,8 @@ func TestLangSmithClientPullDecodesFilesAndLinks(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	client, err := NewLangSmithClient(ls.NewClient(option.WithBaseURL(server.URL)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewLangSmithClient(ls.NewClient(option.WithBaseURL(server.URL)))
+
 	tree, err := client.Pull(context.Background(), "-/agent:abc12345")
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +44,7 @@ func TestLangSmithClientPullMapsNotFound(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"detail":"missing"}`))
 	}))
 	defer server.Close()
-	client, _ := NewLangSmithClient(ls.NewClient(option.WithBaseURL(server.URL)))
+	client := NewLangSmithClient(ls.NewClient(option.WithBaseURL(server.URL)))
 	_, err := client.Pull(context.Background(), "-/missing")
 	if err != ErrRepositoryNotFound {
 		t.Fatalf("err = %v", err)
@@ -87,7 +85,7 @@ func TestLangSmithClientPushCreatesPrivateAgentThenCommits(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client, _ := NewLangSmithClient(ls.NewClient(option.WithBaseURL(server.URL)))
+	client := NewLangSmithClient(ls.NewClient(option.WithBaseURL(server.URL)))
 	result, err := client.Push(context.Background(), "-/new-agent", map[string]*Entry{
 		"a.md": {Kind: EntryFile, Content: "hello"},
 		"gone": nil,
@@ -123,8 +121,17 @@ func TestParseIdentifier(t *testing.T) {
 }
 
 func TestNewLangSmithUsesDefaultClient(t *testing.T) {
-	remote, err := NewLangSmith("-/agent", nil)
-	if err != nil || remote == nil {
-		t.Fatalf("backend = %#v, err = %v", remote, err)
+	remote := NewLangSmith("-/agent", nil)
+	if remote == nil {
+		t.Fatalf("backend = %#v", remote)
 	}
+}
+
+func TestNewLangSmithClientPanicsForNilClient(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil client did not panic")
+		}
+	}()
+	NewLangSmithClient(nil)
 }

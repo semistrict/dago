@@ -215,13 +215,9 @@ func TestAuthenticationDoesNotOverwriteMalformedSession(t *testing.T) {
 }
 
 func TestAuthenticationBuildsAPIAndSubscriptionModels(t *testing.T) {
-	if _, err := (modelAuthentication{apiKey: "secret"}).newModel("main-model", "https://api.example.test/v1"); err != nil {
-		t.Fatal(err)
-	}
+	_ = (modelAuthentication{apiKey: "secret"}).model("main-model", "https://api.example.test/v1")
 	session := writeOAuthSession(t, filepath.Join(t.TempDir(), oauthStoreFilename))
-	if _, err := (modelAuthentication{credentials: session, subscription: true}).newModel("main-model", "https://ignored.example.test"); err != nil {
-		t.Fatal(err)
-	}
+	_ = (modelAuthentication{credentials: session, subscription: true}).model("main-model", "https://ignored.example.test")
 }
 
 func TestRunnerStartsWithHostShellAndApprovalGates(t *testing.T) {

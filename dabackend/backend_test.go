@@ -41,32 +41,47 @@ func backendContract(t *testing.T, value Backend) {
 }
 
 func TestMemoryAndStoreBackendsShareContract(t *testing.T) {
-	memory, err := NewMemory(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := NewMemory(nil)
+
 	backendContract(t, memory)
 	values := memorystore.NewMemory()
-	persistent, err := NewStore(values, memorystore.Namespace{"files", "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	persistent := NewStore(values, memorystore.Namespace{"files", "test"})
+
 	backendContract(t, persistent)
 	if _, err := persistent.Write(context.Background(), "/persist", "value"); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := NewStore(values, memorystore.Namespace{"files", "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	reopened := NewStore(values, memorystore.Namespace{"files", "test"})
+
 	read, err := reopened.Read(context.Background(), "/persist", 0, 10)
 	if err != nil || read.Data.Content != "value" {
 		t.Fatalf("reopened Read = %#v, %v", read, err)
 	}
 }
 
+func TestConstructorsPanicForStaticConfigurationErrors(t *testing.T) {
+	tests := map[string]func(){
+		"memory path":       func() { NewMemory(map[string]FileData{"../escape": {}}) },
+		"state file":        func() { NewState("files", map[string]any{"/bad": 1}) },
+		"store":             func() { NewStore(nil, memorystore.Namespace{"files"}) },
+		"store namespace":   func() { NewStore(memorystore.NewMemory(), nil) },
+		"namespace factory": func() { NewStoreWithOptions(nil) },
+		"composite default": func() { NewComposite(nil, nil) },
+	}
+	for name, call := range tests {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("constructor did not panic")
+				}
+			}()
+			call()
+		})
+	}
+}
+
 func TestBackendsPreserveCanonicalReadWindowsAndLegacyFiles(t *testing.T) {
-	memory, _ := NewMemory(nil)
+	memory := NewMemory(nil)
 	root := t.TempDir()
 	filesystem, err := NewFilesystem(FilesystemOptions{Root: root})
 	if err != nil {
@@ -106,10 +121,8 @@ func TestBackendsPreserveCanonicalReadWindowsAndLegacyFiles(t *testing.T) {
 	if err := values.Put(context.Background(), memorystore.Namespace{"files"}, "/legacy.txt", map[string]any{"content": []any{"one", "two"}}); err != nil {
 		t.Fatal(err)
 	}
-	persistent, err := NewStore(values, memorystore.Namespace{"files"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	persistent := NewStore(values, memorystore.Namespace{"files"})
+
 	read, err = persistent.Read(context.Background(), "/legacy.txt", 0, 10)
 	if err != nil || read.Data == nil || read.Data.Content != "one\ntwo" || read.Data.Encoding != EncodingUTF8 {
 		t.Fatalf("legacy Store.Read = %#v, %v", read, err)
@@ -152,7 +165,7 @@ func TestFilesystemDeleteDoesNotFollowSymlinksAndRejectsMissing(t *testing.T) {
 }
 
 func TestMemoryGlobAndGrepFollowRecursiveIncludeSemantics(t *testing.T) {
-	memory, _ := NewMemory(nil)
+	memory := NewMemory(nil)
 	for name := range map[string]string{"/root.go": "needle", "/nested/code.py": "needle", "/nested/skip.md": "needle"} {
 		if _, err := memory.Write(context.Background(), name, "needle"); err != nil {
 			t.Fatal(err)
@@ -170,7 +183,7 @@ func TestMemoryGlobAndGrepFollowRecursiveIncludeSemantics(t *testing.T) {
 
 func TestStoreBackendResolvesNamespaceAndStorePerRuntime(t *testing.T) {
 	values := memorystore.NewMemory()
-	persistent, err := NewStoreWithOptions(StoreOptions{Namespace: func(runtime *Runtime) (memorystore.Namespace, error) {
+	persistent := NewStoreWithOptions(func(runtime *Runtime) (memorystore.Namespace, error) {
 		if runtime == nil {
 			return nil, fmt.Errorf("runtime is required")
 		}
@@ -179,10 +192,8 @@ func TestStoreBackendResolvesNamespaceAndStorePerRuntime(t *testing.T) {
 			return nil, fmt.Errorf("runtime user is required")
 		}
 		return memorystore.Namespace{"files", user}, nil
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	})
+
 	if _, err := persistent.Write(context.Background(), "/note.txt", "outside"); err == nil {
 		t.Fatal("runtime-dependent Store.Write succeeded outside a bound run")
 	}
@@ -213,25 +224,22 @@ func TestStoreBackendResolvesNamespaceAndStorePerRuntime(t *testing.T) {
 }
 
 func TestStoreBackendRejectsUnsafeDynamicNamespace(t *testing.T) {
-	persistent, err := NewStoreWithOptions(StoreOptions{
-		Store: memorystore.NewMemory(),
-		Namespace: func(*Runtime) (memorystore.Namespace, error) {
+	persistent := NewStoreWithOptions(
+
+		func(*Runtime) (memorystore.Namespace, error) {
 			return memorystore.Namespace{"files", "*"}, nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+		}, StoreOptions{
+			Store: memorystore.NewMemory(),
+		})
+
 	if _, err := persistent.Write(context.Background(), "/note.txt", "unsafe"); err == nil || !strings.Contains(err.Error(), "disallowed") {
 		t.Fatalf("unsafe namespace error = %v", err)
 	}
 }
 
 func TestStateBackendRequiresBindingAndEmitsPlainDataDelta(t *testing.T) {
-	value, err := NewState("", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	value := NewState("", nil)
+
 	if _, err := value.List(context.Background(), "/"); err == nil {
 		t.Fatal("unbound State.List succeeded")
 	}
@@ -262,13 +270,11 @@ func TestStateBackendRequiresBindingAndEmitsPlainDataDelta(t *testing.T) {
 }
 
 func TestCompositeUsesLongestRouteAndRemapsResults(t *testing.T) {
-	root, _ := NewMemory(nil)
-	memories, _ := NewMemory(nil)
-	private, _ := NewMemory(nil)
-	composite, err := NewComposite(root, map[string]Backend{"/memories/": memories, "/memories/private/": private})
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := NewMemory(nil)
+	memories := NewMemory(nil)
+	private := NewMemory(nil)
+	composite := NewComposite(root, map[string]Backend{"/memories/": memories, "/memories/private/": private})
+
 	_, _ = composite.Write(context.Background(), "/root.txt", "root")
 	_, _ = composite.Write(context.Background(), "/memories/note.txt", "memory")
 	_, _ = composite.Write(context.Background(), "/memories/private/secret.txt", "private")
@@ -296,14 +302,10 @@ func TestCompositeResolvesDefaultExecutionAndShellRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistent, err := NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	composite, err := NewComposite(shell, map[string]Backend{"/common/": mounted, "/memories/": persistent})
-	if err != nil {
-		t.Fatal(err)
-	}
+	persistent := NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
+
+	composite := NewComposite(shell, map[string]Backend{"/common/": mounted, "/memories/": persistent})
+
 	resolved, ok := SandboxOf(composite)
 	if !ok || resolved != shell || !CapabilitiesOf(composite).Execute {
 		t.Fatalf("composite sandbox = %#v, %v", resolved, ok)
@@ -313,11 +315,9 @@ func TestCompositeResolvesDefaultExecutionAndShellRoutes(t *testing.T) {
 		t.Fatalf("shell routes = %#v", routes)
 	}
 
-	plain, _ := NewMemory(nil)
-	withoutShell, err := NewComposite(plain, map[string]Backend{"/common/": mounted})
-	if err != nil {
-		t.Fatal(err)
-	}
+	plain := NewMemory(nil)
+	withoutShell := NewComposite(plain, map[string]Backend{"/common/": mounted})
+
 	if _, ok := SandboxOf(withoutShell); ok || ShellPathRoutes(withoutShell)[0].Accessible {
 		t.Fatalf("non-shell composite exposed execution: %#v", ShellPathRoutes(withoutShell))
 	}
@@ -349,18 +349,16 @@ func TestLocalShellUsesDynamicRootForEveryOperation(t *testing.T) {
 }
 
 func TestCompositeArtifactsRootIsNormalized(t *testing.T) {
-	memory, _ := NewMemory(nil)
-	composite, err := NewCompositeWithOptions(CompositeOptions{Default: memory, ArtifactsRoot: "/workspace/"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	memory := NewMemory(nil)
+	composite := NewCompositeWithOptions(memory, CompositeOptions{ArtifactsRoot: "/workspace/"})
+
 	if root := ArtifactsRootOf(composite); root != "/workspace" {
 		t.Fatalf("artifacts root = %q", root)
 	}
 	if target := ArtifactPath(composite, "large_tool_results"); target != "/workspace/large_tool_results" {
 		t.Fatalf("artifact path = %q", target)
 	}
-	plain, _ := NewComposite(memory, nil)
+	plain := NewComposite(memory, nil)
 	if root := ArtifactsRootOf(plain); root != "/" || ArtifactPath(plain, "conversation_history") != "/conversation_history" {
 		t.Fatalf("default artifacts root = %q", root)
 	}

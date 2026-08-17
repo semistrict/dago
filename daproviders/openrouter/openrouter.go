@@ -16,6 +16,7 @@ import (
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/daproviders/openai"
 	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const defaultBaseURL = "https://openrouter.ai/api/v1"
@@ -46,7 +47,6 @@ type ProviderRouting struct {
 
 // Options configures an OpenRouter Responses API model.
 type Options struct {
-	Model           string
 	BaseURL         string
 	HTTPClient      *http.Client
 	MaxOutputTokens int
@@ -77,10 +77,11 @@ type Client struct {
 }
 
 // New creates a model authenticated with an OpenRouter API key.
-func New(apiKey string, options Options) (*Client, error) {
+func New(apiKey, model string, optionValues ...Options) *Client {
+	options := optionvalue.Resolve("openrouter", optionValues)
 	routing, err := cloneAndValidateRouting(options.Routing)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	headers := options.Headers.Clone()
 	if headers == nil {
@@ -116,16 +117,13 @@ func New(apiKey string, options Options) (*Client, error) {
 		retryBackoff = defaultRetryBackoff
 	}
 
-	chat, err := openai.NewCompatibleAPIKey(apiKey, "openrouter", openai.Options{
-		Model: options.Model, BaseURL: baseURL, HTTPClient: httpClient,
+	chat := openai.NewCompatibleAPIKey(apiKey, "openrouter", model, openai.Options{
+		BaseURL: baseURL, HTTPClient: httpClient,
 		MaxOutputTokens: options.MaxOutputTokens, ContextWindow: options.ContextWindow,
 		Headers: headers, DefaultReasoning: options.DefaultReasoning, Store: options.Store,
 		WebSearch: options.WebSearch, RetryBackoff: retryBackoff,
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &Client{chat: chat}, nil
+	return &Client{chat: chat}
 }
 
 // BindTools returns an independent client with the supplied tool definitions.

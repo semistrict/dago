@@ -22,13 +22,11 @@ func TestOpenRouterLive(t *testing.T) {
 		model = liveTestModelDefault
 	}
 	requireParameters := true
-	client, err := New(apiKey, Options{
-		Model: model, MaxOutputTokens: 512,
-		Routing: &ProviderRouting{RequireParameters: &requireParameters},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := New(apiKey,
+		model, Options{
+			MaxOutputTokens: 512,
+			Routing:         &ProviderRouting{RequireParameters: &requireParameters},
+		})
 
 	t.Run("structured invoke", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
