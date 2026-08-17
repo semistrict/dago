@@ -89,13 +89,17 @@ func newApprovalReviewer(model damodel.Chat, backend dabackend.Backend) *dagent.
 }
 
 func (runner *dagoRunner) Review(ctx context.Context, request approvalReviewRequest) (approvalReviewResult, error) {
-	if runner.reviewer == nil {
+	return reviewApprovals(ctx, runner.reviewer, request)
+}
+
+func reviewApprovals(ctx context.Context, reviewer *dagent.Agent, request approvalReviewRequest) (approvalReviewResult, error) {
+	if reviewer == nil {
 		return approvalReviewResult{}, fmt.Errorf("automatic approval reviewer is not configured")
 	}
 	result := approvalReviewResult{Assessments: make(map[string]approvalAssessment, len(request.Requests))}
 	for _, pending := range request.Requests {
 		reviewCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-		response, err := runner.reviewer.Invoke(reviewCtx, dagent.Input{
+		response, err := reviewer.Invoke(reviewCtx, dagent.Input{
 			Messages: []damessage.Message{damessage.Human(buildApprovalReviewPrompt(request, pending))},
 		})
 		cancel()

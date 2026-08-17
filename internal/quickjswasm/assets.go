@@ -1,5 +1,5 @@
-// Package quickjswasm embeds the exact QuickJS-ng WASM artifacts shipped by
-// quickjs-rs v0.2.5.
+// Package quickjswasm embeds the QuickJS-ng execution guest shipped by
+// quickjs-rs v0.2.5 and dago's source-controlled fork of its transform guest.
 package quickjswasm
 
 import _ "embed"
@@ -16,7 +16,7 @@ var Guest []byte
 //go:embed _guest_tracked.wasm
 var TrackedGuest []byte
 
-// Transform is the OXC source-transform guest.
+// Transform is the OXC source-transform guest with workflow-module support.
 //
 //go:embed _transform.wasm
 var Transform []byte

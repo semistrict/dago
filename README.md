@@ -58,6 +58,13 @@ blocked. `/goal show`, `/goal pause`, `/goal resume`, `/goal clear`, and
 `/goal budget <tokens|clear>` control the persisted goal. Active goals resume
 automatically when the thread becomes idle; one-shot mode follows the same lifecycle.
 
+Use `/workflows` to open the live workflow control panel. It shows background run
+status, current phase, agent progress, and errors; use the arrow keys to select a run
+and `c` to cancel it. `/workflow <saved-name-or-script-path>` launches a saved
+workflow directly. Names resolve from `.claude/workflows` and `.agents/workflows` in
+the workspace, while explicit paths are restricted to the workspace and dacode state
+directories.
+
 Use `dacode acp` (or `--acp`) to serve the coding agent to an ACP-compatible editor
 over standard input and output. The editor owns the session and permission prompts
 in this mode; `--yolo` remains available to bypass mutating-tool approval gates.
@@ -172,6 +179,38 @@ delegation options such as `WithInheritedState` apply because their construction
 already complete. Human approval, including approval inside a subagent, requires a
 checkpoint saver so the exact pending tool call can resume without replaying completed
 sibling tools.
+
+### Workflows
+
+Workflows are an optional extension that lets a model launch a deterministic
+JavaScript orchestration script in the background. The host supplies a
+`daworkflow.AgentRunner`, which is the policy boundary for models, reasoning
+effort, custom agent types, structured output, and worktree
+isolation. The manager owns cancellation and same-session replay and should be closed
+with its application scope:
+
+```go
+manager := daworkflow.NewManager(runner, daworkflow.Options{
+	SessionDirectory: sessionDir,
+})
+defer manager.Close()
+
+compiled := dago.NewAgent(chat,
+	dago.WithMiddleware(daworkflow.Middleware(manager)),
+)
+```
+
+The `workflow` tool accepts an inline `script`, a resolver-backed saved `name` or
+`script_path`, or a completed `resume_from_run_id`, and immediately returns task and run IDs. Scripts
+begin with a runtime-evaluated `export const meta = {...}` declaration and can use
+`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, and one level of
+nested `workflow` calls. The runtime has no filesystem or Node APIs and rejects
+implicit clocks and randomness. Concurrency, agent count, collection size, memory,
+execution time, and tokens are bounded through `daworkflow.Options`. When
+`SessionDirectory` is set, the manager persists the script, per-agent transcripts,
+replay journal, and final JSON result under that directory.
+`Options.Completed` can bridge terminal runs into the host application's native
+task-notification channel.
 
 ### Type-safe tools
 

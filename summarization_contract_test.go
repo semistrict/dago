@@ -83,8 +83,9 @@ func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
 			TriggerClauses: []SummarizationTriggerClause{{Tokens: 1}}, KeepMessages: 1,
 		})
 
+	system := damessage.System("You are a helpful assistant.")
 	response, err := middleware.WrapModelCall(context.Background(), dagent.ModelRequest{
-		Model: mainModel, Messages: []damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}, State: dastate.Values{},
+		Model: mainModel, SystemMessage: &system, Messages: []damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}, State: dastate.Values{},
 	}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
 		return dagent.ModelResponse{Messages: []damessage.Message{damessage.Assistant("done")}}, nil
 	})
@@ -226,7 +227,8 @@ func TestSummarizationSupportsMessageTriggersAndTokenKeepWindows(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("summary")}})
 	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
-		if !strings.Contains(request.Messages[0].TextContent(), "summary") {
+		messages := messagesWithoutSystem(request)
+		if len(messages) == 0 || !strings.Contains(messages[0].TextContent(), "summary") {
 			return errors.New("message trigger did not summarize")
 		}
 		return nil

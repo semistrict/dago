@@ -33,7 +33,8 @@ func TestNewPanicsOnNilModel(t *testing.T) {
 func TestAgentInvokeNormalizesMessage(t *testing.T) {
 	script := modeltest.New(damodel.Profile{}, modeltest.Step{
 		Check: func(request damodel.Request) error {
-			if len(request.Messages) != 1 || request.Messages[0].Role != damessage.RoleHuman || request.Messages[0].TextContent() != `{"question":"hello"}` {
+			messages := messagesWithoutSystem(request.Messages)
+			if len(messages) != 1 || messages[0].Role != damessage.RoleHuman || messages[0].TextContent() != `{"question":"hello"}` {
 				return fmt.Errorf("messages = %#v", request.Messages)
 			}
 			return nil
@@ -160,6 +161,25 @@ func TestRetainedThreadStateSendsSystemMessageSeparately(t *testing.T) {
 	}
 	if len(result.Messages) != 2 || result.Messages[1].TextContent() != "done" {
 		t.Fatalf("result messages = %#v", result.Messages)
+	}
+}
+
+func TestAgentAlwaysSuppliesDefaultSystemMessageToMiddleware(t *testing.T) {
+	checked := false
+	middleware := Middleware{Name: "check_default_system", WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
+		if request.SystemMessage.Role != damessage.RoleSystem || request.SystemMessage.TextContent() != defaultSystemPrompt {
+			return ModelResponse{}, fmt.Errorf("default system message = %#v", request.SystemMessage)
+		}
+		checked = true
+		return next(ctx, request)
+	}}
+	script := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}})
+	compiled := New(script, Options{Middleware: []Middleware{middleware}})
+	if _, err := compiled.Invoke(t.Context(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if !checked {
+		t.Fatal("middleware was not called")
 	}
 }
 
@@ -671,6 +691,87 @@ func TestAgentStreamEmitsModelTokensAndReconstructsResponse(t *testing.T) {
 	}
 }
 
+func TestAgentStreamEmitsEachParallelToolResultAsItCompletes(t *testing.T) {
+	releaseSlow := make(chan struct{})
+	slowStarted := make(chan struct{})
+	quick := datool.MustNew("quick", "Complete immediately.", func(context.Context, struct{}) (string, error) {
+		return "quick result", nil
+	})
+	slow := datool.MustNew("slow", "Wait until released.", func(ctx context.Context, _ struct{}) (string, error) {
+		close(slowStarted)
+		select {
+		case <-releaseSlow:
+			return "slow result", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	})
+	script := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{
+			Role: damessage.RoleAssistant,
+			ToolCalls: []damessage.ToolCall{
+				{ID: "quick-call", Name: "quick", Arguments: json.RawMessage(`{}`)},
+				{ID: "slow-call", Name: "slow", Arguments: json.RawMessage(`{}`)},
+			},
+		}}},
+		modeltest.Step{Check: func(request damodel.Request) error {
+			messages := messagesWithoutSystem(request.Messages)
+			if len(messages) != 4 || messages[2].ToolCallID != "quick-call" || messages[3].ToolCallID != "slow-call" {
+				return fmt.Errorf("tool messages = %#v", messages)
+			}
+			return nil
+		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
+	)
+	compiled := New(script, Options{Tools: []datool.Tool{quick, slow}})
+	stream := compiled.Stream(t.Context(), Input{Messages: []damessage.Message{damessage.Human("run both")}})
+	defer stream.Close()
+
+	select {
+	case <-slowStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow tool did not start")
+	}
+	var quickProgress *datool.Progress
+	deadline, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	for quickProgress == nil {
+		event, err := stream.Next(deadline)
+		if err != nil {
+			t.Fatalf("next event before releasing slow tool: %v", err)
+		}
+		if event.Mode == EventToolProgress && event.ToolProgress != nil && event.ToolProgress.CallID == "quick-call" {
+			value := *event.ToolProgress
+			quickProgress = &value
+		}
+	}
+	if quickProgress.Output != "quick result" || quickProgress.Status != damessage.ToolStatusSuccess {
+		t.Fatalf("quick terminal progress = %#v", quickProgress)
+	}
+
+	close(releaseSlow)
+	var slowProgress *datool.Progress
+	for {
+		event, err := stream.Next(t.Context())
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Mode == EventToolProgress && event.ToolProgress != nil && event.ToolProgress.CallID == "slow-call" {
+			value := *event.ToolProgress
+			slowProgress = &value
+		}
+	}
+	if slowProgress == nil || slowProgress.Output != "slow result" || slowProgress.Status != damessage.ToolStatusSuccess {
+		t.Fatalf("slow terminal progress = %#v", slowProgress)
+	}
+	result, err := stream.Result(t.Context())
+	if err != nil || result.Messages[len(result.Messages)-1].TextContent() != "done" {
+		t.Fatalf("result = %#v, %v", result, err)
+	}
+}
+
 func TestAgentReportsRetryableModelError(t *testing.T) {
 	compiled := New(modeltest.New(damodel.Profile{}, modeltest.Step{Error: retryReporterError{}}), Options{})
 
@@ -1152,7 +1253,8 @@ func TestAgentRestartsFromSQLiteDeltaMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
-		if len(request.Messages) != 3 || request.Messages[0].TextContent() != "one" || request.Messages[1].TextContent() != "first" {
+		messages := messagesWithoutSystem(request.Messages)
+		if len(messages) != 3 || messages[0].TextContent() != "one" || messages[1].TextContent() != "first" {
 			return errors.New("restored history missing")
 		}
 		return nil
@@ -1166,6 +1268,13 @@ func TestAgentRestartsFromSQLiteDeltaMessages(t *testing.T) {
 	if len(result.Messages) != 4 || result.Messages[3].TextContent() != "second" {
 		t.Fatalf("restored messages = %#v", result.Messages)
 	}
+}
+
+func messagesWithoutSystem(messages []damessage.Message) []damessage.Message {
+	if len(messages) > 0 && messages[0].Role == damessage.RoleSystem {
+		return messages[1:]
+	}
+	return messages
 }
 
 func TestMergeModelChunkPreservesTextAnnotations(t *testing.T) {

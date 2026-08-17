@@ -33,11 +33,11 @@ func prepareInterpreterTest(t *testing.T, options Interpreter, thread string, to
 		Tools:   append(append([]datool.Tool(nil), tools...), middleware.Tools[0]),
 		Runtime: dagent.Runtime{Config: dacheckpoint.Config{ThreadID: thread}},
 	}
+	system := damessage.System("You are a helpful assistant.")
+	request.SystemMessage = &system
 	prompt := ""
 	_, err = middleware.WrapModelCall(context.Background(), request, func(_ context.Context, got dagent.ModelRequest) (dagent.ModelResponse, error) {
-		if got.SystemMessage != nil {
-			prompt = got.SystemMessage.TextContent()
-		}
+		prompt = got.SystemMessage.TextContent()
 		return dagent.ModelResponse{}, nil
 	})
 	if err != nil {
@@ -338,7 +338,8 @@ func TestInterpreterPTCNamespaceIsReplacedAndNamesAreSafe(t *testing.T) {
 		t.Fatalf("initial = %#v, %v", initial, err)
 	}
 	state := reduceInterpreterTest(t, middleware, nil, initial)
-	request := dagent.ModelRequest{Tools: []datool.Tool{second, eval}, Runtime: dagent.Runtime{Config: dacheckpoint.Config{ThreadID: "namespace"}}}
+	system := damessage.System("You are a helpful assistant.")
+	request := dagent.ModelRequest{SystemMessage: &system, Tools: []datool.Tool{second, eval}, Runtime: dagent.Runtime{Config: dacheckpoint.Config{ThreadID: "namespace"}}}
 	if _, err := middleware.WrapModelCall(context.Background(), request, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
 		return dagent.ModelResponse{}, nil
 	}); err != nil {

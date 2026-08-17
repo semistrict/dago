@@ -72,7 +72,8 @@ func TestAgentInterpreterPersistsCheckpointedStateAcrossInvocations(t *testing.T
 func TestAgentInterpreterCallsSubagentThroughPTC(t *testing.T) {
 	childModel := modeltest.New(damodel.Profile{}, modeltest.Step{
 		Check: func(request damodel.Request) error {
-			if len(request.Messages) != 1 || request.Messages[0].TextContent() != "child work" {
+			messages := messagesWithoutSystem(request)
+			if len(messages) != 1 || messages[0].TextContent() != "child work" {
 				return errors.New("subagent input mismatch")
 			}
 			return nil

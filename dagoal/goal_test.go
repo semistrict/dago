@@ -206,8 +206,9 @@ func TestGoalMiddlewareAccountsToolUsageAndWholeRunTime(t *testing.T) {
 	}
 	toolResult := damessage.Tool("tool-1", "done")
 	toolResult.OtherUsage = []damessage.PurposedUsage{{Purpose: "helper", Usage: damessage.Usage{TotalTokens: 3}}}
+	system := damessage.System("You are a helpful assistant.")
 	response, err := middleware.WrapModelCall(t.Context(), dagent.ModelRequest{
-		State: values, Messages: []damessage.Message{damessage.Human("go"), damessage.Assistant("calling"), toolResult},
+		SystemMessage: &system, State: values, Messages: []damessage.Message{damessage.Human("go"), damessage.Assistant("calling"), toolResult},
 	}, func(context.Context, dagent.ModelRequest) (dagent.ModelResponse, error) {
 		return dagent.ModelResponse{Messages: []damessage.Message{{
 			Role: damessage.RoleAssistant, Content: damessage.Assistant("worked").Content, Usage: &damessage.Usage{TotalTokens: 2},

@@ -36,6 +36,13 @@ func requirePanicContaining(t *testing.T, substring string, fn func()) {
 	fn()
 }
 
+func messagesWithoutSystem(request damodel.Request) []damessage.Message {
+	if len(request.Messages) > 0 && request.Messages[0].Role == damessage.RoleSystem {
+		return request.Messages[1:]
+	}
+	return request.Messages
+}
+
 func TestNewAgentPanicsOnNilModel(t *testing.T) {
 	requirePanicContaining(t, "model is nil", func() { NewAgent(nil) })
 }
@@ -238,10 +245,11 @@ func TestAgentStreamProjectsNestedSubagentLifecycle(t *testing.T) {
 
 func TestAgentRepairsDanglingToolCallsBeforeModel(t *testing.T) {
 	script := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
-		if len(request.Messages) != 4 {
+		messages := messagesWithoutSystem(request)
+		if len(messages) != 4 {
 			return fmt.Errorf("messages = %#v", request.Messages)
 		}
-		result := request.Messages[2]
+		result := messages[2]
 		if result.Role != damessage.RoleTool || result.ToolCallID != "call-1" || result.Name != "lookup" || result.ToolStatus != damessage.ToolStatusError {
 			return fmt.Errorf("patched tool result = %#v", result)
 		}
@@ -579,7 +587,8 @@ func TestStructuredSystemMessageValidation(t *testing.T) {
 
 func TestSubagentTaskUsesIsolatedInput(t *testing.T) {
 	childModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
-		if len(request.Messages) != 1 || request.Messages[0].TextContent() != "child work" {
+		messages := messagesWithoutSystem(request)
+		if len(messages) != 1 || messages[0].TextContent() != "child work" {
 			return errors.New("child input leaked")
 		}
 		return nil
@@ -1163,7 +1172,8 @@ func TestSubagentCanPropagateSelectedStateWithoutMessageLeak(t *testing.T) {
 
 	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Check: func(request damodel.Request) error {
-			if len(request.Messages) != 1 || request.Messages[0].TextContent() != "create child file" {
+			messages := messagesWithoutSystem(request)
+			if len(messages) != 1 || messages[0].TextContent() != "create child file" {
 				return errors.New("parent messages leaked into child")
 			}
 			return nil
@@ -1199,7 +1209,8 @@ func TestSummarizationPreservesRawHistoryAndOffloads(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{ContextWindow: 100}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("facts")}})
 	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
-		if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "conversation that has been summarized") {
+		messages := messagesWithoutSystem(request)
+		if len(messages) != 3 || !strings.Contains(messages[0].TextContent(), "conversation that has been summarized") {
 			return errors.New("compacted history missing")
 		}
 		return nil
@@ -1230,7 +1241,8 @@ func TestSummarizationEventSurvivesSQLiteReplay(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("durable summary")}})
 	firstModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
-		if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "durable summary") {
+		messages := messagesWithoutSystem(request)
+		if len(messages) != 3 || !strings.Contains(messages[0].TextContent(), "durable summary") {
 			return fmt.Errorf("first effective messages = %#v", request.Messages)
 		}
 		return nil
@@ -1245,7 +1257,8 @@ func TestSummarizationEventSurvivesSQLiteReplay(t *testing.T) {
 	}
 
 	secondModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
-		if len(request.Messages) != 5 || !strings.Contains(request.Messages[0].TextContent(), "durable summary") || strings.Contains(request.Messages[0].TextContent(), "old one") {
+		messages := messagesWithoutSystem(request)
+		if len(messages) != 5 || !strings.Contains(messages[0].TextContent(), "durable summary") || strings.Contains(messages[0].TextContent(), "old one") {
 			return fmt.Errorf("replayed effective messages = %#v", request.Messages)
 		}
 		return nil
@@ -1294,7 +1307,8 @@ func TestSummarizationRetriesContextOverflowWithCompactedHistory(t *testing.T) {
 	mainModel := modeltest.New(damodel.Profile{},
 		modeltest.Step{Error: damodel.ErrContextOverflow},
 		modeltest.Step{Check: func(request damodel.Request) error {
-			if len(request.Messages) != 3 || !strings.Contains(request.Messages[0].TextContent(), "fallback facts") {
+			messages := messagesWithoutSystem(request)
+			if len(messages) != 3 || !strings.Contains(messages[0].TextContent(), "fallback facts") {
 				return fmt.Errorf("retry messages = %#v", request.Messages)
 			}
 			return nil
@@ -1322,10 +1336,11 @@ func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
 	mainModel := modeltest.New(damodel.Profile{},
 		modeltest.Step{Error: damodel.ErrContextOverflow},
 		modeltest.Step{Check: func(request damodel.Request) error {
-			if len(request.Messages) != 4 {
+			messages := messagesWithoutSystem(request)
+			if len(messages) != 4 {
 				return fmt.Errorf("retry messages = %#v", request.Messages)
 			}
-			for _, item := range request.Messages[len(request.Messages)-2:] {
+			for _, item := range messages[len(messages)-2:] {
 				if !strings.Contains(item.TextContent(), "Tool result too large") || !strings.Contains(item.TextContent(), "/large_tool_results/") {
 					return fmt.Errorf("tool tail was not clipped: %#v", item)
 				}

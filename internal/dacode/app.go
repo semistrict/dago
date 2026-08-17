@@ -24,6 +24,8 @@ import (
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dagoal"
 	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/daworkflow"
 )
 
 var (
@@ -127,6 +129,8 @@ type tuiModel struct {
 	status           string
 	totalTokens      int
 	goal             *dagoal.Goal
+	workflowPanel    *workflowPanelState
+	pendingWorkflows []daworkflow.Status
 }
 
 func newTUIModel(ctx context.Context, runner agentRunner, workingDir, modelName, threadID string, yolo, autoReview bool, initial string) *tuiModel {
@@ -158,7 +162,7 @@ func newTUIModel(ctx context.Context, runner agentRunner, workingDir, modelName,
 }
 
 func (model *tuiModel) Init() tea.Cmd {
-	commands := []tea.Cmd{textarea.Blink, model.spinner.Tick}
+	commands := []tea.Cmd{textarea.Blink, model.spinner.Tick, waitForWorkflowCompletion(model.ctx, model.runner)}
 	if model.sessionPicker != nil && model.sessionPicker.loading {
 		commands = append(commands, listSessions(model.ctx, model.runner))
 	} else if model.sessionPicker != nil && model.sessionPicker.resuming && len(model.sessionPicker.sessions) > 0 {
@@ -195,6 +199,20 @@ func (model *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case goalActionMsg:
 		return model.finishGoalAction(typed)
+	case workflowStartedMsg:
+		return model, model.finishWorkflowStart(typed)
+	case workflowsLoadedMsg:
+		return model, model.finishWorkflowLoad(typed)
+	case workflowCancelledMsg:
+		return model, model.finishWorkflowCancel(typed)
+	case workflowTickMsg:
+		if model.workflowPanel != nil && model.workflowPanel == typed.panel {
+			typed.panel.polling = false
+			return model, loadWorkflows(model.runner)
+		}
+		return model, nil
+	case workflowCompletedMsg:
+		return model, model.finishWorkflowCompletion(typed.status)
 	case spinner.TickMsg:
 		var command tea.Cmd
 		model.spinner, command = model.spinner.Update(typed)
@@ -250,6 +268,9 @@ func (model *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (model *tuiModel) handleKey(message tea.KeyMsg) (tea.Cmd, bool) {
+	if model.workflowPanel != nil {
+		return model.handleWorkflowKey(message)
+	}
 	if model.sessionPicker != nil {
 		return model.handleSessionKey(message)
 	}
@@ -294,17 +315,23 @@ func (model *tuiModel) handleKey(message tea.KeyMsg) (tea.Cmd, bool) {
 			}
 		}
 	case "y", "Y":
-		if model.approval != nil && model.approval.ready {
+		if model.manualApprovalVisible() && model.approval.ready {
 			return model.resolveApproval(true), true
 		}
 	case "n", "N", "esc":
-		if model.approval != nil && model.approval.ready {
+		if model.manualApprovalVisible() && model.approval.ready {
 			return model.resolveApproval(false), true
 		}
 	case "pgup", "pgdown":
 		var command tea.Cmd
 		model.viewport, command = model.viewport.Update(message)
 		return command, true
+	case "ctrl+_":
+		model.viewport.LineUp(model.viewport.MouseWheelDelta)
+		return nil, true
+	case "ctrl+^":
+		model.viewport.LineDown(model.viewport.MouseWheelDelta)
+		return nil, true
 	}
 	return nil, false
 }
@@ -317,9 +344,12 @@ func (model *tuiModel) slashCommand(prompt string) (tea.Cmd, bool) {
 	if command == "goal" || strings.HasPrefix(command, "goal ") {
 		return model.goalCommand(strings.TrimSpace(strings.TrimPrefix(command, "goal"))), true
 	}
+	if command == "workflow" || strings.HasPrefix(command, "workflow ") {
+		return model.workflowCommand(strings.TrimSpace(strings.TrimPrefix(command, "workflow"))), true
+	}
 	switch command {
 	case "help":
-		model.appendItem(transcriptItem{kind: itemNotice, text: "Commands: /help  /clear  /new  /threads  /model  /goal  /quit"})
+		model.appendItem(transcriptItem{kind: itemNotice, text: "Commands: /help  /clear  /new  /threads  /model  /goal  /workflow  /workflows  /quit"})
 		model.refreshTranscript()
 		return nil, true
 	case "clear":
@@ -345,6 +375,8 @@ func (model *tuiModel) slashCommand(prompt string) (tea.Cmd, bool) {
 	case "threads", "resume":
 		model.sessionPicker = &sessionPickerState{loading: true}
 		return listSessions(model.ctx, model.runner), true
+	case "workflows":
+		return model.showWorkflows(), true
 	case "model":
 		model.appendItem(transcriptItem{kind: itemNotice, text: "Model: openai:" + model.modelName})
 		model.refreshTranscript()
@@ -583,7 +615,7 @@ func (model *tuiModel) applyEvent(event dagent.Event) {
 		}
 	case dagent.EventToolProgress:
 		if event.ToolProgress != nil {
-			model.updateToolProgress(event.ToolProgress.CallID, event.ToolProgress.Name, event.ToolProgress.Output)
+			model.updateToolProgress(*event.ToolProgress)
 		}
 	case dagent.EventInterrupt:
 		if event.Interrupt == nil {
@@ -638,14 +670,23 @@ func (model *tuiModel) completeTool(message damessage.Message) {
 	model.currentAssistant = -1
 }
 
-func (model *tuiModel) updateToolProgress(callID, name, output string) {
-	index, exists := model.toolItems[callID]
+func (model *tuiModel) updateToolProgress(progress datool.Progress) {
+	index, exists := model.toolItems[progress.CallID]
 	if !exists {
-		model.appendItem(transcriptItem{kind: itemTool, callID: callID, name: name})
+		model.appendItem(transcriptItem{kind: itemTool, callID: progress.CallID, name: progress.Name})
 		index = len(model.items) - 1
-		model.toolItems[callID] = index
+		model.toolItems[progress.CallID] = index
 	}
-	model.items[index].text = output
+	item := &model.items[index]
+	if progress.Name != "" {
+		item.name = progress.Name
+	}
+	item.text = progress.Output
+	if progress.Status != "" {
+		item.done = true
+		item.failed = progress.Status == damessage.ToolStatusError
+		model.currentAssistant = -1
+	}
 }
 
 func (model *tuiModel) finishStream(message streamDoneMsg) (tea.Model, tea.Cmd) {
@@ -688,6 +729,10 @@ func (model *tuiModel) finishStream(message streamDoneMsg) (tea.Model, tea.Cmd) 
 		}
 		model.status = "Review action"
 	} else {
+		if len(model.pendingWorkflows) > 0 {
+			model.refreshTranscript()
+			return model, model.startWorkflowContinuation()
+		}
 		if model.goal != nil && model.goal.Actionable() {
 			model.refreshTranscript()
 			return model, model.startGoalContinuation()
@@ -722,21 +767,13 @@ func (model *tuiModel) finishReview(message reviewDoneMsg) (tea.Model, tea.Cmd) 
 		return model, nil
 	}
 	if message.err != nil {
-		model.approval.ready = true
-		model.appendItem(transcriptItem{kind: itemNotice, text: "Automatic review unavailable; a user decision is required. " + message.err.Error()})
-		model.status = "Review action"
-		model.refreshTranscript()
-		return model, nil
+		return model.rejectAutomaticApproval("Automatic review failed; action denied: " + message.err.Error())
 	}
 	decisions := make(map[string]dagent.ApprovalChoice, len(model.approval.requests))
 	for _, request := range model.approval.requests {
 		assessment, ok := message.result.Assessments[request.Call.ID]
 		if !ok {
-			model.approval.ready = true
-			model.appendItem(transcriptItem{kind: itemNotice, text: "Automatic review omitted " + request.Call.Name + "; a user decision is required."})
-			model.status = "Review action"
-			model.refreshTranscript()
-			return model, nil
+			return model.rejectAutomaticApproval("Automatic review omitted " + request.Call.Name + "; action denied.")
 		}
 		decision := dagent.ApprovalApprove
 		if !assessment.approved() {
@@ -745,15 +782,26 @@ func (model *tuiModel) finishReview(message reviewDoneMsg) (tea.Model, tea.Cmd) 
 		decisions[request.Call.ID] = dagent.ApprovalChoice{
 			Decision: decision, Reason: assessment.Rationale, Message: assessment.Rationale,
 		}
-		verdict := "approved"
 		if !assessment.approved() {
-			verdict = "denied"
+			model.appendItem(transcriptItem{kind: itemNotice, text: fmt.Sprintf(
+				"Automatic review denied %s (risk: %s, authorization: %s): %s",
+				request.Call.Name, assessment.RiskLevel, assessment.UserAuthorization, assessment.Rationale,
+			)})
 		}
-		model.appendItem(transcriptItem{kind: itemNotice, text: fmt.Sprintf(
-			"Automatic review %s %s (risk: %s, authorization: %s): %s",
-			verdict, request.Call.Name, assessment.RiskLevel, assessment.UserAuthorization, assessment.Rationale,
-		)})
 	}
+	return model, model.resumeApproval(decisions)
+}
+
+func (model *tuiModel) rejectAutomaticApproval(reason string) (tea.Model, tea.Cmd) {
+	decisions := make(map[string]dagent.ApprovalChoice, len(model.approval.requests))
+	for _, request := range model.approval.requests {
+		decisions[request.Call.ID] = dagent.ApprovalChoice{
+			Decision: dagent.ApprovalReject,
+			Reason:   reason,
+			Message:  reason,
+		}
+	}
+	model.appendItem(transcriptItem{kind: itemError, text: reason})
 	return model, model.resumeApproval(decisions)
 }
 
@@ -863,8 +911,11 @@ func (model *tuiModel) refreshTranscript() {
 	if !model.ready {
 		return
 	}
+	followBottom := model.viewport.AtBottom()
 	model.viewport.SetContent(model.renderTranscript())
-	model.viewport.GotoBottom()
+	if followBottom {
+		model.viewport.GotoBottom()
+	}
 }
 
 func (model *tuiModel) refreshSpinner() {
@@ -881,10 +932,17 @@ func (model *tuiModel) View() string {
 	if model.sessionPicker != nil {
 		return model.renderSessionPicker()
 	}
+	if model.workflowPanel != nil {
+		return model.renderWorkflowPanel()
+	}
+	composer := model.composer
+	if model.running {
+		composer.Placeholder = "Agent is working…"
+	}
 	input := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).BorderForeground(colorPrimary).
 		Padding(0, 1).Width(max(model.width-2, 1)).
-		Render(model.composer.View())
+		Render(composer.View())
 	return lipgloss.NewStyle().Foreground(colorBody).Render(
 		model.viewport.View() + "\n" + input + "\n" + model.renderStatus(),
 	)
@@ -899,10 +957,14 @@ func (model *tuiModel) renderTranscript() string {
 	if model.running {
 		sections = append(sections, lipgloss.NewStyle().Foreground(colorMuted).PaddingLeft(1).Render(model.spinner.View()+" "+model.status+"…"))
 	}
-	if model.approval != nil {
+	if model.manualApprovalVisible() {
 		sections = append(sections, renderApproval(model.approval, width))
 	}
 	return strings.Join(sections, "\n\n")
+}
+
+func (model *tuiModel) manualApprovalVisible() bool {
+	return model.approval != nil && !model.autoReview
 }
 
 func (model *tuiModel) renderWelcome(width int) string {
@@ -1022,7 +1084,11 @@ func (model *tuiModel) renderStatus() string {
 	if model.goal != nil {
 		goalStatus = "  •  goal:" + string(model.goal.Status)
 	}
-	suffix := goalStatus + "  •  " + id
+	workflowStatus := ""
+	if active := model.runner.RunningWorkflows(); active > 0 {
+		workflowStatus = fmt.Sprintf("  •  wf:%d", active)
+	}
+	suffix := goalStatus + workflowStatus + "  •  " + id
 	pathWidth := max(statusWidth-lipgloss.Width(suffix), 1)
 	secondText := truncate(shortPath(model.workingDir), pathWidth) + suffix
 	second := lipgloss.NewStyle().Background(colorSurface).Foreground(colorMuted).Width(statusWidth).

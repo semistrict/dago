@@ -32,6 +32,7 @@ const (
 	dirtyPageSize               = uint32(4096)
 	defaultTrackingMemoryLimit  = uint64(64 << 20)
 	transformTopLevelConstToVar = 1 << 9
+	transformWorkflowModule     = 1 << 10
 )
 
 var guestBuildID = sha256.Sum256(quickjswasm.TrackedGuest)
@@ -84,6 +85,13 @@ type Outcome struct {
 	Stdout        string
 	StdoutDropped int
 	ValueKind     string
+}
+
+// Module is one evaluated ES module namespace. Export reads and Promise
+// settlement use the same Engine and must not run concurrently with Eval.
+type Module struct {
+	engine    *Engine
+	namespace int32
 }
 
 // Engine owns one QuickJS runtime, context, and WASM linear memory.
@@ -297,7 +305,7 @@ func (e *Engine) Eval(ctx context.Context, source string, timeout time.Duration)
 	e.stdoutChars = 0
 	e.stdoutDropped = 0
 	e.lastHostError = nil
-	transformed, err := transform(ctx, e.runtime, source)
+	transformed, err := transform(ctx, e.runtime, "<eval>", source, transformTopLevelConstToVar)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -367,6 +375,137 @@ func (e *Engine) Eval(ctx context.Context, source string, timeout time.Duration)
 		value = "[" + kind + "]"
 	}
 	return Outcome{Value: value, ValueKind: kind, Stdout: e.stdout.String(), StdoutDropped: e.stdoutDropped}, nil
+}
+
+// LoadWorkflowModule parses the workflow grammar in the OXC WASM guest,
+// evaluates the resulting ES module, and returns its live namespace. The
+// transform preserves the script's exported meta binding and exposes the
+// top-level workflow body as the __dago_workflow_result Promise export.
+func (e *Engine) LoadWorkflowModule(ctx context.Context, source string, timeout time.Duration) (*Module, error) {
+	e.stdout.Reset()
+	e.stdoutChars = 0
+	e.stdoutDropped = 0
+	e.lastHostError = nil
+	transformed, err := transform(ctx, e.runtime, "<workflow>", source, transformWorkflowModule)
+	if err != nil {
+		return nil, err
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	e.deadline.Store(time.Now().Add(timeout).UnixNano())
+	defer e.deadline.Store(0)
+	e.evalContext = ctx
+	defer func() { e.evalContext = nil }()
+
+	data := []byte(transformed)
+	ptr, err := e.allocWrite(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	defer e.free(ctx, ptr, uint64(len(data)))
+	name := []byte("<workflow>")
+	namePtr, err := e.allocWrite(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer e.free(ctx, namePtr, uint64(len(name)))
+	out, err := e.alloc(ctx, 4)
+	if err != nil {
+		return nil, err
+	}
+	defer e.free(ctx, out, 4)
+	result, err := e.call(
+		ctx,
+		"eval_module",
+		uint64(ptr), uint64(len(data)), uint64(namePtr), uint64(len(name)), uint64(out),
+	)
+	if err != nil {
+		return nil, e.normalizeInterrupt(ctx, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if int32(result[0]) != statusOK {
+		return nil, e.normalizeInterrupt(ctx, e.statusError(ctx, int32(result[0]), "module eval"))
+	}
+	namespace, err := e.readI32(out)
+	if err != nil {
+		return nil, err
+	}
+	return &Module{engine: e, namespace: namespace}, nil
+}
+
+// Export returns the current JSON-safe value of a named module export.
+func (module *Module) Export(ctx context.Context, name string) (any, string, error) {
+	if module == nil || module.engine == nil {
+		return nil, "", errors.New("JavaScript module is closed")
+	}
+	handle, err := module.engine.getProp(ctx, module.namespace, name)
+	if err != nil {
+		return nil, "", err
+	}
+	defer module.engine.freeValue(ctx, handle)
+	value, kind, err := module.engine.toGo(ctx, handle, 0)
+	if err != nil {
+		return nil, kind, err
+	}
+	return value, kind, nil
+}
+
+// AwaitExport resolves a named Promise export and converts its fulfillment
+// value to Go. Non-Promise exports are returned immediately.
+func (module *Module) AwaitExport(ctx context.Context, name string, timeout time.Duration) (Outcome, error) {
+	if module == nil || module.engine == nil {
+		return Outcome{}, errors.New("JavaScript module is closed")
+	}
+	engine := module.engine
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	engine.deadline.Store(time.Now().Add(timeout).UnixNano())
+	defer engine.deadline.Store(0)
+	engine.evalContext = ctx
+	defer func() { engine.evalContext = nil }()
+
+	handle, err := engine.getProp(ctx, module.namespace, name)
+	if err != nil {
+		return Outcome{}, err
+	}
+	defer func() { engine.freeValue(ctx, handle) }()
+	isPromise, err := engine.isPromise(ctx, handle)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if isPromise {
+		resolved, rejected, err := engine.awaitPromise(ctx, handle)
+		if err != nil {
+			return Outcome{}, err
+		}
+		engine.freeValue(ctx, handle)
+		handle = resolved
+		if rejected {
+			return Outcome{}, engine.settledError(ctx, handle)
+		}
+	}
+	value, kind, err := engine.toGo(ctx, handle, 0)
+	if err != nil {
+		kind = engine.typeName(ctx, handle)
+		value = "[" + kind + "]"
+	}
+	return Outcome{
+		Value: value, ValueKind: kind, Stdout: engine.stdout.String(), StdoutDropped: engine.stdoutDropped,
+	}, nil
+}
+
+// Close releases the module namespace handle. It does not close the Engine.
+func (module *Module) Close(ctx context.Context) {
+	if module == nil || module.engine == nil {
+		return
+	}
+	module.engine.freeValue(ctx, module.namespace)
+	module.engine = nil
+	module.namespace = 0
 }
 
 func (e *Engine) awaitPromise(ctx context.Context, promise int32) (int32, bool, error) {
@@ -1285,7 +1424,7 @@ func (e *Engine) errorField(ctx context.Context, h int32, key string) string {
 	return s
 }
 
-func transform(ctx context.Context, runtime wazero.Runtime, source string) (string, error) {
+func transform(ctx context.Context, runtime wazero.Runtime, name, source string, flags uint64) (string, error) {
 	compiled, err := runtime.CompileModule(ctx, quickjswasm.Transform)
 	if err != nil {
 		return "", fmt.Errorf("compile source transformer: %w", err)
@@ -1310,12 +1449,12 @@ func transform(ctx context.Context, runtime wazero.Runtime, source string) (stri
 		}
 		return p, nil
 	}
-	name := []byte("<eval>")
-	np, err := alloc(name)
+	nameBytes := []byte(name)
+	np, err := alloc(nameBytes)
 	if err != nil {
 		return "", err
 	}
-	defer call("qjst_free", uint64(np), uint64(len(name)))
+	defer call("qjst_free", uint64(np), uint64(len(nameBytes)))
 	data := []byte(source)
 	sp, err := alloc(data)
 	if err != nil {
@@ -1323,7 +1462,7 @@ func transform(ctx context.Context, runtime wazero.Runtime, source string) (stri
 	}
 	defer call("qjst_free", uint64(sp), uint64(len(data)))
 	defer call("qjst_result_free")
-	r, err := call("qjst_transform", uint64(np), uint64(len(name)), uint64(sp), uint64(len(data)), transformTopLevelConstToVar)
+	r, err := call("qjst_transform", uint64(np), uint64(len(nameBytes)), uint64(sp), uint64(len(data)), flags)
 	if err != nil {
 		return "", err
 	}

@@ -85,11 +85,13 @@ type StreamWriter interface {
 	Write(ctx context.Context, value json.RawMessage) error
 }
 
-// Progress is a provider-neutral update emitted while a tool call is running.
+// Progress is a provider-neutral tool lifecycle update. Status is empty for
+// intermediate output and set for the terminal success or error update.
 type Progress struct {
-	CallID string `json:"call_id"`
-	Name   string `json:"name"`
-	Output string `json:"output"`
+	CallID string               `json:"call_id"`
+	Name   string               `json:"name"`
+	Output string               `json:"output"`
+	Status damessage.ToolStatus `json:"status,omitempty"`
 }
 
 type progressEnvelope struct {

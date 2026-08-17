@@ -223,6 +223,7 @@ test("animates the spinner while a response is pending", async ({ page }) => {
   await page.keyboard.type("wait for the response");
   await page.keyboard.press("Enter");
   await expect.poll(() => terminalText(page)).toContain("Thinking…");
+  await expect.poll(() => terminalText(page)).toContain("> Agent is working…");
 
   const frames = await page.evaluate(async () => {
     const visibleFrame = (): string => {
@@ -244,6 +245,25 @@ test("animates the spinner while a response is pending", async ({ page }) => {
   });
 
   expect(new Set(frames).size).toBeGreaterThan(1);
+});
+
+test("marks fast parallel filesystem tools complete before a slow sibling", async ({ page }) => {
+  const url = process.env.PLAYWRIGHT_YOLO_URL;
+  expect(url).toBeTruthy();
+  await openTerminal(page, url);
+
+  await page.keyboard.type("show each completed parallel tool immediately");
+  await page.keyboard.press("Enter");
+
+  await expect.poll(() => terminalText(page), { timeout: 5_000 }).toContain("✓ ls");
+  await expect.poll(() => terminalText(page), { timeout: 5_000 }).toContain("✓ read_file");
+  const whileExecuteRuns = await terminalText(page);
+  expect(whileExecuteRuns).toContain("○ execute");
+  expect(whileExecuteRuns).not.toContain("Parallel tool batch finished.");
+  expect(whileExecuteRuns).toContain("> Agent is working…");
+
+  await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("✓ execute");
+  await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("Parallel tool batch finished.");
 });
 
 test("refits the TUI when the browser becomes narrow", async ({ page }) => {
@@ -288,7 +308,60 @@ test("scrolls transcript history with the mouse wheel", async ({ page }) => {
   await expect
     .poll(() => terminalText(page))
     .toMatch(/Unknown command: \/scroll-history-(?:[0-9]|1[0-9])/);
+
+  // Cursor blink messages refresh the TUI roughly twice a second. Manual
+  // scrolling must survive those otherwise-unrelated redraws.
+  await page.waitForTimeout(1_200);
+  await expect.poll(() => terminalText(page)).not.toContain("Unknown command: /scroll-history-29");
+  await expect
+    .poll(() => terminalText(page))
+    .toMatch(/Unknown command: \/scroll-history-(?:[0-9]|1[0-9])/);
   await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
+});
+
+test("scrolls immediately after an agent response without keyboard input", async ({ page }) => {
+  await openTerminal(page);
+
+  for (let index = 0; index < 30; index += 1) {
+    await page.keyboard.type(`/post-response-history-${index}`);
+    await page.keyboard.press("Enter");
+  }
+  await expect.poll(() => terminalText(page)).toContain("Unknown command: /post-response-history-29");
+
+  await page.keyboard.type("finish this response, then leave the transcript scrollable");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("Thinking…");
+  await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("> What would you like to build?");
+
+  // Simulate the intermittent xterm mode loss seen after a final response
+  // frame. The browser's explicit wheel forwarding must not depend on it.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    window.dacodeTerminal?.write("\u001b[?1002l\u001b[?1006l", resolve);
+  }));
+  const mouseTrackingMode = await page.evaluate(() => (window.dacodeTerminal as any)?.modes?.mouseTrackingMode);
+  expect(mouseTrackingMode).toBe("none");
+
+  // Browser focus can leave xterm after the last response frame. A real mouse
+  // wheel should restore terminal focus without requiring a sacrificial key.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+  const beforeScroll = await terminalText(page);
+  const beforeFirstLine = Number(beforeScroll.match(/response line (\d+)/)?.[1] ?? -1);
+  expect(beforeFirstLine).toBeGreaterThanOrEqual(0);
+  const screen = page.locator(".xterm-screen");
+  await screen.hover();
+  await page.mouse.wheel(0, -1_200);
+  let afterUpFirstLine = beforeFirstLine;
+  await expect.poll(async () => {
+    const text = await terminalText(page);
+    afterUpFirstLine = Number(text.match(/response line (\d+)/)?.[1] ?? -1);
+    return afterUpFirstLine;
+  }).toBeLessThan(beforeFirstLine);
+  await page.mouse.wheel(0, 1_200);
+  await expect.poll(async () => {
+    const text = await terminalText(page);
+    return Number(text.match(/response line (\d+)/)?.[1] ?? -1);
+  }).toBeGreaterThan(afterUpFirstLine);
 });
 
 test("shows manual review mode when requested", async ({ page }) => {
@@ -357,11 +430,182 @@ test("accepts keyboard input and renders local slash-command output", async ({ p
 
   await page.keyboard.type("/help");
   await page.keyboard.press("Enter");
-  await expect.poll(() => terminalText(page)).toContain("Commands: /help  /clear  /new  /threads  /model  /goal  /quit");
+  await expect
+    .poll(() => terminalText(page))
+    .toContain("Commands: /help  /clear  /new  /threads  /model  /goal  /workflow  /workflows  /quit");
 
   await page.keyboard.type("/model");
   await page.keyboard.press("Enter");
   await expect.poll(() => terminalText(page)).toContain("Model: openai:gpt-5.6-terra");
+});
+
+test("opens the workflow control panel and completes a saved workflow", async ({ page }) => {
+  await openTerminal(page);
+
+  await page.keyboard.type("/workflows");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("WORKFLOW CONTROL");
+  await expect.poll(() => terminalText(page)).toContain("No workflow runs yet.");
+  await page.keyboard.press("Escape");
+  await expect.poll(() => terminalText(page)).toContain("Ready to code");
+
+  await page.keyboard.type("/workflow internal/dacode/xtermjs/testdata/workflows/complete.js");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("browser-release-sweep");
+  await expect.poll(() => terminalText(page)).toContain("SUCCESS");
+  const text = await terminalText(page);
+  expect(text).toContain("SELECTED RUN");
+  expect(text).toContain("● Inspect");
+  expect(text).toContain("Fixture complete");
+  expect(text).toContain("esc return");
+});
+
+test("cancels a running workflow from the workflow control panel", async ({ page }) => {
+  await openTerminal(page);
+
+  await page.keyboard.type("/workflow internal/dacode/xtermjs/testdata/workflows/cancellable.js");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("browser-cancellable-sweep");
+  await expect.poll(() => terminalText(page)).toContain("RUNNING");
+  await expect.poll(() => terminalText(page)).toContain("browser-check");
+  await expect.poll(() => terminalText(page)).toContain("RUNNING AGENTS  1");
+  const initialLine = (await terminalText(page)).match(/browser-check\s+Inspect\s+(\d+)s\s+·\s+~([\d.]+)(k?) tok/);
+  const initialElapsed = Number(initialLine?.[1] ?? -1);
+  const initialTokens = Number(initialLine?.[2] ?? 0) * (initialLine?.[3] === "k" ? 1_000 : 1);
+  expect(initialElapsed).toBeGreaterThanOrEqual(0);
+  expect(initialTokens).toBeGreaterThan(0);
+  await page.waitForTimeout(1_100);
+  const laterElapsed = Number((await terminalText(page)).match(/browser-check\s+Inspect\s+(\d+)s\s+·\s+~[\d.]+k? tok/)?.[1] ?? -1);
+  expect(laterElapsed).toBeGreaterThan(initialElapsed);
+
+  await page.keyboard.press("c");
+  await expect.poll(() => terminalText(page)).toContain("CANCELLED");
+  await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
+});
+
+test("updates running workflow token estimates from streamed worker output", async ({ page }) => {
+  await openTerminal(page);
+
+  await page.keyboard.type("/workflow internal/dacode/xtermjs/testdata/workflows/token-progress.js");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("browser-token-progress");
+  await expect.poll(() => terminalText(page)).toContain("RUNNING AGENTS  1");
+
+  const displayedTokens = async (): Promise<number> => {
+    const match = (await terminalText(page)).match(/token-progress-worker\s+Inspect\s+\d+s\s+·\s+~([\d.]+)(k?) tok/);
+    return Number(match?.[1] ?? 0) * (match?.[2] === "k" ? 1_000 : 1);
+  };
+  const initial = await expect.poll(displayedTokens).toBeGreaterThan(0).then(() => displayedTokens());
+  await expect.poll(displayedTokens).toBeGreaterThan(initial);
+  await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("SUCCESS");
+});
+
+test("maps refactoring opportunities with a realistic deterministic workflow", async ({ page, request }) => {
+  test.setTimeout(2 * 60_000);
+  const url = process.env.PLAYWRIGHT_WORKFLOW_FAKE_URL;
+  const apiURL = process.env.PLAYWRIGHT_WORKFLOW_FAKE_API_URL;
+  expect(url).toBeTruthy();
+  expect(apiURL).toBeTruthy();
+  await openTerminal(page, url);
+
+  await page.keyboard.type("Map out refactoring opportunities in this repo with a workflow. Do not modify files.");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/\bwf_\d+\b/);
+  await expect
+    .poll(() => terminalText(page), { timeout: 90_000 })
+    .toMatch(/Workflow repository-refactoring-map \(wf_\d+\) completed: (?:SUCCESS|ERROR)/);
+  const completionText = await terminalText(page);
+  if (!/Workflow repository-refactoring-map \(wf_\d+\) completed: SUCCESS/.test(completionText)) {
+    const diagnosticResponse = await request.get(`${apiURL}/fixture-state`);
+    throw new Error(`workflow failed; fixture state: ${JSON.stringify(await diagnosticResponse.json())}`);
+  }
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain(
+    "Partial workflow result reviewed: three refactoring findings were independently verified; two scanners failed"
+  );
+
+  const fixtureResponse = await request.get(`${apiURL}/fixture-state`);
+  expect(fixtureResponse.ok()).toBe(true);
+  const fixture = await fixtureResponse.json();
+  expect(fixture).toMatchObject({
+    chosenFailureCalls: 1,
+    deniedApprovalReviews: 2,
+    scoutCalls: 1,
+    foregroundWorkflowCalls: 1,
+    recoveryAlternativeCalls: 1,
+    recoveryContinuations: 2,
+    workerExecuteCalls: 8,
+    workerExecuteContinuations: 6
+  });
+  expect(fixture.approvalReviews).toBeGreaterThanOrEqual(8);
+  expect(fixture.failedWorkerRequests).toBeGreaterThanOrEqual(1);
+
+  await page.keyboard.type("/workflows");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("WORKFLOW CONTROL");
+  const text = await terminalText(page);
+  expect(text).toContain("SUCCESS");
+  expect(text).toContain("7 done · 0 active · 2 failed");
+  expect(text).toContain("Grounded parallel repository review");
+  expect(text).not.toContain("no agent calls");
+});
+
+test("automatic review never flashes manual controls or prints approvals", async ({ page }) => {
+  test.setTimeout(60_000);
+  const url = process.env.PLAYWRIGHT_WORKFLOW_FAKE_URL;
+  expect(url).toBeTruthy();
+  await openTerminal(page, url);
+
+  const frames: string[] = [];
+  await page.keyboard.type("AUTO_REVIEW_VISIBILITY: exercise one approval-gated action.");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page), { timeout: 20_000 }).toContain("Reviewing action");
+  while (!(await terminalText(page)).includes("Automatic review completed without displaying manual controls.")) {
+    frames.push(await terminalText(page));
+    await page.waitForTimeout(10);
+  }
+  frames.push(await terminalText(page));
+
+  expect(frames.some((frame) => frame.includes("Reviewing action"))).toBe(true);
+  for (const frame of frames) {
+    expect(frame).not.toContain("Review requested");
+    expect(frame).not.toContain("y approve");
+    expect(frame).not.toContain("n reject");
+    expect(frame).not.toContain("Automatic review approved");
+  }
+});
+
+test("live OpenAI maps repository refactoring opportunities with a workflow", async ({ page }) => {
+  test.skip(process.env.DAGO_PLAYWRIGHT_OPENAI_LIVE !== "1", "set DAGO_PLAYWRIGHT_OPENAI_LIVE=1 to run");
+  test.setTimeout(30 * 60_000);
+  const url = process.env.PLAYWRIGHT_OPENAI_LIVE_URL;
+  expect(url).toBeTruthy();
+  await openTerminal(page, url);
+
+  await page.keyboard.type(
+    "Map out refactoring opportunities in this repo with a workflow. Do not modify files. " +
+      "Keep this live test bounded to 4 independent scan agents plus at most 2 synthesis or verification agents."
+  );
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => terminalText(page), { timeout: 6 * 60_000 })
+    .toMatch(/\bwf_\d+\b/);
+  await expect
+    .poll(() => terminalText(page), { timeout: 22 * 60_000 })
+    .toMatch(/Workflow .+ \(wf_\d+\) completed: SUCCESS/);
+  await expect.poll(() => terminalText(page), { timeout: 2 * 60_000 }).toContain(
+    "> What would you like to build?"
+  );
+  await expect
+    .poll(() => terminalText(page), { timeout: 2 * 60_000 })
+    .not.toMatch(/Responding…|Reviewing workflow result/);
+
+  await page.keyboard.type("/workflows");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page)).toContain("WORKFLOW CONTROL");
+  const text = await terminalText(page);
+  expect(text).toContain("SUCCESS");
+  expect(text).toMatch(/[1-9]\d* done · 0 active · 0 failed/);
+  expect(text).not.toContain("no agent calls");
 });
 
 test("sets and pauses a goal", async ({ page }) => {

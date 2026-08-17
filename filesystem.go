@@ -399,14 +399,9 @@ func filesystemModelWrapper(options filesystemRuntime) dagent.ModelWrapper {
 		request.Tools = applyToolProfile(request.Tools, descriptions, nil)
 		if visible["execute"] {
 			if routePrompt := filesystemRoutePrompt(options.backend); routePrompt != "" {
-				if request.SystemMessage == nil {
-					system := damessage.System(routePrompt)
-					request.SystemMessage = &system
-				} else {
-					system := request.SystemMessage.Clone()
-					system.Content = append(system.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: "\n\n" + routePrompt})
-					request.SystemMessage = &system
-				}
+				system := request.SystemMessage.Clone()
+				system.Content = append(system.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: "\n\n" + routePrompt})
+				request.SystemMessage = &system
 			}
 		}
 		request.Messages = scrubUnsupportedFilesystemMedia(request.Messages, request.Model)

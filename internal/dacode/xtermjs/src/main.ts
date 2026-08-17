@@ -99,6 +99,14 @@ socket.addEventListener("error", () => {
 });
 
 terminal.onData((data) => send({ type: "input", data }));
+container.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  terminal.focus();
+  const direction = Math.sign(event.deltaY);
+  if (direction === 0) return;
+  send({ type: "input", data: direction < 0 ? "\u001f" : "\u001e" });
+}, { capture: true, passive: false });
 terminal.attachCustomKeyEventHandler((event) => {
   if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "j") {
     event.preventDefault();

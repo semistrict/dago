@@ -48,6 +48,70 @@ func TestEvalMarshalsValuesAndUnwrapsPromises(t *testing.T) {
 	}
 }
 
+func TestWorkflowModuleReadsRuntimeExportBeforeDrivingBody(t *testing.T) {
+	ctx := context.Background()
+	started := make(chan struct{}, 1)
+	engine, err := New(ctx, nil, Options{HostFunctions: map[string]HostFunction{
+		"markStarted": func(context.Context, []any) (any, error) {
+			started <- struct{}{}
+			return int64(40), nil
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close(ctx)
+	if _, err := engine.Eval(ctx, `
+globalThis.__dago_run_workflow = async body => {
+  await Promise.resolve()
+  return body()
+}`, time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	module, err := engine.LoadWorkflowModule(ctx, `
+export const meta = {
+  name: ['runtime', 'metadata'].join('-'),
+  description: 'evaluated by QuickJS',
+  phases: [{ title: 'Run' }],
+}
+const answer = await markStarted()
+return { answer: answer + 2 }
+`, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer module.Close(ctx)
+	select {
+	case <-started:
+		t.Fatal("workflow body ran before its exported metadata was read")
+	default:
+	}
+	meta, kind, err := module.Export(ctx, "meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMeta := map[string]any{
+		"name": "runtime-metadata", "description": "evaluated by QuickJS",
+		"phases": []any{map[string]any{"title": "Run"}},
+	}
+	if kind != "object" || !reflect.DeepEqual(meta, wantMeta) {
+		t.Fatalf("meta = %#v (%s), want %#v", meta, kind, wantMeta)
+	}
+	outcome, err := module.AwaitExport(ctx, "__dago_workflow_result", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]any{"answer": int64(42)}; !reflect.DeepEqual(outcome.Value, want) {
+		t.Fatalf("workflow value = %#v, want %#v", outcome.Value, want)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("workflow body was not driven")
+	}
+}
+
 func TestNewEnablesMemoryTrackingByDefault(t *testing.T) {
 	ctx := context.Background()
 	engine, err := New(ctx, nil)

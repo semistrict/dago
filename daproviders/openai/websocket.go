@@ -189,7 +189,7 @@ func (client *Client) startWebSocketStream(ctx context.Context, request response
 		connection: connection,
 		inbox:      connection.inbox,
 		request:    request,
-		parser:     newResponseEventParser(ctx),
+		parser:     newResponseEventParser(ctx, responseFormatFromPayload(request)),
 	}, nil
 }
 
@@ -327,10 +327,11 @@ type websocketResponseStream struct {
 	releaseOnce sync.Once
 }
 
-func newResponseEventParser(ctx context.Context) *responseStream {
+func newResponseEventParser(ctx context.Context, format *damodel.ResponseFormat) *responseStream {
 	return &responseStream{
 		ctx: ctx, calls: map[string]responseOutput{}, emittedCalls: map[string]struct{}{},
 		emittedReasoning: map[string]string{}, emittedServer: map[string]struct{}{},
+		format: format,
 	}
 }
 

@@ -1,9 +1,8 @@
 //go:build ignore
 
-// Command generate downloads the pinned quickjs-rs wheel and extracts the
-// two generated WASM guests. The wheel is the canonical artifact consumed by
-// Deep Agents, so this intentionally does not rebuild it with a local Rust
-// toolchain.
+// Command generate downloads the pinned quickjs-rs execution guest and builds
+// dago's source-controlled fork of its OXC transform guest. The fork adds the
+// workflow-module grammar while retaining the upstream transform behavior.
 package main
 
 import (
@@ -14,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -47,7 +47,7 @@ func main() {
 		fatal(err)
 	}
 	extracted := map[string][]byte{}
-	for _, artifact := range []string{"_guest.wasm", "_transform.wasm"} {
+	for _, artifact := range []string{"_guest.wasm"} {
 		name := "quickjs_rs/" + artifact
 		var source *zip.File
 		for _, file := range reader.File {
@@ -76,6 +76,13 @@ func main() {
 		}
 		extracted[artifact] = contents
 	}
+	transform, err := buildTransform()
+	if err != nil {
+		fatal(err)
+	}
+	if err := os.WriteFile("_transform.wasm", transform, 0o644); err != nil {
+		fatal(err)
+	}
 	tracked, err := wafl.Transform(extracted["_guest.wasm"], wafl.Config{PageSize: 4096})
 	if err != nil {
 		fatal(err)
@@ -83,6 +90,35 @@ func main() {
 	if err := os.WriteFile("_guest_tracked.wasm", tracked, 0o644); err != nil {
 		fatal(err)
 	}
+}
+
+func buildTransform() ([]byte, error) {
+	target, err := os.MkdirTemp("", "dago-quickjs-transform-")
+	if err != nil {
+		return nil, fmt.Errorf("create transform build directory: %w", err)
+	}
+	defer os.RemoveAll(target)
+	manifest, err := filepath.Abs(filepath.Join("transform", "Cargo.toml"))
+	if err != nil {
+		return nil, fmt.Errorf("resolve transform manifest: %w", err)
+	}
+	command := exec.Command(
+		"cargo", "build", "--locked", "--release", "--target", "wasm32-unknown-unknown",
+		"--manifest-path", manifest,
+	)
+	command.Dir = filepath.Dir(manifest)
+	command.Env = append(os.Environ(), "CARGO_TARGET_DIR="+target)
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("build workflow source transformer: %w", err)
+	}
+	artifact := filepath.Join(target, "wasm32-unknown-unknown", "release", "dago_quickjs_wasm_transform.wasm")
+	contents, err := os.ReadFile(artifact)
+	if err != nil {
+		return nil, fmt.Errorf("read workflow source transformer: %w", err)
+	}
+	return contents, nil
 }
 
 func fatal(err error) {

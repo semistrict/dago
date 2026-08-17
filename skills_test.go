@@ -151,7 +151,8 @@ func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
 	middleware = mustSkills(memory, Skills{SystemPrompt: PromptTemplate{Mode: PromptDisabled}})
 
 	script = modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
-		if request.Messages[0].TextContent() != "go" {
+		messages := messagesWithoutSystem(request)
+		if len(messages) != 1 || messages[0].TextContent() != "go" {
 			return &skillTestError{"disabled skills prompt changed the request"}
 		}
 		return nil

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/semistrict/dago"
@@ -21,6 +22,7 @@ import (
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/daworkflow"
 	"github.com/semistrict/dago/daworkspace"
 )
 
@@ -51,6 +53,11 @@ type agentRunner interface {
 	Goal(context.Context, string) (*dagoal.Goal, error)
 	SetGoal(context.Context, string, dagoal.SetRequest) (*dagoal.Goal, error)
 	ClearGoal(context.Context, string) (bool, error)
+	StartWorkflow(context.Context, daworkflow.StartRequest) (daworkflow.Status, error)
+	Workflows() []daworkflow.Status
+	RunningWorkflows() int
+	CancelWorkflow(string) bool
+	WaitWorkflowCompletion(context.Context) (daworkflow.Status, bool)
 }
 
 type dagoRunner struct {
@@ -60,6 +67,54 @@ type dagoRunner struct {
 	database   *sql.DB
 	workingDir string
 	goals      *dagoal.Service
+	workflows  *daworkflow.Manager
+	completed  *workflowCompletionQueue
+}
+
+type workflowCompletionQueue struct {
+	mu    sync.Mutex
+	items []daworkflow.Status
+	ready chan struct{}
+}
+
+func newWorkflowCompletionQueue() *workflowCompletionQueue {
+	return &workflowCompletionQueue{ready: make(chan struct{}, 1)}
+}
+
+func (queue *workflowCompletionQueue) Push(status daworkflow.Status) {
+	queue.mu.Lock()
+	queue.items = append(queue.items, status)
+	queue.mu.Unlock()
+	select {
+	case queue.ready <- struct{}{}:
+	default:
+	}
+}
+
+func (queue *workflowCompletionQueue) Wait(ctx context.Context) (daworkflow.Status, bool) {
+	for {
+		queue.mu.Lock()
+		if len(queue.items) > 0 {
+			status := queue.items[0]
+			queue.items[0] = daworkflow.Status{}
+			queue.items = queue.items[1:]
+			more := len(queue.items) > 0
+			queue.mu.Unlock()
+			if more {
+				select {
+				case queue.ready <- struct{}{}:
+				default:
+				}
+			}
+			return status, true
+		}
+		queue.mu.Unlock()
+		select {
+		case <-queue.ready:
+		case <-ctx.Done():
+			return daworkflow.Status{}, false
+		}
+	}
 }
 
 func (runner *dagoRunner) Start(ctx context.Context, input dagent.Input) eventStream {
@@ -184,6 +239,20 @@ func (runner *dagoRunner) ClearGoal(ctx context.Context, threadID string) (bool,
 	return runner.goals.Clear(ctx, dacheckpoint.Config{ThreadID: threadID})
 }
 
+func (runner *dagoRunner) StartWorkflow(ctx context.Context, request daworkflow.StartRequest) (daworkflow.Status, error) {
+	return runner.workflows.Start(ctx, request)
+}
+
+func (runner *dagoRunner) Workflows() []daworkflow.Status { return runner.workflows.List() }
+
+func (runner *dagoRunner) RunningWorkflows() int { return runner.workflows.Running() }
+
+func (runner *dagoRunner) CancelWorkflow(runID string) bool { return runner.workflows.Cancel(runID) }
+
+func (runner *dagoRunner) WaitWorkflowCompletion(ctx context.Context) (daworkflow.Status, bool) {
+	return runner.completed.Wait(ctx)
+}
+
 type runnerOptions struct {
 	Authentication modelAuthentication
 	BaseURL        string
@@ -236,11 +305,36 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 
 	memory, guidanceSummary := workspaceContext(options.WorkingDir)
 	skills := workspaceSkills(options.WorkingDir, os.Getenv("HERDR_ENV"))
+	var reviewer *dagent.Agent
+	if options.AutoReview {
+		reviewModel := options.Authentication.model(options.ReviewModel, options.BaseURL)
+		var reviewErr error
+		readOnly, reviewErr := dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: options.WorkingDir})
+		if reviewErr != nil {
+			_ = database.Close()
+			return nil, nil, fmt.Errorf("open review workspace: %w", reviewErr)
+		}
+		reviewer = newApprovalReviewer(reviewModel, readOnly)
+	}
 
 	systemText := `You are dacode, an interactive coding agent. Work as a careful senior engineer inside the configured workspace. Filesystem tool paths are virtual: use / for the workspace root and never pass a host filesystem path. Inspect relevant files before making claims, use the available filesystem and shell tools to complete requested work, preserve unrelated user changes, and verify edits with focused tests. Keep final responses concise and concrete.`
 	systemText += guidanceSummary
 	system := damessage.System(systemText)
 	goalOptions := dagoal.Options{}
+	workflowCompletions := newWorkflowCompletionQueue()
+	workflowRunner := &dacodeWorkflowAgentRunner{
+		authentication: options.Authentication, baseURL: options.BaseURL, model: options.Model,
+		backend: backend, tools: append([]datool.Tool(nil), options.Tools...), filesystem: filesystem,
+		skills: skills, memory: memory, system: systemText, approvalRules: interruptOn,
+		reviewer: reviewer, workingDir: options.WorkingDir,
+	}
+	workflowManager := daworkflow.NewManager(workflowRunner, daworkflow.Options{
+		Resolver:         workspaceWorkflowResolver{root: options.WorkingDir, stateRoot: options.StateDir},
+		SessionDirectory: options.StateDir,
+		Completed: func(_ context.Context, status daworkflow.Status) {
+			workflowCompletions.Push(status)
+		},
+	})
 	agent := dago.NewAgent(
 		model,
 		dago.WithName("dacode"),
@@ -251,27 +345,17 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 		dago.WithSkills(skills),
 		dago.WithMemory(memory),
 		dago.WithTodo(),
-		dago.WithMiddleware(dagoal.Middleware(goalOptions)),
+		dago.WithMiddleware(dagoal.Middleware(goalOptions), daworkflow.Middleware(workflowManager)),
 		dago.WithApprovalRules(interruptOn...),
 		dago.WithSaver(saver),
 		dago.WithRetainedThreadState(),
 		dago.WithStateFields(sessionStateFields()),
 	)
 	runner := &dagoRunner{
-		agent: agent, saver: saver, database: database, workingDir: options.WorkingDir,
-		goals: dagoal.NewService(agent, goalOptions),
+		agent: agent, reviewer: reviewer, saver: saver, database: database, workingDir: options.WorkingDir,
+		goals: dagoal.NewService(agent, goalOptions), workflows: workflowManager, completed: workflowCompletions,
 	}
-	if options.AutoReview {
-		reviewModel := options.Authentication.model(options.ReviewModel, options.BaseURL)
-		var reviewErr error
-		readOnly, reviewErr := dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: options.WorkingDir})
-		if reviewErr != nil {
-			_ = database.Close()
-			return nil, nil, fmt.Errorf("open review workspace: %w", reviewErr)
-		}
-		runner.reviewer = newApprovalReviewer(reviewModel, readOnly)
-	}
-	return runner, database, nil
+	return runner, &sessionClosers{closers: []io.Closer{workflowManager, database}}, nil
 }
 
 func sessionStateFields() map[string]dagent.StateField {

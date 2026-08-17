@@ -10,6 +10,7 @@ import (
 
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/datool"
 )
@@ -28,8 +29,10 @@ func TestInterpreterPersistsBindingsAndCallsPTCTools(t *testing.T) {
 		Tools:   append([]datool.Tool{echo}, middleware.Tools...),
 		Runtime: dagent.Runtime{Config: dacheckpoint.Config{ThreadID: "thread"}},
 	}
+	system := damessage.System("You are a helpful assistant.")
+	request.SystemMessage = &system
 	_, err = middleware.WrapModelCall(context.Background(), request, func(_ context.Context, got dagent.ModelRequest) (dagent.ModelResponse, error) {
-		if got.SystemMessage == nil || !strings.Contains(got.SystemMessage.TextContent(), "tools.echoValue") {
+		if !strings.Contains(got.SystemMessage.TextContent(), "tools.echoValue") {
 			t.Fatalf("interpreter prompt = %#v", got.SystemMessage)
 		}
 		return dagent.ModelResponse{}, nil

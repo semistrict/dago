@@ -11,6 +11,7 @@ export default defineConfig({
   timeout: 30_000,
   use: {
     baseURL: process.env.PLAYWRIGHT_TEST_BASE_URL,
+    launchOptions: { slowMo: Number(process.env.PLAYWRIGHT_SLOW_MO ?? "0") },
     screenshot: "on",
     trace: "retain-on-failure"
   },

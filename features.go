@@ -1278,14 +1278,10 @@ func isSummaryMessage(item damessage.Message) bool {
 
 func requestTokenCount(ctx context.Context, request dagent.ModelRequest) int {
 	tokens := approximateTokens(request.Messages)
-	if request.SystemMessage != nil {
-		tokens += approximateTokens([]damessage.Message{*request.SystemMessage})
-	}
+	tokens += approximateTokens([]damessage.Message{*request.SystemMessage})
 	if counter, ok := request.Model.(damodel.TokenCounter); ok {
 		messages := append([]damessage.Message(nil), request.Messages...)
-		if request.SystemMessage != nil {
-			messages = append([]damessage.Message{request.SystemMessage.Clone()}, messages...)
-		}
+		messages = append([]damessage.Message{request.SystemMessage.Clone()}, messages...)
 		if counted, err := counter.CountTokens(ctx, messages); err == nil {
 			tokens = counted
 		}
@@ -1419,7 +1415,7 @@ func compileMemory(backend dabackend.Backend, options Memory, addCacheControl bo
 			fragment := strings.ReplaceAll(template, "{agent_memory}", body)
 			appendSystem(&request, fragment)
 		}
-		if addCacheControl && request.Model != nil && strings.EqualFold(request.Model.Profile().Provider, "anthropic") && request.SystemMessage != nil && len(request.SystemMessage.Content) > 0 {
+		if addCacheControl && request.Model != nil && strings.EqualFold(request.Model.Profile().Provider, "anthropic") && len(request.SystemMessage.Content) > 0 {
 			copy := request.SystemMessage.Clone()
 			last := &copy.Content[len(copy.Content)-1]
 			if last.Extra == nil {
@@ -2157,11 +2153,6 @@ func cloneStringValues(source map[string]string) map[string]string {
 }
 func appendSystem(request *dagent.ModelRequest, fragment string) {
 	if fragment == "" {
-		return
-	}
-	if request.SystemMessage == nil {
-		value := damessage.System(fragment)
-		request.SystemMessage = &value
 		return
 	}
 	copy := request.SystemMessage.Clone()

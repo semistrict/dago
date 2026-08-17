@@ -283,11 +283,6 @@ func appendGoalSystem(request *dagent.ModelRequest, goal *Goal) {
 		}
 		text += fmt.Sprintf("\n\n<thread_goal>\nObjective: %s\nStatus: %s\nTokens used: %d\nRemaining token budget: %s\n</thread_goal>", escapeXML(goal.Objective), goal.Status, goal.TokensUsed, remaining)
 	}
-	if request.SystemMessage == nil {
-		message := damessage.System(text)
-		request.SystemMessage = &message
-		return
-	}
 	copy := request.SystemMessage.Clone()
 	copy.Content = append(copy.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: "\n\n" + strings.TrimSpace(text)})
 	request.SystemMessage = &copy

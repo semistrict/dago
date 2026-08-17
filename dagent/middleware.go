@@ -197,11 +197,6 @@ func cloneTodoRecords(value todoState) todoState {
 }
 
 func appendModelSystem(request *ModelRequest, text string) {
-	if request.SystemMessage == nil {
-		value := damessage.System(text)
-		request.SystemMessage = &value
-		return
-	}
 	copy := request.SystemMessage.Clone()
 	copy.Content = append(copy.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: "\n\n" + text})
 	request.SystemMessage = &copy
@@ -441,7 +436,7 @@ func addAnthropicCacheBreakpoints(request ModelRequest, retention string) ModelR
 		cacheControl["ttl"] = "1h"
 	}
 	raw, _ := json.Marshal(cacheControl)
-	if request.SystemMessage != nil && len(request.SystemMessage.Content) > 0 {
+	if len(request.SystemMessage.Content) > 0 {
 		system := request.SystemMessage.Clone()
 		last := len(system.Content) - 1
 		if system.Content[last].Extra == nil {

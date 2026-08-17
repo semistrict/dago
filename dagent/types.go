@@ -86,10 +86,8 @@ type ModelRequest struct {
 func (request ModelRequest) Clone() ModelRequest {
 	copy := request
 	copy.Messages = cloneMessages(request.Messages)
-	if request.SystemMessage != nil {
-		messageCopy := request.SystemMessage.Clone()
-		copy.SystemMessage = &messageCopy
-	}
+	messageCopy := request.SystemMessage.Clone()
+	copy.SystemMessage = &messageCopy
 	copy.Tools = append([]datool.Tool(nil), request.Tools...)
 	if request.ToolChoice != nil {
 		choice := *request.ToolChoice

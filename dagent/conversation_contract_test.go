@@ -40,13 +40,15 @@ func toolCall(id, name string) damessage.ToolCall {
 func TestBasicConvo(t *testing.T) {
 	script := modeltest.New(damodel.Profile{},
 		modeltest.Step{Check: func(request damodel.Request) error {
-			if len(request.Messages) != 1 || !strings.Contains(request.Messages[0].TextContent(), "Cornelius") {
+			messages := conversationMessages(request)
+			if len(messages) != 1 || !strings.Contains(messages[0].TextContent(), "Cornelius") {
 				return fmt.Errorf("first request = %#v", request.Messages)
 			}
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("Hello, Cornelius.")}},
 		modeltest.Step{Check: func(request damodel.Request) error {
-			if len(request.Messages) != 3 || request.Messages[1].TextContent() != "Hello, Cornelius." {
+			messages := conversationMessages(request)
+			if len(messages) != 3 || messages[1].TextContent() != "Hello, Cornelius." {
 				return fmt.Errorf("history = %#v", request.Messages)
 			}
 			return nil
@@ -115,11 +117,12 @@ func TestInsertMissingToolResults(t *testing.T) {
 			toolCall("1", "one"), toolCall("2", "two"), toolCall("3", "three"),
 		}}}},
 		modeltest.Step{Check: func(request damodel.Request) error {
-			if len(request.Messages) != 5 {
+			messages := conversationMessages(request)
+			if len(messages) != 5 {
 				return fmt.Errorf("messages = %#v", request.Messages)
 			}
 			for index, id := range []string{"1", "2", "3"} {
-				result := request.Messages[index+2]
+				result := messages[index+2]
 				if result.Role != damessage.RoleTool || result.ToolCallID != id {
 					return fmt.Errorf("tool result %d = %#v", index, result)
 				}
@@ -157,7 +160,8 @@ func TestSubConvo(t *testing.T) {
 
 func onlyHuman(text string) func(damodel.Request) error {
 	return func(request damodel.Request) error {
-		if len(request.Messages) != 1 || request.Messages[0].Role != damessage.RoleHuman || request.Messages[0].TextContent() != text {
+		messages := conversationMessages(request)
+		if len(messages) != 1 || messages[0].Role != damessage.RoleHuman || messages[0].TextContent() != text {
 			return fmt.Errorf("request = %#v", request.Messages)
 		}
 		return nil
@@ -377,7 +381,8 @@ func TestSubConvoWithHistoryAdditional(t *testing.T) {
 		t.Fatal(err)
 	}
 	childScript := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
-		if len(request.Messages) != 3 || request.Messages[0].TextContent() != "parent question" || request.Messages[2].TextContent() != "follow up" {
+		messages := conversationMessages(request)
+		if len(messages) != 3 || messages[0].TextContent() != "parent question" || messages[2].TextContent() != "follow up" {
 			return fmt.Errorf("child history = %#v", request.Messages)
 		}
 		return nil
@@ -390,6 +395,13 @@ func TestSubConvoWithHistoryAdditional(t *testing.T) {
 	if len(parent.Messages) != 2 || len(child.Messages) != 4 {
 		t.Fatalf("parent = %d messages, child = %d", len(parent.Messages), len(child.Messages))
 	}
+}
+
+func conversationMessages(request damodel.Request) []damessage.Message {
+	if len(request.Messages) > 0 && request.Messages[0].Role == damessage.RoleSystem {
+		return request.Messages[1:]
+	}
+	return request.Messages
 }
 
 func TestDepthAdditional(t *testing.T) {

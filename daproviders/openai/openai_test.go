@@ -701,6 +701,29 @@ func TestStreamYieldsTextToolCallUsageAndDone(t *testing.T) {
 	}
 }
 
+func TestStreamPreservesStructuredResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, `data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"value\":\"streamed\"}"}]}],"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}}`+"\n\n")
+	}))
+	defer server.Close()
+	client := NewAPIKey("secret", "m", Options{BaseURL: server.URL, HTTPClient: server.Client()})
+	stream, err := client.Stream(t.Context(), damodel.Request{
+		Messages: []damessage.Message{damessage.Human("return structured output")},
+		ResponseFormat: &damodel.ResponseFormat{
+			Name: "answer", Schema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}`), Strict: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	chunk, err := stream.Next(t.Context())
+	if err != nil || !chunk.Done || string(chunk.Structured) != `{"value":"streamed"}` || chunk.MessageDelta.Usage.TotalTokens != 7 {
+		t.Fatalf("structured chunk = %#v, %v", chunk, err)
+	}
+}
+
 func TestResponsesWebSocketReusesConnectionWithIncrementalInput(t *testing.T) {
 	requests := make(chan map[string]any, 3)
 	headers := make(chan http.Header, 1)

@@ -416,13 +416,9 @@ func runNonInteractive(ctx context.Context, runner agentRunner, workingDir, thre
 			decisions[request.Call.ID] = dagent.ApprovalChoice{
 				Decision: decision, Reason: assessment.Rationale, Message: assessment.Rationale,
 			}
-			if !quiet {
-				verdict := "approved"
-				if !assessment.approved() {
-					verdict = "denied"
-				}
-				fmt.Fprintf(stderr, "[auto review] %s %s (risk: %s, authorization: %s): %s\n",
-					verdict, request.Call.Name, assessment.RiskLevel, assessment.UserAuthorization, assessment.Rationale)
+			if !quiet && !assessment.approved() {
+				fmt.Fprintf(stderr, "[auto review] denied %s (risk: %s, authorization: %s): %s\n",
+					request.Call.Name, assessment.RiskLevel, assessment.UserAuthorization, assessment.Rationale)
 			}
 		}
 		input = dagent.Input{

@@ -472,7 +472,7 @@ func (client *Client) streamPayload(ctx context.Context, payload responsesReques
 			}
 			continue
 		}
-		return newResponseStream(ctx, response.Body, client.provider), nil
+		return newResponseStream(ctx, response.Body, client.provider, responseFormatFromPayload(payload)), nil
 	}
 }
 
@@ -1190,14 +1190,26 @@ type responseStream struct {
 	emittedServer     map[string]struct{}
 	emittedCompaction bool
 	completed         *responsesResponse
+	format            *damodel.ResponseFormat
 }
 
-func newResponseStream(ctx context.Context, body io.ReadCloser, provider string) *responseStream {
+func newResponseStream(ctx context.Context, body io.ReadCloser, provider string, format *damodel.ResponseFormat) *responseStream {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 2<<20)
 	return &responseStream{
 		ctx: ctx, body: body, scanner: scanner, provider: provider, calls: map[string]responseOutput{},
 		emittedCalls: map[string]struct{}{}, emittedReasoning: map[string]string{}, emittedServer: map[string]struct{}{},
+		format: format,
+	}
+}
+
+func responseFormatFromPayload(payload responsesRequest) *damodel.ResponseFormat {
+	if payload.Text == nil || payload.Text.Format.Type != "json_schema" {
+		return nil
+	}
+	format := payload.Text.Format
+	return &damodel.ResponseFormat{
+		Name: format.Name, Description: format.Description, Schema: append(json.RawMessage(nil), format.Schema...), Strict: format.Strict,
 	}
 }
 
@@ -1374,7 +1386,7 @@ func (stream *responseStream) event(data []byte) (damodel.Chunk, bool, error) {
 }
 
 func (stream *responseStream) completedChunk(payload responsesResponse) (damodel.Chunk, bool, error) {
-	response, err := normalizeResponse(payload, nil, stream.provider)
+	response, err := normalizeResponse(payload, stream.format, stream.provider)
 	if err != nil {
 		return damodel.Chunk{}, false, err
 	}
@@ -1417,7 +1429,7 @@ func (stream *responseStream) completedChunk(payload responsesResponse) (damodel
 			delta.ToolCalls = append(delta.ToolCalls, call)
 		}
 	}
-	return damodel.Chunk{MessageDelta: delta, Done: true}, true, nil
+	return damodel.Chunk{MessageDelta: delta, Structured: append(json.RawMessage(nil), response.Structured...), Done: true}, true, nil
 }
 
 func reasoningText(items []responseSummary) string {

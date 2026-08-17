@@ -165,11 +165,12 @@ func TestMemoryPromptCanBeCustomizedOrDisabled(t *testing.T) {
 
 	middleware := mustMemory(memory, Memory{SystemPrompt: PromptTemplate{Mode: PromptDisabled}})
 
+	system := damessage.System("You are a helpful assistant.")
 	_, err := middleware.WrapModelCall(context.Background(), dagent.ModelRequest{
-		Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"memory_contents": map[string]string{}},
+		SystemMessage: &system, Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"memory_contents": map[string]string{}},
 	}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
-		if request.SystemMessage != nil {
-			return dagent.ModelResponse{}, &memoryTestError{"disabled memory prompt created a system message"}
+		if request.SystemMessage == nil || request.SystemMessage.TextContent() != system.TextContent() {
+			return dagent.ModelResponse{}, &memoryTestError{"disabled memory prompt changed the system message"}
 		}
 		return dagent.ModelResponse{}, nil
 	})

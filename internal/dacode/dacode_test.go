@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,8 @@ import (
 	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/daproviders/openai"
 	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/daworkflow"
 )
 
 type fakeEventStream struct {
@@ -70,6 +73,11 @@ type fakeRunner struct {
 	goalErr         error
 	goalRequests    []dagoal.SetRequest
 	goalCleared     bool
+	workflows       []daworkflow.Status
+	workflowStarts  []daworkflow.StartRequest
+	workflowErr     error
+	workflowCancels []string
+	workflowDone    chan daworkflow.Status
 }
 
 func (runner *fakeRunner) Start(_ context.Context, input dagent.Input) eventStream {
@@ -115,6 +123,50 @@ func (runner *fakeRunner) SetGoal(_ context.Context, _ string, request dagoal.Se
 func (runner *fakeRunner) ClearGoal(context.Context, string) (bool, error) {
 	runner.goalCleared = true
 	return true, runner.goalErr
+}
+
+func (runner *fakeRunner) StartWorkflow(_ context.Context, request daworkflow.StartRequest) (daworkflow.Status, error) {
+	runner.workflowStarts = append(runner.workflowStarts, request)
+	if runner.workflowErr != nil {
+		return daworkflow.Status{}, runner.workflowErr
+	}
+	status := daworkflow.Status{Version: 1, RunID: "wf_1", TaskID: "workflow-1", Name: "fixture", Status: "running"}
+	runner.workflows = append(runner.workflows, status)
+	return status, nil
+}
+
+func (runner *fakeRunner) Workflows() []daworkflow.Status {
+	return append([]daworkflow.Status(nil), runner.workflows...)
+}
+
+func (runner *fakeRunner) RunningWorkflows() int {
+	count := 0
+	for _, run := range runner.workflows {
+		if run.Status == "running" {
+			count++
+		}
+	}
+	return count
+}
+
+func (runner *fakeRunner) CancelWorkflow(runID string) bool {
+	runner.workflowCancels = append(runner.workflowCancels, runID)
+	for index := range runner.workflows {
+		if runner.workflows[index].RunID == runID && runner.workflows[index].Status == "running" {
+			runner.workflows[index].Status = "cancelled"
+			return true
+		}
+	}
+	return false
+}
+
+func (runner *fakeRunner) WaitWorkflowCompletion(ctx context.Context) (daworkflow.Status, bool) {
+	select {
+	case status := <-runner.workflowDone:
+		return status, true
+	case <-ctx.Done():
+		return daworkflow.Status{}, false
+	}
 }
 
 func TestAuthenticationPrefersExplicitAPIKey(t *testing.T) {
@@ -240,7 +292,7 @@ func TestRunnerStartsWithHostShellAndApprovalGates(t *testing.T) {
 	for _, tool := range compiled.agent.Tools() {
 		toolNames[tool.Definition().Name] = true
 	}
-	for _, name := range []string{"create_goal", "get_goal", "update_goal"} {
+	for _, name := range []string{"create_goal", "get_goal", "update_goal", "workflow", "check_workflow", "cancel_workflow", "list_workflows"} {
 		if !toolNames[name] {
 			t.Errorf("runner is missing %s", name)
 		}
@@ -636,6 +688,59 @@ func TestXtermSessionEnvironmentAdvertisesTrueColor(t *testing.T) {
 	}
 }
 
+func TestTUITerminalToolProgressCompletesItemBeforeBatchUpdate(t *testing.T) {
+	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "test-model", "thread", false, true, "")
+	model.resize(100, 30)
+	model.addToolCall(damessage.ToolCall{ID: "read-call", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/README.md"}`)})
+
+	model.applyEvent(dagent.Event{Mode: dagent.EventToolProgress, ToolProgress: &datool.Progress{
+		CallID: "read-call", Name: "read_file", Output: "partial output",
+	}})
+	item := model.items[model.toolItems["read-call"]]
+	if item.done {
+		t.Fatalf("non-terminal progress completed item: %#v", item)
+	}
+
+	model.applyEvent(dagent.Event{Mode: dagent.EventToolProgress, ToolProgress: &datool.Progress{
+		CallID: "read-call", Name: "read_file", Output: "file contents", Status: damessage.ToolStatusSuccess,
+	}})
+	item = model.items[model.toolItems["read-call"]]
+	if !item.done || item.failed || item.text != "file contents" {
+		t.Fatalf("terminal progress item = %#v", item)
+	}
+	if text := model.renderTranscript(); !strings.Contains(text, "✓ read_file") {
+		t.Fatalf("transcript did not render completed tool:\n%s", text)
+	}
+}
+
+func TestWorkflowTokenTrackerReportsPromptAndStreamingGrowth(t *testing.T) {
+	var reports []int64
+	tracker := &workflowTokenTracker{report: func(tokens int64) {
+		reports = append(reports, tokens)
+	}}
+	tracker.beginModel(t.Context(), dagent.ModelRequest{
+		Model:         modeltest.New(damodel.Profile{}),
+		SystemMessage: new(damessage.System("workflow worker instructions")),
+		Messages:      []damessage.Message{damessage.Human("inspect the repository")},
+	})
+	if len(reports) != 1 || reports[0] <= 0 {
+		t.Fatalf("initial token reports = %#v", reports)
+	}
+	initial := reports[0]
+	tracker.observe(dagent.Event{Mode: dagent.EventToken, Chunk: &damodel.Chunk{
+		MessageDelta: damessage.Assistant(strings.Repeat("streaming output ", 20)),
+	}})
+	if reports[len(reports)-1] <= initial {
+		t.Fatalf("streaming token reports = %#v", reports)
+	}
+	tracker.finishModel(dagent.ModelResponse{Messages: []damessage.Message{{
+		Role: damessage.RoleAssistant, Usage: &damessage.Usage{TotalTokens: 73},
+	}}})
+	if reports[len(reports)-1] != 73 {
+		t.Fatalf("reconciled token reports = %#v", reports)
+	}
+}
+
 func TestApprovalAssessmentValidation(t *testing.T) {
 	valid := approvalAssessment{RiskLevel: "high", UserAuthorization: "medium", Outcome: "allow", Rationale: "Narrow and authorized."}
 	if err := valid.validate(); err != nil {
@@ -707,8 +812,8 @@ func TestAutomaticReviewApprovesAndResumes(t *testing.T) {
 	}
 }
 
-func TestAutomaticReviewFailureFallsBackToUser(t *testing.T) {
-	runner := &fakeRunner{reviewErr: errors.New("review unavailable")}
+func TestAutomaticReviewFailureDeniesAndResumesWithoutManualReview(t *testing.T) {
+	runner := &fakeRunner{streams: []eventStream{&fakeEventStream{}}, reviewErr: errors.New("review unavailable")}
 	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, true, "")
 	model.approval = &approvalState{requests: []dagent.ApprovalRequest{{Call: damessage.ToolCall{ID: "call-1", Name: "execute", Arguments: []byte(`{}`)}}}}
 	model.running = true
@@ -717,8 +822,60 @@ func TestAutomaticReviewFailureFallsBackToUser(t *testing.T) {
 	reviewMessage := reviewCommand().(reviewDoneMsg)
 	updated, command := model.Update(reviewMessage)
 	result := updated.(*tuiModel)
-	if command != nil || result.approval == nil || !result.approval.ready || result.running {
-		t.Fatalf("model did not fall back to user review: %#v", result.approval)
+	if command == nil || result.approval != nil || !result.running {
+		t.Fatalf("model did not deny and resume: approval=%#v running=%v command=%v", result.approval, result.running, command)
+	}
+	response := runner.inputs[0].Resume.(dagent.ApprovalResponse)
+	if response.Decisions["call-1"].Decision != dagent.ApprovalReject {
+		t.Fatalf("decision = %#v", response.Decisions["call-1"])
+	}
+	view := result.View()
+	if strings.Contains(view, "Review requested") || strings.Contains(view, "y approve") {
+		t.Fatalf("automatic review exposed manual controls:\n%s", view)
+	}
+}
+
+func TestAutomaticReviewNeverRendersOrAcceptsManualApproval(t *testing.T) {
+	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "main-model", "thread-1", false, true, "")
+	model.approval = &approvalState{ready: true, requests: []dagent.ApprovalRequest{{Call: damessage.ToolCall{
+		ID: "call-1", Name: "execute", Arguments: []byte(`{"command":"go test ./..."}`),
+	}}}}
+	model.running = true
+	model.status = "Reviewing action"
+	model.width = 120
+	model.height = 32
+	model.ready = true
+	model.relayout()
+	model.refreshTranscript()
+
+	view := model.View()
+	if strings.Contains(view, "Review requested") || strings.Contains(view, "y approve") || strings.Contains(view, "n reject") {
+		t.Fatalf("automatic review exposed manual controls:\n%s", view)
+	}
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if command != nil || model.approval == nil {
+		t.Fatal("automatic review accepted a manual approval key")
+	}
+}
+
+func TestAutomaticReviewApprovalIsSilent(t *testing.T) {
+	runner := &fakeRunner{streams: []eventStream{&fakeEventStream{}}}
+	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, true, "")
+	model.approval = &approvalState{ready: true, requests: []dagent.ApprovalRequest{{Call: damessage.ToolCall{
+		ID: "call-1", Name: "execute", Arguments: []byte(`{"command":"go test ./..."}`),
+	}}}}
+
+	updated, command := model.finishReview(reviewDoneMsg{result: approvalReviewResult{Assessments: map[string]approvalAssessment{
+		"call-1": {RiskLevel: "low", UserAuthorization: "high", Outcome: "allow", Rationale: "Routine test command."},
+	}}})
+	result := updated.(*tuiModel)
+	if command == nil {
+		t.Fatal("approved action was not resumed")
+	}
+	for _, item := range result.items {
+		if strings.Contains(item.text, "Automatic review approved") {
+			t.Fatalf("approval status was printed: %q", item.text)
+		}
 	}
 }
 
@@ -747,6 +904,18 @@ func TestAutomaticReviewDenialResumesWithRejection(t *testing.T) {
 	}
 }
 
+func TestWorkflowAgentCanChooseTerminalFailure(t *testing.T) {
+	tool := workflowAgentFailureTool()
+	if !tool.Definition().Direct {
+		t.Fatal("workflow failure tool does not terminate the worker directly")
+	}
+	result := dagent.Result{Messages: []damessage.Message{damessage.Tool("failure-call", workflowAgentFailurePrefix+"no safe alternative")}}
+	reason, failed := workflowAgentFailure(result)
+	if !failed || reason != "no safe alternative" {
+		t.Fatalf("failure = %q, %v", reason, failed)
+	}
+}
+
 func TestNonInteractiveAutomaticReviewContinues(t *testing.T) {
 	interrupt := dagent.Interrupt{ID: "human_approval", Value: []dagent.ApprovalRequest{{Call: damessage.ToolCall{
 		ID: "call-1", Name: "execute", Arguments: []byte(`{"command":"go test ./..."}`),
@@ -771,6 +940,28 @@ func TestNonInteractiveAutomaticReviewContinues(t *testing.T) {
 	response, ok := runner.inputs[1].Resume.(dagent.ApprovalResponse)
 	if !ok || response.Decisions["call-1"].Decision != dagent.ApprovalApprove {
 		t.Fatalf("resume = %#v", runner.inputs[1].Resume)
+	}
+}
+
+func TestNonInteractiveAutomaticApprovalIsSilent(t *testing.T) {
+	interrupt := dagent.Interrupt{ID: "human_approval", Value: []dagent.ApprovalRequest{{Call: damessage.ToolCall{
+		ID: "call-1", Name: "execute", Arguments: []byte(`{"command":"go test ./..."}`),
+	}}}}
+	runner := &fakeRunner{
+		streams: []eventStream{
+			&fakeEventStream{result: dagent.Result{Interrupts: []dagent.Interrupt{interrupt}}},
+			&fakeEventStream{result: dagent.Result{Messages: []damessage.Message{damessage.Assistant("done")}}},
+		},
+		reviewResult: approvalReviewResult{Assessments: map[string]approvalAssessment{
+			"call-1": {RiskLevel: "low", UserAuthorization: "high", Outcome: "allow", Rationale: "Routine test command."},
+		}},
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runNonInteractive(t.Context(), runner, "/work", "thread-1", "Run the tests.", true, false, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stderr.String(), "auto review") || strings.Contains(stderr.String(), "approved") {
+		t.Fatalf("automatic approval was printed: %q", stderr.String())
 	}
 }
 
@@ -822,6 +1013,161 @@ func TestTUIRendersWelcomeAndAutomaticReviewMode(t *testing.T) {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("view missing %q", expected)
 		}
+	}
+}
+
+func TestTUIWorkflowPanelRendersProgressAndCancelsSelection(t *testing.T) {
+	now := time.Now().UTC()
+	runner := &fakeRunner{workflows: []daworkflow.Status{
+		{
+			Version: 1, RunID: "wf_1", Name: "release-sweep", Description: "Inspect release readiness",
+			Status: "running", CreatedAt: now.Format(time.RFC3339), UpdatedAt: now.Format(time.RFC3339),
+			Phases: []daworkflow.Phase{{Title: "Scan"}, {Title: "Verify"}},
+			Events: []daworkflow.Event{
+				{Version: 1, Sequence: 1, Kind: "phase", Message: "Scan"},
+				{Version: 1, Sequence: 2, Kind: "agent_started", Phase: "Scan", Label: "scan:api", Call: 1, Timestamp: now.Add(-3 * time.Second).Format(time.RFC3339Nano)},
+				{Version: 1, Sequence: 3, Kind: "agent_progress", Phase: "Scan", Label: "scan:api", Call: 1, Tokens: 420, Timestamp: now.Format(time.RFC3339Nano)},
+			},
+		},
+		{
+			Version: 1, RunID: "wf_0", Name: "docs-check", Status: "success",
+			CreatedAt: now.Add(-time.Minute).Format(time.RFC3339), UpdatedAt: now.Add(-time.Minute).Format(time.RFC3339),
+		},
+	}}
+	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, true, "")
+	model.resize(100, 30)
+	command, handled := model.slashCommand("/workflows")
+	if !handled || command == nil {
+		t.Fatal("/workflows did not load the workflow panel")
+	}
+	model.Update(command())
+	view := model.View()
+	for _, expected := range []string{"WORKFLOW CONTROL", "1 ACTIVE", "release-sweep", "RUNNING", "RUNNING AGENTS  1", "scan:api", "~420 tok", "● Scan", "○ Verify"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("workflow panel missing %q:\n%s", expected, view)
+		}
+	}
+	model.resize(52, 24)
+	for index, line := range strings.Split(model.View(), "\n") {
+		if width := lipgloss.Width(line); width > 52 {
+			t.Errorf("narrow workflow line %d width = %d:\n%s", index+1, width, line)
+		}
+	}
+	_, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if command == nil {
+		t.Fatal("cancel key did not return a command")
+	}
+	model.Update(command())
+	if len(runner.workflowCancels) != 1 || runner.workflowCancels[0] != "wf_1" || !strings.Contains(model.View(), "CANCELLED") {
+		t.Fatalf("workflow cancels = %#v\n%s", runner.workflowCancels, model.View())
+	}
+	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if model.workflowPanel != nil || !strings.Contains(model.View(), "Ready to code") {
+		t.Fatal("escape did not return from workflow panel")
+	}
+}
+
+func TestWorkflowPanelListsEveryRunningAgent(t *testing.T) {
+	now := time.Now().UTC()
+	run := daworkflow.Status{
+		RunID: "wf_many", Name: "wide-scan", Status: "running",
+		CreatedAt: now.Add(-time.Minute).Format(time.RFC3339), UpdatedAt: now.Format(time.RFC3339),
+	}
+	for call := 1; call <= 10; call++ {
+		run.Events = append(run.Events,
+			daworkflow.Event{Sequence: int64(call*2 - 1), Kind: "agent_started", Phase: "Scan", Label: fmt.Sprintf("scan:worker-%02d", call), Call: call, Timestamp: now.Add(-time.Duration(call) * time.Second).Format(time.RFC3339Nano)},
+			daworkflow.Event{Sequence: int64(call * 2), Kind: "agent_progress", Phase: "Scan", Label: fmt.Sprintf("scan:worker-%02d", call), Call: call, Tokens: int64(call * 100), Timestamp: now.Format(time.RFC3339Nano)},
+		)
+	}
+	detail := renderWorkflowDetail(run, 140)
+	if !strings.Contains(detail, "RUNNING AGENTS  10") {
+		t.Fatalf("active count missing:\n%s", detail)
+	}
+	for call := 1; call <= 10; call++ {
+		label := fmt.Sprintf("scan:worker-%02d", call)
+		if !strings.Contains(detail, label) {
+			t.Fatalf("running agent %q missing:\n%s", label, detail)
+		}
+	}
+	if !strings.Contains(detail, "1.0k tok") {
+		t.Fatalf("live token total missing:\n%s", detail)
+	}
+}
+
+func TestTUIWorkflowCommandStartsSavedScript(t *testing.T) {
+	runner := &fakeRunner{}
+	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, true, "")
+	model.resize(90, 26)
+	command, handled := model.slashCommand("/workflow .claude/workflows/review.js")
+	if !handled || command == nil {
+		t.Fatal("/workflow did not start")
+	}
+	model.Update(command())
+	if len(runner.workflowStarts) != 1 || runner.workflowStarts[0].ScriptPath != ".claude/workflows/review.js" {
+		t.Fatalf("workflow starts = %#v", runner.workflowStarts)
+	}
+	if model.workflowPanel == nil || !strings.Contains(model.View(), "fixture") {
+		t.Fatalf("workflow panel was not opened:\n%s", model.View())
+	}
+}
+
+func TestTUIWorkflowCompletionNotifiesAgent(t *testing.T) {
+	runner := &fakeRunner{workflowDone: make(chan daworkflow.Status)}
+	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, true, "")
+	model.resize(90, 26)
+	status := daworkflow.Status{
+		Version: 1, RunID: "wf_9", Name: "audit", Status: "error",
+		Error: "workflow returned null after 3 agent failures",
+	}
+	command := model.finishWorkflowCompletion(status)
+	if command == nil || len(runner.inputs) != 1 || !model.running {
+		t.Fatalf("command = %v, inputs = %d, running = %v", command, len(runner.inputs), model.running)
+	}
+	input := runner.inputs[0]
+	if len(input.Messages) != 1 || !strings.Contains(input.Messages[0].TextContent(), "<workflow_notification>") ||
+		!strings.Contains(input.Messages[0].TextContent(), "agent failures") {
+		t.Fatalf("completion input = %#v", input)
+	}
+	if !strings.Contains(model.renderTranscript(), "Workflow audit (wf_9) completed: ERROR") {
+		t.Fatalf("transcript = %s", model.renderTranscript())
+	}
+}
+
+func TestWorkflowCompletionQueueDoesNotDropBursts(t *testing.T) {
+	queue := newWorkflowCompletionQueue()
+	for index := 0; index < 100; index++ {
+		queue.Push(daworkflow.Status{RunID: fmt.Sprintf("wf_%d", index)})
+	}
+	for index := 0; index < 100; index++ {
+		status, ok := queue.Wait(t.Context())
+		if !ok || status.RunID != fmt.Sprintf("wf_%d", index) {
+			t.Fatalf("completion %d = %#v, %v", index, status, ok)
+		}
+	}
+}
+
+func TestWorkspaceWorkflowResolverRestrictsAndResolvesScripts(t *testing.T) {
+	root := t.TempDir()
+	state := t.TempDir()
+	directory := filepath.Join(root, ".claude", "workflows")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "export const meta = {name: 'review', description: 'Review'}\nreturn true"
+	if err := os.WriteFile(filepath.Join(directory, "review.js"), []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := workspaceWorkflowResolver{root: root, stateRoot: state}
+	resolved, err := resolver.ResolveWorkflow(t.Context(), "review")
+	if err != nil || resolved != script {
+		t.Fatalf("resolved = %q, error = %v", resolved, err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.js")
+	if err := os.WriteFile(outside, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveWorkflow(t.Context(), outside); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("outside workflow error = %v", err)
 	}
 }
 
@@ -1058,6 +1404,16 @@ func TestTUIMouseWheelScrollsTranscript(t *testing.T) {
 	})
 	if model.viewport.YOffset >= bottom {
 		t.Fatalf("viewport offset = %d, want less than %d", model.viewport.YOffset, bottom)
+	}
+	scrolled := model.viewport.YOffset
+	model.refreshTranscript()
+	if model.viewport.YOffset != scrolled {
+		t.Fatalf("viewport offset after refresh = %d, want %d", model.viewport.YOffset, scrolled)
+	}
+	model.viewport.GotoBottom()
+	model.Update(tea.KeyMsg{Type: tea.KeyCtrlUnderscore})
+	if model.viewport.AtBottom() {
+		t.Fatal("browser wheel-up control did not move the viewport")
 	}
 }
 

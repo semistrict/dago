@@ -21,6 +21,8 @@ import (
 	"github.com/semistrict/dago/internal/optionvalue"
 )
 
+const defaultSystemPrompt = "You are a helpful assistant."
+
 // Options configures a generic tool-calling agent.
 type Options struct {
 	Name             string
@@ -120,10 +122,11 @@ func compileAgent(model damodel.Chat, options Options) (*Agent, error) {
 	if model == nil {
 		return nil, fmt.Errorf("create agent: model is nil")
 	}
-	if options.SystemMessage.Role != "" {
-		if options.SystemMessage.Role != damessage.RoleSystem {
-			return nil, fmt.Errorf("create agent: system message role must be system")
-		}
+	if options.SystemMessage.Role == "" {
+		options.SystemMessage = damessage.System(defaultSystemPrompt)
+	} else if options.SystemMessage.Role != damessage.RoleSystem {
+		return nil, fmt.Errorf("create agent: system message role must be system")
+	} else {
 		options.SystemMessage = options.SystemMessage.Clone()
 	}
 	options.Metadata = cloneRawMap(options.Metadata)
@@ -490,10 +493,8 @@ func (compiler *compiler) model(ctx context.Context, values dastate.Values, runt
 		MessagesReadOnly:   compiler.options.RetainThreadState,
 		InvocationMetadata: cloneRawMap(compiler.options.Metadata), InvocationTags: append([]string(nil), compiler.options.Tags...),
 	}
-	if compiler.options.SystemMessage.Role != "" {
-		system := compiler.options.SystemMessage.Clone()
-		request.SystemMessage = &system
-	}
+	system := compiler.options.SystemMessage.Clone()
+	request.SystemMessage = &system
 	configureStructuredRequest(&request, compiler.options.StructuredOutput)
 	handler := compiler.modelHandler()
 	for index := len(compiler.options.Middleware) - 1; index >= 0; index-- {
@@ -562,10 +563,10 @@ func (compiler *compiler) modelHandler() ModelHandler {
 			messages = cloneMessages(request.Messages)
 		}
 		var providerSystem *damessage.Message
-		if request.SystemMessage != nil && compiler.options.RetainThreadState && request.Model.Profile().SupportsSeparateSystemMessage {
+		if compiler.options.RetainThreadState && request.Model.Profile().SupportsSeparateSystemMessage {
 			system := request.SystemMessage.Clone()
 			providerSystem = &system
-		} else if request.SystemMessage != nil {
+		} else {
 			messages = append([]damessage.Message{request.SystemMessage.Clone()}, messages...)
 		}
 		chat := request.Model
@@ -740,6 +741,15 @@ func mergeModelChunk(response *damodel.Response, chunk damodel.Chunk) {
 	}
 }
 
+type toolOutcome struct {
+	message   damessage.Message
+	update    dastate.Values
+	direct    bool
+	handoff   *datool.Handoff
+	interrupt *Interrupt
+	err       error
+}
+
 func (compiler *compiler) executeTools(ctx context.Context, values dastate.Values, runtime graph.Runtime) (graph.Command, error) {
 	messages, err := messagesFrom(values[MessagesKey])
 	if err != nil {
@@ -792,15 +802,7 @@ func (compiler *compiler) executeTools(ctx context.Context, values dastate.Value
 		resumeConsumed = resumeConsumed || response.ResumeConsumed
 		prefilled = append(prefilled, cloneMessages(response.Messages)...)
 	}
-	type outcome struct {
-		message   damessage.Message
-		update    dastate.Values
-		direct    bool
-		handoff   *datool.Handoff
-		interrupt *Interrupt
-		err       error
-	}
-	results := make([]outcome, len(calls))
+	results := make([]toolOutcome, len(calls))
 	semaphore := make(chan struct{}, compiler.options.MaxConcurrency)
 	var wait sync.WaitGroup
 	for index, call := range calls {
@@ -820,6 +822,11 @@ func (compiler *compiler) executeTools(ctx context.Context, values dastate.Value
 				toolRuntime.Resume = nil
 			}
 			results[index] = compiler.executeTool(ctx, call, values, toolRuntime)
+			if progress, ok := terminalToolProgress(call, results[index]); ok {
+				if err := writeToolProgress(ctx, runtime.Writer, progress); err != nil && results[index].err == nil {
+					results[index].err = fmt.Errorf("stream tool %q result: %w", call.Name, err)
+				}
+			}
 		}()
 	}
 	wait.Wait()
@@ -934,14 +941,42 @@ func (compiler *compiler) executeTools(ctx context.Context, values dastate.Value
 	return command, nil
 }
 
-func (compiler *compiler) executeTool(ctx context.Context, call damessage.ToolCall, values dastate.Values, runtime graph.Runtime) (result struct {
-	message   damessage.Message
-	update    dastate.Values
-	direct    bool
-	handoff   *datool.Handoff
-	interrupt *Interrupt
-	err       error
-}) {
+func terminalToolProgress(call damessage.ToolCall, result toolOutcome) (datool.Progress, bool) {
+	if result.interrupt != nil {
+		return datool.Progress{}, false
+	}
+	progress := datool.Progress{CallID: call.ID, Name: call.Name}
+	if result.err != nil {
+		progress.Output = result.err.Error()
+		progress.Status = damessage.ToolStatusError
+		return progress, true
+	}
+	if result.message.Role != damessage.RoleTool {
+		return datool.Progress{}, false
+	}
+	if result.message.Name != "" {
+		progress.Name = result.message.Name
+	}
+	if result.message.ToolCallID != "" {
+		progress.CallID = result.message.ToolCallID
+	}
+	progress.Output = result.message.TextContent()
+	progress.Status = result.message.ToolStatus
+	return progress, true
+}
+
+func writeToolProgress(ctx context.Context, writer graph.EventWriter, progress datool.Progress) error {
+	if writer == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(streamEnvelope{Version: 1, Kind: "tool_progress", ToolProgress: &progress})
+	if err != nil {
+		return fmt.Errorf("encode terminal tool progress: %w", err)
+	}
+	return writer.Write(ctx, graph.Event{Mode: graph.EventCustom, Custom: encoded})
+}
+
+func (compiler *compiler) executeTool(ctx context.Context, call damessage.ToolCall, values dastate.Values, runtime graph.Runtime) (result toolOutcome) {
 	executable := compiler.tools[call.Name]
 	if executable == nil {
 		if compiler.options.FailOnToolError {
