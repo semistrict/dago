@@ -267,8 +267,8 @@ func TestTUIModalToastsStayBoundedAndASCII(t *testing.T) {
 		model.toasts.add(text, toastWarning, maximumToastDuration, "", time.Now())
 	}
 	view := model.View()
-	if height := lipgloss.Height(view); height > 18 {
-		t.Fatalf("height = %d\n%s", height, view)
+	if height := lipgloss.Height(view); height != 18 {
+		t.Fatalf("height = %d, want exact terminal height\n%s", height, view)
 	}
 	for index, line := range strings.Split(view, "\n") {
 		if width := lipgloss.Width(line); width > 52 {
@@ -279,6 +279,9 @@ func TestTUIModalToastsStayBoundedAndASCII(t *testing.T) {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("view missing %q\n%s", expected, view)
 		}
+	}
+	if lines := strings.Split(view, "\n"); !strings.Contains(lines[len(lines)-1], "Ready") {
+		t.Fatalf("status is not on final physical row: %q", lines[len(lines)-1])
 	}
 	if strings.ContainsAny(view, "╭╮╰╯│─…✓✗⏳•⏎") {
 		t.Fatalf("ASCII view has Unicode UI glyphs:\n%s", view)

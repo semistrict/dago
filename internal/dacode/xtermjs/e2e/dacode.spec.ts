@@ -328,6 +328,26 @@ test("Ctrl+C keeps the physical bottom row anchored while its dialog appears and
 	}).toEqual({ markerRow, rows: before.length, lastRow: before.at(-1)?.trim() ?? "" });
 });
 
+test("modal dialogs keep the status on the final physical row when opened and closed", async ({ page }) => {
+	await openTerminal(page);
+	const rows = await page.evaluate(() => window.dacodeTerminal?.rows ?? 0);
+
+	await page.keyboard.type("/theme");
+	await page.keyboard.press("Enter");
+	await expect.poll(() => terminalText(page)).toContain("Select Theme");
+	await expect.poll(async () => {
+		const lines = await visibleTerminalLines(page);
+		return { rows: lines.length, lastRow: lines.at(-1)?.trim() ?? "" };
+	}).toEqual({ rows, lastRow: expect.stringContaining("Context:") });
+
+	await page.keyboard.press("Escape");
+	await expect.poll(() => terminalText(page)).not.toContain("Select Theme");
+	await expect.poll(async () => {
+		const lines = await visibleTerminalLines(page);
+		return { rows: lines.length, lastRow: lines.at(-1)?.trim() ?? "" };
+	}).toEqual({ rows, lastRow: expect.stringContaining("Context:") });
+});
+
 test("a wrapped two-line draft keeps its first line visible while editing the second", async ({ page }) => {
   await page.setViewportSize({ width: 640, height: 420 });
   await openTerminal(page);

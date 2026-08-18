@@ -70,17 +70,13 @@ func (model *tuiModel) renderModalWithToasts(content string) string {
 		return content
 	}
 	input := lipgloss.NewStyle().Border(model.uiBorder()).BorderForeground(colorPrimary).
-		Padding(0, 1).Width(max(model.width-2, 1)).Render(model.composer.View())
+		Padding(0, 1).Width(max(model.width-4, 1)).Render(model.composer.View())
 	chrome := input + "\n" + model.renderStatus()
 	chromeHeight := lipgloss.Height(chrome)
 	maximumToastHeight := max(min(model.height/3, model.height-chromeHeight-3), 0)
 	toast := renderToastsWithin(model.toasts, model.width, maximumToastHeight, model.glyphs, time.Now())
 	toastHeight := lipgloss.Height(toast)
-	separatorHeight := 1
-	if toast == "" {
-		separatorHeight = 0
-	}
-	remaining := max(model.height-toastHeight-separatorHeight-chromeHeight-1, 1)
+	remaining := max(model.height-toastHeight-chromeHeight, 1)
 	lines := nonBlankRenderedLines(content)
 	if len(lines) > remaining {
 		head := max(remaining/2, 1)
@@ -90,6 +86,15 @@ func (model *tuiModel) renderModalWithToasts(content string) string {
 			trimmed = append(trimmed, lines[len(lines)-tail:]...)
 		}
 		lines = trimmed
+	}
+	if len(lines) < remaining {
+		top := (remaining - len(lines)) / 2
+		bottom := remaining - len(lines) - top
+		padded := make([]string, 0, remaining)
+		padded = append(padded, make([]string, top)...)
+		padded = append(padded, lines...)
+		padded = append(padded, make([]string, bottom)...)
+		lines = padded
 	}
 	parts := make([]string, 0, 3)
 	if toast != "" {
