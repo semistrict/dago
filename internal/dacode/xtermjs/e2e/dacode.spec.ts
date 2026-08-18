@@ -26,6 +26,16 @@ async function visibleTerminalLines(page: Page): Promise<string[]> {
   });
 }
 
+async function terminalFramePosition(page: Page): Promise<{ rows: number; cursorRow: number; lastRow: string }> {
+  return page.evaluate(() => {
+    const terminal = window.dacodeTerminal;
+    if (!terminal) return { rows: 0, cursorRow: -1, lastRow: "" };
+    const buffer = terminal.buffer.active;
+    const lastRow = buffer.getLine(buffer.viewportY + terminal.rows - 1)?.translateToString(true).trim() ?? "";
+    return { rows: terminal.rows, cursorRow: buffer.cursorY, lastRow };
+  });
+}
+
 async function openTerminal(page: Page, url = "/"): Promise<void> {
   await page.goto(url);
   await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
@@ -331,18 +341,11 @@ test("Ctrl+C keeps the physical bottom row anchored while its dialog appears and
 test("modal dialogs keep the status on the final physical row when opened and closed", async ({ page }) => {
 	await openTerminal(page);
 	const rows = await page.evaluate(() => window.dacodeTerminal?.rows ?? 0);
-	const framePosition = async () => page.evaluate(() => {
-		const terminal = window.dacodeTerminal;
-		if (!terminal) return { rows: 0, cursorRow: -1, lastRow: "" };
-		const buffer = terminal.buffer.active;
-		const lastRow = buffer.getLine(buffer.viewportY + terminal.rows - 1)?.translateToString(true).trim() ?? "";
-		return { rows: terminal.rows, cursorRow: buffer.cursorY, lastRow };
-	});
 
 	await page.keyboard.type("/theme");
 	await page.keyboard.press("Enter");
 	await expect.poll(() => terminalText(page)).toContain("Select Theme");
-	await expect.poll(framePosition).toEqual({
+	await expect.poll(() => terminalFramePosition(page)).toEqual({
 		rows,
 		cursorRow: rows - 1,
 		lastRow: expect.stringContaining("Context:")
@@ -350,7 +353,7 @@ test("modal dialogs keep the status on the final physical row when opened and cl
 
 	await page.keyboard.press("Escape");
 	await expect.poll(() => terminalText(page)).not.toContain("Select Theme");
-	await expect.poll(framePosition).toEqual({
+	await expect.poll(() => terminalFramePosition(page)).toEqual({
 		rows,
 		cursorRow: rows - 1,
 		lastRow: expect.stringContaining("Context:")
@@ -1606,6 +1609,30 @@ test("virtualizes restored transcript history and hydrates it on page up", async
 	const hydrated = await pageUpUntil(page, "Virtual history user 000");
 	expect(hydrated).toContain("Virtual history user 000");
 	expect(await terminalText(page)).not.toContain("earlier transcript items virtualized");
+});
+
+test("Ctrl+C during a long restored session keeps the status on the physical bottom row", async ({ page }) => {
+  const url = process.env.PLAYWRIGHT_TRANSCRIPT_HISTORY_URL;
+  expect(url).toBeTruthy();
+  await page.goto(url!);
+  await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
+  await expect.poll(() => terminalText(page)).toContain("Virtual history assistant 094");
+
+  const rows = await page.evaluate(() => window.dacodeTerminal?.rows ?? 0);
+  await page.keyboard.press("Control+c");
+  await expect.poll(() => terminalText(page)).toContain("Press Ctrl+C again to quit.");
+  await expect.poll(() => terminalFramePosition(page)).toEqual({
+    rows,
+    cursorRow: rows - 1,
+    lastRow: expect.stringContaining("Context:")
+  });
+
+  await expect.poll(() => terminalText(page), { timeout: 7_000 }).not.toContain("Press Ctrl+C again to quit.");
+  await expect.poll(() => terminalFramePosition(page)).toEqual({
+    rows,
+    cursorRow: rows - 1,
+    lastRow: expect.stringContaining("Context:")
+  });
 });
 
 test("denies or persists exact trust for an external skill symlink", async ({ page }) => {

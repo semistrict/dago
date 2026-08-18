@@ -322,6 +322,34 @@ func TestTUIBrowserLayoutKeepsStatusOnPhysicalBottomRow(t *testing.T) {
 	}
 }
 
+func TestTUIToastExpiryCannotChangeFrameBetweenLayoutAndRender(t *testing.T) {
+	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
+	model.resize(80, 24)
+	now := time.Now()
+	model.toasts.add("expiring", toastWarning, maximumToastDuration, "", now)
+	model.toasts.add("remaining", toastWarning, maximumToastDuration, "", now)
+	model.relayout()
+	if len(model.toasts.items) != 2 {
+		t.Fatalf("toast count = %d, want 2", len(model.toasts.items))
+	}
+	model.toasts.items[0].ExpiresAt = now.Add(-time.Second)
+	view := model.View()
+	if height := lipgloss.Height(view); height != 24 {
+		t.Fatalf("frame changed after a toast crossed its deadline between layout and render: height=%d\n%s", height, view)
+	}
+	if !strings.Contains(view, "expiring") || !strings.Contains(view, "remaining") {
+		t.Fatalf("layout snapshot was not rendered atomically:\n%s", view)
+	}
+	model.Update(toastExpiryMsg(time.Now()))
+	view = model.View()
+	if height := lipgloss.Height(view); height != 24 {
+		t.Fatalf("frame after scheduled expiry = %d, want 24\n%s", height, view)
+	}
+	if strings.Contains(view, "expiring") || !strings.Contains(view, "remaining") {
+		t.Fatalf("scheduled expiry did not replace the layout snapshot:\n%s", view)
+	}
+}
+
 func runTUITestCommand(model *tuiModel, command tea.Cmd) {
 	if command == nil {
 		return

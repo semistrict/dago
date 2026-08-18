@@ -356,6 +356,7 @@ type tuiModel struct {
 	draftAttachmentUndo     composerAttachmentUndo
 	toasts                  *toastQueue
 	toastHeight             int
+	toastView               string
 	notifications           *notificationRegistry
 	notificationCenter      *notificationCenterState
 	notificationSettings    *notificationSettingsState
@@ -4110,6 +4111,7 @@ func (model *tuiModel) relayout() {
 	fixedHeight := model.composer.Height() + 4 + model.inputAuxiliaryHeight() + goalHeight + subagentHeight + tipHeight
 	maximumToastHeight := max(model.height-fixedHeight-3, 0)
 	toast := renderToastsWithin(model.toasts, model.width, maximumToastHeight, model.glyphs, time.Now())
+	model.toastView = toast
 	model.toastHeight = 0
 	if toast != "" {
 		model.toastHeight = lipgloss.Height(toast)
@@ -4422,7 +4424,7 @@ func (model *tuiModel) View() string {
 	if tip != "" {
 		tip += "\n"
 	}
-	toast := renderToastsWithin(model.toasts, model.width, model.toastHeight, model.glyphs, time.Now())
+	toast := model.toastView
 	if toast != "" {
 		toast += "\n"
 	}

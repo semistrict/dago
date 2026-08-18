@@ -31,6 +31,7 @@ func (model *tuiModel) handleNotificationShortcut(message tea.KeyMsg) (tea.Cmd, 
 		for _, dismissed := range model.toasts.dismissActionable() {
 			model.notifications.unbindToast(notificationToastIdentity(dismissed.ID))
 		}
+		model.relayout()
 	}
 	model.notificationCenter = newNotificationCenter(entries)
 	return nil, true
