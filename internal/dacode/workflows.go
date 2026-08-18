@@ -276,7 +276,7 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 		}))
 		options = append(options, dago.WithStructuredOutput(&dagent.StructuredOutput{
 			Name: "workflow_result", Description: "Return the workflow worker result.", Schema: request.Schema,
-			Strategy: dagent.StructuredTool, Strict: true, HandleErrors: true,
+			Strategy: dagent.StructuredTool, Strict: true, HandleErrors: true, MaxRetries: 3,
 		}))
 	}
 	agent := dago.NewAgent(model, options...)
@@ -340,9 +340,26 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 	}
 	transcript := make([]damessage.Message, len(result.Messages))
 	for index := range result.Messages {
-		transcript[index] = result.Messages[index].Clone()
+		transcript[index] = workflowSerializableMessage(result.Messages[index])
 	}
 	return daworkflow.AgentResponse{Value: value, Tokens: int64(usage.TotalTokens), Transcript: transcript}, nil
+}
+
+func workflowSerializableMessage(message damessage.Message) damessage.Message {
+	copy := message.Clone()
+	for index := range copy.ToolCalls {
+		if !json.Valid(copy.ToolCalls[index].Arguments) {
+			encoded, _ := json.Marshal(string(copy.ToolCalls[index].Arguments))
+			copy.ToolCalls[index].Arguments = encoded
+		}
+	}
+	for index := range copy.InvalidToolCalls {
+		if !json.Valid(copy.InvalidToolCalls[index].Arguments) {
+			encoded, _ := json.Marshal(string(copy.InvalidToolCalls[index].Arguments))
+			copy.InvalidToolCalls[index].Arguments = encoded
+		}
+	}
+	return copy
 }
 
 func streamWorkflowAgent(ctx context.Context, agent *dagent.Agent, input dagent.Input, tracker *workflowTokenTracker) (dagent.Result, error) {

@@ -1261,7 +1261,18 @@ async function startWorkflowFixture() {
       }
 			if (!input.includes("workflow_result")) state.workerExecuteContinuations += 1;
       if (requestText.includes("SCAN_CORE")) {
-			if (!input.includes("workflow_result") && state.structuredCorrections === 0) {
+			if (state.structuredCorrections === 0) {
+				state.structuredCorrections += 1;
+				send([{
+					type: "function_call",
+					id: `structured-malformed-${sequence}`,
+					call_id: `structured-malformed-${sequence}`,
+					name: "workflow_result",
+					arguments: "{\"findings\":"
+				}]);
+				return;
+			}
+			if (state.structuredCorrections === 1) {
 				state.structuredCorrections += 1;
 				sendStructured({ findings: "invalid-first-result" });
 				return;

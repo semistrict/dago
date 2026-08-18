@@ -1029,7 +1029,7 @@ func TestWorkflowAgentUsesRequiredStructuredToolInsteadOfProviderJSON(t *testing
 		Check: checkToolRequest,
 		Chunks: []damodel.Chunk{{
 			MessageDelta: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
-				ID: "result-1", Name: "workflow_result", Arguments: json.RawMessage(`{"value":7}`),
+				ID: "result-malformed", Name: "workflow_result", Arguments: json.RawMessage(`{"value":`),
 			}}},
 			Done: true,
 		}},
@@ -1042,14 +1042,34 @@ func TestWorkflowAgentUsesRequiredStructuredToolInsteadOfProviderJSON(t *testing
 				return errors.New("structured correction feedback missing")
 			}
 			last := request.Messages[len(request.Messages)-1]
-			if last.Role != damessage.RoleTool || last.ToolStatus != damessage.ToolStatusError || !strings.Contains(last.TextContent(), "validation failed") {
+			if last.Role != damessage.RoleTool || last.ToolStatus != damessage.ToolStatusError || !strings.Contains(last.TextContent(), "invalid JSON") {
 				return fmt.Errorf("structured correction feedback = %#v", last)
 			}
 			return nil
 		},
 		Chunks: []damodel.Chunk{{
 			MessageDelta: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
-				ID: "result-2", Name: "workflow_result", Arguments: json.RawMessage(`{"value":"recovered"}`),
+				ID: "result-schema", Name: "workflow_result", Arguments: json.RawMessage(`{"value":7}`),
+			}}},
+			Done: true,
+		}},
+	}, modeltest.Step{
+		Check: func(request damodel.Request) error {
+			if err := checkToolRequest(request); err != nil {
+				return err
+			}
+			if len(request.Messages) == 0 {
+				return errors.New("schema correction feedback missing")
+			}
+			last := request.Messages[len(request.Messages)-1]
+			if last.Role != damessage.RoleTool || last.ToolStatus != damessage.ToolStatusError || !strings.Contains(last.TextContent(), "validation failed") {
+				return fmt.Errorf("schema correction feedback = %#v", last)
+			}
+			return nil
+		},
+		Chunks: []damodel.Chunk{{
+			MessageDelta: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
+				ID: "result-valid", Name: "workflow_result", Arguments: json.RawMessage(`{"value":"recovered"}`),
 			}}},
 			Done: true,
 		}},
@@ -1073,6 +1093,9 @@ func TestWorkflowAgentUsesRequiredStructuredToolInsteadOfProviderJSON(t *testing
 	value, ok := response.Value.(map[string]any)
 	if !ok || value["value"] != "recovered" {
 		t.Fatalf("workflow value = %#v", response.Value)
+	}
+	if _, err := json.Marshal(response.Transcript); err != nil {
+		t.Fatalf("workflow transcript is not persistable after malformed structured output: %v", err)
 	}
 }
 

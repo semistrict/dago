@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	MessagesKey           = "messages"
-	StructuredResponseKey = "structured_response"
-	toolDirectKey         = "__agent_tool_direct"
-	structuredRetryKey    = "__agent_structured_retry"
-	jumpToKey             = "__agent_jump_to"
+	MessagesKey             = "messages"
+	StructuredResponseKey   = "structured_response"
+	toolDirectKey           = "__agent_tool_direct"
+	structuredRetryKey      = "__agent_structured_retry"
+	structuredRetryCountKey = "__agent_structured_retry_count"
+	jumpToKey               = "__agent_jump_to"
 )
 
 var (
@@ -281,12 +282,15 @@ const (
 
 // StructuredOutput configures provider-native or synthetic-tool structured output.
 type StructuredOutput struct {
-	Strategy           StructuredStrategy
-	Name               string
-	Description        string
-	Schema             json.RawMessage
-	Strict             bool
-	HandleErrors       bool
+	Strategy     StructuredStrategy
+	Name         string
+	Description  string
+	Schema       json.RawMessage
+	Strict       bool
+	HandleErrors bool
+	// MaxRetries bounds correction attempts after an invalid structured response.
+	// Zero preserves the caller's existing graph-level execution bound.
+	MaxRetries         int
 	ToolMessageContent string
 	compiled           *jsonschema.Schema
 }
@@ -297,6 +301,9 @@ func prepareStructuredOutput(output *StructuredOutput) (*StructuredOutput, error
 	}
 	if output.Name == "" || !json.Valid(output.Schema) {
 		return nil, fmt.Errorf("structured output requires a name and valid JSON schema")
+	}
+	if output.MaxRetries < 0 {
+		return nil, fmt.Errorf("structured output retries cannot be negative")
 	}
 	switch output.Strategy {
 	case "", StructuredAuto, StructuredProvider, StructuredTool:

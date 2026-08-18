@@ -195,6 +195,7 @@ func newAgent(model damodel.Chat, options Options) (*Agent, error) {
 	}
 	schema.Fields[toolDirectKey] = graph.Ephemeral(identityClone)
 	schema.Fields[structuredRetryKey] = graph.Ephemeral(identityClone)
+	schema.Fields[structuredRetryCountKey] = graph.Ephemeral(identityClone)
 
 	compiled := &compiler{chat: model, options: options, tools: tools, fields: fields}
 	builder := graph.NewBuilder(schema)
@@ -525,6 +526,17 @@ func (compiler *compiler) model(ctx context.Context, values dastate.Values, runt
 	if err != nil {
 		return graph.Command{}, err
 	}
+	if retry, _ := response.Update[structuredRetryKey].(bool); retry {
+		count, _ := current[structuredRetryCountKey].(int)
+		count++
+		if limit := compiler.options.StructuredOutput.MaxRetries; limit > 0 && count > limit {
+			return graph.Command{}, fmt.Errorf("%w: retry limit exhausted after %d invalid responses", ErrStructuredValidation, count)
+		}
+		if response.Update == nil {
+			response.Update = dastate.Values{}
+		}
+		response.Update[structuredRetryCountKey] = count
+	}
 	if len(response.Messages) == 0 {
 		return graph.Command{}, fmt.Errorf("%w: model returned no messages", ErrInvalidModelOutput)
 	}
@@ -638,7 +650,7 @@ func invokeModelStream(ctx context.Context, chat damodel.Chat, request damodel.R
 		if nextErr != nil {
 			return damodel.Response{}, nextErr
 		}
-		encoded, encodeErr := json.Marshal(streamEnvelope{Version: 1, Kind: "token", Chunk: chunk})
+		encoded, encodeErr := json.Marshal(streamEnvelope{Version: 1, Kind: "token", Chunk: streamSafeChunk(chunk)})
 		if encodeErr != nil {
 			return damodel.Response{}, encodeErr
 		}
@@ -648,6 +660,25 @@ func invokeModelStream(ctx context.Context, chat damodel.Chat, request damodel.R
 		mergeModelChunk(&response, chunk)
 	}
 	return response, nil
+}
+
+func streamSafeChunk(chunk damodel.Chunk) damodel.Chunk {
+	copy := chunk
+	copy.MessageDelta = chunk.MessageDelta.Clone()
+	for index := range copy.MessageDelta.ToolCalls {
+		if !json.Valid(copy.MessageDelta.ToolCalls[index].Arguments) {
+			// Streaming telemetry must remain serializable even when the model's
+			// synthetic structured-output call is malformed. The authoritative
+			// chunk is still merged unchanged and validated after the stream ends.
+			copy.MessageDelta.ToolCalls[index].Arguments = json.RawMessage("null")
+		}
+	}
+	for index := range copy.MessageDelta.InvalidToolCalls {
+		if !json.Valid(copy.MessageDelta.InvalidToolCalls[index].Arguments) {
+			copy.MessageDelta.InvalidToolCalls[index].Arguments = json.RawMessage("null")
+		}
+	}
+	return copy
 }
 
 type streamEnvelope struct {
@@ -1488,6 +1519,22 @@ func handleStructuredResponse(response damodel.Response, output *StructuredOutpu
 		}
 	}
 	if len(matching) == 0 {
+		var invalidMatching []damessage.InvalidToolCall
+		for _, call := range response.Message.InvalidToolCalls {
+			if call.Name == output.Name {
+				invalidMatching = append(invalidMatching, call)
+			}
+		}
+		if len(invalidMatching) > 1 {
+			return ModelResponse{}, fmt.Errorf("%w: multiple invalid structured output calls", ErrInvalidModelOutput)
+		}
+		if len(invalidMatching) == 1 {
+			call := damessage.ToolCall{ID: invalidMatching[0].ID, Name: invalidMatching[0].Name, Arguments: invalidMatching[0].Arguments}
+			return structuredFailure(response.Message, &call, output, "structured output arguments are invalid JSON")
+		}
+		if len(response.Message.ToolCalls) == 0 {
+			return structuredFailure(response.Message, nil, output, "required structured output tool was not called")
+		}
 		return ModelResponse{Messages: []damessage.Message{response.Message}}, nil
 	}
 	if len(matching) > 1 {

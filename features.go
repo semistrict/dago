@@ -136,6 +136,7 @@ type taskResponseFormatDescriptor struct {
 	Schema             json.RawMessage           `json:"schema"`
 	Strict             bool                      `json:"strict,omitempty"`
 	HandleErrors       bool                      `json:"handle_errors,omitempty"`
+	MaxRetries         int                       `json:"max_retries,omitempty"`
 	ToolMessageContent string                    `json:"tool_message_content,omitempty"`
 }
 
@@ -508,7 +509,7 @@ func encodeTaskResponseFormat(format *dagent.StructuredOutput) (string, error) {
 	}
 	descriptor, err := json.Marshal(taskResponseFormatDescriptor{
 		Version: 1, Strategy: format.Strategy, Name: format.Name, Description: format.Description,
-		Schema: canonicalSchema, Strict: format.Strict, HandleErrors: format.HandleErrors,
+		Schema: canonicalSchema, Strict: format.Strict, HandleErrors: format.HandleErrors, MaxRetries: format.MaxRetries,
 		ToolMessageContent: format.ToolMessageContent,
 	})
 	if err != nil {
@@ -528,7 +529,7 @@ func decodeTaskResponseFormat(encoded string) (*dagent.StructuredOutput, error) 
 	return &dagent.StructuredOutput{
 		Strategy: descriptor.Strategy, Name: descriptor.Name, Description: descriptor.Description,
 		Schema: append(json.RawMessage(nil), descriptor.Schema...), Strict: descriptor.Strict,
-		HandleErrors: descriptor.HandleErrors, ToolMessageContent: descriptor.ToolMessageContent,
+		HandleErrors: descriptor.HandleErrors, MaxRetries: descriptor.MaxRetries, ToolMessageContent: descriptor.ToolMessageContent,
 	}, nil
 }
 

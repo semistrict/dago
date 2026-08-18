@@ -2227,9 +2227,9 @@ test("maps refactoring opportunities with a realistic deterministic workflow", a
     foregroundWorkflowCalls: 1,
     recoveryAlternativeCalls: 1,
     recoveryContinuations: 2,
-		structuredCorrections: 1,
+		structuredCorrections: 2,
     workerExecuteCalls: 8,
-    workerExecuteContinuations: 6
+    workerExecuteContinuations: 7
   });
   expect(fixture.approvalReviews).toBeGreaterThanOrEqual(8);
   expect(fixture.failedWorkerRequests).toBeGreaterThanOrEqual(1);

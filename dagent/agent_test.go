@@ -674,6 +674,58 @@ func TestStructuredOutputValidatesSchemaAndRetriesWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestStructuredToolRequiresItsCallAndBoundsInvalidCorrections(t *testing.T) {
+	recoversMissingCall := modeltest.New(damodel.Profile{ToolCalling: true},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("plain text is not the result")}},
+		modeltest.Step{
+			Check: func(request damodel.Request) error {
+				if len(request.Messages) == 0 {
+					return errors.New("missing-tool correction feedback is absent")
+				}
+				last := request.Messages[len(request.Messages)-1]
+				if last.Role != damessage.RoleHuman || !strings.Contains(last.TextContent(), "required structured output tool was not called") {
+					return fmt.Errorf("missing-tool correction feedback = %#v", last)
+				}
+				return nil
+			},
+			Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
+				ID: "structured-valid", Name: "answer", Arguments: json.RawMessage(`{"value":"fixed"}`),
+			}}}},
+		},
+	)
+	agent := New(recoversMissingCall, Options{StructuredOutput: &StructuredOutput{
+		Strategy: StructuredTool, Name: "answer", Description: "Answer", Schema: objectSchema, HandleErrors: true, MaxRetries: 3,
+	}})
+	result, err := agent.Invoke(t.Context(), Input{Messages: []damessage.Message{damessage.Human("answer")}})
+	if err != nil || string(result.Structured) != `{"value":"fixed"}` {
+		t.Fatalf("recovered result = %s, error = %v", result.Structured, err)
+	}
+
+	steps := make([]modeltest.Step, 4)
+	for index := range steps {
+		steps[index] = modeltest.Step{Response: damodel.Response{Message: damessage.Message{
+			Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{
+				ID: fmt.Sprintf("invalid-%d", index), Name: "answer", Arguments: json.RawMessage(`{"value":`),
+			}},
+		}}}
+	}
+	alwaysInvalid := New(modeltest.New(damodel.Profile{ToolCalling: true}, steps...), Options{StructuredOutput: &StructuredOutput{
+		Strategy: StructuredTool, Name: "answer", Description: "Answer", Schema: objectSchema, HandleErrors: true, MaxRetries: 3,
+	}})
+	_, err = alwaysInvalid.Invoke(t.Context(), Input{Messages: []damessage.Message{damessage.Human("answer")}})
+	if !errors.Is(err, ErrStructuredValidation) || !strings.Contains(err.Error(), "retry limit exhausted after 4 invalid responses") {
+		t.Fatalf("retry exhaustion error = %v", err)
+	}
+}
+
+func TestStructuredOutputRejectsNegativeRetryLimit(t *testing.T) {
+	requirePanicContaining(t, "retries cannot be negative", func() {
+		New(modeltest.New(damodel.Profile{}), Options{StructuredOutput: &StructuredOutput{
+			Strategy: StructuredTool, Name: "answer", Description: "Answer", Schema: objectSchema, HandleErrors: true, MaxRetries: -1,
+		}})
+	})
+}
+
 func TestStructuredOutputRejectsRemoteSchemaReferences(t *testing.T) {
 	requirePanicContaining(t, "external JSON Schema", func() {
 		New(modeltest.New(damodel.Profile{}), Options{StructuredOutput: &StructuredOutput{
