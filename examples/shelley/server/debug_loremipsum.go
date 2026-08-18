@@ -255,6 +255,9 @@ type loremGen struct {
 	// publish per row, which is exactly the slowness CreateMessages exists
 	// to avoid — and defeats the purpose of a perf-test generator.
 	pending []db.CreateMessageParams
+	// pendingTypes parallels pending; conversation identity and message type
+	// are required call inputs rather than mutable option fields.
+	pendingTypes []db.MessageType
 }
 
 func (g *loremGen) tick(d time.Duration) time.Time {
@@ -291,9 +294,8 @@ func (g *loremGen) recordTyped(messageType db.MessageType, msg llm.Message, usag
 	// tool/usage timestamps (see usage() and turn()'s per-tool ticks), not
 	// the DB default (real insertion time) — see db.CreateMessageParams.CreatedAt.
 	createdAt := g.tick(200 * time.Millisecond)
+	g.pendingTypes = append(g.pendingTypes, messageType)
 	g.pending = append(g.pending, db.CreateMessageParams{
-		ConversationID:      g.convID,
-		Type:                messageType,
 		LLMData:             msg,
 		UserData:            userData,
 		UsageData:           usage,
@@ -315,10 +317,11 @@ func (g *loremGen) flush(ctx context.Context) error {
 	if len(g.pending) == 0 {
 		return nil
 	}
-	if _, err := g.s.db.CreateMessages(ctx, g.pending); err != nil {
+	if _, err := g.s.db.CreateMessages(ctx, g.convID, g.pendingTypes, g.pending); err != nil {
 		return err
 	}
 	g.pending = g.pending[:0]
+	g.pendingTypes = g.pendingTypes[:0]
 	return nil
 }
 

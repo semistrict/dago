@@ -133,6 +133,7 @@ func (client *Client) streamWebSocketRequest(ctx context.Context, request respon
 	for attempt := 0; ; attempt++ {
 		stream, err := client.startWebSocketStream(ctx, request, generate)
 		if err == nil {
+			stream.retryAttempt = attempt
 			return stream, nil
 		}
 		if !client.canRetry(ctx, attempt, err) {
@@ -144,7 +145,7 @@ func (client *Client) streamWebSocketRequest(ctx context.Context, request respon
 	}
 }
 
-func (client *Client) startWebSocketStream(ctx context.Context, request responsesRequest, generate *bool) (damodel.Stream, error) {
+func (client *Client) startWebSocketStream(ctx context.Context, request responsesRequest, generate *bool) (*websocketResponseStream, error) {
 	connection, input, err := client.websockets.acquire(request.Input)
 	if err != nil {
 		return nil, fmt.Errorf("openai: prepare websocket continuation: %w", err)
@@ -189,6 +190,7 @@ func (client *Client) startWebSocketStream(ctx context.Context, request response
 		connection: connection,
 		inbox:      connection.inbox,
 		request:    request,
+		generate:   generate,
 		parser:     newResponseEventParser(ctx, responseFormatFromPayload(request)),
 	}, nil
 }
@@ -317,14 +319,17 @@ func (client *Client) dialWebSocket(ctx context.Context) (*websocket.Conn, error
 }
 
 type websocketResponseStream struct {
-	ctx         context.Context
-	client      *Client
-	pool        *responsesWebSocketPool
-	connection  *responsesWebSocketConnection
-	inbox       *responsesWebSocketInbox
-	request     responsesRequest
-	parser      *responseStream
-	releaseOnce sync.Once
+	ctx          context.Context
+	client       *Client
+	pool         *responsesWebSocketPool
+	connection   *responsesWebSocketConnection
+	inbox        *responsesWebSocketInbox
+	request      responsesRequest
+	generate     *bool
+	parser       *responseStream
+	retryAttempt int
+	emitted      bool
+	releaseOnce  sync.Once
 }
 
 func newResponseEventParser(ctx context.Context, format *damodel.ResponseFormat) *responseStream {
@@ -343,6 +348,7 @@ func (stream *websocketResponseStream) Next(ctx context.Context) (damodel.Chunk,
 	if len(stream.parser.queued) > 0 {
 		result := stream.parser.queued[0]
 		stream.parser.queued = stream.parser.queued[1:]
+		stream.emitted = true
 		return result, nil
 	}
 	if stream.parser.done {
@@ -355,11 +361,20 @@ func (stream *websocketResponseStream) Next(ctx context.Context) (damodel.Chunk,
 			return damodel.Chunk{}, err
 		}
 		if message.err != nil {
-			stream.invalidate()
 			if ctxErr := ctx.Err(); ctxErr != nil {
+				stream.invalidate()
 				return damodel.Chunk{}, ctxErr
 			}
-			return damodel.Chunk{}, fmt.Errorf("openai: read websocket response: %w", message.err)
+			readErr := fmt.Errorf("openai: read websocket response: %w", message.err)
+			if !stream.emitted {
+				if retryErr := stream.retryBeforeEmission(ctx, readErr); retryErr == nil {
+					continue
+				} else {
+					return damodel.Chunk{}, retryErr
+				}
+			}
+			stream.invalidate()
+			return damodel.Chunk{}, readErr
 		}
 		if message.messageType != websocket.MessageText {
 			stream.invalidate()
@@ -379,7 +394,38 @@ func (stream *websocketResponseStream) Next(ctx context.Context) (damodel.Chunk,
 				return damodel.Chunk{}, err
 			}
 		}
+		stream.emitted = true
 		return chunk, nil
+	}
+}
+
+func (stream *websocketResponseStream) retryBeforeEmission(ctx context.Context, retryErr error) error {
+	stream.invalidate()
+	for {
+		attempt := stream.retryAttempt
+		if !stream.client.canRetry(ctx, attempt, retryErr) {
+			return retryErr
+		}
+		if err := stream.client.waitRetry(ctx, attempt, retryErr); err != nil {
+			return err
+		}
+		stream.retryAttempt++
+		replacement, err := stream.client.startWebSocketStream(ctx, stream.request, stream.generate)
+		if err != nil {
+			retryErr = err
+			continue
+		}
+		stream.ctx = replacement.ctx
+		stream.client = replacement.client
+		stream.pool = replacement.pool
+		stream.connection = replacement.connection
+		stream.inbox = replacement.inbox
+		stream.request = replacement.request
+		stream.generate = replacement.generate
+		stream.parser = replacement.parser
+		stream.emitted = false
+		stream.releaseOnce = sync.Once{}
+		return nil
 	}
 }
 

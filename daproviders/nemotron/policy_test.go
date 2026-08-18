@@ -40,6 +40,15 @@ func TestNemotronProgressBudgetStopsRepeatedCallLoop(t *testing.T) {
 	}
 }
 
+func TestNemotronProgressBudgetRejectsNegativeLimits(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("negative progress budget was accepted")
+		}
+	}()
+	ProgressBudget(ProgressBudgetOptions{MaxModelCalls: -1})
+}
+
 func TestNemotronProgressBudgetAllowsNonconsecutiveCalls(t *testing.T) {
 	middleware := ProgressBudget(ProgressBudgetOptions{MaxModelCalls: 99, MaxToolResults: 99, MaxRepeatedToolCalls: 3})
 	messages := []damessage.Message{damessage.Human("Inspect.")}

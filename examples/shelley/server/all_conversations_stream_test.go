@@ -68,14 +68,15 @@ func runUnifiedStream(t *testing.T, srv *Server, query string, until func([]Stre
 func createLiveMessage(t *testing.T, srv *Server, database *db.DB, convID, text string) {
 	t.Helper()
 	ctx := context.Background()
-	msg, err := database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: convID,
-		Type:           db.MessageTypeUser,
-		LLMData: llm.Message{
-			Role:    llm.MessageRoleUser,
-			Content: []llm.Content{{Type: llm.ContentTypeText, Text: text}},
-		},
-	})
+	msg, err := database.CreateMessage(ctx,
+		convID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData: llm.Message{
+				Role:    llm.MessageRoleUser,
+				Content: []llm.Content{{Type: llm.ContentTypeText, Text: text}},
+			},
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage(%s): %v", convID, err)
 	}

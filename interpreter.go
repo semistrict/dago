@@ -197,10 +197,10 @@ func (runtime *interpreterRuntime) evaluate(ctx context.Context, input interpret
 		}
 		bindings = append(bindings, fmt.Sprintf("%s:(input={})=>%s(input)", jsIdentifier(name), hostName))
 	}
-	engine, err := quickjs.New(ctx, snapshot, quickjs.Options{
+	engine, err := quickjs.New(ctx, quickjs.Options{
 		MemoryLimit: runtime.options.MemoryLimit, StackLimit: runtime.options.StackLimit,
 		MaxStdout: runtime.options.MaxStdoutChars, HostFunctions: hostFunctions,
-	})
+	}, snapshot)
 	if err != nil {
 		return datool.Result{}, err
 	}

@@ -35,11 +35,12 @@ func TestStreamResumeWithLastSequenceID(t *testing.T) {
 		Role:    llm.MessageRoleUser,
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hello"}},
 	}
-	_, err = database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        userMsg,
-	})
+	_, err = database.CreateMessage(ctx,
+		conv.ConversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData: userMsg,
+		})
 	if err != nil {
 		t.Fatalf("Failed to create user message: %v", err)
 	}
@@ -50,11 +51,12 @@ func TestStreamResumeWithLastSequenceID(t *testing.T) {
 		Content:   []llm.Content{{Type: llm.ContentTypeText, Text: "Hi there!"}},
 		EndOfTurn: true,
 	}
-	_, err = database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData:        agentMsg,
-	})
+	_, err = database.CreateMessage(ctx,
+		conv.ConversationID,
+		db.MessageTypeAgent, db.CreateMessageParams{
+
+			LLMData: agentMsg,
+		})
 	if err != nil {
 		t.Fatalf("Failed to create agent message: %v", err)
 	}
@@ -148,12 +150,13 @@ func TestStreamResumeWithLastSequenceID(t *testing.T) {
 			Content: []llm.Content{{Type: llm.ContentTypeText, Text: "You missed this!"}},
 		}
 		usage := llm.Usage{InputTokens: 5000, OutputTokens: 200}
-		_, err := database.CreateMessage(ctx, db.CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           db.MessageTypeAgent,
-			LLMData:        newMsg,
-			UsageData:      &usage,
-		})
+		_, err := database.CreateMessage(ctx,
+			conv.ConversationID,
+			db.MessageTypeAgent, db.CreateMessageParams{
+
+				LLMData:   newMsg,
+				UsageData: &usage,
+			})
 		if err != nil {
 			t.Fatalf("Failed to create message: %v", err)
 		}

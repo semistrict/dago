@@ -52,6 +52,12 @@ type Typed struct {
 	Data []byte
 }
 
+// Codec encodes and decodes typed checkpoint payloads.
+type Codec interface {
+	Encode(any) (Typed, error)
+	Decode(Typed) (any, error)
+}
+
 // Limits bound untrusted payload allocation and recursion.
 type Limits struct {
 	MaxDepth      int
@@ -66,13 +72,16 @@ type Safe struct {
 }
 
 func New(limits Limits) *Safe {
-	if limits.MaxDepth <= 0 {
+	if limits.MaxDepth < 0 || limits.MaxCollection < 0 || limits.MaxBytes < 0 {
+		panic("checkpoint serializer limits cannot be negative")
+	}
+	if limits.MaxDepth == 0 {
 		limits.MaxDepth = 64
 	}
-	if limits.MaxCollection <= 0 {
+	if limits.MaxCollection == 0 {
 		limits.MaxCollection = 1_000_000
 	}
-	if limits.MaxBytes <= 0 {
+	if limits.MaxBytes == 0 {
 		limits.MaxBytes = 64 << 20
 	}
 	return &Safe{limits: limits}

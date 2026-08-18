@@ -2,9 +2,74 @@ package dacheckpoint
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 )
+
+func TestListOptionsNormalizeFiniteDefaultAndRejectNegativeLimit(t *testing.T) {
+	options, err := (ListOptions{}).Normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Limit != DefaultListLimit {
+		t.Fatalf("normalized limit = %d, want %d", options.Limit, DefaultListLimit)
+	}
+	if _, err := (ListOptions{Limit: -1}).Normalized(); err == nil {
+		t.Fatal("negative list limit was accepted")
+	}
+}
+
+func TestSpecialWriteIndexesAreReadOnlyLookups(t *testing.T) {
+	want := map[string]int{
+		ChannelError: -1, ChannelScheduled: -2, ChannelInterrupt: -3, ChannelResume: -4,
+	}
+	for channel, expected := range want {
+		index, ok := SpecialWriteIndex(channel)
+		if !ok || index != expected {
+			t.Fatalf("SpecialWriteIndex(%q) = (%d, %v), want (%d, true)", channel, index, ok, expected)
+		}
+	}
+	if index, ok := SpecialWriteIndex("ordinary"); ok || index != 0 {
+		t.Fatalf("ordinary channel = (%d, %v), want (0, false)", index, ok)
+	}
+}
+
+func TestMemorySaverListAppliesFiniteDefaultLimit(t *testing.T) {
+	saver := NewMemorySaver()
+	ctx := context.Background()
+	config := Config{ThreadID: "bounded"}
+	for index := 0; index <= DefaultListLimit; index++ {
+		checkpoint := testCheckpoint(fmt.Sprintf("cp-%03d", index), nil, nil)
+		if _, err := saver.Put(ctx, config, checkpoint, Metadata{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tuples, err := saver.List(ctx, &config, ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tuples) != DefaultListLimit {
+		t.Fatalf("default list length = %d, want %d", len(tuples), DefaultListLimit)
+	}
+	if _, err := saver.List(ctx, &config, ListOptions{Limit: -1}); err == nil {
+		t.Fatal("negative list limit was accepted")
+	}
+}
+
+func TestMemorySaverListSelectionRetainsOnlyRequestedLimit(t *testing.T) {
+	selection := boundedMemoryKeys{limit: 4}
+	for index := 9999; index >= 0; index-- {
+		selection.Add(memoryKey{threadID: "thread", namespace: "", id: fmt.Sprintf("cp-%05d", index)})
+		if len(selection.keys) > selection.limit {
+			t.Fatalf("retained %d keys for limit %d", len(selection.keys), selection.limit)
+		}
+	}
+	keys := selection.Sorted()
+	if len(keys) != 4 || keys[0].id != "cp-09999" || keys[3].id != "cp-09996" {
+		t.Fatalf("selected keys = %#v", keys)
+	}
+}
 
 func TestMemorySaverPutGetAndList(t *testing.T) {
 	ctx := context.Background()

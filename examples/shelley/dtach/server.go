@@ -17,11 +17,8 @@ import (
 
 // ServerOptions configures Serve.
 type ServerOptions struct {
-	// SocketPath is the Unix socket the server listens on.
-	SocketPath string
-	// Command and Args are the program to exec inside the PTY.
-	Command string
-	Args    []string
+	// Args are passed to the required command.
+	Args []string
 	// Dir is the working directory for the command.
 	Dir string
 	// Env is the environment for the command. If nil, os.Environ() is used.
@@ -39,21 +36,27 @@ type ServerOptions struct {
 
 // Serve runs the PTY-backed process and serves clients on a Unix socket until
 // the process exits, then unlinks the socket. It blocks until exit.
-func Serve(opts ServerOptions) error {
+func Serve(socket, command string, opts ServerOptions) error {
 	if opts.Cols == 0 {
 		opts.Cols = 80
 	}
 	if opts.Rows == 0 {
 		opts.Rows = 24
 	}
-	if opts.ScrollbackBytes <= 0 {
+	if opts.ScrollbackBytes < 0 {
+		return errors.New("dtach: negative scrollback size")
+	}
+	if opts.ScrollbackBytes == 0 {
 		opts.ScrollbackBytes = 256 * 1024
 	}
-	if opts.Command == "" {
+	if command == "" {
 		return errors.New("dtach: empty command")
 	}
 
-	actualSocketPath := socketPath(opts.SocketPath)
+	if socket == "" {
+		return errors.New("dtach: empty socket path")
+	}
+	actualSocketPath := socketPath(socket)
 	if err := os.MkdirAll(filepath.Dir(actualSocketPath), 0o700); err != nil {
 		return fmt.Errorf("dtach: mkdir socket dir: %w", err)
 	}
@@ -69,7 +72,7 @@ func Serve(opts ServerOptions) error {
 		_ = os.Remove(actualSocketPath)
 	}()
 
-	cmd := exec.Command(opts.Command, opts.Args...)
+	cmd := exec.Command(command, opts.Args...)
 	cmd.Dir = opts.Dir
 	if opts.Env == nil {
 		cmd.Env = os.Environ()

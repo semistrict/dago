@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -26,24 +26,45 @@ type Runner interface {
 	Cancel(context.Context, dagent.Input) (dagent.Result, error)
 }
 
-// SessionConfig describes one ACP session before its execution target is built.
-// A factory can use the working directory and MCP declarations to construct an
-// isolated runner with exactly the tools available to that client session.
-type SessionConfig struct {
+// AgentSessionContext describes one ACP session before its execution target is
+// built. A factory can use the selected model, working directory, and MCP
+// declarations to construct an isolated runner for that client session.
+type AgentSessionContext struct {
 	ID                    string
 	CWD                   string
 	AdditionalDirectories []string
 	MCPServers            []acp.McpServer
+	Model                 string
 }
 
-// SessionFactory constructs a session-scoped runner. The returned closer owns
+// SessionConfig is retained as an alias for callers using the original name.
+type SessionConfig = AgentSessionContext
+
+// AgentFactory constructs a session-scoped runner. The returned closer owns
 // any resources opened for that session, including MCP connections.
-type SessionFactory func(context.Context, SessionConfig) (Runner, io.Closer, error)
+type AgentFactory func(context.Context, AgentSessionContext) (Runner, io.Closer, error)
+
+// SessionFactory is retained as an alias for callers using the original name.
+type SessionFactory = AgentFactory
+
+// SessionState is the durable ACP state required by session/load. CWD is the
+// original absolute working directory recorded when the thread was created.
+type SessionState struct {
+	Messages []damessage.Message
+	CWD      string
+	Model    string
+}
 
 // SessionLoader is optionally implemented by a session-scoped runner that can
-// reconstruct the durable transcript for session/load without executing work.
+// reconstruct durable ACP state for session/load without executing work.
 type SessionLoader interface {
-	LoadSession(context.Context, string) ([]damessage.Message, error)
+	LoadACPSession(context.Context, string) (SessionState, error)
+}
+
+// SessionConfigSaver is implemented by durable session runners that can save
+// a selected model without executing a model turn.
+type SessionConfigSaver interface {
+	SaveACPModelSelection(context.Context, string, string) error
 }
 
 // Options configures the ACP agent identity and optional prompt content.
@@ -55,7 +76,6 @@ type Options struct {
 	EmbeddedContext bool
 	AuthMethods     []acp.AuthMethod
 	ConfigOptions   []acp.SessionConfigOption
-	SessionFactory  SessionFactory
 	LoadSession     bool
 	Configurable    map[string]any
 	Logger          *slog.Logger
@@ -65,16 +85,29 @@ type Options struct {
 // session registry and transport.
 type Server struct {
 	runner  Runner
+	factory AgentFactory
 	options Options
 }
 
 // New constructs an ACP server. It panics when runner is nil because a server
 // without an execution target can never serve a prompt.
-func New(runner Runner, optionValues ...Options) *Server {
-	options := optionvalue.Resolve("ACP server", optionValues)
-	if runner == nil && options.SessionFactory == nil {
-		panic("ACP server: runner or session factory is required")
+func New(runner Runner, options Options) *Server {
+	if nilRunner(runner) {
+		panic("ACP server: runner is required")
 	}
+	return &Server{runner: runner, options: compileOptions(options)}
+}
+
+// NewFactory constructs an ACP server whose required session factory is a
+// positional input. The factory receives the selected model on every build.
+func NewFactory(factory AgentFactory, options Options) *Server {
+	if factory == nil {
+		panic("ACP server: session factory is required")
+	}
+	return &Server{factory: factory, options: compileOptions(options)}
+}
+
+func compileOptions(options Options) Options {
 	if options.Name == "" {
 		options.Name = "dago"
 	}
@@ -83,8 +116,21 @@ func New(runner Runner, optionValues ...Options) *Server {
 	}
 	options.Configurable = cloneConfigurable(options.Configurable)
 	options.AuthMethods = append([]acp.AuthMethod(nil), options.AuthMethods...)
-	options.ConfigOptions = append([]acp.SessionConfigOption(nil), options.ConfigOptions...)
-	return &Server{runner: runner, options: options}
+	options.ConfigOptions = cloneConfigOptions(options.ConfigOptions)
+	return options
+}
+
+func nilRunner(runner Runner) bool {
+	if runner == nil {
+		return true
+	}
+	value := reflect.ValueOf(runner)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // Serve runs a newline-delimited JSON-RPC ACP connection until the peer closes
@@ -98,7 +144,7 @@ func (server *Server) Serve(ctx context.Context, input io.Reader, output io.Writ
 		return fmt.Errorf("ACP server: input and output are required")
 	}
 
-	agent := newProtocolAgent(ctx, server.runner, server.options)
+	agent := newProtocolAgent(ctx, server.runner, server.factory, server.options)
 	reader := &trackingReader{Reader: input}
 	writer := &trackingWriter{Writer: output}
 	connection := acp.NewAgentSideConnection(agent, writer, reader)

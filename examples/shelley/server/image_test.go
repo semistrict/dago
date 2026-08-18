@@ -254,11 +254,12 @@ func TestHandleMessageImage(t *testing.T) {
 		},
 	}
 
-	createdMsg, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conversation.ConversationID,
-		Type:           db.MessageTypeTool,
-		LLMData:        msg,
-	})
+	createdMsg, err := database.CreateMessage(context.Background(),
+		conversation.ConversationID,
+		db.MessageTypeTool, db.CreateMessageParams{
+
+			LLMData: msg,
+		})
 	if err != nil {
 		t.Fatal(err)
 	}

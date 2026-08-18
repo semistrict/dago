@@ -13,19 +13,16 @@ import (
 )
 
 func TestHandleModelRefreshReturnsRefreshedModels(t *testing.T) {
-	mgr, err := models.NewManager(&models.Config{
-		Models: []models.Built{
-			{
-				ID:       "old-built",
-				Provider: models.ProviderBuiltIn,
-				Source:   "old source",
-				Chat:     loop.NewPredictableService(),
-			},
+	mgr, err := models.NewManager([]models.Built{
+		{
+			ID:       "old-built",
+			Provider: models.ProviderBuiltIn,
+			Source:   "old source",
+			Chat:     loop.NewPredictableService(),
 		},
-		Logger: slog.Default(),
-	})
+	}, models.Config{Logger: slog.Default()})
 	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
+		t.Fatal(err)
 	}
 	s := &Server{
 		llmManager: mgr,
@@ -71,15 +68,12 @@ func TestHandleModelRefreshReturnsRefreshedModels(t *testing.T) {
 }
 
 func TestHandleModelsAssignsTiers(t *testing.T) {
-	mgr, err := models.NewManager(&models.Config{
-		Models: []models.Built{
-			{ID: "gpt-5.6-sol", Provider: models.ProviderOpenAI, Chat: loop.NewPredictableService()},
-			{ID: "gpt-5.5", Provider: models.ProviderOpenAI, Chat: loop.NewPredictableService()},
-		},
-		Logger: slog.Default(),
-	})
+	mgr, err := models.NewManager([]models.Built{
+		{ID: "gpt-5.6-sol", Provider: models.ProviderOpenAI, Chat: loop.NewPredictableService()},
+		{ID: "gpt-5.5", Provider: models.ProviderOpenAI, Chat: loop.NewPredictableService()},
+	}, models.Config{Logger: slog.Default()})
 	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
+		t.Fatal(err)
 	}
 	s := &Server{llmManager: mgr, logger: slog.Default()}
 

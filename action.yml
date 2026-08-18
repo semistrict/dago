@@ -1,0 +1,164 @@
+name: "dago Code"
+description: "Run the dago coding agent in a GitHub Actions workflow"
+author: "semistrict"
+branding:
+  icon: "terminal"
+  color: "blue"
+
+inputs:
+  prompt:
+    description: "Task to send to the agent"
+    required: true
+  openai_api_key:
+    description: "OpenAI API key used by the agent"
+    required: true
+  github_token:
+    description: "Token used by gh and optional private skills repositories"
+    required: false
+    default: ${{ github.token }}
+  model:
+    description: "Model name; the CLI default is used when omitted"
+    required: false
+    default: ""
+  approval_model:
+    description: "Model used to review gated tool calls"
+    required: false
+    default: ""
+  working_directory:
+    description: "Workspace-relative directory in which the agent runs"
+    required: false
+    default: "."
+  shell_allow_list:
+    description: "Comma-separated commands allowed for unattended shell execution"
+    required: false
+    default: "recommended,git,gh"
+  max_turns:
+    description: "Maximum agentic turns"
+    required: false
+    default: "50"
+  timeout:
+    description: "Maximum agent runtime in seconds"
+    required: false
+    default: "1800"
+  quiet:
+    description: "Emit only the final response on standard output"
+    required: false
+    default: "true"
+  enable_memory:
+    description: "Restore and save this agent's durable thread with actions/cache"
+    required: false
+    default: "true"
+  memory_scope:
+    description: "Memory sharing boundary: pr, branch, or repo"
+    required: false
+    default: "branch"
+  agent_name:
+    description: "Stable identity used to isolate memory"
+    required: false
+    default: "agent"
+  skills_repo:
+    description: "GitHub owner/repository[@ref] containing directories with SKILL.md"
+    required: false
+    default: ""
+
+outputs:
+  response:
+    description: "Full standard-output response from the agent"
+    value: ${{ steps.run-agent.outputs.response }}
+  exit_code:
+    description: "Agent process exit code"
+    value: ${{ steps.run-agent.outputs.exit_code }}
+  cache_hit:
+    description: "Whether durable agent memory was restored"
+    value: ${{ steps.restore-memory.outputs.cache-hit }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve action configuration
+      id: config
+      shell: bash
+      env:
+        INPUT_ENABLE_MEMORY: ${{ inputs.enable_memory }}
+        INPUT_MEMORY_SCOPE: ${{ inputs.memory_scope }}
+        INPUT_AGENT_NAME: ${{ inputs.agent_name }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        GITHUB_EVENT_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
+      run: "$GITHUB_ACTION_PATH/scripts/github-action/configure.sh"
+
+    - name: Restore durable agent memory
+      if: steps.config.outputs.cache_enabled == 'true'
+      id: restore-memory
+      uses: actions/cache/restore@6849a6489940f00c2f30c0fb92c6274307ccb58a # v4.1.2
+      with:
+        path: |
+          ${{ steps.config.outputs.state_dir }}/threads.db
+          ${{ steps.config.outputs.state_dir }}/threads.db-wal
+          ${{ steps.config.outputs.state_dir }}/threads.db-shm
+        key: ${{ steps.config.outputs.cache_key }}
+        restore-keys: |
+          ${{ steps.config.outputs.cache_prefix }}-
+
+    - name: Set up Go
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: false
+
+    - name: Build agent
+      shell: bash
+      env:
+        ACTION_BINARY: ${{ steps.config.outputs.binary }}
+      run: |
+        cd "$GITHUB_ACTION_PATH"
+        go build -trimpath -o "$ACTION_BINARY" ./cmd/dacode
+
+    - name: Install skills
+      if: inputs.skills_repo != ''
+      shell: bash
+      env:
+        INPUT_SKILLS_REPO: ${{ inputs.skills_repo }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+        INPUT_WORKING_DIRECTORY: ${{ steps.config.outputs.workspace }}
+      run: "$GITHUB_ACTION_PATH/scripts/github-action/install-skills.sh"
+
+    - name: Run agent
+      id: run-agent
+      continue-on-error: true
+      shell: bash
+      env:
+        DAGO_ACTION_BINARY: ${{ steps.config.outputs.binary }}
+        INPUT_PROMPT: ${{ inputs.prompt }}
+        INPUT_WORKING_DIRECTORY: ${{ steps.config.outputs.workspace }}
+        INPUT_STATE_DIR: ${{ steps.config.outputs.state_dir }}
+        INPUT_SESSION_ID: ${{ steps.config.outputs.session_id }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_APPROVAL_MODEL: ${{ inputs.approval_model }}
+        INPUT_SHELL_ALLOW_LIST: ${{ inputs.shell_allow_list }}
+        INPUT_MAX_TURNS: ${{ inputs.max_turns }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_QUIET: ${{ inputs.quiet }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: "$GITHUB_ACTION_PATH/scripts/github-action/run-agent.sh"
+
+    - name: Save durable agent memory
+      if: always() && steps.config.outputs.cache_enabled == 'true'
+      uses: actions/cache/save@6849a6489940f00c2f30c0fb92c6274307ccb58a # v4.1.2
+      with:
+        path: |
+          ${{ steps.config.outputs.state_dir }}/threads.db
+          ${{ steps.config.outputs.state_dir }}/threads.db-wal
+          ${{ steps.config.outputs.state_dir }}/threads.db-shm
+        key: ${{ steps.config.outputs.cache_key }}
+
+    - name: Propagate agent result
+      if: always()
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.run-agent.outputs.exit_code }}
+      run: |
+        case "$EXIT_CODE" in
+          ''|*[!0-9]*) exit 1 ;;
+          *) exit "$EXIT_CODE" ;;
+        esac

@@ -23,18 +23,26 @@ func TestCustomModelWithThinking(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	chat, err := models.NewOpenAIResponses("test-key", "gpt-native", upstream.URL, upstream.Client(), models.OpenAIResponsesOptions{
+	chat := models.NewOpenAIResponses("test-key", "gpt-native", upstream.URL, upstream.Client(), models.OpenAIResponsesOptions{
 		SupportsReasoning: true, DefaultReasoningLevel: "medium",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	response, err := chat.Invoke(context.Background(), damodel.Request{Messages: []dmessage.Message{dmessage.Human("test")}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(response.Message.Content) != 2 || response.Message.Content[0].Type != dmessage.BlockReasoning || response.Message.Content[1].Text != "test successful" {
 		t.Fatalf("response content = %#v", response.Message.Content)
+	}
+}
+
+func TestCustomModelReasoningEffortIsStrict(t *testing.T) {
+	for _, value := range []string{"", "none", "off", "minimal", "low", "medium", "high", "xhigh"} {
+		if got, err := validReasoningEffort(value); err != nil || got != value {
+			t.Errorf("validReasoningEffort(%q) = (%q, %v)", value, got, err)
+		}
+	}
+	if _, err := validReasoningEffort("turbo"); err == nil {
+		t.Fatal("validReasoningEffort accepted unknown value")
 	}
 }
 
@@ -121,7 +129,7 @@ func TestOpenRouterCustomModelTestEndpoint(t *testing.T) {
 
 func TestCreateOpenRouterCustomModel(t *testing.T) {
 	harness := NewTestHarness(t)
-	manager, err := models.NewManager(&models.Config{DB: harness.db})
+	manager, err := models.NewManager(nil, models.Config{DB: harness.db})
 	if err != nil {
 		t.Fatal(err)
 	}

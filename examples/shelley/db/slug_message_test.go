@@ -23,18 +23,20 @@ func TestGetLatestActionableMessageIgnoresSlugMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleUser},
+		}); err != nil {
 		t.Fatal(err)
 	}
-	errMsg, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeError,
-		LLMData:        llm.Message{},
-	})
+	errMsg, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeError, CreateMessageParams{
+
+			LLMData: llm.Message{},
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +72,12 @@ func TestSlugMarkerDoesNotBreakWarningRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleUser},
+		}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,11 +132,12 @@ func TestListMessagesTailCountsVisibleMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeAgent,
-		LLMData:        llm.Message{Role: llm.MessageRoleAssistant},
-	})
+	agent, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeAgent, CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleAssistant},
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,11 +172,12 @@ func TestListMessagesTailCountsVisibleMessages(t *testing.T) {
 	}
 
 	// A marker deeper in the history must not shrink the visible window either.
-	user, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-	})
+	user, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleUser},
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,11 +214,12 @@ func TestForkGenerationIgnoresSlugMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Generation 1: the real history a fork should copy.
-	gen1, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-	})
+	gen1, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleUser},
+		})
 	if err != nil {
 		t.Fatal(err)
 	}

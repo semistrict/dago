@@ -16,7 +16,6 @@ import (
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/daproviders/openai"
 	"github.com/semistrict/dago/datool"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const defaultBaseURL = "https://openrouter.ai/api/v1"
@@ -76,13 +75,10 @@ type Client struct {
 	chat damodel.Chat
 }
 
-// New creates a model authenticated with an OpenRouter API key.
-func New(apiKey, model string, optionValues ...Options) *Client {
-	options := optionvalue.Resolve("openrouter", optionValues)
-	routing, err := cloneAndValidateRouting(options.Routing)
-	if err != nil {
-		panic(err)
-	}
+// New creates a model authenticated with an OpenRouter API key. Construction
+// does no I/O; missing required values and invalid static options panic.
+func New(apiKey, model string, options Options) *Client {
+	routing := cloneAndValidateRouting(options.Routing)
 	headers := options.Headers.Clone()
 	if headers == nil {
 		headers = make(http.Header)
@@ -159,39 +155,48 @@ func (client *Client) Stream(ctx context.Context, request damodel.Request) (damo
 	return client.chat.Stream(ctx, request)
 }
 
-func cloneAndValidateRouting(value *ProviderRouting) (*ProviderRouting, error) {
+func cloneAndValidateRouting(value *ProviderRouting) *ProviderRouting {
 	if value == nil {
-		return nil, nil
+		return nil
 	}
 	result := *value
 	result.Order = append([]string(nil), value.Order...)
 	result.Only = append([]string(nil), value.Only...)
 	result.Ignore = append([]string(nil), value.Ignore...)
 	result.Quantizations = append([]string(nil), value.Quantizations...)
+	if value.AllowFallbacks != nil {
+		result.AllowFallbacks = new(*value.AllowFallbacks)
+	}
+	if value.RequireParameters != nil {
+		result.RequireParameters = new(*value.RequireParameters)
+	}
+	if value.ZeroDataRetention != nil {
+		result.ZeroDataRetention = new(*value.ZeroDataRetention)
+	}
 	for name, items := range map[string][]string{
 		"order": result.Order, "only": result.Only, "ignore": result.Ignore, "quantizations": result.Quantizations,
 	} {
 		for _, item := range items {
 			if strings.TrimSpace(item) == "" {
-				return nil, fmt.Errorf("openrouter: routing %s contains an empty value", name)
+				panic(fmt.Sprintf("openrouter: routing %s contains an empty value", name))
 			}
 		}
 	}
 	if result.DataCollection != "" && result.DataCollection != "allow" && result.DataCollection != "deny" {
-		return nil, fmt.Errorf("openrouter: routing data collection must be allow or deny")
+		panic("openrouter: routing data collection must be allow or deny")
 	}
 	switch result.Sort {
 	case "", "price", "throughput", "latency":
 	default:
-		return nil, fmt.Errorf("openrouter: routing sort %q is unsupported", result.Sort)
+		panic(fmt.Sprintf("openrouter: routing sort %q is unsupported", result.Sort))
 	}
 	if result.PreferredMinThroughput < 0 {
-		return nil, fmt.Errorf("openrouter: preferred minimum throughput cannot be negative")
+		panic("openrouter: preferred minimum throughput cannot be negative")
 	}
 	if result.PreferredMaxLatency < 0 {
-		return nil, fmt.Errorf("openrouter: preferred maximum latency cannot be negative")
+		panic("openrouter: preferred maximum latency cannot be negative")
 	}
-	return &result, nil
+	return &result
 }
 
 type routingTransport struct {

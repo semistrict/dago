@@ -13,6 +13,17 @@ import (
 	"github.com/semistrict/dago/datool"
 )
 
+func TestParseThinkingLevelStrictRejectsUnknownValues(t *testing.T) {
+	for _, value := range []string{"", "default", "off", "minimal", "low", "medium", "high", "xhigh"} {
+		if _, err := ParseThinkingLevelStrict(value); err != nil {
+			t.Fatalf("ParseThinkingLevelStrict(%q): %v", value, err)
+		}
+	}
+	if _, err := ParseThinkingLevelStrict("turbo"); err == nil {
+		t.Fatal("ParseThinkingLevelStrict accepted unknown level")
+	}
+}
+
 func TestUseSimplifiedPatch(t *testing.T) {
 	tests := []struct {
 		name    string

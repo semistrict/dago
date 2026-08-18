@@ -174,6 +174,11 @@ func ModelRateLimitRetry(delays ...time.Duration) dagent.Middleware {
 	if delays == nil {
 		delays = []time.Duration{4 * time.Second, 12 * time.Second}
 	}
+	for _, delay := range delays {
+		if delay < 0 {
+			panic("nemotron retry delays cannot be negative")
+		}
+	}
 	delays = append([]time.Duration(nil), delays...)
 	return dagent.Middleware{Name: "ModelRateLimitRetryMiddleware", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 		for attempt := 0; ; attempt++ {

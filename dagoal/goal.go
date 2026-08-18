@@ -49,6 +49,7 @@ func (status Status) valid() bool {
 type Goal struct {
 	ID              string    `json:"id"`
 	Objective       string    `json:"objective"`
+	Criteria        string    `json:"criteria,omitempty"`
 	Status          Status    `json:"status"`
 	TokenBudget     *int64    `json:"token_budget,omitempty"`
 	TokensUsed      int64     `json:"tokens_used"`
@@ -140,6 +141,9 @@ func goalToState(goal *Goal) goalState {
 		"id": goal.ID, "objective": goal.Objective, "status": string(goal.Status),
 		"tokens_used": goal.TokensUsed, "time_used_seconds": goal.TimeUsedSeconds,
 	}
+	if goal.Criteria != "" {
+		state["criteria"] = goal.Criteria
+	}
 	if goal.TokenBudget != nil {
 		state["token_budget"] = *goal.TokenBudget
 	}
@@ -223,6 +227,9 @@ Continue working autonomously toward the active thread goal.
 
 Use get_goal if you need the authoritative snapshot. Do not repeat completed work. Keep working while meaningful progress remains. Call update_goal with status "complete" only when the objective is fully achieved, or "blocked" only when its strict blocker conditions are satisfied.
 </goal_continuation>`, escapeXML(goal.Objective), goal.TokensUsed, remaining))
+	if goal.Criteria != "" {
+		message.Content = append(message.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: "\nAcceptance criteria are available through get_rubric."})
+	}
 	message.Metadata = map[string]json.RawMessage{"dago_goal_control": json.RawMessage(`true`)}
 	return message
 }

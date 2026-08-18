@@ -21,9 +21,12 @@ Goals are durable, explicitly requested objectives that may span multiple turns.
 - Do not create a goal for an ordinary task. Use create_goal only when the user or higher-priority instructions explicitly request a goal.
 - If a state notice below reports an active goal, keep making meaningful progress toward it across turns.
 - Use get_goal to inspect authoritative status and usage.
+- Use get_rubric when acceptance criteria are available; do not infer completion from the objective alone.
 - Use update_goal only to mark a goal complete or genuinely blocked. The host owns pause, resume, limit, and clear transitions.`
 
 const goalRunKey = "__goal_run"
+
+const goalCompletionPendingKey = "__goal_completion_pending"
 
 type goalRun map[string]string
 
@@ -45,6 +48,13 @@ type goalResponse struct {
 	Goal                   *Goal  `json:"goal"`
 	RemainingTokens        *int64 `json:"remaining_tokens"`
 	CompletionBudgetReport string `json:"completion_budget_report,omitempty"`
+	CompletionPending      bool   `json:"completion_pending,omitempty"`
+}
+
+type rubricResponse struct {
+	Active        bool    `json:"active"`
+	Criteria      *string `json:"criteria"`
+	GradingStatus *string `json:"grading_status"`
 }
 
 // Middleware adds durable goal state, model-visible goal tools, active-goal
@@ -59,6 +69,39 @@ func Middleware(options Options) dagent.Middleware {
 			}
 			goal, _ := goalFromReader(runtime.State)
 			return responseResult(goalResponseFor(goal, false), nil), nil
+		})
+	getRubric := datool.MustNew("get_rubric", "Get the active goal acceptance criteria and the latest rubric grading status.",
+		func(ctx context.Context, _ struct{}) (datool.Result, error) {
+			runtime, ok := datool.RuntimeFromContext(ctx)
+			if !ok {
+				return datool.Result{}, errors.New("goal tool runtime is unavailable")
+			}
+			response := rubricResponse{}
+			if value, ok := runtime.State.Get("rubric"); ok {
+				if criteria, ok := value.(string); ok && strings.TrimSpace(criteria) != "" {
+					criteria = strings.TrimSpace(criteria)
+					response.Active, response.Criteria = true, &criteria
+				}
+			}
+			if !response.Active {
+				goal, _ := goalFromReader(runtime.State)
+				if goal != nil && goal.Actionable() && goal.Criteria != "" {
+					criteria := goal.Criteria
+					response.Active, response.Criteria = true, &criteria
+				}
+			}
+			if value, ok := runtime.State.Get("_rubric_status"); ok {
+				if status, ok := value.(string); ok && status != "" {
+					response.GradingStatus = &status
+				}
+			}
+			encoded, err := json.Marshal(response)
+			if err != nil {
+				return datool.Result{}, err
+			}
+			result := datool.TextResult(string(encoded))
+			result.Structured = encoded
+			return result, nil
 		})
 	create := datool.MustNew("create_goal", `Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.
 Set token_budget only when an explicit token budget is requested. This fails while an unfinished goal exists.`,
@@ -108,6 +151,15 @@ Set complete only when the full objective is achieved and no required work remai
 			if input.Status != StatusComplete && input.Status != StatusBlocked {
 				return datool.Result{}, fmt.Errorf("%w: update_goal accepts only complete or blocked", ErrInvalidStatus)
 			}
+			if input.Status == StatusComplete && goal.Criteria != "" {
+				if rubric, ok := runtime.State.Get("rubric"); ok {
+					if criteria, ok := rubric.(string); ok && strings.TrimSpace(criteria) != "" {
+						response := goalResponseFor(goal, false)
+						response.CompletionPending = true
+						return responseResult(response, map[string]any{goalCompletionPendingKey: true}), nil
+					}
+				}
+			}
 			goal.Status = input.Status
 			goal.UpdatedAt = options.Clock().UTC()
 			return responseResult(goalResponseFor(goal, input.Status == StatusComplete), map[string]any{StateKey: goalToState(goal)}), nil
@@ -123,8 +175,12 @@ Set complete only when the full objective is achieved and no required work remai
 				Kind: dagent.FieldEphemeral, Contract: "dago.goal.run.v1", Private: true,
 				Clone: cloneGoalRun,
 			}),
+			goalCompletionPendingKey: dagent.Field(dagent.FieldSpec[bool]{
+				Kind: dagent.FieldLast, Contract: "dago.goal.completion-pending.v1", Private: true,
+				Clone: func(value bool) bool { return value },
+			}),
 		},
-		Tools: []datool.Tool{get, create, update},
+		Tools: []datool.Tool{get, getRubric, create, update},
 		BeforeAgent: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
 			goal, _ := goalFromValues(values)
 			if goal == nil || goal.Status != StatusActive {
@@ -173,6 +229,40 @@ Set complete only when the full objective is achieved and no required work remai
 				return dastate.Values{StateKey: goalToState(goal)}, nil
 			}
 			return nil, nil
+		},
+	}
+}
+
+// RubricCompletionMiddleware commits a staged goal completion only after the
+// rubric middleware reports that every criterion is satisfied. Place it after
+// Middleware and before the rubric middleware; after-agent hooks run in reverse
+// registration order, allowing this hook to observe the final verdict.
+func RubricCompletionMiddleware(rubricStatusKey, satisfiedStatus string) dagent.Middleware {
+	if strings.TrimSpace(rubricStatusKey) == "" || strings.TrimSpace(satisfiedStatus) == "" {
+		panic("goal rubric completion requires status key and satisfied value")
+	}
+	return dagent.Middleware{
+		Name: "goal_rubric_completion",
+		AfterAgent: func(_ context.Context, values dastate.Values, _ dagent.Runtime) (dastate.Values, error) {
+			pending, _ := values[goalCompletionPendingKey].(bool)
+			if !pending {
+				return nil, nil
+			}
+			status, _ := values[rubricStatusKey].(string)
+			if status == "" || status == "needs_revision" {
+				return nil, nil
+			}
+			update := dastate.Values{goalCompletionPendingKey: false}
+			if status != satisfiedStatus {
+				return update, nil
+			}
+			goal, _ := goalFromValues(values)
+			if goal == nil || goal.Status != StatusActive {
+				return update, nil
+			}
+			goal.Status = StatusComplete
+			update[StateKey] = goalToState(goal)
+			return update, nil
 		},
 	}
 }
@@ -277,11 +367,14 @@ func accountCreationCall(goal *Goal, state datool.StateReader) {
 func appendGoalSystem(request *dagent.ModelRequest, goal *Goal) {
 	text := goalSystemPrompt
 	if goal != nil {
-		remaining := "unbounded"
-		if value := goal.RemainingTokens(); value != nil {
-			remaining = fmt.Sprintf("%d", *value)
+		budget := "unbounded"
+		if goal.TokenBudget != nil {
+			budget = fmt.Sprintf("%d", *goal.TokenBudget)
 		}
-		text += fmt.Sprintf("\n\n<thread_goal>\nObjective: %s\nStatus: %s\nTokens used: %d\nRemaining token budget: %s\n</thread_goal>", escapeXML(goal.Objective), goal.Status, goal.TokensUsed, remaining)
+		text += fmt.Sprintf("\n\n<thread_goal>\nObjective: %s\nStatus: %s\nToken budget: %s\n</thread_goal>", escapeXML(goal.Objective), goal.Status, budget)
+		if goal.Criteria != "" {
+			text += "\nAcceptance criteria are available through get_rubric."
+		}
 	}
 	copy := request.SystemMessage.Clone()
 	copy.Content = append(copy.Content, damessage.ContentBlock{Type: damessage.BlockText, Text: "\n\n" + strings.TrimSpace(text)})

@@ -22,3 +22,15 @@ func TestRequestAndResponseJSONContract(t *testing.T) {
 		t.Fatalf("response JSON = %s, want %s", got, want)
 	}
 }
+
+func TestExecutorNameDefaultsAndValidation(t *testing.T) {
+	if got := normalizeExecutorName(""); got != DefaultExecutorGlobal {
+		t.Fatalf("default executor = %q", got)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("padded executor name was accepted")
+		}
+	}()
+	normalizeExecutorName(" padded ")
+}

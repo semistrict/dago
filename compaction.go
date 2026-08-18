@@ -41,10 +41,13 @@ type ConversationCompaction struct {
 // point and returns the recent verbatim tail. It does not mutate checkpoints or
 // application projections.
 func CompactConversation(ctx context.Context, model damodel.Chat, messages []damessage.Message, options ConversationCompactionOptions) (ConversationCompaction, error) {
-	if model == nil {
+	if nilInterface(model) {
 		panic("conversation compaction model is nil")
 	}
-	if options.KeepMessages <= 0 && options.KeepTokens <= 0 {
+	if options.KeepMessages < 0 || options.KeepTokens < 0 {
+		panic("conversation compaction limits cannot be negative")
+	}
+	if options.KeepMessages == 0 && options.KeepTokens == 0 {
 		options.KeepMessages = 6
 	}
 	cutoff := summaryCutoff(messages, Summarization{KeepMessages: options.KeepMessages, KeepTokens: options.KeepTokens})

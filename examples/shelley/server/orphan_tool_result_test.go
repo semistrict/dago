@@ -59,12 +59,13 @@ func TestOrphanToolResultAfterCancellation(t *testing.T) {
 			{Type: llm.ContentTypeText, Text: "bash: echo hello"},
 		},
 	}
-	if _, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        userMsg1,
-		UsageData:      llm.Usage{},
-	}); err != nil {
+	if _, err := database.CreateMessage(context.Background(),
+		conversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData:   userMsg1,
+			UsageData: llm.Usage{},
+		}); err != nil {
 		t.Fatalf("failed to create user message: %v", err)
 	}
 
@@ -81,12 +82,13 @@ func TestOrphanToolResultAfterCancellation(t *testing.T) {
 			},
 		},
 	}
-	if _, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData:        assistantMsg1,
-		UsageData:      llm.Usage{},
-	}); err != nil {
+	if _, err := database.CreateMessage(context.Background(),
+		conversationID,
+		db.MessageTypeAgent, db.CreateMessageParams{
+
+			LLMData:   assistantMsg1,
+			UsageData: llm.Usage{},
+		}); err != nil {
 		t.Fatalf("failed to create assistant message: %v", err)
 	}
 
@@ -105,12 +107,13 @@ func TestOrphanToolResultAfterCancellation(t *testing.T) {
 			},
 		},
 	}
-	if _, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        cancelledToolResult,
-		UsageData:      llm.Usage{},
-	}); err != nil {
+	if _, err := database.CreateMessage(context.Background(),
+		conversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData:   cancelledToolResult,
+			UsageData: llm.Usage{},
+		}); err != nil {
 		t.Fatalf("failed to create cancelled tool_result message: %v", err)
 	}
 
@@ -120,12 +123,13 @@ func TestOrphanToolResultAfterCancellation(t *testing.T) {
 		Content:   []llm.Content{{Type: llm.ContentTypeText, Text: "[Operation cancelled]"}},
 		EndOfTurn: true,
 	}
-	if _, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData:        endTurnMsg,
-		UsageData:      llm.Usage{},
-	}); err != nil {
+	if _, err := database.CreateMessage(context.Background(),
+		conversationID,
+		db.MessageTypeAgent, db.CreateMessageParams{
+
+			LLMData:   endTurnMsg,
+			UsageData: llm.Usage{},
+		}); err != nil {
 		t.Fatalf("failed to create end-turn message: %v", err)
 	}
 
@@ -144,12 +148,13 @@ func TestOrphanToolResultAfterCancellation(t *testing.T) {
 			},
 		},
 	}
-	if _, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        actualToolResult,
-		UsageData:      llm.Usage{},
-	}); err != nil {
+	if _, err := database.CreateMessage(context.Background(),
+		conversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData:   actualToolResult,
+			UsageData: llm.Usage{},
+		}); err != nil {
 		t.Fatalf("failed to create orphan tool_result message: %v", err)
 	}
 
@@ -221,11 +226,12 @@ func TestOrphanToolResultFiltering(t *testing.T) {
 		Role:    llm.MessageRoleUser,
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}},
 	}
-	if _, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        userMsg1,
-	}); err != nil {
+	if _, err := database.CreateMessage(context.Background(),
+		conversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData: userMsg1,
+		}); err != nil {
 		t.Fatalf("failed to create message: %v", err)
 	}
 
@@ -235,11 +241,12 @@ func TestOrphanToolResultFiltering(t *testing.T) {
 		Content:   []llm.Content{{Type: llm.ContentTypeText, Text: "Hi there!"}},
 		EndOfTurn: true,
 	}
-	if _, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData:        assistantMsg,
-	}); err != nil {
+	if _, err := database.CreateMessage(context.Background(),
+		conversationID,
+		db.MessageTypeAgent, db.CreateMessageParams{
+
+			LLMData: assistantMsg,
+		}); err != nil {
 		t.Fatalf("failed to create message: %v", err)
 	}
 
@@ -258,11 +265,12 @@ func TestOrphanToolResultFiltering(t *testing.T) {
 			},
 		},
 	}
-	if _, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        orphanResult,
-	}); err != nil {
+	if _, err := database.CreateMessage(context.Background(),
+		conversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData: orphanResult,
+		}); err != nil {
 		t.Fatalf("failed to create orphan message: %v", err)
 	}
 

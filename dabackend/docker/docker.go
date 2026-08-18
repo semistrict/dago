@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -23,7 +24,6 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	engineclient "github.com/moby/moby/client"
 	"github.com/semistrict/dago/dabackend"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -107,9 +107,11 @@ type commandResult struct {
 // New connects to Docker using the standard environment variables and API
 // version negotiation, then creates and starts one owned container. Closing the
 // backend also closes the Engine client created by this function.
-func New(ctx context.Context, image string, optionValues ...Options) (*Backend, error) {
-	image = requiredImage(image)
-	options := optionvalue.Resolve("docker sandbox", optionValues)
+func New(ctx context.Context, image string, options Options) (*Backend, error) {
+	if nilDependency(ctx) {
+		panic("docker sandbox: context is required")
+	}
+	validateStatic(image, options)
 	engine, err := engineclient.New(engineclient.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("docker sandbox: create Engine client: %w", err)
@@ -124,51 +126,50 @@ func New(ctx context.Context, image string, optionValues ...Options) (*Backend, 
 
 // NewWithClient creates an owned container using a caller-managed Engine
 // client. Closing the backend removes the container but does not close client.
-func NewWithClient(ctx context.Context, client *engineclient.Client, image string, optionValues ...Options) (*Backend, error) {
+func NewWithClient(ctx context.Context, client *engineclient.Client, image string, options Options) (*Backend, error) {
+	if nilDependency(ctx) {
+		panic("docker sandbox: context is required")
+	}
 	if client == nil {
 		panic("docker sandbox: Engine client is required")
 	}
-	return newBackend(ctx, requiredImage(image), optionvalue.Resolve("docker sandbox", optionValues), client, nil)
+	validateStatic(image, options)
+	return newBackend(ctx, image, options, client, nil)
 }
 
-func requiredImage(image string) string {
-	image = strings.TrimSpace(image)
-	if image == "" {
-		panic("docker sandbox: image is required")
+func nilDependency(value any) bool {
+	if value == nil {
+		return true
 	}
-	return image
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func newBackend(ctx context.Context, image string, options Options, engine engineAPI, closeEngine func() error) (*Backend, error) {
+	if nilDependency(ctx) {
+		panic("docker sandbox: context is required")
+	}
 	if engine == nil {
 		panic("docker sandbox: Engine client is required")
 	}
-	image = requiredImage(image)
+	validateStatic(image, options)
+	image = strings.TrimSpace(image)
 	if options.Workdir == "" {
 		options.Workdir = defaultContainerWorkdir
-	}
-	if options.Workdir == "/" || options.Workdir == "/tmp" || !strings.HasPrefix(options.Workdir, "/") || path.Clean(options.Workdir) != options.Workdir || strings.ContainsRune(options.Workdir, '\x00') {
-		return nil, fmt.Errorf("docker sandbox: invalid container workdir %q", options.Workdir)
-	}
-	for name, value := range options.Env {
-		if name == "" || strings.ContainsAny(name, "=\x00") || strings.ContainsRune(value, '\x00') {
-			return nil, fmt.Errorf("docker sandbox: invalid environment variable %q", name)
-		}
 	}
 	if options.Network == "" {
 		options.Network = "none"
 	}
-	if options.DefaultTimeout < 0 {
-		return nil, fmt.Errorf("docker sandbox: default timeout cannot be negative")
-	}
 	if options.DefaultTimeout == 0 {
 		options.DefaultTimeout = defaultTimeout
 	}
-	if options.MaxOutput <= 0 {
+	if options.MaxOutput == 0 {
 		options.MaxOutput = defaultMaxOutput
-	}
-	if options.MemoryBytes < 0 || options.CPUs < 0 || math.IsNaN(options.CPUs) || math.IsInf(options.CPUs, 0) || options.CPUs > float64(math.MaxInt64)/1e9 || options.PidsLimit < 0 {
-		return nil, fmt.Errorf("docker sandbox: resource limits are invalid")
 	}
 	if options.MemoryBytes == 0 {
 		options.MemoryBytes = defaultMemoryBytes
@@ -227,6 +228,30 @@ func newBackend(ctx context.Context, image string, options Options, engine engin
 		workdir: options.Workdir, defaultTimeout: options.DefaultTimeout,
 		maxOutput: options.MaxOutput, operation: make(chan struct{}, 1),
 	}, nil
+}
+
+func validateStatic(image string, options Options) {
+	if strings.TrimSpace(image) == "" {
+		panic("docker sandbox: image is required")
+	}
+	workdir := options.Workdir
+	if workdir == "" {
+		workdir = defaultContainerWorkdir
+	}
+	if workdir == "/" || workdir == "/tmp" || !strings.HasPrefix(workdir, "/") || path.Clean(workdir) != workdir || strings.ContainsRune(workdir, '\x00') {
+		panic(fmt.Sprintf("docker sandbox: invalid container workdir %q", workdir))
+	}
+	for name, value := range options.Env {
+		if name == "" || strings.ContainsAny(name, "=\x00") || strings.ContainsRune(value, '\x00') {
+			panic(fmt.Sprintf("docker sandbox: invalid environment variable %q", name))
+		}
+	}
+	if options.DefaultTimeout < 0 || options.MaxOutput < 0 || options.MaxFileSize < 0 || options.MaxVideoSize < 0 || options.MaxResults < 0 {
+		panic("docker sandbox: durations and bounds cannot be negative")
+	}
+	if options.MemoryBytes < 0 || options.CPUs < 0 || math.IsNaN(options.CPUs) || math.IsInf(options.CPUs, 0) || options.CPUs > float64(math.MaxInt64)/1e9 || options.PidsLimit < 0 {
+		panic("docker sandbox: resource limits are invalid")
+	}
 }
 
 func createOptions(image string, options Options, workspace, containerUser string) engineclient.ContainerCreateOptions {

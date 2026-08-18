@@ -31,7 +31,7 @@ func NewTestDB(tb testTB) (*DB, func()) {
 	if err := os.WriteFile(dsn, templateSnapshot, 0o600); err != nil {
 		tb.Fatalf("Failed to write test database snapshot: %v", err)
 	}
-	database, err := New(Config{DSN: dsn})
+	database, err := New(dsn)
 	if err != nil {
 		tb.Fatalf("Failed to create test database from snapshot: %v", err)
 	}
@@ -50,7 +50,7 @@ func buildTestTemplateSnapshot() (snapshot []byte, err error) {
 	}
 	defer os.RemoveAll(templateDir)
 	templatePath := filepath.Join(templateDir, "test.db")
-	database, err := New(Config{DSN: templatePath})
+	database, err := New(templatePath)
 	if err != nil {
 		return nil, fmt.Errorf("create template database: %w", err)
 	}

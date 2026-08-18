@@ -23,8 +23,9 @@ import (
 	"github.com/semistrict/dago/examples/shelley/slug"
 )
 
-func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (*server.LLMConfig, error) {
-	return buildLLMConfigWithOAuth(global, logger, database, nil)
+func buildLLMConfig(global globalConfig, logger *slog.Logger, database *db.DB) (*server.LLMConfig, error) {
+	_, cfg, err := buildLLMConfigWithOAuth(global, logger, database, nil)
+	return cfg, err
 }
 
 type tieredModelProvider struct {
@@ -86,7 +87,7 @@ func TestValidateListenHost(t *testing.T) {
 // FlagSet rather than constructing GlobalConfig directly, so reverting the
 // flag default fails here.
 func TestGlobalFlagsDefaultModelEmptyByDefault(t *testing.T) {
-	var global GlobalConfig
+	var global globalConfig
 	fs := flag.NewFlagSet("shelley", flag.ContinueOnError)
 	registerGlobalFlags(fs, &global)
 	if err := fs.Parse([]string{"serve"}); err != nil {
@@ -97,7 +98,7 @@ func TestGlobalFlagsDefaultModelEmptyByDefault(t *testing.T) {
 	}
 
 	// An explicit flag is still captured.
-	global = GlobalConfig{}
+	global = globalConfig{}
 	fs = flag.NewFlagSet("shelley", flag.ContinueOnError)
 	registerGlobalFlags(fs, &global)
 	if err := fs.Parse([]string{"-default-model", "claude-opus-5", "serve"}); err != nil {
@@ -105,6 +106,23 @@ func TestGlobalFlagsDefaultModelEmptyByDefault(t *testing.T) {
 	}
 	if global.DefaultModel != "claude-opus-5" {
 		t.Fatalf("DefaultModel = %q, want claude-opus-5", global.DefaultModel)
+	}
+}
+
+func TestLoadConfigRejectsUnknownAndTrailingValues(t *testing.T) {
+	for name, contents := range map[string]string{
+		"unknown":  `{"default_model":"predictable","typo":true}`,
+		"trailing": `{"default_model":"predictable"} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "shelley.json")
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadConfig(path); err == nil {
+				t.Fatal("loadConfig accepted malformed configuration")
+			}
+		})
 	}
 }
 
@@ -130,9 +148,9 @@ func TestBuildLLMConfigDefaultModelPrecedence(t *testing.T) {
 	// parseGlobal registers and parses the global flags exactly as main does,
 	// then points -config at our temp file. This ties the flag default to the
 	// precedence assertion so neither can regress silently.
-	parseGlobal := func(t *testing.T, args ...string) GlobalConfig {
+	parseGlobal := func(t *testing.T, args ...string) globalConfig {
 		t.Helper()
-		var global GlobalConfig
+		var global globalConfig
 		fs := flag.NewFlagSet("shelley", flag.ContinueOnError)
 		registerGlobalFlags(fs, &global)
 		if err := fs.Parse(append([]string{"-config", configPath}, args...)); err != nil {

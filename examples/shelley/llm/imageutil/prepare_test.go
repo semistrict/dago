@@ -37,6 +37,16 @@ func TestPrepare(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsNegativeLimits(t *testing.T) {
+	data := createTestPNG(t, 1, 1)
+	if _, err := Prepare(data, "image.png", -1, 1); err == nil {
+		t.Fatal("negative dimension limit was accepted")
+	}
+	if _, err := Prepare(data, "image.png", 1, -1); err == nil {
+		t.Fatal("negative byte limit was accepted")
+	}
+}
+
 func TestPrepareErrors(t *testing.T) {
 	if _, err := Prepare([]byte("plain text"), "notes.txt", 0, 0); err == nil || !strings.Contains(err.Error(), "not an image") {
 		t.Fatalf("non-image error = %v", err)

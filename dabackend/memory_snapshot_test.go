@@ -7,7 +7,6 @@ import (
 
 func TestMemorySnapshotIsIndependent(t *testing.T) {
 	memory := NewMemory(nil)
-
 	if _, err := memory.Write(context.Background(), "/workspace/a.txt", "one"); err != nil {
 		t.Fatal(err)
 	}

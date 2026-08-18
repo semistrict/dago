@@ -32,20 +32,23 @@ import (
 	"github.com/semistrict/dago/examples/shelley/slug"
 )
 
-// newPredictableLLMConfig returns an LLMConfig with only the predictable
-// built-in model registered. Tests that exercise the chat path use this
-// because the refactored manager no longer auto-registers built-ins.
-func newPredictableLLMConfig(logger *slog.Logger) *server.LLMConfig {
-	return &server.LLMConfig{
-		Models: modelsources.Build(models.All(), []modelsources.Source{modelsources.Predictable()}, nil, logger),
-		Logger: logger,
+func newPredictableLLMManager(t *testing.T, logger *slog.Logger) server.LLMProvider {
+	t.Helper()
+	built, err := modelsources.Build(models.All(), []modelsources.Source{modelsources.Predictable()}, nil, logger)
+	if err != nil {
+		t.Fatal(err)
 	}
+	manager, err := server.NewLLMServiceManager(built, server.LLMConfig{Logger: logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager
 }
 
 func TestServerEndToEnd(t *testing.T) {
 	// Create temporary database
 	tempDB := t.TempDir() + "/test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -62,7 +65,7 @@ func TestServerEndToEnd(t *testing.T) {
 	}))
 
 	// Create LLM service manager with predictable service
-	llmManager := server.NewLLMServiceManager(newPredictableLLMConfig(logger))
+	llmManager := newPredictableLLMManager(t, logger)
 	predictableService := loop.NewPredictableService()
 	// For testing, we'll override the manager's service selection
 	_ = predictableService // will need to mock this properly
@@ -75,7 +78,7 @@ func TestServerEndToEnd(t *testing.T) {
 	}
 
 	// Create server
-	svr := server.NewServer(database, llmManager, toolSetConfig, logger, false, "", "")
+	svr := server.MustNewServer(database, llmManager, toolSetConfig, logger, false, "", "")
 
 	// Set up HTTP server
 	mux := http.NewServeMux()
@@ -196,11 +199,12 @@ func TestServerEndToEnd(t *testing.T) {
 				{Type: llm.ContentTypeText, Text: "Test message"},
 			},
 		}
-		_, err = database.CreateMessage(context.Background(), db.CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           db.MessageTypeUser,
-			LLMData:        testMsg,
-		})
+		_, err = database.CreateMessage(context.Background(),
+			conv.ConversationID,
+			db.MessageTypeUser, db.CreateMessageParams{
+
+				LLMData: testMsg,
+			})
 		if err != nil {
 			t.Fatalf("Failed to create message: %v", err)
 		}
@@ -364,7 +368,7 @@ func TestPredictableServiceWithTools(t *testing.T) {
 func TestConversationCleanup(t *testing.T) {
 	// Create temporary database
 	tempDB := t.TempDir() + "/cleanup_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -377,8 +381,8 @@ func TestConversationCleanup(t *testing.T) {
 
 	// Create server with predictable service
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	llmManager := server.NewLLMServiceManager(newPredictableLLMConfig(logger))
-	svr := server.NewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "")
+	llmManager := newPredictableLLMManager(t, logger)
+	svr := server.MustNewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "")
 
 	// Create a conversation
 	// Using database directly instead of service
@@ -400,7 +404,7 @@ func TestSlugGeneration(t *testing.T) {
 
 	// Create temporary database
 	tempDB := t.TempDir() + "/test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -413,8 +417,8 @@ func TestSlugGeneration(t *testing.T) {
 
 	// Create server
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	llmManager := server.NewLLMServiceManager(newPredictableLLMConfig(logger))
-	_ = server.NewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "")
+	llmManager := newPredictableLLMManager(t, logger)
+	_ = server.MustNewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "")
 
 	// Test slug generation directly to avoid timing issues
 	// ctx := context.Background()
@@ -494,11 +498,11 @@ func TestSanitizeSlug(t *testing.T) {
 func TestSlugGenerationWithPredictableService(t *testing.T) {
 	// Create server with predictable service only
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	llmManager := server.NewLLMServiceManager(newPredictableLLMConfig(logger))
+	llmManager := newPredictableLLMManager(t, logger)
 
 	// Create a temporary database
 	tempDB := t.TempDir() + "/test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -508,7 +512,7 @@ func TestSlugGenerationWithPredictableService(t *testing.T) {
 		t.Fatalf("Failed to migrate database: %v", err)
 	}
 
-	_ = server.NewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "")
+	_ = server.MustNewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "")
 
 	// Test slug generation directly
 	// ctx := context.Background()
@@ -536,7 +540,7 @@ func TestSlugGenerationWithPredictableService(t *testing.T) {
 func TestSlugEndToEnd(t *testing.T) {
 	// Create temporary database
 	tempDB := t.TempDir() + "/test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -588,7 +592,7 @@ func TestSlugEndToEnd(t *testing.T) {
 func TestSSEIncrementalUpdates(t *testing.T) {
 	// Create temporary database
 	tempDB := t.TempDir() + "/test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -601,10 +605,10 @@ func TestSSEIncrementalUpdates(t *testing.T) {
 
 	// Create logger and LLM manager
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	llmManager := server.NewLLMServiceManager(newPredictableLLMConfig(logger))
+	llmManager := newPredictableLLMManager(t, logger)
 
 	// Create server
-	serviceInstance := server.NewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "")
+	serviceInstance := server.MustNewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "")
 	mux := http.NewServeMux()
 	serviceInstance.RegisterRoutes(mux)
 	testServer := httptest.NewServer(mux)
@@ -618,13 +622,14 @@ func TestSSEIncrementalUpdates(t *testing.T) {
 	}
 
 	// Add initial message
-	_, err = database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        &llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hello"}}},
-		UserData:       map[string]string{"content": "Hello"},
-		UsageData:      llm.Usage{},
-	})
+	_, err = database.CreateMessage(context.Background(),
+		conv.ConversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData:   &llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hello"}}},
+			UserData:  map[string]string{"content": "Hello"},
+			UsageData: llm.Usage{},
+		})
 	if err != nil {
 		t.Fatalf("Failed to create initial message: %v", err)
 	}
@@ -653,13 +658,14 @@ func TestSSEIncrementalUpdates(t *testing.T) {
 	}
 
 	// Add a second message
-	_, err = database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData:        &llm.Message{Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hi there!"}}},
-		UserData:       map[string]string{"content": "Hi there!"},
-		UsageData:      llm.Usage{},
-	})
+	_, err = database.CreateMessage(context.Background(),
+		conv.ConversationID,
+		db.MessageTypeAgent, db.CreateMessageParams{
+
+			LLMData:   &llm.Message{Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hi there!"}}},
+			UserData:  map[string]string{"content": "Hi there!"},
+			UsageData: llm.Usage{},
+		})
 	if err != nil {
 		t.Fatalf("Failed to create second message: %v", err)
 	}
@@ -700,7 +706,7 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 	// Note: :memory: is not supported by our DB wrapper since it requires multiple connections.
 	// Use a temp file-backed database for tests.
 	tempDB := t.TempDir() + "/system_prompt_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -722,7 +728,7 @@ func TestSystemPromptSentToLLM(t *testing.T) {
 	}
 
 	tools := claudetool.ToolSetConfig{}
-	svr := server.NewServer(database, customLLMManager, tools, logger, false, "", "")
+	svr := server.MustNewServer(database, customLLMManager, tools, logger, false, "", "")
 
 	// Start server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -930,7 +936,7 @@ func TestVersionEndpoint(t *testing.T) {
 	// Create temp DB-backed server
 	ctx := context.Background()
 	tempDB := t.TempDir() + "/version_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -940,8 +946,8 @@ func TestVersionEndpoint(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	llmManager := server.NewLLMServiceManager(newPredictableLLMConfig(logger))
-	svr := server.NewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, true, "", "")
+	llmManager := newPredictableLLMManager(t, logger)
+	svr := server.MustNewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, true, "", "")
 
 	mux := http.NewServeMux()
 	svr.RegisterRoutes(mux)
@@ -980,7 +986,7 @@ func TestScreenshotRouteServesImage(t *testing.T) {
 	// Create temp DB-backed server
 	ctx := context.Background()
 	tempDB := t.TempDir() + "/route_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -990,8 +996,8 @@ func TestScreenshotRouteServesImage(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	llmManager := server.NewLLMServiceManager(newPredictableLLMConfig(logger))
-	svr := server.NewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, true, "", "")
+	llmManager := newPredictableLLMManager(t, logger)
+	svr := server.MustNewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, true, "", "")
 
 	mux := http.NewServeMux()
 	svr.RegisterRoutes(mux)
@@ -1067,7 +1073,7 @@ func TestGitStateChangeCreatesGitInfoMessage(t *testing.T) {
 
 	// Create database
 	tempDB := t.TempDir() + "/gitstate_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -1090,7 +1096,7 @@ func TestGitStateChangeCreatesGitInfoMessage(t *testing.T) {
 		WorkingDir:    workDir,
 		EnableBrowser: false,
 	}
-	svr := server.NewServer(database, customLLMManager, toolConfig, logger, false, "", "")
+	svr := server.MustNewServer(database, customLLMManager, toolConfig, logger, false, "", "")
 
 	mux := http.NewServeMux()
 	svr.RegisterRoutes(mux)
@@ -1154,7 +1160,7 @@ func TestGitStateChangeCreatesGitInfoMessage(t *testing.T) {
 func TestSubagentEndToEnd(t *testing.T) {
 	// Create temporary database
 	tempDB := t.TempDir() + "/test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -1171,7 +1177,7 @@ func TestSubagentEndToEnd(t *testing.T) {
 	}))
 
 	// Create LLM service manager with predictable service
-	llmManager := server.NewLLMServiceManager(newPredictableLLMConfig(logger))
+	llmManager := newPredictableLLMManager(t, logger)
 
 	// Set up tools config
 	toolSetConfig := claudetool.ToolSetConfig{
@@ -1180,7 +1186,7 @@ func TestSubagentEndToEnd(t *testing.T) {
 	}
 
 	// Create server (predictable-only mode)
-	svr := server.NewServer(database, llmManager, toolSetConfig, logger, true, "", "")
+	svr := server.MustNewServer(database, llmManager, toolSetConfig, logger, true, "", "")
 
 	// Set up HTTP server
 	mux := http.NewServeMux()

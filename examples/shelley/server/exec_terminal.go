@@ -119,7 +119,7 @@ func buildTerminalEnv(conversationID, slug, model, userEmail, cwd string, listen
 	}.Environ(cwd)
 }
 
-func (s *Server) attachOrSpawn(termID, cmd, cwd string, cols, rows uint16, extraEnv []string) (*TerminalSession, *dtach.Client, error) {
+func (s *Server) attachOrSpawn(termID, cmd, cwd string, cols, rows uint16, extraEnv []string) (*terminalSession, *dtach.Client, error) {
 	unlock := s.terminals.LockAttach()
 	defer unlock()
 	if termID != "" {

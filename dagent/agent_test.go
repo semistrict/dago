@@ -15,14 +15,36 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/semistrict/dago/dacache"
 	"github.com/semistrict/dago/dacheckpoint"
 	checkpointsqlite "github.com/semistrict/dago/dacheckpoint/sqlite"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/dastore"
 	"github.com/semistrict/dago/datool"
 )
+
+type typedNilAgentSaver struct{ dacheckpoint.Saver }
+type typedNilAgentStore struct{ dastore.Store }
+type typedNilAgentCache struct{ dacache.Cache }
+type typedNilAgentTool struct{ datool.Tool }
+
+func TestNewNormalizesTypedNilOptionalDependenciesAndRejectsTypedNilTools(t *testing.T) {
+	var saver *typedNilAgentSaver
+	var store *typedNilAgentStore
+	var cache *typedNilAgentCache
+	agent := New(modeltest.New(damodel.Profile{}), Options{Saver: saver, Store: store, Cache: cache})
+	if agent.saver != nil {
+		t.Fatalf("saver = %#v, want nil", agent.saver)
+	}
+
+	var tool *typedNilAgentTool
+	requirePanicContaining(t, "agent tool is nil", func() {
+		New(modeltest.New(damodel.Profile{}), Options{Tools: []datool.Tool{tool}})
+	})
+}
 
 var objectSchema = json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}`)
 

@@ -39,7 +39,6 @@ func TestReadFileExtractsVideoWindow(t *testing.T) {
 	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/movie.mp4": {Content: base64.StdEncoding.EncodeToString(raw), Encoding: dabackend.EncodingBase64},
 	})
-
 	var gotContent []byte
 	var gotWindow davideo.Window
 	extractor := davideo.ExtractorFunc(func(_ context.Context, content []byte, window davideo.Window) ([]damessage.ContentBlock, error) {
@@ -113,7 +112,6 @@ func TestReadFileEnforcesVideoInputCap(t *testing.T) {
 
 func TestReadFileUsesBackendVideoGuardBeforePayloadAllocation(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	backend := &boundedVideoBackend{Backend: memory, result: dabackend.ReadResult{Data: &dabackend.FileData{
 		Content: base64.StdEncoding.EncodeToString([]byte{0xff}), Encoding: dabackend.EncodingBase64,
 	}}}
@@ -164,7 +162,6 @@ func TestReadFileLeavesVideoOpaqueWithoutExtractor(t *testing.T) {
 
 func TestReadFileAdvertisesVideoOnlyWhenConfigured(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	plain := filesystemTool(t, memory, Filesystem{}, "read_file").Definition()
 	video := filesystemTool(t, memory, Filesystem{VideoExtractor: davideo.ExtractorFunc(func(context.Context, []byte, davideo.Window) ([]damessage.ContentBlock, error) {
 		return nil, nil
@@ -188,7 +185,6 @@ func videoMemory(t *testing.T, name string, raw []byte) *dabackend.Memory {
 	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		name: {Content: base64.StdEncoding.EncodeToString(raw), Encoding: dabackend.EncodingBase64},
 	})
-
 	return memory
 }
 
@@ -209,7 +205,7 @@ func mustFilesystem(backend dabackend.Backend, options Filesystem, approvalOverr
 	if len(approvalOverrides) > 0 {
 		rules = approvalOverrides[0]
 	}
-	middleware, err := compileFilesystem(backend, options, rules)
+	middleware, err := newFilesystem(backend, options, rules)
 	if err != nil {
 		panic(err)
 	}

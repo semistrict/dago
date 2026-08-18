@@ -34,7 +34,7 @@ func newTestDatabase(tb databaseTestTB) (*db.DB, func()) {
 	if err := os.WriteFile(dsn, databaseTemplateData, 0o600); err != nil {
 		tb.Fatalf("Failed to write test database snapshot: %v", err)
 	}
-	database, err := db.New(db.Config{DSN: dsn})
+	database, err := db.New(dsn)
 	if err != nil {
 		tb.Fatalf("Failed to create test database from snapshot: %v", err)
 	}
@@ -48,7 +48,7 @@ func buildDatabaseTemplate() (snapshot []byte, err error) {
 	}
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.db")
-	database, err := db.New(db.Config{DSN: path})
+	database, err := db.New(path)
 	if err != nil {
 		return nil, fmt.Errorf("create template database: %w", err)
 	}
@@ -81,15 +81,13 @@ func InProcessSpawner(socket, _ string, cwd, command string, cols, rows uint16, 
 		env = append(os.Environ(), extraEnv...)
 	}
 	go func() {
-		_ = dtach.Serve(dtach.ServerOptions{
-			SocketPath: socket,
-			Command:    "bash",
-			Args:       []string{"--login", "-c", command},
-			Dir:        cwd,
-			Cols:       cols,
-			Rows:       rows,
-			Env:        env,
-			Ready:      ready,
+		_ = dtach.Serve(socket, "bash", dtach.ServerOptions{
+			Args:  []string{"--login", "-c", command},
+			Dir:   cwd,
+			Cols:  cols,
+			Rows:  rows,
+			Env:   env,
+			Ready: ready,
 		})
 	}()
 	<-ready

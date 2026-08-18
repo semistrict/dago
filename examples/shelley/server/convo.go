@@ -85,8 +85,8 @@ type pendingBatch struct {
 	isStale func() bool
 }
 
-// ConversationManager manages a single active conversation
-type ConversationManager struct {
+// conversationManager manages a single active conversation.
+type conversationManager struct {
 	conversationID      string
 	conversationOptions db.ConversationOptions
 	db                  *db.DB
@@ -263,15 +263,21 @@ type ConversationManager struct {
 // consecutive sequence ids). See Server.recordMessages.
 type messageBatchRecordFunc func(ctx context.Context, msgs []recordMessageInput) error
 
-// NewConversationManager constructs a manager with dependencies but defers hydration until needed.
-func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage, recordTurnStartMessage loop.MessageRecordFunc, recordMessageBatch messageBatchRecordFunc, onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse]) *ConversationManager {
+// newConversationManager constructs a manager with dependencies but defers hydration until needed.
+func newConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage, recordTurnStartMessage loop.MessageRecordFunc, recordMessageBatch messageBatchRecordFunc, onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse]) *conversationManager {
+	if strings.TrimSpace(conversationID) == "" {
+		panic("conversation ID is required")
+	}
+	if database == nil || recordMessage == nil || recordTurnStartMessage == nil || recordMessageBatch == nil || onStateChange == nil {
+		panic("conversation manager dependencies are required")
+	}
 	logger := baseLogger
 	if logger == nil {
 		logger = slog.Default()
 	}
 	logger = logger.With("conversationID", conversationID)
 
-	return &ConversationManager{
+	return &conversationManager{
 		conversationID:         conversationID,
 		db:                     database,
 		lastActivity:           time.Now(),
@@ -289,7 +295,7 @@ func NewConversationManager(conversationID string, database *db.DB, baseLogger *
 // broadcastStream tags data with the conversation ID and fans it out to both
 // the per-conversation subpub (used by the legacy /api/conversation/<id>/stream
 // endpoint) and the server-wide stream (used by /api/stream2).
-func (cm *ConversationManager) broadcastStream(data StreamResponse) {
+func (cm *conversationManager) broadcastStream(data StreamResponse) {
 	data.ConversationID = cm.conversationID
 	cm.subpub.Broadcast(data)
 	if cm.streamPub != nil {
@@ -301,7 +307,7 @@ func (cm *ConversationManager) broadcastStream(data StreamResponse) {
 // per-conversation subpub at the given sequence id, also broadcasting to the
 // server-wide stream. Sequence ids are per-conversation and meaningless on
 // the global stream, so we Broadcast rather than Publish there.
-func (cm *ConversationManager) publishStream(seqID int64, data StreamResponse) {
+func (cm *conversationManager) publishStream(seqID int64, data StreamResponse) {
 	data.ConversationID = cm.conversationID
 	cm.subpub.Publish(seqID, data)
 	if cm.streamPub != nil {
@@ -310,7 +316,7 @@ func (cm *ConversationManager) publishStream(seqID int64, data StreamResponse) {
 }
 
 // RegisterEndOfTurnHook records a webhook URL to post whenever a top-level turn ends.
-func (cm *ConversationManager) RegisterEndOfTurnHook(ctx context.Context, hook db.ConversationHook) error {
+func (cm *conversationManager) RegisterEndOfTurnHook(ctx context.Context, hook db.ConversationHook) error {
 	if err := cm.Hydrate(ctx); err != nil {
 		return err
 	}
@@ -341,9 +347,13 @@ func (cm *ConversationManager) RegisterEndOfTurnHook(ctx context.Context, hook d
 // thinkingMu serializes the whole DB-write-then-apply sequence so concurrent
 // calls can't persist one level while an earlier call's in-memory assignment
 // leaves conversationOptions / the loop pinned to a stale level.
-func (cm *ConversationManager) SetThinkingLevel(ctx context.Context, reasoning string) error {
+func (cm *conversationManager) SetThinkingLevel(ctx context.Context, reasoning string) error {
 	if reasoning == "" {
 		return nil
+	}
+	thinkingLevel, err := llm.ParseThinkingLevelStrict(reasoning)
+	if err != nil {
+		return err
 	}
 	if err := cm.Hydrate(ctx); err != nil {
 		return err
@@ -373,13 +383,13 @@ func (cm *ConversationManager) SetThinkingLevel(ctx context.Context, reasoning s
 	cm.mu.Unlock()
 
 	if loopInstance != nil {
-		loopInstance.SetThinkingLevel(llm.ParseThinkingLevel(reasoning))
+		loopInstance.SetThinkingLevel(thinkingLevel)
 	}
 	return nil
 }
 
 // EndOfTurnHooks returns the registered top-level end-of-turn hooks.
-func (cm *ConversationManager) EndOfTurnHooks(ctx context.Context) ([]db.ConversationHook, error) {
+func (cm *conversationManager) EndOfTurnHooks(ctx context.Context) ([]db.ConversationHook, error) {
 	if err := cm.Hydrate(ctx); err != nil {
 		return nil, err
 	}
@@ -393,7 +403,7 @@ func (cm *ConversationManager) EndOfTurnHooks(ctx context.Context) ([]db.Convers
 // SetAgentWorking updates the agent working state, persists it to the
 // conversations table (so the conversation list patch stream picks it up via
 // the standard Pool.OnCommit hook), and notifies the server to broadcast.
-func (cm *ConversationManager) SetAgentWorking(working bool) {
+func (cm *conversationManager) SetAgentWorking(working bool) {
 	cm.setAgentWorking(working, true)
 }
 
@@ -403,11 +413,11 @@ func (cm *ConversationManager) SetAgentWorking(working bool) {
 // folded into a message INSERT via CreateMessageParams.MarkAgentStart/
 // MarkAgentDone — so we don't pay a second commit (and a second full
 // conversation-list recompute) just to re-write a value the DB already holds.
-func (cm *ConversationManager) syncAgentWorking(working bool) {
+func (cm *conversationManager) syncAgentWorking(working bool) {
 	cm.setAgentWorking(working, false)
 }
 
-func (cm *ConversationManager) setAgentWorking(working, persist bool) {
+func (cm *conversationManager) setAgentWorking(working, persist bool) {
 	cm.mu.Lock()
 	if cm.agentWorking == working {
 		cm.mu.Unlock()
@@ -459,7 +469,7 @@ func (cm *ConversationManager) setAgentWorking(working, persist bool) {
 // notification, since the waiter is expected to deliver the subagent's
 // response via the tool's return value. Each call must be paired with exactly
 // one finishSubagentWait.
-func (cm *ConversationManager) registerSubagentWaiter() {
+func (cm *conversationManager) registerSubagentWaiter() {
 	cm.mu.Lock()
 	cm.subagentWaitOwners++
 	cm.mu.Unlock()
@@ -472,7 +482,7 @@ func (cm *ConversationManager) registerSubagentWaiter() {
 // we are about to send, so it must NOT later be mistaken for an undelivered
 // finish of the follow-up turn (which would fire a premature/duplicate
 // notification if our own wait subsequently timed out).
-func (cm *ConversationManager) consumeSuppressedFinish() {
+func (cm *conversationManager) consumeSuppressedFinish() {
 	cm.mu.Lock()
 	cm.subagentFinishSuppressed = false
 	cm.mu.Unlock()
@@ -482,7 +492,7 @@ func (cm *ConversationManager) consumeSuppressedFinish() {
 // this (subagent) conversation's agent message with the given sequence id;
 // completion notifications for it (or anything older) are moot. See
 // handledResponseSeq.
-func (cm *ConversationManager) markResponseHandled(seq int64) {
+func (cm *conversationManager) markResponseHandled(seq int64) {
 	for {
 		cur := cm.handledResponseSeq.Load()
 		if seq <= cur || cm.handledResponseSeq.CompareAndSwap(cur, seq) {
@@ -493,7 +503,7 @@ func (cm *ConversationManager) markResponseHandled(seq int64) {
 
 // handledSeq returns the highest sequence id recorded by
 // markResponseHandled.
-func (cm *ConversationManager) handledSeq() int64 {
+func (cm *conversationManager) handledSeq() int64 {
 	return cm.handledResponseSeq.Load()
 }
 
@@ -501,7 +511,7 @@ func (cm *ConversationManager) handledSeq() int64 {
 // (subagent) conversation's agent message with the given sequence id. It
 // returns false when a notification for that response (or a newer one) has
 // already been claimed. See notifiedResponseSeq.
-func (cm *ConversationManager) claimNotified(seq int64) bool {
+func (cm *conversationManager) claimNotified(seq int64) bool {
 	for {
 		cur := cm.notifiedResponseSeq.Load()
 		if seq <= cur {
@@ -526,7 +536,7 @@ func (cm *ConversationManager) claimNotified(seq int64) bool {
 // concurrent SetAgentWorking transition: given the single-waiter precondition
 // documented on subagentWaitOwners, exactly one of the two paths (onDone or
 // notifyOwed) ends up delivering, never both and never neither.
-func (cm *ConversationManager) finishSubagentWait(delivered bool) (notifyOwed bool) {
+func (cm *conversationManager) finishSubagentWait(delivered bool) (notifyOwed bool) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	if cm.subagentWaitOwners > 0 {
@@ -540,7 +550,7 @@ func (cm *ConversationManager) finishSubagentWait(delivered bool) (notifyOwed bo
 }
 
 // IsAgentWorking returns the current agent working state.
-func (cm *ConversationManager) IsAgentWorking() bool {
+func (cm *conversationManager) IsAgentWorking() bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.agentWorking
@@ -548,7 +558,7 @@ func (cm *ConversationManager) IsAgentWorking() bool {
 
 // IsCancelling reports whether the current loop is being torn down. Messages
 // arriving in this window must be queued for the replacement loop.
-func (cm *ConversationManager) IsCancelling() bool {
+func (cm *conversationManager) IsCancelling() bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.cancelling
@@ -557,7 +567,7 @@ func (cm *ConversationManager) IsCancelling() bool {
 // SetDistilling marks the conversation as distilling. While true, queued
 // messages will not be drained immediately — they wait for distillation to
 // complete and the caller to invoke drainPendingMessages.
-func (cm *ConversationManager) SetDistilling(distilling bool) {
+func (cm *conversationManager) SetDistilling(distilling bool) {
 	cm.mu.Lock()
 	cm.distilling = distilling
 	setupDone := cm.distillSetupDone
@@ -574,7 +584,7 @@ func (cm *ConversationManager) SetDistilling(distilling bool) {
 // whether it acquired the distilling state. It returns false when a
 // distillation is already in flight, so callers can reject concurrent
 // attempts (overlapping compactions would race on the generation counter).
-func (cm *ConversationManager) BeginDistillingSetup() bool {
+func (cm *conversationManager) BeginDistillingSetup() bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	if cm.distilling {
@@ -587,7 +597,7 @@ func (cm *ConversationManager) BeginDistillingSetup() bool {
 	return true
 }
 
-func (cm *ConversationManager) FinishDistillingSetup() {
+func (cm *conversationManager) FinishDistillingSetup() {
 	cm.mu.Lock()
 	setupDone := cm.distillSetupDone
 	cm.distillSetupDone = nil
@@ -597,13 +607,13 @@ func (cm *ConversationManager) FinishDistillingSetup() {
 	}
 }
 
-func (cm *ConversationManager) IsDistilling() bool {
+func (cm *conversationManager) IsDistilling() bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.distilling
 }
 
-func (cm *ConversationManager) waitDistillingSetup() {
+func (cm *conversationManager) waitDistillingSetup() {
 	cm.mu.Lock()
 	setupDone := cm.distillSetupDone
 	cm.mu.Unlock()
@@ -613,7 +623,7 @@ func (cm *ConversationManager) waitDistillingSetup() {
 }
 
 // GetModel returns the model ID used by this conversation.
-func (cm *ConversationManager) GetModel() string {
+func (cm *conversationManager) GetModel() string {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.modelID
@@ -623,7 +633,7 @@ func (cm *ConversationManager) GetModel() string {
 // prompt if one doesn't exist yet. It does NOT cache the message history;
 // ensureLoop reads messages fresh from the DB when creating a loop so that
 // any messages added asynchronously (e.g. distillation) are always included.
-func (cm *ConversationManager) Hydrate(ctx context.Context) error {
+func (cm *conversationManager) Hydrate(ctx context.Context) error {
 	cm.mu.Lock()
 	if cm.hydrated {
 		cm.lastActivity = time.Now()
@@ -671,7 +681,11 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 	cm.toolSetConfig.ModelID = modelID
 
 	// Load conversation options
-	cm.conversationOptions = db.ParseConversationOptions(conversation.ConversationOptions)
+	conversationOptions, err := db.ParseConversationOptionsStrict(conversation.ConversationOptions)
+	if err != nil {
+		return fmt.Errorf("load conversation options: %w", err)
+	}
+	cm.conversationOptions = conversationOptions
 
 	// Set ParentConversationID on toolSetConfig so that subagent tool is included
 	// in the display_data tools list when generating system prompt.
@@ -776,7 +790,7 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 // AcceptUserMessage enqueues a user message, ensuring the loop is ready first.
 // The message is recorded to the database immediately so it appears in the UI,
 // even if the loop is busy processing a previous request.
-func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, chat damodel.Chat, modelID string, message llm.Message) (bool, error) {
+func (cm *conversationManager) AcceptUserMessage(ctx context.Context, chat damodel.Chat, modelID string, message llm.Message) (bool, error) {
 	if chat == nil {
 		return false, fmt.Errorf("chat model is required")
 	}
@@ -848,7 +862,7 @@ var errRetryNotApplicable = fmt.Errorf("latest message is not a retryable error;
 // The error message row is never mutated. Once the retry kicks off a new turn,
 // the error is no longer the bottom-most message, so the UI stops offering the
 // Retry button on its own. retryMu serializes concurrent invocations.
-func (cm *ConversationManager) RetryLastLLMRequest(ctx context.Context) error {
+func (cm *conversationManager) RetryLastLLMRequest(ctx context.Context) error {
 	// Take retryMu first to serialize across concurrent retries without
 	// holding cm.mu (which would block unrelated message recording and
 	// state changes for the duration of the DB update + broadcast).
@@ -920,7 +934,7 @@ var errNotRefusal = fmt.Errorf("latest message is not a refusal; nothing to cont
 // ch carries the model switch to apply before continuing; service/modelID name
 // the model to build the loop with (must match ch.NewModel when a switch is
 // requested). retryMu serializes this against concurrent retries/continues.
-func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, ch ModelSettingsChange, chat damodel.Chat, modelID string) error {
+func (cm *conversationManager) ContinueAfterRefusal(ctx context.Context, ch ModelSettingsChange, chat damodel.Chat, modelID string) error {
 	if chat == nil {
 		return fmt.Errorf("chat model is required")
 	}
@@ -1004,7 +1018,7 @@ func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, ch Mode
 // only when it drains. The append bumps updated_at, which re-sorts the
 // conversation and fires the conversation-list patch + per-conversation
 // broadcast so the new queued entry reaches subscribers via stream2 diffs.
-func (cm *ConversationManager) QueueMessage(ctx context.Context, s *Server, modelID string, message llm.Message) error {
+func (cm *conversationManager) QueueMessage(ctx context.Context, s *Server, modelID string, message llm.Message) error {
 	cm.waitDistillingSetup()
 
 	llmJSON, err := json.Marshal(message)
@@ -1073,7 +1087,7 @@ func (cm *ConversationManager) QueueMessage(ctx context.Context, s *Server, mode
 // notification from an EARLIER turn of the same subagent, so a subagent that
 // finishes repeatedly while the parent is busy never piles up stale
 // completions.
-func (cm *ConversationManager) EnqueueSubagentDone(s *Server, modelID, subagentConversationID string, assistant, toolResult llm.Message, isStale func() bool) {
+func (cm *conversationManager) EnqueueSubagentDone(s *Server, modelID, subagentConversationID string, assistant, toolResult llm.Message, isStale func() bool) {
 	cm.enqueueBatch(s, pendingBatch{
 		Kind:                   pendingBatchSubagentDone,
 		Messages:               []llm.Message{assistant, toolResult},
@@ -1094,7 +1108,7 @@ func (cm *ConversationManager) EnqueueSubagentDone(s *Server, modelID, subagentC
 // (drainPendingMessages and takeInjectableSubagentDone) snapshot AND clear/
 // compact under cm.mu before processing, so no live snapshot aliases the
 // backing array we compact here.
-func (cm *ConversationManager) DropPendingSubagentDone(subagentConversationID string) (dropped int) {
+func (cm *conversationManager) DropPendingSubagentDone(subagentConversationID string) (dropped int) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	kept := cm.pendingBatches[:0]
@@ -1132,7 +1146,7 @@ func (cm *ConversationManager) DropPendingSubagentDone(subagentConversationID st
 // the OLD generation after the compaction snapshot was taken and thus be
 // absent from the new generation's context (visible in the transcript, not
 // re-fed) — an accepted, pre-existing loss mode of the drain path too.
-func (cm *ConversationManager) takeInjectableSubagentDone(ctx context.Context) []llm.Message {
+func (cm *conversationManager) takeInjectableSubagentDone(ctx context.Context) []llm.Message {
 	cm.mu.Lock()
 	if cm.distilling || cm.cancelling || len(cm.pendingBatches) == 0 || cm.recordMessageBatch == nil {
 		cm.mu.Unlock()
@@ -1178,7 +1192,7 @@ func (cm *ConversationManager) takeInjectableSubagentDone(ctx context.Context) [
 // safely spawn drain goroutines — only the first will own the drain; the
 // others will see draining=true and exit, having already appended their
 // batches for the winning drainer to pick up.
-func (cm *ConversationManager) enqueueBatch(s *Server, b pendingBatch) {
+func (cm *conversationManager) enqueueBatch(s *Server, b pendingBatch) {
 	cm.mu.Lock()
 	// Producer-side invalidation (see pendingBatch.isStale): a subagent-done
 	// batch whose result has already reached the parent via a synchronous
@@ -1223,7 +1237,7 @@ func (cm *ConversationManager) enqueueBatch(s *Server, b pendingBatch) {
 // array. Subagent-done batches stay queued: they represent work the parent
 // agent still needs to acknowledge, and they live only in memory (no array
 // entry).
-func (cm *ConversationManager) CancelQueuedMessages(ctx context.Context, s *Server) {
+func (cm *conversationManager) CancelQueuedMessages(ctx context.Context, s *Server) {
 	cm.mu.Lock()
 	var keep []pendingBatch
 	cancelled := 0
@@ -1253,7 +1267,7 @@ func (cm *ConversationManager) CancelQueuedMessages(ctx context.Context, s *Serv
 // CancelQueuedMessage removes a single queued user message by its QueuedMessage
 // id, from both the in-memory drain queue and the persistent array. Used by the
 // per-ghost cancel affordance in the UI.
-func (cm *ConversationManager) CancelQueuedMessage(ctx context.Context, s *Server, queuedID string) {
+func (cm *conversationManager) CancelQueuedMessage(ctx context.Context, s *Server, queuedID string) {
 	cm.mu.Lock()
 	var keep []pendingBatch
 	removed := false
@@ -1288,7 +1302,7 @@ func (cm *ConversationManager) CancelQueuedMessage(ctx context.Context, s *Serve
 // the queued_messages array, and Hydrate already ran). Subagent-done failures
 // return true — we do NOT unwind/retry those (a half-written tool_use/result
 // pair would corrupt history).
-func (cm *ConversationManager) processBatch(ctx context.Context, s *Server, loopInstance *loop.Loop, b pendingBatch) (ok bool) {
+func (cm *conversationManager) processBatch(ctx context.Context, s *Server, loopInstance *loop.Loop, b pendingBatch) (ok bool) {
 	switch b.Kind {
 	case pendingBatchUser:
 		// User batches: no DB row exists yet — the message lives only in the
@@ -1346,7 +1360,7 @@ func (cm *ConversationManager) processBatch(ctx context.Context, s *Server, loop
 // Each batch is fed atomically to the loop via loop.QueueMessages, so paired
 // sequences (assistant tool_use + user tool_result) cannot interleave with
 // other batches. Batches are processed in FIFO order.
-func (cm *ConversationManager) drainPendingMessages(s *Server) {
+func (cm *conversationManager) drainPendingMessages(s *Server) {
 	// Take exclusive draining ownership. Other callers (turn end,
 	// post-distillation defer, concurrent enqueues) bail out and let the
 	// in-flight drainer pick up their batches before exiting.
@@ -1500,7 +1514,7 @@ restart:
 // the drainer has already snapshotted those same ids for the current pass,
 // restoring them would feed the message twice and insert a duplicate immutable
 // row. Caller must hold cm.mu.
-func (cm *ConversationManager) dropRestoredDuplicatesLocked(snapshot []pendingBatch) {
+func (cm *conversationManager) dropRestoredDuplicatesLocked(snapshot []pendingBatch) {
 	snapIDs := make(map[string]bool)
 	for _, b := range snapshot {
 		if b.Kind == pendingBatchUser {
@@ -1524,7 +1538,7 @@ func (cm *ConversationManager) dropRestoredDuplicatesLocked(snapshot []pendingBa
 
 const maxConsecutiveWarnings = 3
 
-func (cm *ConversationManager) recordWarning(ctx context.Context, text string) error {
+func (cm *conversationManager) recordWarning(ctx context.Context, text string) error {
 	result, err := cm.db.CreateWarningMessage(ctx, cm.conversationID, text, maxConsecutiveWarnings, "Suppressing further warnings.")
 	if err != nil {
 		return err
@@ -1549,7 +1563,7 @@ func (cm *ConversationManager) recordWarning(ctx context.Context, text string) e
 }
 
 // Touch updates last activity timestamp.
-func (cm *ConversationManager) Touch() {
+func (cm *conversationManager) Touch() {
 	cm.mu.Lock()
 	cm.lastActivity = time.Now()
 	cm.mu.Unlock()
@@ -1573,7 +1587,7 @@ func hasNonSystemMessages(messages []generated.Message) bool {
 	return false
 }
 
-func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generated.Message, error) {
+func (cm *conversationManager) createSystemPrompt(ctx context.Context) (*generated.Message, error) {
 	opts := []SystemPromptOption{withoutPromptSkills()}
 	if cm.toolSetConfig.TrustWorkspaceGuidance {
 		opts = append(opts, withTrustedWorkspaceGuidance())
@@ -1593,13 +1607,14 @@ func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generat
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: systemPrompt}},
 	}
 
-	created, err := cm.db.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: cm.conversationID,
-		Type:           db.MessageTypeSystem,
-		LLMData:        systemMessage,
-		UsageData:      llm.Usage{},
-		DisplayData:    cm.systemPromptDisplayData(),
-	})
+	created, err := cm.db.CreateMessage(ctx,
+		cm.conversationID,
+		db.MessageTypeSystem, db.CreateMessageParams{
+
+			LLMData:     systemMessage,
+			UsageData:   llm.Usage{},
+			DisplayData: cm.systemPromptDisplayData(),
+		})
 	if err != nil {
 		return nil, fmt.Errorf("failed to store system prompt: %w", err)
 	}
@@ -1644,14 +1659,14 @@ func systemPromptDisplayData(cfg claudetool.ToolSetConfig) map[string]any {
 	return toolDisplayData(ts.Tools())
 }
 
-func (cm *ConversationManager) systemPromptDisplayData() map[string]any {
+func (cm *conversationManager) systemPromptDisplayData() map[string]any {
 	cfg := cm.toolSetConfig
 	cfg.ToolOverrides = cm.conversationOptions.ToolOverrides
 	cfg.DisableAllTools = cm.conversationOptions.DisableAllTools
 	return systemPromptDisplayData(cfg)
 }
 
-func (cm *ConversationManager) createSubagentSystemPrompt(ctx context.Context, parentConversationID string) (*generated.Message, error) {
+func (cm *conversationManager) createSubagentSystemPrompt(ctx context.Context, parentConversationID string) (*generated.Message, error) {
 	systemPrompt, err := GenerateSubagentSystemPrompt(cm.cwd, parentConversationID, withoutSubagentPromptSkills())
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate subagent system prompt: %w", err)
@@ -1667,13 +1682,14 @@ func (cm *ConversationManager) createSubagentSystemPrompt(ctx context.Context, p
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: systemPrompt}},
 	}
 
-	created, err := cm.db.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: cm.conversationID,
-		Type:           db.MessageTypeSystem,
-		LLMData:        systemMessage,
-		UsageData:      llm.Usage{},
-		DisplayData:    cm.systemPromptDisplayData(),
-	})
+	created, err := cm.db.CreateMessage(ctx,
+		cm.conversationID,
+		db.MessageTypeSystem, db.CreateMessageParams{
+
+			LLMData:     systemMessage,
+			UsageData:   llm.Usage{},
+			DisplayData: cm.systemPromptDisplayData(),
+		})
 	if err != nil {
 		return nil, fmt.Errorf("failed to store subagent system prompt: %w", err)
 	}
@@ -1682,7 +1698,7 @@ func (cm *ConversationManager) createSubagentSystemPrompt(ctx context.Context, p
 	return created, nil
 }
 
-func (cm *ConversationManager) partitionMessages(messages []generated.Message) ([]llm.Message, []llm.SystemContent) {
+func (cm *conversationManager) partitionMessages(messages []generated.Message) ([]llm.Message, []llm.SystemContent) {
 	var history []llm.Message
 	var system []llm.SystemContent
 
@@ -1734,7 +1750,7 @@ func (cm *ConversationManager) partitionMessages(messages []generated.Message) (
 	return history, system
 }
 
-func (cm *ConversationManager) applyDistillationContentOverride(llmMsg *llm.Message, msg generated.Message) {
+func (cm *conversationManager) applyDistillationContentOverride(llmMsg *llm.Message, msg generated.Message) {
 	content, ok := resolveDistilledContent(cm.logger, msg)
 	if !ok {
 		return
@@ -1748,7 +1764,7 @@ func (cm *ConversationManager) applyDistillationContentOverride(llmMsg *llm.Mess
 	llmMsg.Content = append(llmMsg.Content, llm.Content{Type: llm.ContentTypeText, Text: content})
 }
 
-func (cm *ConversationManager) logSystemPromptState(system []llm.SystemContent, messageCount int) {
+func (cm *conversationManager) logSystemPromptState(system []llm.SystemContent, messageCount int) {
 	if len(system) == 0 {
 		cm.logger.Warn("No system prompt found in database", "message_count", messageCount)
 		return
@@ -1761,7 +1777,7 @@ func (cm *ConversationManager) logSystemPromptState(system []llm.SystemContent, 
 	cm.logger.Info("Loaded system prompt from database", "system_items", len(system), "total_length", length)
 }
 
-func (cm *ConversationManager) ensureLoop(chat damodel.Chat, modelID string) error {
+func (cm *conversationManager) ensureLoop(chat damodel.Chat, modelID string) error {
 	if chat == nil {
 		return fmt.Errorf("model %s has no chat implementation", modelID)
 	}
@@ -1852,6 +1868,11 @@ func (cm *ConversationManager) ensureLoop(chat damodel.Chat, modelID string) err
 	toolSetConfig.ToolOverrides = conversationOpts.ToolOverrides
 	toolSetConfig.DisableAllTools = conversationOpts.DisableAllTools
 	toolSetConfig.ReasoningLevel = conversationOpts.ThinkingLevel
+	thinkingLevel, err := llm.ParseThinkingLevelStrict(conversationOpts.ThinkingLevel)
+	if err != nil {
+		cancel()
+		return err
+	}
 	toolSet := claudetool.NewToolSet(processCtx, toolSetConfig)
 	gitRoot := ""
 	if info, err := collectGitInfo(cwd); err == nil {
@@ -1868,42 +1889,43 @@ func (cm *ConversationManager) ensureLoop(chat damodel.Chat, modelID string) err
 	// of individual deltas per second from the Anthropic SSE stream.
 	sf := newStreamFlusher(cm, 50*time.Millisecond)
 
-	loopInstance := loop.NewLoop(loop.Config{
-		Model:         chat,
-		ModelID:       modelID,
-		History:       history,
-		Tools:         toolSet.NativeTools(),
-		ThinkingLevel: llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),
-		RecordMessage: recordMessage,
-		RecordWarning: func(ctx context.Context, text string) error {
-			return cm.recordWarning(ctx, text)
-		},
-		Logger:        logger,
-		System:        system,
-		WorkingDir:    cwd,
-		GetWorkingDir: toolSet.WorkingDir().Get,
-		OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
-			cm.recordGitStateChange(ctx, state)
-		},
-		OnToolProgress: func(progress llm.ToolProgress) {
-			cm.broadcastStream(StreamResponse{
-				ToolProgress: &progress,
-			})
-		},
-		OnStreamDelta: sf.Push,
-		OnStreamDone:  sf.Flush,
-		InjectMessages: func(ctx context.Context) []llm.Message {
-			return cm.takeInjectableSubagentDone(ctx)
-		},
-		Saver:           database.CheckpointSaver(),
-		ThreadID:        conversationID,
-		Namespace:       checkpointNamespace,
-		FilesystemTools: toolSet.FilesystemTools(),
-		SkillCatalog:    skillCatalog,
-		SkillActivation: func(item dago.Skill) string {
-			return "Run `" + skillCommand + item.Name + "` to load the full instructions"
-		},
-	})
+	loopInstance := loop.NewLoop(chat,
+
+		recordMessage, loop.Config{
+			ModelID:       modelID,
+			History:       history,
+			Tools:         toolSet.NativeTools(),
+			ThinkingLevel: thinkingLevel,
+
+			RecordWarning: func(ctx context.Context, text string) error {
+				return cm.recordWarning(ctx, text)
+			},
+			Logger:        logger,
+			System:        system,
+			WorkingDir:    cwd,
+			GetWorkingDir: toolSet.CurrentWorkingDir,
+			OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
+				cm.recordGitStateChange(ctx, state)
+			},
+			OnToolProgress: func(progress llm.ToolProgress) {
+				cm.broadcastStream(StreamResponse{
+					ToolProgress: &progress,
+				})
+			},
+			OnStreamDelta: sf.Push,
+			OnStreamDone:  sf.Flush,
+			InjectMessages: func(ctx context.Context) []llm.Message {
+				return cm.takeInjectableSubagentDone(ctx)
+			},
+			Saver:           database.CheckpointSaver(),
+			ThreadID:        conversationID,
+			Namespace:       checkpointNamespace,
+			FilesystemTools: toolSet.FilesystemTools(),
+			SkillCatalog:    skillCatalog,
+			SkillActivation: func(item dago.Skill) string {
+				return "Run `" + skillCommand + item.Name + "` to load the full instructions"
+			},
+		})
 
 	cm.mu.Lock()
 	if cm.loop != nil {
@@ -1945,16 +1967,16 @@ func (cm *ConversationManager) ensureLoop(chat damodel.Chat, modelID string) err
 	return nil
 }
 
-func (cm *ConversationManager) stopLoop() {
+func (cm *conversationManager) stopLoop() {
 	cm.resetLoop(false)
 }
 
 // ResetLoop drops the in-memory LLM loop so the next turn hydrates from the DB.
-func (cm *ConversationManager) ResetLoop() {
+func (cm *conversationManager) ResetLoop() {
 	cm.resetLoop(true)
 }
 
-func (cm *ConversationManager) resetLoop(markUnhydrated bool) {
+func (cm *conversationManager) resetLoop(markUnhydrated bool) {
 	cm.mu.Lock()
 	cancel := cm.loopCancel
 	toolSet := cm.toolSet
@@ -1978,7 +2000,7 @@ func (cm *ConversationManager) resetLoop(markUnhydrated bool) {
 }
 
 // CancelConversation cancels the current conversation loop and records a cancelled tool result if a tool was in progress
-func (cm *ConversationManager) CancelConversation(ctx context.Context) error {
+func (cm *conversationManager) CancelConversation(ctx context.Context) error {
 	cm.mu.Lock()
 	loopInstance := cm.loop
 	loopCtx := cm.loopCtx
@@ -2173,7 +2195,7 @@ type GitInfoUserData struct {
 
 // recordGitStateChange creates a gitinfo message when git state changes.
 // This message is visible to users in the UI but is not sent to the LLM.
-func (cm *ConversationManager) recordGitStateChange(ctx context.Context, state *gitstate.GitState) {
+func (cm *conversationManager) recordGitStateChange(ctx context.Context, state *gitstate.GitState) {
 	if state == nil || !state.IsRepo {
 		return
 	}
@@ -2192,13 +2214,14 @@ func (cm *ConversationManager) recordGitStateChange(ctx context.Context, state *
 		Text:     state.String(),
 	}
 
-	createdMsg, err := cm.db.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: cm.conversationID,
-		Type:           db.MessageTypeGitInfo,
-		LLMData:        message,
-		UserData:       userData,
-		UsageData:      llm.Usage{},
-	})
+	createdMsg, err := cm.db.CreateMessage(ctx,
+		cm.conversationID,
+		db.MessageTypeGitInfo, db.CreateMessageParams{
+
+			LLMData:   message,
+			UserData:  userData,
+			UsageData: llm.Usage{},
+		})
 	if err != nil {
 		cm.logger.Error("Failed to record git state change", "error", err)
 		return
@@ -2248,7 +2271,7 @@ type ModelSettingsChange struct {
 
 // GetThinkingLevel returns the conversation's current user-facing reasoning
 // level name ("" means the service default).
-func (cm *ConversationManager) GetThinkingLevel() string {
+func (cm *conversationManager) GetThinkingLevel() string {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.conversationOptions.ThinkingLevel
@@ -2261,7 +2284,7 @@ func (cm *ConversationManager) GetThinkingLevel() string {
 // shows exactly where the change happened. Both the model and the reasoning
 // level are baked into the loop at build time, so any change requires a loop
 // rebuild.
-func (cm *ConversationManager) ApplyModelSettings(ctx context.Context, ch ModelSettingsChange) error {
+func (cm *conversationManager) ApplyModelSettings(ctx context.Context, ch ModelSettingsChange) error {
 	// Persist the reasoning level into the conversation options and mirror it
 	// in memory. The loop reset below marks the manager unhydrated, so the next
 	// turn re-reads options from the DB anyway; the in-memory update keeps state
@@ -2366,25 +2389,26 @@ func reasoningDisplayName(level string) string {
 // recordModelCommandInfo records an informational modelchange marker (bare
 // /model output, already-using notice, or an error) that does not switch the
 // model. From and To are left empty.
-func (cm *ConversationManager) recordModelCommandInfo(ctx context.Context, text string) error {
+func (cm *conversationManager) recordModelCommandInfo(ctx context.Context, text string) error {
 	return cm.recordModelChangeMarker(ctx, ModelChangeUserData{Text: text})
 }
 
 // recordModelChangeMarker persists and broadcasts a modelchange marker.
-func (cm *ConversationManager) recordModelChangeMarker(ctx context.Context, userData ModelChangeUserData) error {
+func (cm *conversationManager) recordModelChangeMarker(ctx context.Context, userData ModelChangeUserData) error {
 	message := llm.Message{
 		Role:    llm.MessageRoleAssistant,
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: userData.Text}},
 	}
 
-	createdMsg, err := cm.db.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID:      cm.conversationID,
-		Type:                db.MessageTypeModelChange,
-		LLMData:             message,
-		UserData:            userData,
-		UsageData:           llm.Usage{},
-		ExcludedFromContext: true,
-	})
+	createdMsg, err := cm.db.CreateMessage(ctx,
+		cm.conversationID,
+		db.MessageTypeModelChange, db.CreateMessageParams{
+
+			LLMData:             message,
+			UserData:            userData,
+			UsageData:           llm.Usage{},
+			ExcludedFromContext: true,
+		})
 	if err != nil {
 		return fmt.Errorf("failed to record model change: %w", err)
 	}
@@ -2407,7 +2431,7 @@ func (cm *ConversationManager) recordModelChangeMarker(ctx context.Context, user
 }
 
 // notifyGitStateChange publishes a gitinfo message to subscribers.
-func (cm *ConversationManager) notifyGitStateChange(ctx context.Context, msg *generated.Message) {
+func (cm *conversationManager) notifyGitStateChange(ctx context.Context, msg *generated.Message) {
 	var conversation generated.Conversation
 	err := cm.db.Queries(ctx, func(q *generated.Queries) error {
 		var err error

@@ -19,33 +19,28 @@ import (
 	"github.com/semistrict/dago/datool"
 )
 
-// AgentMode specifies whether the agent should generate new steps or fix existing ones.
-type AgentMode int
+// agentMode specifies whether the agent should generate new steps or fix existing ones.
+type agentMode int
 
 const (
-	AgentModeGenerate AgentMode = iota
-	AgentModeFix
+	agentModeGenerate agentMode = iota
+	agentModeFix
 )
 
-// AgentConfig configures an agent run.
-type AgentConfig struct {
-	Mode          AgentMode
-	Description   string
+// agentConfig configures an agent run.
+type agentConfig struct {
+	Mode          agentMode
 	PreviousSteps []byte // JSON of previous steps (fix mode)
 	PreviousError string // Error from previous run (fix mode)
 	CacheFilePath string // Path to the cached steps JSON for this test (fix mode); lets the agent inspect its git history for prior flakiness
-	Browser       *Browser
-	BaseURL       string
-	Model         string
 	OpenAIBaseURL string
-	OpenAIAPIKey  string
 	HTTPClient    *http.Client
 	RepoRoot      string
 	Verbose       bool
 }
 
-// AgentResult is the result of an agent run.
-type AgentResult struct {
+// agentResult is the result of an agent run.
+type agentResult struct {
 	Success        bool
 	Error          string
 	StepsJSON      []byte
@@ -238,7 +233,7 @@ func (state *agentRunState) snapshot() (lastSteps []byte, lastResults []StepResu
 	return append([]byte(nil), state.lastSteps...), append([]StepResult(nil), state.lastResults...), append([]byte(nil), state.finalSteps...), append([]StepResult(nil), state.finalResult...), state.lastError
 }
 
-func buildTools(cfg *AgentConfig, state *agentRunState, logf func(string, ...any)) []datool.Tool {
+func buildTools(cfg *agentConfig, browser *Browser, baseURL string, state *agentRunState, logf func(string, ...any)) []datool.Tool {
 	runSteps := datool.MustNew(
 		"run_steps",
 		"Execute an array of DSL test steps against the browser. When the complete test passes, call this tool with final=true so those exact steps can be cached.",
@@ -251,7 +246,7 @@ func buildTools(cfg *AgentConfig, state *agentRunState, logf func(string, ...any
 			for index, step := range steps {
 				logf("  [%d] %s", index, StepSummary(step))
 			}
-			results, executeErr := cfg.Browser.ExecuteSteps(ctx, cfg.BaseURL, steps)
+			results, executeErr := browser.ExecuteSteps(ctx, baseURL, steps)
 			state.record(input, results, executeErr)
 			var summary strings.Builder
 			for index, result := range results {
@@ -280,7 +275,7 @@ func buildTools(cfg *AgentConfig, state *agentRunState, logf func(string, ...any
 	)
 	screenshot := datool.MustNew("screenshot", "Take a screenshot of the current browser page and return it as a PNG image.", func(ctx context.Context, _ screenshotInput) (datool.Result, error) {
 		logf("tool: screenshot")
-		png, err := cfg.Browser.Screenshot(ctx)
+		png, err := browser.Screenshot(ctx)
 		if err != nil {
 			return datool.Result{}, fmt.Errorf("screenshot: %w", err)
 		}
@@ -293,15 +288,24 @@ func buildTools(cfg *AgentConfig, state *agentRunState, logf func(string, ...any
 	return []datool.Tool{runSteps, screenshot, gitCommand}
 }
 
-// RunAgent generates or heals one browser test through dago's native agent
+// runAgent generates or heals one browser test through dago's native agent
 // graph. Model messages and tool results remain provider-neutral throughout;
 // only the OpenAI Responses adapter knows the wire protocol.
-func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("agent config is required")
+func runAgent(ctx context.Context, browser *Browser, baseURL, model, apiKey, description string, cfg agentConfig) (*agentResult, error) {
+	if nilContext(ctx) {
+		return nil, fmt.Errorf("context is required")
 	}
-	if cfg.Browser == nil {
+	if browser == nil {
 		return nil, fmt.Errorf("browser is required")
+	}
+	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(description) == "" {
+		return nil, fmt.Errorf("base URL and description are required")
+	}
+	if strings.TrimSpace(apiKey) == "" || strings.TrimSpace(model) == "" {
+		return nil, fmt.Errorf("OpenAI API key and model are required")
+	}
+	if cfg.Mode != agentModeGenerate && cfg.Mode != agentModeFix {
+		return nil, fmt.Errorf("invalid agent mode %d", cfg.Mode)
 	}
 	logf := func(format string, args ...any) {
 		if cfg.Verbose {
@@ -311,27 +315,24 @@ func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, agentBudget)
 	defer cancel()
 
-	chat, err := openai.NewAPIKey(cfg.OpenAIAPIKey, openai.Options{
-		Model: cfg.Model, BaseURL: cfg.OpenAIBaseURL, HTTPClient: cfg.HTTPClient,
+	chat := openai.NewAPIKey(apiKey, model, openai.Options{
+		BaseURL: cfg.OpenAIBaseURL, HTTPClient: cfg.HTTPClient,
 		MaxOutputTokens: 8192,
 		// LazyCue owns the user-visible retry budget below. Disable the
 		// transport adapter's retry loop so three logical attempts cannot
 		// multiply into twelve HTTP requests.
 		RetryBackoff: []time.Duration{},
 	})
-	if err != nil {
-		return nil, err
-	}
 	retrying := &retryingChat{inner: chat, attempts: modelMaxAttempts, backoff: modelRetryBackoff, verbose: cfg.Verbose}
 	state := &agentRunState{}
 	compiled := dagent.New(retrying, dagent.Options{
 		Name: "lazycue", SystemMessage: damessage.System(buildSystemPrompt()),
-		Tools: buildTools(cfg, state, logf), RecursionLimit: maxAgentTurns*2 + 3,
+		Tools: buildTools(&cfg, browser, baseURL, state, logf), RecursionLimit: maxAgentTurns*2 + 3,
 		MaxConcurrency: 1,
 	})
-	userPrompt := buildGenerateUserPrompt(cfg.Description)
-	if cfg.Mode == AgentModeFix {
-		userPrompt = buildFixUserPrompt(cfg.Description, cfg.PreviousSteps, cfg.PreviousError, cfg.CacheFilePath)
+	userPrompt := buildGenerateUserPrompt(description)
+	if cfg.Mode == agentModeFix {
+		userPrompt = buildFixUserPrompt(description, cfg.PreviousSteps, cfg.PreviousError, cfg.CacheFilePath)
 	}
 	result, err := compiled.Invoke(ctx, dagent.Input{Messages: []damessage.Message{damessage.Human(userPrompt)}})
 	if err != nil {
@@ -357,16 +358,16 @@ func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
 			if lastError == "" {
 				lastError = text
 			}
-			return &AgentResult{Success: false, Error: lastError, StepsJSON: lastSteps, StepResults: lastResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
+			return &agentResult{Success: false, Error: lastError, StepsJSON: lastSteps, StepResults: lastResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
 		}
 	}
 	if finalSteps != nil && allPassed(finalResults) {
-		return &AgentResult{Success: true, StepsJSON: finalSteps, StepResults: finalResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
+		return &agentResult{Success: true, StepsJSON: finalSteps, StepResults: finalResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
 	}
 	if lastError == "" {
 		lastError = "agent stopped without producing a complete passing test"
 	}
-	return &AgentResult{Success: false, Error: lastError, StepsJSON: lastSteps, StepResults: lastResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
+	return &agentResult{Success: false, Error: lastError, StepsJSON: lastSteps, StepResults: lastResults, InputTokens: inputTokens, OutputTokens: outputTokens}, nil
 }
 
 func usageFromMessages(messages []damessage.Message) (inputTokens, outputTokens int) {

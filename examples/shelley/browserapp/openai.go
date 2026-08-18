@@ -3,6 +3,7 @@ package browserapp
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/daproviders/openai"
@@ -10,6 +11,18 @@ import (
 )
 
 func customModelChat(model CustomModel) (damodel.Chat, error) {
+	if strings.TrimSpace(model.APIKey) == "" || strings.TrimSpace(model.ModelName) == "" || model.MaxTokens < 0 {
+		return nil, fmt.Errorf("model API key, model name, and non-negative token limit are required")
+	}
+	if err := validateModelEnum("image_support", model.ImageSupport, "", "auto", "yes", "no"); err != nil {
+		return nil, err
+	}
+	if err := validateModelEnum("reasoning_support", model.ReasoningSupport, "", "auto", "yes", "no"); err != nil {
+		return nil, err
+	}
+	if err := validateModelEnum("reasoning_effort", model.ReasoningEffort, "", "off", "none", "minimal", "low", "medium", "high", "xhigh"); err != nil {
+		return nil, err
+	}
 	switch model.ProviderType {
 	case "openai-responses":
 		return openAIChat(model)
@@ -20,16 +33,25 @@ func customModelChat(model CustomModel) (damodel.Chat, error) {
 	}
 }
 
+func validateModelEnum(field, value string, allowed ...string) error {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported %s %q", field, value)
+}
+
 func openAIChat(model CustomModel) (damodel.Chat, error) {
 	var reasoning *damodel.Reasoning
 	if model.ReasoningEffort != "" {
 		reasoning = &damodel.Reasoning{Effort: model.ReasoningEffort}
 	}
-	return openai.NewAPIKey(model.APIKey, openai.Options{
-		Model: model.ModelName, BaseURL: model.Endpoint, ContextWindow: int(model.MaxTokens),
+	return openai.NewAPIKey(model.APIKey, model.ModelName, openai.Options{
+		BaseURL: model.Endpoint, ContextWindow: int(model.MaxTokens),
 		HTTPClient:       &http.Client{Transport: http.DefaultTransport},
 		DefaultReasoning: reasoning, WebSearch: true,
-	})
+	}), nil
 }
 
 func openRouterChat(model CustomModel) (damodel.Chat, error) {
@@ -38,16 +60,13 @@ func openRouterChat(model CustomModel) (damodel.Chat, error) {
 		reasoning = &damodel.Reasoning{Effort: model.ReasoningEffort}
 	}
 	requireParameters := true
-	chat, err := openrouter.New(model.APIKey, openrouter.Options{
-		Model: model.ModelName, BaseURL: model.Endpoint, ContextWindow: int(model.MaxTokens),
+	chat := openrouter.New(model.APIKey, model.ModelName, openrouter.Options{
+		BaseURL: model.Endpoint, ContextWindow: int(model.MaxTokens),
 		HTTPClient:       &http.Client{Transport: http.DefaultTransport},
 		DefaultReasoning: reasoning,
 		AppTitle:         "Shelley",
 		Routing:          &openrouter.ProviderRouting{RequireParameters: &requireParameters},
 	})
-	if err != nil {
-		return nil, err
-	}
 	return damodel.WithProfile(chat, func(profile *damodel.Profile) {
 		profile.SupportsImages = model.ImageSupport != "no"
 		profile.SupportsReasoning = model.ReasoningSupport != "no"

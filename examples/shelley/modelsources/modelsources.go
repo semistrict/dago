@@ -2,9 +2,13 @@
 package modelsources
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"strings"
 
+	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/examples/shelley/llm/llmhttp"
 	"github.com/semistrict/dago/examples/shelley/models"
 )
@@ -46,12 +50,27 @@ func Env(openAIKey string) Source {
 
 // Build materializes catalog entries from sources in order. The first source
 // to provide a model ID wins.
-func Build(catalog []models.Model, sources []Source, httpClient *http.Client, logger *slog.Logger) []models.Built {
+func Build(catalog []models.Model, sources []Source, httpClient *http.Client, logger *slog.Logger) ([]models.Built, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if httpClient == nil {
 		httpClient = llmhttp.NewClient(nil)
+	}
+	catalogIDs := make(map[string]struct{}, len(catalog))
+	for _, model := range catalog {
+		if strings.TrimSpace(model.ID) == "" || model.Build == nil {
+			return nil, fmt.Errorf("catalog model ID and builder are required")
+		}
+		if _, exists := catalogIDs[model.ID]; exists {
+			return nil, fmt.Errorf("catalog contains duplicate model ID %q", model.ID)
+		}
+		catalogIDs[model.ID] = struct{}{}
+		switch model.APIType {
+		case models.APITypeOpenAIResponses, models.APITypeOpenRouterResponses, models.APITypeBuiltIn:
+		default:
+			return nil, fmt.Errorf("catalog model %q has invalid API type %q", model.ID, model.APIType)
+		}
 	}
 	seen := map[string]bool{}
 	var result []models.Built
@@ -63,8 +82,10 @@ func Build(catalog []models.Model, sources []Source, httpClient *http.Client, lo
 			}
 			chat, err := model.Build(connection.baseURL, connection.apiKey, httpClient)
 			if err != nil {
-				logger.Warn("Could not materialize model", "id", model.ID, "source", source.labelFor(model.Provider), "error", err)
-				continue
+				return nil, fmt.Errorf("materialize model %q from %s: %w", model.ID, source.labelFor(model.Provider), err)
+			}
+			if nilChat(chat) {
+				return nil, fmt.Errorf("materialize model %q from %s: builder returned nil", model.ID, source.labelFor(model.Provider))
 			}
 			seen[model.ID] = true
 			baseURL := connection.baseURL
@@ -78,5 +99,18 @@ func Build(catalog []models.Model, sources []Source, httpClient *http.Client, lo
 			})
 		}
 	}
-	return result
+	return result, nil
+}
+
+func nilChat(chat damodel.Chat) bool {
+	if chat == nil {
+		return true
+	}
+	value := reflect.ValueOf(chat)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }

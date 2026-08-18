@@ -26,13 +26,14 @@ func TestLoopPrefersNativeToolOverLegacyFacade(t *testing.T) {
 	}
 	chat := &nativeToolChat{}
 	var recorded []llm.Message
-	runtime := NewLoop(Config{
-		Model: chat, Tools: []datool.Tool{native},
-		RecordMessage: func(_ context.Context, item llm.Message, _ llm.Usage, _ []llm.PurposedUsage) error {
+	runtime := NewLoop(chat,
+
+		func(_ context.Context, item llm.Message, _ llm.Usage, _ []llm.PurposedUsage) error {
 			recorded = append(recorded, item)
 			return nil
-		},
-	})
+		}, Config{
+			Tools: []datool.Tool{native},
+		})
 	runtime.QueueUserMessage(userStringMessage("lookup"))
 	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)

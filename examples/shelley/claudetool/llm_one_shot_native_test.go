@@ -20,10 +20,10 @@ func TestLLMOneShotNativeToolUsesNativeModelContract(t *testing.T) {
 	}
 	chat := modeltest.NewPredictable(modeltest.PredictableOptions{DefaultResponse: "native one-shot result"})
 	provider := &oneShotMockProvider{services: map[string]damodel.Chat{"native-model": chat}}
-	executable := (&LLMOneShotTool{
-		LLMProvider: provider, ModelID: "native-model", WorkingDir: NewMutableWorkingDir(root),
+	executable := (&llmOneShotTool{
+		LLMProvider: provider, ModelID: "native-model", WorkingDir: newMutableWorkingDir(root),
 		AvailableModels: []AvailableModel{{ID: "native-model"}},
-	}).NativeTool()
+	}).nativeTool()
 	result, err := executable.Execute(context.Background(), json.RawMessage(`{"prompt_files":"prompt.txt"}`), datool.Runtime{CallID: "call-1"})
 	if err != nil {
 		t.Fatal(err)

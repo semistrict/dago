@@ -36,11 +36,12 @@ func TestMessageOpenAIResponsesReasoningMetadataRoundTrip(t *testing.T) {
 			},
 		}},
 	}
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeAgent,
-		LLMData:        want,
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeAgent, CreateMessageParams{
+
+			LLMData: want,
+		}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,13 +115,14 @@ func TestMessageService_Create(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg, err := db.CreateMessage(ctx, CreateMessageParams{
-				ConversationID: conv.ConversationID,
-				Type:           tt.msgType,
-				LLMData:        tt.llmData,
-				UserData:       tt.userData,
-				UsageData:      tt.usageData,
-			})
+			msg, err := db.CreateMessage(ctx,
+				conv.ConversationID,
+				tt.msgType, CreateMessageParams{
+
+					LLMData:   tt.llmData,
+					UserData:  tt.userData,
+					UsageData: tt.usageData,
+				})
 			if err != nil {
 				t.Errorf("Create() error = %v", err)
 				return
@@ -175,13 +177,14 @@ func TestMessageService_LLMModelColumns(t *testing.T) {
 	}
 
 	// Agent message carries the LLM endpoint URL and model name.
-	agent, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeAgent,
-		LLMData:        map[string]string{"response": "hi"},
-		LLMAPIURL:      "https://api.anthropic.com/v1/messages",
-		ModelName:      "claude-opus-4-7",
-	})
+	agent, err := db.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeAgent, CreateMessageParams{
+
+			LLMData:   map[string]string{"response": "hi"},
+			LLMAPIURL: "https://api.anthropic.com/v1/messages",
+			ModelName: "claude-opus-4-7",
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage() error = %v", err)
 	}
@@ -193,11 +196,12 @@ func TestMessageService_LLMModelColumns(t *testing.T) {
 	}
 
 	// User message has no model metadata: empty strings store as NULL.
-	user, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        map[string]string{"content": "hi"},
-	})
+	user, err := db.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: map[string]string{"content": "hi"},
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage() error = %v", err)
 	}
@@ -225,11 +229,12 @@ func TestMessageService_GetByID(t *testing.T) {
 	}
 
 	// Create a test message
-	created, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        map[string]string{"content": "test message"},
-	})
+	created, err := db.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: map[string]string{"content": "test message"},
+		})
 	if err != nil {
 		t.Fatalf("Failed to create test message: %v", err)
 	}
@@ -273,11 +278,12 @@ func TestMessageService_ListByConversation(t *testing.T) {
 	// Create multiple test messages
 	msgTypes := []MessageType{MessageTypeUser, MessageTypeAgent, MessageTypeTool}
 	for i, msgType := range msgTypes {
-		_, err := db.CreateMessage(ctx, CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           msgType,
-			LLMData:        map[string]interface{}{"index": i, "type": string(msgType)},
-		})
+		_, err := db.CreateMessage(ctx,
+			conv.ConversationID,
+			msgType, CreateMessageParams{
+
+				LLMData: map[string]interface{}{"index": i, "type": string(msgType)},
+			})
 		if err != nil {
 			t.Fatalf("Failed to create test message %d: %v", i, err)
 		}
@@ -327,11 +333,12 @@ func TestMessageService_ListByType(t *testing.T) {
 	// Create messages of different types
 	msgTypes := []MessageType{MessageTypeUser, MessageTypeAgent, MessageTypeUser, MessageTypeTool}
 	for i, msgType := range msgTypes {
-		_, err := db.CreateMessage(ctx, CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           msgType,
-			LLMData:        map[string]interface{}{"index": i},
-		})
+		_, err := db.CreateMessage(ctx,
+			conv.ConversationID,
+			msgType, CreateMessageParams{
+
+				LLMData: map[string]interface{}{"index": i},
+			})
 		if err != nil {
 			t.Fatalf("Failed to create test message %d: %v", i, err)
 		}
@@ -380,11 +387,12 @@ func TestMessageService_GetLatest(t *testing.T) {
 	// Create multiple test messages
 	var lastCreated *generated.Message
 	for i := range 3 {
-		created, err := db.CreateMessage(ctx, CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           MessageTypeUser,
-			LLMData:        map[string]interface{}{"index": i},
-		})
+		created, err := db.CreateMessage(ctx,
+			conv.ConversationID,
+			MessageTypeUser, CreateMessageParams{
+
+				LLMData: map[string]interface{}{"index": i},
+			})
 		if err != nil {
 			t.Fatalf("Failed to create test message %d: %v", i, err)
 		}
@@ -419,11 +427,12 @@ func TestMessageService_Delete(t *testing.T) {
 	}
 
 	// Create a test message
-	created, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        map[string]string{"content": "test message"},
-	})
+	created, err := db.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: map[string]string{"content": "test message"},
+		})
 	if err != nil {
 		t.Fatalf("Failed to create test message: %v", err)
 	}
@@ -476,11 +485,12 @@ func TestMessageService_CountInConversation(t *testing.T) {
 
 	// Create test messages
 	for i := range 4 {
-		_, err := db.CreateMessage(ctx, CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           MessageTypeUser,
-			LLMData:        map[string]interface{}{"index": i},
-		})
+		_, err := db.CreateMessage(ctx,
+			conv.ConversationID,
+			MessageTypeUser, CreateMessageParams{
+
+				LLMData: map[string]interface{}{"index": i},
+			})
 		if err != nil {
 			t.Fatalf("Failed to create test message %d: %v", i, err)
 		}
@@ -519,11 +529,12 @@ func TestMessageService_CountByType(t *testing.T) {
 	// Create messages of different types
 	msgTypes := []MessageType{MessageTypeUser, MessageTypeAgent, MessageTypeUser, MessageTypeTool, MessageTypeUser}
 	for i, msgType := range msgTypes {
-		_, err := db.CreateMessage(ctx, CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           msgType,
-			LLMData:        map[string]interface{}{"index": i},
-		})
+		_, err := db.CreateMessage(ctx,
+			conv.ConversationID,
+			msgType, CreateMessageParams{
+
+				LLMData: map[string]interface{}{"index": i},
+			})
 		if err != nil {
 			t.Fatalf("Failed to create test message %d: %v", i, err)
 		}
@@ -575,11 +586,12 @@ func TestMessageService_ListMessagesByConversationPaginated(t *testing.T) {
 
 	// Create multiple test messages
 	for i := range 5 {
-		_, err := db.CreateMessage(ctx, CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           MessageTypeUser,
-			LLMData:        map[string]string{"text": fmt.Sprintf("test message %d", i)},
-		})
+		_, err := db.CreateMessage(ctx,
+			conv.ConversationID,
+			MessageTypeUser, CreateMessageParams{
+
+				LLMData: map[string]string{"text": fmt.Sprintf("test message %d", i)},
+			})
 		if err != nil {
 			t.Fatalf("Failed to create test message %d: %v", i, err)
 		}
@@ -636,20 +648,22 @@ func TestMessageUserEmailRoundTrip(t *testing.T) {
 	}
 
 	// A user message with an author.
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-		UserEmail:      "alice@example.com",
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData:   llm.Message{Role: llm.MessageRoleUser},
+			UserEmail: "alice@example.com",
+		}); err != nil {
 		t.Fatal(err)
 	}
 	// A user message with no author (e.g. direct/local access): stored NULL.
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleUser},
+		}); err != nil {
 		t.Fatal(err)
 	}
 

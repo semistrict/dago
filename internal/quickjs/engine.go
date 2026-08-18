@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/semistrict/dago/internal/optionvalue"
 	"github.com/semistrict/dago/internal/quickjswasm"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -71,7 +71,6 @@ func (*DeadlockError) Error() string {
 type Options struct {
 	MemoryLimit   uint64
 	StackLimit    uint64
-	Timeout       time.Duration
 	MaxStdout     int
 	HostFunctions map[string]HostFunction
 }
@@ -123,10 +122,30 @@ type hostCompletion struct {
 }
 
 // New creates an isolated VM and optionally restores a whole-memory snapshot.
-func New(ctx context.Context, snapshot []byte, optionValues ...Options) (*Engine, error) {
-	options := optionvalue.Resolve("QuickJS engine", optionValues)
+func New(ctx context.Context, options Options, snapshot []byte) (*Engine, error) {
+	if nilQuickJSDependency(ctx) {
+		panic("QuickJS context is required")
+	}
+	if options.MaxStdout < 0 {
+		panic("QuickJS maximum stdout cannot be negative")
+	}
+	if options.MemoryLimit == 0 {
+		options.MemoryLimit = defaultTrackingMemoryLimit
+	}
+	const pageSize = uint64(65536)
+	pages := (options.MemoryLimit + pageSize - 1) / pageSize
+	if pages > 1<<16 {
+		panic(fmt.Sprintf("QuickJS memory limit %d exceeds wasm32 capacity", options.MemoryLimit))
+	}
+	hostFunctions := make(map[string]HostFunction, len(options.HostFunctions))
+	for name, function := range options.HostFunctions {
+		if name == "" || function == nil {
+			panic("QuickJS host function name and implementation are required")
+		}
+		hostFunctions[name] = function
+	}
 	e := &Engine{
-		maxStdout: options.MaxStdout, hostFunctions: options.HostFunctions,
+		maxStdout: options.MaxStdout, hostFunctions: hostFunctions,
 		pending: make(chan hostCompletion, 64),
 	}
 	if e.maxStdout <= 0 {
@@ -135,14 +154,7 @@ func New(ctx context.Context, snapshot []byte, optionValues ...Options) (*Engine
 	// The interpreter backend is portable to Go's js/wasm target; the compiler
 	// backend is native-only.
 	config := wazero.NewRuntimeConfigInterpreter()
-	if options.MemoryLimit > 0 {
-		const pageSize = uint64(65536)
-		pages := (options.MemoryLimit + pageSize - 1) / pageSize
-		if pages > 1<<16 {
-			return nil, fmt.Errorf("QuickJS memory limit %d exceeds wasm32 capacity", options.MemoryLimit)
-		}
-		config = config.WithMemoryLimitPages(uint32(pages))
-	}
+	config = config.WithMemoryLimitPages(uint32(pages))
 	e.runtime = wazero.NewRuntimeWithConfig(ctx, config)
 	fail := func(err error) (*Engine, error) { _ = e.Close(context.Background()); return nil, err }
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, e.runtime); err != nil {
@@ -200,6 +212,19 @@ func New(ctx context.Context, snapshot []byte, optionValues ...Options) (*Engine
 		return fail(err)
 	}
 	return e, nil
+}
+
+func nilQuickJSDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (e *Engine) setupDirtyTracking(ctx context.Context, memoryLimit uint64) error {

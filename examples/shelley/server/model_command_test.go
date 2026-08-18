@@ -85,7 +85,7 @@ func newTwoModelTestServer(t *testing.T) (*Server, *db.DB) {
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	ps := loop.NewPredictableService()
-	svr := NewServer(database, &twoModelLLMManager{chat: ps},
+	svr := MustNewServer(database, &twoModelLLMManager{chat: ps},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		false, "model-a", "")
@@ -516,7 +516,7 @@ func TestModelCommandAmbiguous(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	ps := loop.NewPredictableService()
-	srv := NewServer(database, &levelNamedModelLLMManager{chat: ps},
+	srv := MustNewServer(database, &levelNamedModelLLMManager{chat: ps},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		false, "model-a", "")

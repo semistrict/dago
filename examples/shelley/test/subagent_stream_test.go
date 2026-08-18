@@ -100,7 +100,7 @@ func setupTestServerForSubagent(t *testing.T) (*server.Server, *db.DB, *httptest
 
 	// Create temporary database
 	tempDB := t.TempDir() + "/test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -124,7 +124,7 @@ func setupTestServerForSubagent(t *testing.T) (*server.Server, *db.DB, *httptest
 		EnableBrowser: false,
 	}
 
-	svr := server.NewServer(database, llmManager, toolSetConfig, logger, true, "predictable", "")
+	svr := server.MustNewServer(database, llmManager, toolSetConfig, logger, true, "predictable", "")
 
 	mux := http.NewServeMux()
 	svr.RegisterRoutes(mux)

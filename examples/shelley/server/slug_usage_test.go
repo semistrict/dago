@@ -31,20 +31,17 @@ func newUsageCollectingServer(t *testing.T) (*Server, *db.DB) {
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	mgr, err := models.NewManager(&models.Config{
-		Models: []models.Built{{
-			ID:       "predictable",
-			Provider: models.ProviderBuiltIn,
-			Source:   "test",
-			Tags:     "slug",
-			Chat:     loop.NewPredictableService(),
-		}},
-		Logger: logger,
-	})
+	mgr, err := models.NewManager([]models.Built{{
+		ID:       "predictable",
+		Provider: models.ProviderBuiltIn,
+		Source:   "test",
+		Tags:     "slug",
+		Chat:     loop.NewPredictableService(),
+	}}, models.Config{Logger: logger})
 	if err != nil {
 		t.Fatal(err)
 	}
-	svr := NewServer(database, mgr, claudetool.ToolSetConfig{EnableBrowser: false},
+	svr := MustNewServer(database, mgr, claudetool.ToolSetConfig{EnableBrowser: false},
 		logger, true, "predictable", "")
 	svr.hooksDir = t.TempDir()
 	if svr.terminals != nil {
@@ -167,7 +164,7 @@ func TestRetryWorksWithTrailingSlugMarker(t *testing.T) {
 	ps := loop.NewPredictableService()
 	switchable := &switchableTestLLM{inner: ps, err: fmt.Errorf("connection error: EOF")}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	svr := NewServer(database, &testLLMManager{service: switchable},
+	svr := MustNewServer(database, &testLLMManager{service: switchable},
 		claudetool.ToolSetConfig{EnableBrowser: false}, logger, true, "predictable", "")
 	if svr.terminals != nil {
 		svr.terminals.SetSpawner(InProcessSpawner)

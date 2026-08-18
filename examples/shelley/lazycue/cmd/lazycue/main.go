@@ -50,7 +50,6 @@ func runTests() {
 	}
 
 	opts := lazycue.Options{
-		BaseURL:       *baseURL,
 		CacheDir:      resolvedCacheDir,
 		Model:         *model,
 		OpenAIBaseURL: *apiURL,
@@ -61,7 +60,7 @@ func runTests() {
 
 	ctx := context.Background()
 
-	result, err := lazycue.Run(ctx, opts, description)
+	result, err := lazycue.Run(ctx, *baseURL, opts, description)
 	if err != nil {
 		printError(description, err)
 		os.Exit(1)

@@ -44,6 +44,9 @@ const engineeringAgentPrompt = `## Engineering-Agent Behavior
 - Before finishing, reconcile every item created through write_todos. Mark each done, blocked with a concise reason, or cancelled; do not finish with pending items.`
 
 func builtinHarnessProfile(provider, model string) (Profile, bool) {
+	if prompt, ok := glm52HarnessPrompt(provider, model); ok {
+		return Profile{Name: provider + ":" + model, SystemPromptSuffix: &prompt}, true
+	}
 	if provider == "anthropic" {
 		var prompt string
 		switch model {

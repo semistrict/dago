@@ -27,10 +27,13 @@ type ToolRetryOptions struct {
 // ToolRetry returns middleware that retries whole tool executions. Attempts includes
 // the initial call. Context cancellation and deadline errors are never retried.
 func ToolRetry(options ToolRetryOptions) Middleware {
+	if options.Attempts < 0 || options.Backoff < 0 {
+		panic("tool retry attempts and backoff cannot be negative")
+	}
 	if options.Name == "" {
 		options.Name = "tool_retry"
 	}
-	if options.Attempts <= 0 {
+	if options.Attempts == 0 {
 		options.Attempts = 1
 	}
 	return Middleware{Name: options.Name, WrapToolCall: func(ctx context.Context, request ToolCallRequest, next ToolHandler) (ToolCallResponse, error) {

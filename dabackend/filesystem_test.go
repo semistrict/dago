@@ -62,6 +62,41 @@ func TestFilesystemCRUDPaginationGlobAndGrep(t *testing.T) {
 	}
 }
 
+func TestFilesystemHostPathSearchDefaultsToConfiguredWorkingDirectory(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "inside.txt"), []byte("needle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "outside.txt"), []byte("parent"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewFilesystem(FilesystemOptions{Root: root, AllowHostPaths: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolvedRoot, "inside.txt")
+	glob, err := backend.Glob(t.Context(), "*.txt", "")
+	if err != nil || len(glob.Matches) != 1 || glob.Matches[0].Path != want {
+		t.Fatalf("host glob = %#v, %v", glob, err)
+	}
+	grep, err := backend.Grep(t.Context(), "needle", GrepOptions{})
+	if err != nil || len(grep.Matches) != 1 || grep.Matches[0].Path != want {
+		t.Fatalf("host grep = %#v, %v", grep, err)
+	}
+	read, err := backend.Read(t.Context(), "../outside.txt", 0, 10)
+	if err != nil || read.Data == nil || read.Data.Content != "parent" {
+		t.Fatalf("host parent read = %#v, %v", read, err)
+	}
+}
+
 func TestFilesystemBlocksTraversalAndSymlinkEscapes(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

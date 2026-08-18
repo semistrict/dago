@@ -52,14 +52,13 @@ func TestInvokeMapsOpenRouterResponsesRequest(t *testing.T) {
 		AllowFallbacks: &noFallbacks, RequireParameters: &requireParameters,
 		DataCollection: "deny", Sort: "throughput",
 	}
-	client := New("secret",
-		"anthropic/claude-sonnet-4.6", Options{
-			BaseURL: server.URL + "/responses", HTTPClient: server.Client(),
-			AppURL: "https://example.test/agent", AppTitle: "Example Agent", Routing: routing,
-			ContextWindow: 200_000, MaxOutputTokens: 32_000, RetryBackoff: []time.Duration{},
-		})
-
+	client := New("secret", "anthropic/claude-sonnet-4.6", Options{BaseURL: server.URL + "/responses", HTTPClient: server.Client(),
+		AppURL: "https://example.test/agent", AppTitle: "Example Agent", Routing: routing,
+		ContextWindow: 200_000, MaxOutputTokens: 32_000, RetryBackoff: []time.Duration{},
+	})
 	routing.Order[0] = "mutated-after-construction"
+	noFallbacks = true
+	requireParameters = false
 
 	response, err := client.Invoke(context.Background(), damodel.Request{
 		Messages: []damessage.Message{damessage.Human("hello")},
@@ -101,7 +100,6 @@ func TestStreamIgnoresOpenRouterKeepaliveComments(t *testing.T) {
 	}))
 	defer server.Close()
 	client := New("secret", "openai/gpt-5", Options{BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{}})
-
 	stream, err := client.Stream(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +123,6 @@ func TestErrorUsesOpenRouterIdentityAndContextOverflowType(t *testing.T) {
 	}))
 	defer server.Close()
 	client := New("secret", "google/gemini-3.1-pro", Options{BaseURL: server.URL, HTTPClient: server.Client(), RetryBackoff: []time.Duration{}})
-
 	_, err := client.Invoke(context.Background(), damodel.Request{Messages: []damessage.Message{damessage.Human("hello")}})
 	if !errors.Is(err, damodel.ErrContextOverflow) {
 		t.Fatalf("error = %v, want context overflow", err)
@@ -151,12 +148,9 @@ func TestRetryEventUsesOpenRouterIdentity(t *testing.T) {
 		_, _ = io.WriteString(writer, `{"id":"r","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
-	client := New("secret",
-		"meta-llama/llama-3.3-70b-instruct", Options{
-			BaseURL: server.URL, HTTPClient: server.Client(),
-			RetryBackoff: []time.Duration{time.Nanosecond},
-		})
-
+	client := New("secret", "meta-llama/llama-3.3-70b-instruct", Options{BaseURL: server.URL, HTTPClient: server.Client(),
+		RetryBackoff: []time.Duration{time.Nanosecond},
+	})
 	var events []damodel.RetryEvent
 	ctx := damodel.WithRetryObserver(context.Background(), func(_ context.Context, event damodel.RetryEvent) {
 		events = append(events, event)

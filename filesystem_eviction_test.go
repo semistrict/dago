@@ -120,7 +120,6 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 
 func TestFilesystemEvictionLimitsCanBeDisabled(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	middleware := mustFilesystem(
 		memory, Filesystem{
 			ToolResultLimit: ContentLimit{Unit: ContentTokens, Amount: -1}, HumanMessageTokenLimit: -1,

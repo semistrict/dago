@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,16 @@ import (
 	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/datool"
 )
+
+func TestNewPanicsForTypedNilRunner(t *testing.T) {
+	var runner *dagent.Agent
+	defer func() {
+		if recover() == nil {
+			t.Fatal("New did not panic")
+		}
+	}()
+	New(runner, Options{})
+}
 
 func TestServerStreamsPromptToolsAndApproval(t *testing.T) {
 	var executions atomic.Int32
@@ -170,9 +181,9 @@ func TestCloseSessionCancelsActivePromptBeforeClosingResources(t *testing.T) {
 	model := &blockingChat{started: make(chan struct{})}
 	runner := dagent.New(model, dagent.Options{})
 	var closed atomic.Int32
-	server := New(nil, Options{SessionFactory: func(context.Context, SessionConfig) (Runner, io.Closer, error) {
+	server := NewFactory(func(context.Context, SessionConfig) (Runner, io.Closer, error) {
 		return runner, closerFunc(func() error { closed.Add(1); return nil }), nil
-	}})
+	}, Options{})
 	connection, stop := startTestConnection(t, server, &testClient{})
 	defer stop()
 	created, err := connection.NewSession(t.Context(), acp.NewSessionRequest{Cwd: t.TempDir(), McpServers: []acp.McpServer{}})
@@ -209,14 +220,16 @@ func TestServerSupportsT3SessionSetupAndDurableLoad(t *testing.T) {
 	var closed atomic.Int32
 	factory := func(_ context.Context, config SessionConfig) (Runner, io.Closer, error) {
 		configs = append(configs, config)
-		return &loadableTestRunner{Runner: base, messages: []damessage.Message{
-			damessage.Human("previous prompt"), damessage.System("not replayed"), damessage.Tool("call-1", "not replayed"),
+		return &loadableTestRunner{Runner: base, cwd: config.CWD, messages: []damessage.Message{
+			damessage.Human("previous prompt"), damessage.System("not replayed"),
 			{Role: damessage.RoleAssistant, Content: []damessage.ContentBlock{
 				{Type: damessage.BlockText, Text: "previous response"},
 				{Type: damessage.BlockImage, Data: []byte("image"), MIMEType: "image/png"},
 				{Type: damessage.BlockAudio, Data: []byte("audio"), MIMEType: "audio/wav"},
 				{Type: damessage.BlockFile, Text: "not replayed"},
-			}},
+			}, ToolCalls: []damessage.ToolCall{{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/guide.md"}`)}}},
+			{Role: damessage.RoleTool, ToolCallID: "call-1", ToolStatus: damessage.ToolStatusError,
+				Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: "tool failed"}}},
 		}}, closerFunc(func() error { closed.Add(1); return nil }), nil
 	}
 	category := acp.SessionConfigOptionCategoryModel
@@ -225,8 +238,8 @@ func TestServerSupportsT3SessionSetupAndDurableLoad(t *testing.T) {
 		Id: "model", Name: "Model", Category: &category, CurrentValue: "test-model",
 		Options: acp.SessionConfigSelectOptions{Ungrouped: &values},
 	}}}
-	server := New(nil, Options{
-		SessionFactory: factory, LoadSession: true, ImagePrompts: true, EmbeddedContext: true,
+	server := NewFactory(factory, Options{
+		LoadSession: true, ImagePrompts: true, EmbeddedContext: true,
 		AuthMethods:   []acp.AuthMethod{{Agent: &acp.AuthMethodAgent{Id: "cursor_login", Name: "Configured"}}},
 		ConfigOptions: options,
 	})
@@ -289,8 +302,13 @@ func TestServerSupportsT3SessionSetupAndDurableLoad(t *testing.T) {
 		t.Fatalf("loaded = %#v, configs = %#v", loaded, configs)
 	}
 	_, updates := client.snapshot()
-	if len(updates) != 4 || updates[0].Meta["isReplay"] != true || updates[0].Update.UserMessageChunk == nil || updates[1].Update.AgentMessageChunk == nil || updates[2].Update.AgentMessageChunk == nil || updates[2].Update.AgentMessageChunk.Content.Image == nil || updates[3].Update.AgentMessageChunk == nil || updates[3].Update.AgentMessageChunk.Content.Audio == nil {
+	if len(updates) != 6 || updates[0].Update.UserMessageChunk == nil || updates[1].Update.AgentMessageChunk == nil || updates[2].Update.AgentMessageChunk == nil || updates[2].Update.AgentMessageChunk.Content.Image == nil || updates[3].Update.AgentMessageChunk == nil || updates[3].Update.AgentMessageChunk.Content.Audio == nil || updates[4].Update.ToolCall == nil || updates[4].Update.ToolCall.RawInput == nil || updates[5].Update.ToolCallUpdate == nil || updates[5].Update.ToolCallUpdate.Status == nil || *updates[5].Update.ToolCallUpdate.Status != acp.ToolCallStatusFailed {
 		t.Fatalf("replay updates = %#v", updates)
+	}
+	for index, update := range updates {
+		if update.Meta["isReplay"] != true {
+			t.Fatalf("replay update %d omitted replay metadata: %#v", index, update)
+		}
 	}
 	if _, err := connection.CloseSession(t.Context(), acp.CloseSessionRequest{SessionId: "persisted"}); err != nil {
 		t.Fatal(err)
@@ -302,10 +320,10 @@ func TestServerSupportsT3SessionSetupAndDurableLoad(t *testing.T) {
 
 func TestLoadSessionFailureClosesFactoryResources(t *testing.T) {
 	var closed atomic.Int32
-	server := New(nil, Options{LoadSession: true, SessionFactory: func(context.Context, SessionConfig) (Runner, io.Closer, error) {
+	server := NewFactory(func(context.Context, SessionConfig) (Runner, io.Closer, error) {
 		return &failingLoadRunner{Runner: dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{})},
 			closerFunc(func() error { closed.Add(1); return nil }), nil
-	}})
+	}, Options{LoadSession: true})
 	connection, stop := startTestConnection(t, server, &testClient{})
 	defer stop()
 	_, err := connection.LoadSession(t.Context(), acp.LoadSessionRequest{
@@ -319,8 +337,79 @@ func TestLoadSessionFailureClosesFactoryResources(t *testing.T) {
 	}
 }
 
+func TestSessionFactoryFailureClosesReturnedResources(t *testing.T) {
+	var closed atomic.Int32
+	server := NewFactory(func(context.Context, AgentSessionContext) (Runner, io.Closer, error) {
+		return nil, closerFunc(func() error { closed.Add(1); return nil }), errors.New("factory failed")
+	}, Options{})
+	connection, stop := startTestConnection(t, server, &testClient{})
+	defer stop()
+	_, err := connection.NewSession(t.Context(), acp.NewSessionRequest{Cwd: t.TempDir(), McpServers: []acp.McpServer{}})
+	if err == nil || !strings.Contains(err.Error(), "factory failed") {
+		t.Fatalf("NewSession error = %v", err)
+	}
+	if closed.Load() != 1 {
+		t.Fatalf("closed = %d", closed.Load())
+	}
+}
+
+func TestLoadSessionRejectsDifferentPersistedWorkingDirectory(t *testing.T) {
+	original := t.TempDir()
+	requested := t.TempDir()
+	var closed atomic.Int32
+	base := dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{})
+	server := NewFactory(func(context.Context, SessionConfig) (Runner, io.Closer, error) {
+		return &loadableTestRunner{Runner: base, cwd: original, messages: []damessage.Message{damessage.Human("private history")}},
+			closerFunc(func() error { closed.Add(1); return nil }), nil
+	}, Options{LoadSession: true})
+	client := &testClient{}
+	connection, stop := startTestConnection(t, server, client)
+	defer stop()
+	_, err := connection.LoadSession(t.Context(), acp.LoadSessionRequest{
+		SessionId: "persisted", Cwd: requested, McpServers: []acp.McpServer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must match the working directory") {
+		t.Fatalf("LoadSession error = %v", err)
+	}
+	if closed.Load() != 1 {
+		t.Fatalf("closed = %d", closed.Load())
+	}
+	_, updates := client.snapshot()
+	if len(updates) != 0 {
+		t.Fatalf("mismatched session leaked replay updates: %#v", updates)
+	}
+}
+
+func TestLoadSessionDoesNotConstructUnadvertisedPersistedModel(t *testing.T) {
+	var configs []AgentSessionContext
+	root := t.TempDir()
+	factory := func(_ context.Context, config AgentSessionContext) (Runner, io.Closer, error) {
+		configs = append(configs, cloneAgentSessionContext(config))
+		return &loadableTestRunner{
+			Runner: dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{}),
+			cwd:    root, model: "unadvertised-model",
+		}, closerFunc(func() error { return nil }), nil
+	}
+	connection, stop := startTestConnection(t, NewFactory(factory, Options{
+		LoadSession: true, ConfigOptions: testModelConfigOptions("alpha", "beta"),
+	}), &testClient{})
+	defer stop()
+	loaded, err := connection.LoadSession(t.Context(), acp.LoadSessionRequest{
+		SessionId: "persisted", Cwd: root, McpServers: []acp.McpServer{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := currentModelOption(loaded.ConfigOptions); got != "alpha" {
+		t.Fatalf("loaded model = %q", got)
+	}
+	if len(configs) != 1 || configs[0].Model != "alpha" {
+		t.Fatalf("factory contexts = %#v", configs)
+	}
+}
+
 func TestPromptMessageConvertsAdvertisedRichContent(t *testing.T) {
-	agent := newProtocolAgent(t.Context(), dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{}), Options{
+	agent := newProtocolAgent(t.Context(), dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{}), nil, Options{
 		ImagePrompts: true, AudioPrompts: true, EmbeddedContext: true,
 	})
 	textResource := acp.EmbeddedResourceResource{TextResourceContents: &acp.TextResourceContents{Uri: "file:///guide.txt", Text: "guide"}}
@@ -338,7 +427,7 @@ func TestPromptMessageConvertsAdvertisedRichContent(t *testing.T) {
 }
 
 func TestPromptMessageRejectsUnadvertisedRichContent(t *testing.T) {
-	agent := newProtocolAgent(t.Context(), dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{}), Options{})
+	agent := newProtocolAgent(t.Context(), dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{}), nil, Options{})
 	if _, err := agent.promptMessage([]acp.ContentBlock{acp.ImageBlock(base64.StdEncoding.EncodeToString([]byte("image")), "image/png")}); err == nil {
 		t.Fatal("unadvertised image was accepted")
 	}
@@ -347,16 +436,22 @@ func TestPromptMessageRejectsUnadvertisedRichContent(t *testing.T) {
 type loadableTestRunner struct {
 	Runner
 	messages []damessage.Message
+	cwd      string
+	model    string
 }
 
 type failingLoadRunner struct{ Runner }
 
-func (*failingLoadRunner) LoadSession(context.Context, string) ([]damessage.Message, error) {
-	return nil, errors.New("session not found")
+func (*failingLoadRunner) LoadACPSession(context.Context, string) (SessionState, error) {
+	return SessionState{}, errors.New("session not found")
 }
 
-func (runner *loadableTestRunner) LoadSession(context.Context, string) ([]damessage.Message, error) {
-	return append([]damessage.Message(nil), runner.messages...), nil
+func (runner *loadableTestRunner) LoadACPSession(context.Context, string) (SessionState, error) {
+	messages := make([]damessage.Message, len(runner.messages))
+	for index := range runner.messages {
+		messages[index] = runner.messages[index].Clone()
+	}
+	return SessionState{Messages: messages, CWD: runner.cwd, Model: runner.model}, nil
 }
 
 type closerFunc func() error

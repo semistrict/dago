@@ -165,14 +165,11 @@ func newStateMachine(
 			if spec.ownedReducerInput {
 				deltaOptions = append(deltaOptions, channel.WithOwnedReducerInput())
 			}
-			delta, err := channel.NewDelta(
+			delta := channel.NewDelta(
 				spec.initial,
 				channel.DeltaReducer[any](spec.reducer),
 				channel.Cloner[any](spec.clone),
 				deltaOptions...)
-			if err != nil {
-				return nil, fmt.Errorf("state field %q: %w", key, err)
-			}
 			var seed channel.CheckpointValue[any]
 			if present {
 				if snapshot, ok := value.(dacheckpoint.DeltaSnapshot); ok {

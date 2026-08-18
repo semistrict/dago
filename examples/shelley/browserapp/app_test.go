@@ -12,13 +12,40 @@ import (
 
 	"github.com/semistrict/dago/dabackend"
 	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/damodel/modeltest"
 )
 
-func TestBrowserAppRunsdagoTurnAndPublishesOrderedMessages(t *testing.T) {
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
+func TestBrowserConstructorsPanicForTypedNilDependencies(t *testing.T) {
+	var workspace *browserWorkspace
+	var saver *dacheckpoint.MemorySaver
+	executor := ShellExecutor(func(context.Context, ShellRequest) (ShellResponse, error) { return ShellResponse{}, nil })
+	for name, construct := range map[string]func(){
+		"workspace": func() { NewWithWorkspaceAndSaver(workspace, executor, dacheckpoint.NewMemorySaver()) },
+		"saver":     func() { NewWithShellAndSaver(executor, saver) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("constructor did not panic")
+				}
+			}()
+			construct()
+		})
 	}
+}
+
+func TestConfigureWebGPUModelPanicsForTypedNil(t *testing.T) {
+	var model *modeltest.Predictable
+	defer func() {
+		if recover() == nil {
+			t.Fatal("typed-nil WebGPU model was accepted")
+		}
+	}()
+	New().ConfigureWebGPUModel(model)
+}
+
+func TestBrowserAppRunsdagoTurnAndPublishesOrderedMessages(t *testing.T) {
+	app := New()
 	events := make(chan json.RawMessage, 8)
 	app.SetEventSink(func(event json.RawMessage) { events <- append(json.RawMessage(nil), event...) })
 
@@ -94,10 +121,7 @@ complete:
 }
 
 func TestBrowserAppStreamsToolUseResultAndFinalAnswer(t *testing.T) {
-	app, err := newApp(nil, dacheckpoint.NewMemorySaver())
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := newApp(nil, dacheckpoint.NewMemorySaver())
 	events := make(chan json.RawMessage, 16)
 	app.SetEventSink(func(event json.RawMessage) { events <- append(json.RawMessage(nil), event...) })
 	response := app.Handle(Request{
@@ -135,10 +159,7 @@ func TestBrowserAppStreamsToolUseResultAndFinalAnswer(t *testing.T) {
 }
 
 func TestBrowserConversationLifecycleWorksLocally(t *testing.T) {
-	app, err := newApp(nil, dacheckpoint.NewMemorySaver())
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := newApp(nil, dacheckpoint.NewMemorySaver())
 	events := make(chan json.RawMessage, 64)
 	app.SetEventSink(func(event json.RawMessage) { events <- append(json.RawMessage(nil), event...) })
 	created := app.Handle(Request{Method: "POST", URL: "/api/conversations/new", Body: `{"message":"hello"}`})
@@ -206,10 +227,7 @@ func TestBrowserConversationLifecycleWorksLocally(t *testing.T) {
 }
 
 func TestBrowserDraftSearchQueueAndRetryWorkLocally(t *testing.T) {
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := New()
 	draftResponse := app.Handle(Request{
 		Method: "POST", URL: "/api/conversations/draft",
 		Body: `{"draft":"initial words","model":"browser-predictable","cwd":"/workspace"}`,
@@ -280,10 +298,7 @@ func TestBrowserDraftSearchQueueAndRetryWorkLocally(t *testing.T) {
 }
 
 func TestBrowserFileAPIsPersistFilesAndEmptyDirectories(t *testing.T) {
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := New()
 	created := app.Handle(Request{Method: "POST", URL: "/api/create-directory", Body: `{"path":"/workspace/empty"}`})
 	if created.Status != http.StatusCreated {
 		t.Fatalf("create directory = %#v", created)
@@ -302,10 +317,7 @@ func TestBrowserFileAPIsPersistFilesAndEmptyDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	restored := New()
 	if err := restored.Restore(snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -316,10 +328,7 @@ func TestBrowserFileAPIsPersistFilesAndEmptyDirectories(t *testing.T) {
 }
 
 func TestBrowserSnapshotRestoresConversationsAndWorkspace(t *testing.T) {
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := New()
 	if _, err := app.workspace.Write(context.Background(), "/workspace/notes.txt", "durable"); err != nil {
 		t.Fatal(err)
 	}
@@ -332,10 +341,7 @@ func TestBrowserSnapshotRestoresConversationsAndWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	restored := New()
 	if err := restored.Restore(saved); err != nil {
 		t.Fatal(err)
 	}
@@ -359,10 +365,7 @@ func TestBrowserSnapshotRestoresConversationsAndWorkspace(t *testing.T) {
 }
 
 func TestBrowserRestoreKeepsLaterAssistantMessagesDistinct(t *testing.T) {
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := New()
 	events := make(chan json.RawMessage, 8)
 	app.SetEventSink(func(event json.RawMessage) { events <- append(json.RawMessage(nil), event...) })
 	response := app.Handle(Request{Method: "POST", URL: "/api/conversations/new", Body: `{"message":"hello"}`})
@@ -381,10 +384,7 @@ func TestBrowserRestoreKeepsLaterAssistantMessagesDistinct(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	restored := New()
 	if err := restored.Restore(saved); err != nil {
 		t.Fatal(err)
 	}
@@ -430,10 +430,7 @@ func TestBrowserRestoreKeepsLaterAssistantMessagesDistinct(t *testing.T) {
 
 func TestBrowserAppRestoresGraphCheckpointWithoutReplayingHistory(t *testing.T) {
 	saver := dacheckpoint.NewMemorySaver()
-	app, err := newApp(nil, saver)
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := newApp(nil, saver)
 	events := make(chan json.RawMessage, 8)
 	app.SetEventSink(func(event json.RawMessage) { events <- append(json.RawMessage(nil), event...) })
 	response := app.Handle(Request{Method: "POST", URL: "/api/conversations/new", Body: `{"message":"hello"}`})
@@ -455,10 +452,7 @@ func TestBrowserAppRestoresGraphCheckpointWithoutReplayingHistory(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	restored, err := newApp(nil, saver)
-	if err != nil {
-		t.Fatal(err)
-	}
+	restored := newApp(nil, saver)
 	if err := restored.Restore(snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -488,10 +482,7 @@ func TestBrowserAppRestoresGraphCheckpointWithoutReplayingHistory(t *testing.T) 
 }
 
 func TestBrowserCapabilitiesDoNotPretendHostFeaturesExist(t *testing.T) {
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := New()
 	response := app.Handle(Request{Method: "GET", URL: "/api/capabilities"})
 	if response.Status != 200 {
 		t.Fatalf("capability status = %d", response.Status)
@@ -522,10 +513,7 @@ func TestBrowserCustomModelUsesDirectResponsesAPIWithoutPersistingKey(t *testing
 	}))
 	defer upstream.Close()
 
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := New()
 	modelJSON, err := json.Marshal(CustomModel{
 		DisplayName: "Browser Luna", ProviderType: "openai-responses", Endpoint: upstream.URL,
 		APIKey: "browser-secret", ModelName: "gpt-5.6-luna", MaxTokens: 200000,
@@ -584,6 +572,28 @@ func TestBrowserCustomModelUsesDirectResponsesAPIWithoutPersistingKey(t *testing
 	}
 }
 
+func TestBrowserCustomModelRejectsUnknownEnumsAndNegativeLimits(t *testing.T) {
+	base := CustomModel{
+		ProviderType: "openai-responses", Endpoint: "https://example.test",
+		APIKey: "key", ModelName: "model", MaxTokens: 1,
+		ReasoningSupport: "auto", ImageSupport: "auto",
+	}
+	for name, mutate := range map[string]func(*CustomModel){
+		"reasoning support": func(model *CustomModel) { model.ReasoningSupport = "maybe" },
+		"image support":     func(model *CustomModel) { model.ImageSupport = "maybe" },
+		"reasoning effort":  func(model *CustomModel) { model.ReasoningEffort = "turbo" },
+		"negative tokens":   func(model *CustomModel) { model.MaxTokens = -1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			model := base
+			mutate(&model)
+			if _, err := customModelChat(model); err == nil {
+				t.Fatal("customModelChat accepted invalid configuration")
+			}
+		})
+	}
+}
+
 func TestBrowserOpenRouterCustomModelUsesSelectedProvider(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/responses" {
@@ -604,10 +614,7 @@ func TestBrowserOpenRouterCustomModelUsesSelectedProvider(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := New()
 	modelJSON, err := json.Marshal(CustomModel{
 		DisplayName: "Browser DeepSeek", ProviderType: "openrouter-responses", Endpoint: upstream.URL,
 		APIKey: "browser-router-secret", ModelName: "deepseek/deepseek-v4-flash-0731",
@@ -638,10 +645,7 @@ func TestBrowserOpenRouterCustomModelUsesSelectedProvider(t *testing.T) {
 }
 
 func TestBrowserOpenAIKeyConfiguresStandardModelCatalogWithoutPersistingKey(t *testing.T) {
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	app := New()
 	response := app.Handle(Request{
 		Method: "POST", URL: "/api/browser-openai-key", Body: `{"api_key":"one-time-browser-key"}`,
 	})
@@ -667,13 +671,8 @@ func TestBrowserOpenAIKeyConfiguresStandardModelCatalogWithoutPersistingKey(t *t
 }
 
 func TestConfigureWebGPUModelAddsLocalDefaultWithoutPersistingModelState(t *testing.T) {
-	app, err := New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := app.ConfigureWebGPUModel(newPredictableModel()); err != nil {
-		t.Fatal(err)
-	}
+	app := New()
+	app.ConfigureWebGPUModel(newPredictableModel())
 	catalog := app.Handle(Request{Method: "GET", URL: "/api/models"})
 	if !strings.Contains(string(catalog.Body), webGPUModelID) || !strings.Contains(string(catalog.Body), webGPUModelName) {
 		t.Fatalf("catalog omitted WebGPU model: %s", catalog.Body)
@@ -697,7 +696,7 @@ func TestBrowserShellExecutesAgainstAndUpdatesDurableWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := newAppWithWorkspace(workspace, func(ctx context.Context, request ShellRequest) (ShellResponse, error) {
+	app := newAppWithWorkspace(workspace, func(ctx context.Context, request ShellRequest) (ShellResponse, error) {
 		if request.Cwd != workspaceRoot {
 			return ShellResponse{}, fmt.Errorf("shell cwd = %q", request.Cwd)
 		}
@@ -706,9 +705,6 @@ func TestBrowserShellExecutesAgainstAndUpdatesDurableWorkspace(t *testing.T) {
 		}
 		return ShellResponse{Stdout: "from just-bash\n", ExitCode: 0}, nil
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	capabilities := app.Handle(Request{Method: "GET", URL: "/api/capabilities"})
 	if !strings.Contains(string(capabilities.Body), `"shell"`) {
 		t.Fatalf("browser capabilities omitted shell: %s", capabilities.Body)
@@ -743,7 +739,7 @@ func TestBrowserOwnedWorkspaceFilesStayOutOfApplicationSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	workspace := &independentlyPersistedWorkspace{browserWorkspace: memory}
-	app, err := newAppWithWorkspace(workspace, func(ctx context.Context, request ShellRequest) (ShellResponse, error) {
+	app := newAppWithWorkspace(workspace, func(ctx context.Context, request ShellRequest) (ShellResponse, error) {
 		if request.Cwd != workspaceRoot {
 			return ShellResponse{}, fmt.Errorf("shell cwd = %q", request.Cwd)
 		}
@@ -752,9 +748,6 @@ func TestBrowserOwnedWorkspaceFilesStayOutOfApplicationSnapshot(t *testing.T) {
 		}
 		return ShellResponse{}, nil
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	response := app.Handle(Request{Method: "POST", URL: "/api/browser-shell", Body: `{"command":"touch shell.txt"}`})
 	if response.Status != http.StatusOK {
 		t.Fatalf("browser shell response = %#v", response)
@@ -775,7 +768,7 @@ func TestBrowserShellDoesNotBlockSnapshotsAndPreservesConcurrentFileChanges(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := newAppWithWorkspace(workspace, func(ctx context.Context, request ShellRequest) (ShellResponse, error) {
+	app := newAppWithWorkspace(workspace, func(ctx context.Context, request ShellRequest) (ShellResponse, error) {
 		started <- request
 		<-release
 		if _, err := workspace.Write(ctx, workspaceRoot+"/shell.txt", "shell"); err != nil {
@@ -783,9 +776,6 @@ func TestBrowserShellDoesNotBlockSnapshotsAndPreservesConcurrentFileChanges(t *t
 		}
 		return ShellResponse{}, nil
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	execution := make(chan Response, 1)
 	go func() {
 		execution <- app.Handle(Request{Method: "POST", URL: "/api/browser-shell", Body: `{"command":"touch shell.txt"}`})

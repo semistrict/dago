@@ -18,15 +18,15 @@ func TestChangeDirTool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wd := NewMutableWorkingDir(tmpDir)
-	tool := &ChangeDirTool{WorkingDir: wd}
+	wd := newMutableWorkingDir(tmpDir)
+	tool := &changeDirTool{WorkingDir: wd}
 
 	t.Run("change to absolute path", func(t *testing.T) {
 		// Reset
 		wd.Set(tmpDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: subDir})
-		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
+		_, err := tool.nativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -42,7 +42,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(tmpDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: "subdir"})
-		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
+		_, err := tool.nativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -57,7 +57,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(subDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: ".."})
-		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
+		_, err := tool.nativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -72,7 +72,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(tmpDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: "/nonexistent/path"})
-		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
+		_, err := tool.nativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err == nil {
 			t.Fatal("expected error for non-existent path")
@@ -89,7 +89,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(tmpDir)
 
 		input, _ := json.Marshal(changeDirInput{Path: filePath})
-		_, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
+		_, err := tool.nativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err == nil {
 			t.Fatal("expected error for file path")
@@ -100,7 +100,7 @@ func TestChangeDirTool(t *testing.T) {
 		wd.Set(tmpDir)
 
 		var callbackDir string
-		toolWithCallback := &ChangeDirTool{
+		toolWithCallback := &changeDirTool{
 			WorkingDir: wd,
 			OnChange: func(newDir string) {
 				callbackDir = newDir
@@ -108,7 +108,7 @@ func TestChangeDirTool(t *testing.T) {
 		}
 
 		input, _ := json.Marshal(changeDirInput{Path: subDir})
-		_, err := toolWithCallback.NativeTool().Execute(context.Background(), input, datool.Runtime{})
+		_, err := toolWithCallback.nativeTool().Execute(context.Background(), input, datool.Runtime{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -121,9 +121,9 @@ func TestChangeDirTool(t *testing.T) {
 }
 
 func TestChangeDirTool_Method(t *testing.T) {
-	wd := NewMutableWorkingDir("/test")
-	tool := &ChangeDirTool{WorkingDir: wd}
-	nativeTool := tool.NativeTool()
+	wd := newMutableWorkingDir("/test")
+	tool := &changeDirTool{WorkingDir: wd}
+	nativeTool := tool.nativeTool()
 
 	if nativeTool == nil {
 		t.Fatal("NativeTool() returned nil")

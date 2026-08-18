@@ -55,7 +55,7 @@ func newTestServer(t *testing.T) (*Server, *db.DB, *loop.PredictableService) {
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	ps := loop.NewPredictableService()
-	svr := NewServer(database, &testLLMManager{service: ps},
+	svr := MustNewServer(database, &testLLMManager{service: ps},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		true, "predictable", "")
@@ -455,7 +455,7 @@ func TestRetryAfterLLMFailure(t *testing.T) {
 	ps := loop.NewPredictableService()
 	switchable := &switchableTestLLM{inner: ps, err: fmt.Errorf("connection error: EOF")}
 
-	svr := NewServer(database, &testLLMManager{service: switchable},
+	svr := MustNewServer(database, &testLLMManager{service: switchable},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		true, "predictable", "")

@@ -7,13 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"regexp"
 	"strings"
 
+	"github.com/semistrict/dago/dabackend"
+	"github.com/semistrict/dago/dacost"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/darepository"
 	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/datool"
 )
@@ -60,11 +64,52 @@ type RubricEvaluation struct {
 	Criteria     []RubricCriterionEvaluation `json:"criteria"`
 }
 
+// RubricSnapshot is the durable, host-facing view of rubric state. Criteria
+// and the latest verdict are public because hosts need them to restore their
+// controls; grading bookkeeping remains private to the middleware.
+type RubricSnapshot struct {
+	Criteria    string             `json:"criteria,omitempty"`
+	Status      RubricResult       `json:"status,omitempty"`
+	Iterations  int                `json:"iterations"`
+	Evaluations []RubricEvaluation `json:"evaluations,omitempty"`
+}
+
+// RubricSnapshotFromState projects live or checkpoint-restored agent state
+// into a detached host view. Malformed fields fail closed to their zero values
+// instead of leaking loosely typed checkpoint data to callers.
+func RubricSnapshotFromState(values dastate.Values) RubricSnapshot {
+	criteria, _ := values[RubricKey].(string)
+	criteria = strings.TrimSpace(criteria)
+	status := rubricStatus(values[RubricStatusKey])
+	if !knownRubricStatus(status) {
+		status = ""
+	}
+	return RubricSnapshot{
+		Criteria:    criteria,
+		Status:      status,
+		Iterations:  max(rubricIteration(values[RubricIterationsKey]), 0),
+		Evaluations: rubricEvaluations(values[RubricEvaluationsKey]),
+	}
+}
+
 type RubricOptions struct {
-	SystemPrompt  string
-	Tools         []datool.Tool
-	MaxIterations int
-	OnEvaluation  func(RubricEvaluation)
+	SystemPrompt      string
+	Tools             []datool.Tool
+	MaxIterations     int
+	MaxIterationsFunc func() int
+	OnEvaluation      func(RubricEvaluation)
+}
+
+// RubricWithRepository constructs a rubric grader with bounded, read-only
+// access to repositoryBackend. Repository dependencies are explicit and
+// positional; zero repository options select conservative defaults.
+func RubricWithRepository(model damodel.Chat, repositoryBackend dabackend.Backend, repositoryOptions darepository.Options, options RubricOptions) dagent.Middleware {
+	inspector := darepository.New(repositoryBackend, repositoryOptions)
+	middleware, err := newRubricWithInspector(model, options, inspector)
+	if err != nil {
+		panic(err)
+	}
+	return middleware
 }
 
 const defaultRubricSystemPrompt = `You are a grader. Evaluate whether the work in <transcript> satisfies every criterion in <rubric>.
@@ -81,15 +126,19 @@ var rubricResponseSchema = json.RawMessage(`{"type":"object","properties":{"resu
 // actionable feedback before routing back to the model. It panics when static
 // options violate an invariant.
 func Rubric(model damodel.Chat, options RubricOptions) dagent.Middleware {
-	middleware, err := compileRubric(model, options)
+	middleware, err := newRubric(model, options)
 	if err != nil {
 		panic(err)
 	}
 	return middleware
 }
 
-func compileRubric(model damodel.Chat, options RubricOptions) (dagent.Middleware, error) {
-	if model == nil {
+func newRubric(model damodel.Chat, options RubricOptions) (dagent.Middleware, error) {
+	return newRubricWithInspector(model, options, nil)
+}
+
+func newRubricWithInspector(model damodel.Chat, options RubricOptions, inspector *darepository.Inspector) (dagent.Middleware, error) {
+	if nilInterface(model) {
 		return dagent.Middleware{}, fmt.Errorf("rubric model is nil")
 	}
 	if options.MaxIterations == 0 {
@@ -98,12 +147,19 @@ func compileRubric(model damodel.Chat, options RubricOptions) (dagent.Middleware
 	if options.MaxIterations < 1 {
 		return dagent.Middleware{}, fmt.Errorf("rubric max iterations must be positive, got %d", options.MaxIterations)
 	}
+	if options.MaxIterationsFunc != nil && options.MaxIterationsFunc() < 1 {
+		return dagent.Middleware{}, fmt.Errorf("rubric dynamic max iterations must be positive")
+	}
 	if options.SystemPrompt == "" {
 		options.SystemPrompt = defaultRubricSystemPrompt
 	}
 
+	tools := append([]datool.Tool(nil), options.Tools...)
+	if inspector != nil {
+		tools = append(inspector.Tools(), tools...)
+	}
 	grader := dagent.New(model, dagent.Options{
-		Name: RubricGraderSource, Tools: append([]datool.Tool(nil), options.Tools...),
+		Name: RubricGraderSource, Tools: tools,
 		SystemMessage: damessage.System(options.SystemPrompt), RecursionLimit: 9_999,
 		StructuredOutput: &dagent.StructuredOutput{
 			Strategy: dagent.StructuredAuto, Name: "GraderResponse",
@@ -162,13 +218,32 @@ func compileRubric(model damodel.Chat, options RubricOptions) (dagent.Middleware
 				return nil, err
 			}
 			var graded RubricGraderResponse
+			var graderUsage []damessage.PurposedUsage
 			payload, err := buildRubricPayload(rubric, messages, iteration)
 			if err == nil {
-				result, invokeErr := grader.Invoke(ctx, dagent.Input{
-					Messages:     []damessage.Message{damessage.Human(payload)},
-					Deps:         runtime.Deps,
-					Configurable: runtime.Configurable.Snapshot(),
-				})
+				graderCtx := ctx
+				if inspector != nil {
+					graderCtx = inspector.Operation(ctx)
+				}
+				invoke := func() (dagent.Result, error) {
+					return grader.Invoke(graderCtx, dagent.Input{
+						Messages:     []damessage.Message{damessage.Human(payload)},
+						Deps:         runtime.Deps,
+						Configurable: runtime.Configurable.Snapshot(),
+					})
+				}
+				result, invokeErr := invoke()
+				if transientGraderTransportError(invokeErr) {
+					// Repository and caller-supplied rubric tools must be read-only:
+					// a retry may replay the complete grader invocation once.
+					if inspector != nil {
+						graderCtx = inspector.Operation(ctx)
+					}
+					result, invokeErr = invoke()
+				}
+				if invokeErr == nil {
+					graderUsage, _ = dacost.TransferUsage(result.Messages, dacost.PurposeAssistant, 256)
+				}
 				err = invokeErr
 				if err == nil {
 					err = json.Unmarshal(result.Structured, &graded)
@@ -187,21 +262,73 @@ func compileRubric(model damodel.Chat, options RubricOptions) (dagent.Middleware
 				}
 				emitRubricEvent(ctx, runtime, "rubric_evaluation_end", runID, iteration, &evaluation)
 				callRubricCallback(options.OnEvaluation, evaluation)
-				return rubricTerminalUpdate(values, evaluation), nil
+				return withRubricUsage(rubricTerminalUpdate(values, evaluation), values, graderUsage), nil
 			}
 
 			evaluation := RubricEvaluation{
 				GradingRunID: runID, Iteration: iteration, Result: graded.Result,
 				Explanation: graded.Explanation, Criteria: cloneRubricCriteria(graded.Criteria),
 			}
-			if evaluation.Result == RubricNeedsRevision && iteration+1 >= options.MaxIterations {
+			if evaluation.Result == RubricNeedsRevision && iteration+1 >= rubricMaxIterations(options) {
 				evaluation.Result = RubricMaxIterations
 			}
 			emitRubricEvent(ctx, runtime, "rubric_evaluation_end", runID, iteration, &evaluation)
 			callRubricCallback(options.OnEvaluation, evaluation)
-			return rubricTerminalUpdate(values, evaluation), nil
+			return withRubricUsage(rubricTerminalUpdate(values, evaluation), values, graderUsage), nil
 		},
 	}, nil
+}
+
+func withRubricUsage(update, values dastate.Values, added []damessage.PurposedUsage) dastate.Values {
+	if len(added) == 0 {
+		return update
+	}
+	messages, err := featureMessages(values[dagent.MessagesKey])
+	if err != nil {
+		return update
+	}
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role != damessage.RoleAssistant {
+			continue
+		}
+		message := messages[index].Clone()
+		if len(message.OtherUsage) > 65_536-len(added) {
+			return update
+		}
+		message.OtherUsage = append(message.OtherUsage, cloneRubricUsage(added)...)
+		if update == nil {
+			update = dastate.Values{}
+		}
+		pending, _ := update[dagent.MessagesKey].([]damessage.Message)
+		update[dagent.MessagesKey] = append([]damessage.Message{message}, pending...)
+		return update
+	}
+	return update
+}
+
+func cloneRubricUsage(usage []damessage.PurposedUsage) []damessage.PurposedUsage {
+	message := damessage.Message{OtherUsage: usage}.Clone()
+	return message.OtherUsage
+}
+
+func rubricMaxIterations(options RubricOptions) int {
+	if options.MaxIterationsFunc != nil {
+		if value := options.MaxIterationsFunc(); value > 0 {
+			return value
+		}
+	}
+	return options.MaxIterations
+}
+
+func transientGraderTransportError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var reporter damodel.RetryReporter
+	return errors.As(err, &reporter) && reporter.RetryEvent(1, 0).Retryable
 }
 
 func rubricTerminalUpdate(values dastate.Values, evaluation RubricEvaluation) dastate.Values {
@@ -391,6 +518,11 @@ func newRubricRunID() (string, error) {
 
 func terminalRubricStatus(value RubricResult) bool {
 	return value == RubricSatisfied || value == RubricFailed || value == RubricMaxIterations || value == RubricGraderError
+}
+
+func knownRubricStatus(value RubricResult) bool {
+	return value == RubricSatisfied || value == RubricNeedsRevision || value == RubricFailed ||
+		value == RubricMaxIterations || value == RubricGraderError
 }
 
 func rubricStatus(value any) RubricResult {

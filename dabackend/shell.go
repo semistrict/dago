@@ -12,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // LocalShell is an explicitly constructed host process capability rooted at a
@@ -39,8 +37,20 @@ type LocalShellOptions struct {
 	InheritEnv bool
 }
 
-func NewLocalShell(optionValues ...LocalShellOptions) (*LocalShell, error) {
-	options := optionvalue.Resolve("local shell", optionValues)
+func NewLocalShell(options LocalShellOptions) (*LocalShell, error) {
+	if options.DefaultTimeout < 0 {
+		panic(fmt.Sprintf("default timeout cannot be negative: %s", options.DefaultTimeout))
+	}
+	if options.DefaultTimeout == 0 {
+		options.DefaultTimeout = 120 * time.Second
+	}
+	if options.MaxOutput < 0 {
+		panic("maximum output cannot be negative")
+	}
+	if options.MaxOutput == 0 {
+		options.MaxOutput = 100_000
+	}
+	environment := shellEnvironment(options.Env, options.InheritEnv)
 	filesystem, err := NewFilesystem(options.Filesystem)
 	if err != nil {
 		return nil, err
@@ -54,19 +64,6 @@ func NewLocalShell(optionValues ...LocalShellOptions) (*LocalShell, error) {
 	}
 	if options.Shell == "" {
 		options.Shell = "/bin/sh"
-	}
-	if options.DefaultTimeout < 0 {
-		return nil, fmt.Errorf("default timeout must be positive, got %s", options.DefaultTimeout)
-	}
-	if options.DefaultTimeout == 0 {
-		options.DefaultTimeout = 120 * time.Second
-	}
-	if options.MaxOutput <= 0 {
-		options.MaxOutput = 100_000
-	}
-	environment, err := shellEnvironment(options.Env, options.InheritEnv)
-	if err != nil {
-		return nil, err
 	}
 	return &LocalShell{Filesystem: filesystem, id: options.ID, shell: options.Shell, defaultTimeout: options.DefaultTimeout, maxOutput: options.MaxOutput, env: environment}, nil
 }
@@ -150,7 +147,7 @@ func (shell *LocalShell) execute(ctx context.Context, command string, timeout ti
 	return result, err
 }
 
-func shellEnvironment(overrides map[string]string, inherit bool) ([]string, error) {
+func shellEnvironment(overrides map[string]string, inherit bool) []string {
 	values := make(map[string]string, len(overrides))
 	if inherit {
 		for _, entry := range os.Environ() {
@@ -162,10 +159,10 @@ func shellEnvironment(overrides map[string]string, inherit bool) ([]string, erro
 	}
 	for name, value := range overrides {
 		if name == "" || strings.ContainsAny(name, "=\x00") {
-			return nil, fmt.Errorf("invalid environment variable name %q", name)
+			panic(fmt.Sprintf("invalid environment variable name %q", name))
 		}
 		if strings.ContainsRune(value, '\x00') {
-			return nil, fmt.Errorf("environment variable %q contains a NUL byte", name)
+			panic(fmt.Sprintf("environment variable %q contains a NUL byte", name))
 		}
 		values[name] = value
 	}
@@ -178,7 +175,7 @@ func shellEnvironment(overrides map[string]string, inherit bool) ([]string, erro
 	for _, name := range names {
 		result = append(result, name+"="+values[name])
 	}
-	return result, nil
+	return result
 }
 
 func formatShellOutput(stdout, stderr string, max int) (string, bool) {

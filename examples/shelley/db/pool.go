@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const defaultPoolReaders = 3
+
 // Pool is an SQLite connection pool.
 //
 // We deliberately minimize our use of database/sql machinery because
@@ -45,7 +47,13 @@ func (p *Pool) fireCommitHooks() {
 	}
 }
 
-func NewPool(dataSourceName string, readerCount int) (*Pool, error) {
+func newPool(dataSourceName string, readerCount int) (*Pool, error) {
+	if readerCount < 0 {
+		panic("database reader count cannot be negative")
+	}
+	if readerCount == 0 {
+		readerCount = defaultPoolReaders
+	}
 	if dataSourceName == ":memory:" {
 		return nil, fmt.Errorf(":memory: is not supported (because multiple conns are needed); use a temp file")
 	}
@@ -54,11 +62,11 @@ func NewPool(dataSourceName string, readerCount int) (*Pool, error) {
 	// to ensure read-only transactions are always such.
 	db, err := sql.Open("sqlite", dataSourceName)
 	if err != nil {
-		return nil, fmt.Errorf("NewPool: %w", err)
+		return nil, fmt.Errorf("open pool: %w", err)
 	}
 	numConns := readerCount + 1
-	if err := InitPoolDB(db, numConns); err != nil {
-		return nil, fmt.Errorf("NewPool: %w", err)
+	if err := initPoolDB(db, numConns); err != nil {
+		return nil, fmt.Errorf("open pool: %w", err)
 	}
 
 	var conns []*sql.Conn
@@ -66,7 +74,7 @@ func NewPool(dataSourceName string, readerCount int) (*Pool, error) {
 		conn, err := db.Conn(context.Background())
 		if err != nil {
 			db.Close()
-			return nil, fmt.Errorf("NewPool: %w", err)
+			return nil, fmt.Errorf("open pool: %w", err)
 		}
 		conns = append(conns, conn)
 	}
@@ -80,7 +88,7 @@ func NewPool(dataSourceName string, readerCount int) (*Pool, error) {
 	for _, conn := range conns[1:] {
 		if _, err := conn.ExecContext(context.Background(), "PRAGMA query_only=1;"); err != nil {
 			db.Close()
-			return nil, fmt.Errorf("NewPool query_only: %w", err)
+			return nil, fmt.Errorf("open pool query_only: %w", err)
 		}
 		p.readers <- conn
 	}
@@ -88,8 +96,8 @@ func NewPool(dataSourceName string, readerCount int) (*Pool, error) {
 	return p, nil
 }
 
-// InitPoolDB fixes the database/sql pool to a set of fixed connections.
-func InitPoolDB(db *sql.DB, numConns int) error {
+// initPoolDB fixes the database/sql pool to a set of fixed connections.
+func initPoolDB(db *sql.DB, numConns int) error {
 	db.SetMaxIdleConns(numConns)
 	db.SetMaxOpenConns(numConns)
 	db.SetConnMaxLifetime(-1)
@@ -109,12 +117,12 @@ func InitPoolDB(db *sql.DB, numConns int) error {
 		conn, err := db.Conn(context.Background())
 		if err != nil {
 			db.Close()
-			return fmt.Errorf("InitPoolDB: %w", err)
+			return fmt.Errorf("initialize pool: %w", err)
 		}
 		for _, q := range initQueries {
 			if _, err := conn.ExecContext(context.Background(), q); err != nil {
 				db.Close()
-				return fmt.Errorf("InitPoolDB %d: %w", i, err)
+				return fmt.Errorf("initialize pool connection %d: %w", i, err)
 			}
 		}
 		conns = append(conns, conn)
@@ -122,7 +130,7 @@ func InitPoolDB(db *sql.DB, numConns int) error {
 	for _, conn := range conns {
 		if err := conn.Close(); err != nil {
 			db.Close()
-			return fmt.Errorf("InitPoolDB: %w", err)
+			return fmt.Errorf("initialize pool: %w", err)
 		}
 	}
 	return nil

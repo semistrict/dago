@@ -51,6 +51,15 @@ func TestPredictableTextAndToolPatterns(t *testing.T) {
 	}
 }
 
+func TestNewPredictableRejectsNegativeLimits(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("negative history limit did not panic")
+		}
+	}()
+	NewPredictable(PredictableOptions{HistoryLimit: -1})
+}
+
 func TestPredictableReasoningStructuredAndDefault(t *testing.T) {
 	predictable := NewPredictable(PredictableOptions{DefaultResponse: "fallback"})
 

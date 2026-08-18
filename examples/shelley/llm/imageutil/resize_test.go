@@ -122,6 +122,12 @@ func TestResizeImageErrors(t *testing.T) {
 			maxDim:  2000,
 			wantErr: true,
 		},
+		{
+			name:    "negative maximum is rejected before decode",
+			data:    []byte("not an image"),
+			maxDim:  -1,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -131,6 +137,21 @@ func TestResizeImageErrors(t *testing.T) {
 				t.Errorf("ResizeImage() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestResizeImageZeroUsesFiniteDefault(t *testing.T) {
+	data := createTestPNG(t, DefaultMaxDimension+1, 1)
+	resized, _, didResize, err := ResizeImage(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !didResize {
+		t.Fatal("zero maximum did not select the finite default")
+	}
+	width, _, err := DecodeDimensions(resized)
+	if err != nil || width != DefaultMaxDimension {
+		t.Fatalf("resized width = %d, err %v; want %d", width, err, DefaultMaxDimension)
 	}
 }
 

@@ -1012,12 +1012,19 @@ func (server *Server) handleStoreSearch(writer http.ResponseWriter, request *htt
 
 func (server *Server) handleStoreNamespaces(writer http.ResponseWriter, request *http.Request) {
 	var payload struct {
-		Prefix []string `json:"prefix"`
+		Prefix   []string `json:"prefix"`
+		Suffix   []string `json:"suffix"`
+		MaxDepth int      `json:"max_depth"`
+		Limit    int      `json:"limit"`
+		Offset   int      `json:"offset"`
 	}
 	if !decodeJSON(writer, request, &payload) {
 		return
 	}
-	values, err := server.store.ListNamespaces(request.Context(), payload.Prefix)
+	values, err := server.store.ListNamespaces(request.Context(), dastore.ListNamespacesOptions{
+		Prefix: payload.Prefix, Suffix: payload.Suffix, MaxDepth: payload.MaxDepth,
+		Limit: payload.Limit, Offset: payload.Offset,
+	})
 	if err != nil {
 		writeError(writer, 400, err.Error())
 		return

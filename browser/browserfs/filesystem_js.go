@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -81,6 +82,12 @@ type DirectoryInfo struct {
 
 // New constructs a browser filesystem and restores only virtual-file metadata.
 func New(ctx context.Context, store Store) (*Filesystem, error) {
+	if nilInterface(ctx) {
+		panic("browser filesystem context is required")
+	}
+	if nilInterface(store) {
+		panic("browser filesystem store is required")
+	}
 	filesystem := &Filesystem{
 		store: store, external: map[string]browserEntry{}, virtual: map[string]browserEntry{},
 	}
@@ -123,6 +130,19 @@ func New(ctx context.Context, store Store) (*Filesystem, error) {
 		}
 	}
 	return filesystem, nil
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (filesystem *Filesystem) newEntry(filePath string, directory bool, size int64, handle js.Value) browserEntry {

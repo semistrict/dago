@@ -8,7 +8,7 @@ import (
 
 func TestSubagentIdlePollingWithSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		manager := &ConversationManager{agentWorking: true}
+		manager := &conversationManager{agentWorking: true}
 		runner := &SubagentRunner{}
 		started := time.Now()
 		done, err := runner.waitForIdle(t.Context(), manager, "subagent", started.Add(2*time.Second))

@@ -17,7 +17,7 @@ import (
 
 func mustMemory(backend dabackend.Backend, options Memory, addCacheControl ...bool) dagent.Middleware {
 	cacheControl := len(addCacheControl) > 0 && addCacheControl[0]
-	middleware, err := compileMemory(backend, options, cacheControl)
+	middleware, err := newMemory(backend, options, cacheControl)
 	if err != nil {
 		panic(err)
 	}
@@ -45,7 +45,6 @@ func TestMemoryLoadsOnceInOneBatchAndFormatsSourcesInOrder(t *testing.T) {
 		"/base/AGENTS.md":    {Content: "base\n<!-- private author note -->\n", Encoding: dabackend.EncodingUTF8},
 		"/project/AGENTS.md": {Content: "project", Encoding: dabackend.EncodingUTF8},
 	})
-
 	recording := &recordingDownloadBackend{Backend: memory}
 	middleware := mustMemory(
 		recording, Memory{
@@ -94,7 +93,6 @@ func TestMemoryPreloadedContentsArePortableAndSurviveCheckpointDecode(t *testing
 	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/disk/AGENTS.md": {Content: "disk", Encoding: dabackend.EncodingUTF8},
 	})
-
 	recording := &recordingDownloadBackend{Backend: memory}
 	middleware := mustMemory(
 		recording, Memory{
@@ -136,7 +134,6 @@ func TestMemoryPreloadedContentsArePortableAndSurviveCheckpointDecode(t *testing
 
 func TestMemoryMissingIsEmptyAndOtherDownloadErrorsFail(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	middleware := mustMemory(memory, Memory{Sources: []string{"/missing"}})
 
 	update, err := middleware.BeforeAgent(context.Background(), dastate.Values{}, dagent.Runtime{})
@@ -157,7 +154,6 @@ func TestMemoryMissingIsEmptyAndOtherDownloadErrorsFail(t *testing.T) {
 
 func TestMemoryPromptCanBeCustomizedOrDisabled(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	invalid := "memory without a slot"
 	requirePanicContaining(t, "{agent_memory}", func() {
 		mustMemory(memory, Memory{SystemPrompt: PromptTemplate{Mode: PromptCustom, Text: invalid}})
@@ -179,9 +175,37 @@ func TestMemoryPromptCanBeCustomizedOrDisabled(t *testing.T) {
 	}
 }
 
+func TestMemoryReadOnlyUsesUsefulDefaultUnlessPromptIsExplicit(t *testing.T) {
+	memory := dabackend.NewMemory(nil)
+	middleware := mustMemory(memory, Memory{ReadOnly: true})
+
+	_, err := middleware.WrapModelCall(context.Background(), dagent.ModelRequest{
+		Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"memory_contents": map[string]string{}},
+	}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
+		prompt := request.SystemMessage.TextContent()
+		if !strings.Contains(prompt, "Memory is read-only") || strings.Contains(prompt, "Persist durable") {
+			return dagent.ModelResponse{}, &memoryTestError{"read-only memory prompt was not selected"}
+		}
+		return dagent.ModelResponse{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	custom := mustMemory(memory, Memory{ReadOnly: true, SystemPrompt: PromptTemplate{Mode: PromptCustom, Text: "custom {agent_memory}"}})
+	_, err = custom.WrapModelCall(context.Background(), dagent.ModelRequest{State: dastate.Values{"memory_contents": map[string]string{}}}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
+		if got := request.SystemMessage.TextContent(); !strings.Contains(got, "custom") || strings.Contains(got, "read-only") {
+			return dagent.ModelResponse{}, &memoryTestError{"explicit memory prompt did not take precedence"}
+		}
+		return dagent.ModelResponse{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMemoryAddsProviderCacheHintToLastSystemBlock(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	middleware := mustMemory(memory, Memory{SystemPrompt: PromptTemplate{Mode: PromptDisabled}}, true)
 
 	provider := modeltest.New(damodel.Profile{Provider: "anthropic"})

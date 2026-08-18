@@ -119,7 +119,7 @@ func compileAsyncSubagents(options AsyncSubagentsOptions, subagents []AsyncSubag
 		if strings.TrimSpace(value.Name) == "" || strings.TrimSpace(value.Description) == "" || strings.TrimSpace(value.GraphID) == "" {
 			return dagent.Middleware{}, fmt.Errorf("async subagent name, description, and graph id are required")
 		}
-		if value.Runner == nil {
+		if nilInterface(value.Runner) {
 			return dagent.Middleware{}, fmt.Errorf("async subagent %q runner is required", value.Name)
 		}
 		if _, exists := byName[value.Name]; exists {

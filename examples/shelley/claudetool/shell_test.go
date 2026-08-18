@@ -33,11 +33,11 @@ func (capture *progressCapture) Write(_ context.Context, value json.RawMessage) 
 	return nil
 }
 
-func runShell(t *testing.T, tool *ShellTool, input string, timeout time.Duration) (string, *ShellDisplayData, error) {
+func runShell(t *testing.T, tool *shellTool, input string, timeout time.Duration) (string, *ShellDisplayData, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := tool.NativeTool().Execute(ctx, json.RawMessage(input), datool.Runtime{})
+	out, err := tool.nativeTool().Execute(ctx, json.RawMessage(input), datool.Runtime{})
 	var disp *ShellDisplayData
 	if len(out.Artifact) > 0 {
 		var decoded ShellDisplayData
@@ -55,11 +55,11 @@ func runShell(t *testing.T, tool *ShellTool, input string, timeout time.Duration
 	return out.Content[0].Text, disp, nil
 }
 
-func newTestShell(t *testing.T) *ShellTool {
+func newTestShell(t *testing.T) *shellTool {
 	t.Helper()
 	td := t.TempDir()
-	return &ShellTool{
-		WorkingDir:    NewMutableWorkingDir("/"),
+	return &shellTool{
+		WorkingDir:    newMutableWorkingDir("/"),
 		BackgroundCtx: context.Background(),
 		DefaultYield:  2 * time.Second,
 		MaxYield:      10 * time.Second,
@@ -162,6 +162,7 @@ func TestShellExplicitYieldTimeSeconds(t *testing.T) {
 
 func TestShellYieldTimeCappedAtMax(t *testing.T) {
 	s := newTestShell(t)
+	s.DefaultYield = 500 * time.Millisecond
 	s.MaxYield = 500 * time.Millisecond
 	start := time.Now()
 	_, disp, err := runShell(t, s,
@@ -183,6 +184,29 @@ func TestShellYieldTimeCappedAtMax(t *testing.T) {
 	}()
 }
 
+func TestShellNativeToolRejectsInvalidStaticConfiguration(t *testing.T) {
+	for name, mutate := range map[string]func(*shellTool){
+		"missing working directory": func(tool *shellTool) { tool.WorkingDir = nil },
+		"negative default yield":    func(tool *shellTool) { tool.DefaultYield = -time.Second },
+		"negative maximum yield":    func(tool *shellTool) { tool.MaxYield = -time.Second },
+		"default exceeds maximum": func(tool *shellTool) {
+			tool.DefaultYield = 2 * time.Second
+			tool.MaxYield = time.Second
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tool := newTestShell(t)
+			mutate(tool)
+			defer func() {
+				if recover() == nil {
+					t.Fatal("nativeTool accepted invalid static configuration")
+				}
+			}()
+			tool.nativeTool()
+		})
+	}
+}
+
 func TestShellFailingCommand(t *testing.T) {
 	s := newTestShell(t)
 	_, _, err := runShell(t, s, `{"command":"false"}`, 5*time.Second)
@@ -196,7 +220,7 @@ func TestShellFailingCommand(t *testing.T) {
 
 func TestShellWorkingDirMissing(t *testing.T) {
 	s := newTestShell(t)
-	s.WorkingDir = NewMutableWorkingDir("/this/does/not/exist/shelley/test")
+	s.WorkingDir = newMutableWorkingDir("/this/does/not/exist/shelley/test")
 	_, _, err := runShell(t, s, `{"command":"echo x"}`, 5*time.Second)
 	if err == nil {
 		t.Fatalf("expected error for missing working dir")
@@ -206,13 +230,14 @@ func TestShellWorkingDirMissing(t *testing.T) {
 func TestShellContextCancelKills(t *testing.T) {
 	s := newTestShell(t)
 	s.DefaultYield = 30 * time.Second // would otherwise yield slowly
+	s.MaxYield = 30 * time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(300 * time.Millisecond)
 		cancel()
 	}()
-	_, err := s.NativeTool().Execute(ctx, json.RawMessage(`{"command":"sleep 30"}`), datool.Runtime{})
+	_, err := s.nativeTool().Execute(ctx, json.RawMessage(`{"command":"sleep 30"}`), datool.Runtime{})
 	if err == nil {
 		t.Fatalf("expected error after cancel")
 	}
@@ -252,7 +277,7 @@ func TestShellProgressLoop(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := s.NativeTool().Execute(ctx, json.RawMessage(
+	_, err := s.nativeTool().Execute(ctx, json.RawMessage(
 		`{"command":"echo first; sleep 1; echo second"}`,
 	), datool.Runtime{CallID: "tool-use-123", Stream: capture})
 	if err != nil {
@@ -368,6 +393,7 @@ func TestShellRejectsBashkitCheckedCommand(t *testing.T) {
 func TestShellLargeOutputSummarized(t *testing.T) {
 	s := newTestShell(t)
 	s.DefaultYield = 30 * time.Second
+	s.MaxYield = 30 * time.Second
 
 	// Print > 50KB and exit promptly. yes + head -c is fast and deterministic.
 	cmdJSON := `{"command":"head -c 80000 /dev/urandom | base64 -w 0; echo"}`
@@ -392,7 +418,7 @@ func TestShellCoauthorTrailerIntegration(t *testing.T) {
 	// the command will fail with 'not a git repository' but the trailer code
 	// should run without panicking.
 	s := newTestShell(t)
-	s.WorkingDir = NewMutableWorkingDir(t.TempDir())
+	s.WorkingDir = newMutableWorkingDir(t.TempDir())
 	// 'git commit -m foo' will fail (no repo) but exercise trailer logic.
 	_, _, err := runShell(t, s,
 		`{"command":"git commit -m 'test message'"}`,

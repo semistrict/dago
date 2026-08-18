@@ -73,7 +73,7 @@ func TestContinueAfterRefusalSwitchesModelAndResumes(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	svc := &refuseThenOKService{inner: loop.NewPredictableService()}
-	svr := NewServer(database, &twoModelLLMManager{chat: svc},
+	svr := MustNewServer(database, &twoModelLLMManager{chat: svc},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		false, "model-a", "")

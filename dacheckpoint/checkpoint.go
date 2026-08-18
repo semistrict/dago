@@ -20,11 +20,19 @@ const (
 	ChannelTasks     = "__pregel_tasks"
 )
 
-var SpecialWriteIndexes = map[string]int{
+var specialWriteIndexes = map[string]int{
 	ChannelError:     -1,
 	ChannelScheduled: -2,
 	ChannelInterrupt: -3,
 	ChannelResume:    -4,
+}
+
+// SpecialWriteIndex reports the fixed index reserved for a checkpoint control
+// channel. The backing table is immutable to callers so saver write semantics
+// cannot be changed through exported mutable state.
+func SpecialWriteIndex(channel string) (int, bool) {
+	index, ok := specialWriteIndexes[channel]
+	return index, ok
 }
 
 var (
@@ -133,7 +141,23 @@ type DeltaHistory struct {
 type ListOptions struct {
 	Metadata map[string]any
 	Before   *Config
-	Limit    int
+	// Limit defaults to DefaultListLimit and cannot be negative.
+	Limit int
+}
+
+// DefaultListLimit bounds checkpoint listings whose caller does not specify a
+// limit.
+const DefaultListLimit = 100
+
+// Normalized returns a validated copy with the finite default limit applied.
+func (options ListOptions) Normalized() (ListOptions, error) {
+	if options.Limit < 0 {
+		return ListOptions{}, fmt.Errorf("checkpoint list limit cannot be negative")
+	}
+	if options.Limit == 0 {
+		options.Limit = DefaultListLimit
+	}
+	return options, nil
 }
 
 // PruneStrategy controls thread-history pruning.

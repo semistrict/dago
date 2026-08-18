@@ -24,6 +24,15 @@ func runSubagent(runner *SubagentRunner, ctx context.Context, conversationID, pr
 	return reply.Content, err
 }
 
+func TestNewSubagentRunnerRejectsNilServer(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewSubagentRunner accepted a nil server")
+		}
+	}()
+	NewSubagentRunner(nil)
+}
+
 func TestBuildConversationSummary(t *testing.T) {
 	t.Parallel()
 	// Create a server to get a SubagentRunner

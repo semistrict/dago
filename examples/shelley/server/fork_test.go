@@ -32,11 +32,12 @@ func seedForkConversation(t *testing.T, database *db.DB) (string, []generated.Me
 		t.Fatalf("create conversation: %v", err)
 	}
 	for _, text := range []string{"first", "second", "third"} {
-		if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           db.MessageTypeUser,
-			LLMData:        makeForkTestMessage(text),
-		}); err != nil {
+		if _, err := database.CreateMessage(ctx,
+			conv.ConversationID,
+			db.MessageTypeUser, db.CreateMessageParams{
+
+				LLMData: makeForkTestMessage(text),
+			}); err != nil {
 			t.Fatalf("create message %q: %v", text, err)
 		}
 	}
@@ -185,11 +186,12 @@ func TestForkConversationOnlyCopiesCurrentGeneration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("increment generation: %v", err)
 	}
-	if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: sourceID,
-		Type:           db.MessageTypeUser,
-		LLMData:        makeForkTestMessage("gen2 message"),
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		sourceID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData: makeForkTestMessage("gen2 message"),
+		}); err != nil {
 		t.Fatalf("create gen2 message: %v", err)
 	}
 
@@ -239,11 +241,12 @@ func TestForkConversationAtOlderGenerationMessage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("increment generation: %v", err)
 	}
-	if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: sourceID,
-		Type:           db.MessageTypeUser,
-		LLMData:        makeForkTestMessage("gen2 message"),
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		sourceID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData: makeForkTestMessage("gen2 message"),
+		}); err != nil {
 		t.Fatalf("create gen2 message: %v", err)
 	}
 

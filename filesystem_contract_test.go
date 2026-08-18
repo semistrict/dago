@@ -41,6 +41,40 @@ type recordingConfigurableSandbox struct {
 	unknown bool
 }
 
+type recordingCaptureSandbox struct {
+	*dabackend.Memory
+	command string
+	path    string
+	options dabackend.ExecuteOffloadOptions
+}
+
+func TestFilesystemToolPathsPreserveBackendDefaultAndRelativePaths(t *testing.T) {
+	if value, err := validateFilesystemToolPath("", true); err != nil || value != "" {
+		t.Fatalf("default path = %q, %v", value, err)
+	}
+	if value, err := validateFilesystemToolPath("docs/ARCHITECTURE.md", false); err != nil || value != "docs/ARCHITECTURE.md" {
+		t.Fatalf("relative path = %q, %v", value, err)
+	}
+	if value, err := validateFilesystemToolPath("/home/user/project/README.md", false); err != nil || value != "/home/user/project/README.md" {
+		t.Fatalf("absolute host path = %q, %v", value, err)
+	}
+	if value, err := validateFilesystemToolPath("../README.md", false); err != nil || value != "../README.md" {
+		t.Fatalf("parent-relative host path = %q, %v", value, err)
+	}
+}
+
+func (sandbox *recordingCaptureSandbox) ID() string { return "capture" }
+
+func (sandbox *recordingCaptureSandbox) Execute(context.Context, string, time.Duration) (dabackend.ExecuteResult, error) {
+	panic("plain execute called instead of capture-at-source")
+}
+
+func (sandbox *recordingCaptureSandbox) ExecuteWithOffload(_ context.Context, command, capturePath string, options dabackend.ExecuteOffloadOptions) (dabackend.ExecuteOffloadResult, error) {
+	sandbox.command, sandbox.path, sandbox.options = command, capturePath, options
+	code := 0
+	return dabackend.ExecuteOffloadResult{Offloaded: true, Response: dabackend.ExecuteResult{Output: "preview", ExitCode: &code}}, nil
+}
+
 func (sandbox *recordingConfigurableSandbox) ID() string { return "recording" }
 
 func (sandbox *recordingConfigurableSandbox) Execute(context.Context, string, time.Duration) (dabackend.ExecuteResult, error) {
@@ -66,7 +100,6 @@ func (value blockingGlobBackend) Glob(context.Context, string, string) (dabacken
 
 func TestFilesystemToolSchemasDescribeEveryArgument(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	middleware := mustFilesystem(memory, Filesystem{})
 
 	want := map[string][]string{
@@ -104,19 +137,14 @@ func TestFilesystemToolSchemasDescribeEveryArgument(t *testing.T) {
 	}
 }
 
-func TestFilesystemToolsNormalizePathsAndRejectAmbiguousHostSyntax(t *testing.T) {
+func TestFilesystemToolsPreserveBackendPathSemantics(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
-	read := filesystemTool(t, memory, Filesystem{}, "read_file")
-	if _, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"C:\\Users\\test.txt"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "Windows absolute") {
-		t.Fatalf("Windows path error = %v", err)
-	}
 	edit := filesystemTool(t, memory, Filesystem{}, "edit_file")
 	if _, err := edit.Execute(context.Background(), json.RawMessage(`{"file_path":"./question/..","old_string":"a","new_string":"b"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
 		t.Fatalf("traversal path error = %v", err)
 	}
 	glob := filesystemTool(t, memory, Filesystem{}, "glob")
-	if _, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"../*.txt"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
+	if _, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":"*.txt","path":"../"}`), datool.Runtime{}); err == nil || !strings.Contains(err.Error(), "traversal") {
 		t.Fatalf("traversal glob error = %v", err)
 	}
 	write := filesystemTool(t, memory, Filesystem{}, "write_file")
@@ -131,7 +159,6 @@ func TestFilesystemToolsNormalizePathsAndRejectAmbiguousHostSyntax(t *testing.T)
 
 func TestFilesystemDescriptionsRespectVisibilityAndOverrides(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	middleware := mustFilesystem(
 		memory, Filesystem{
 			Tools:            []string{"read_file", "grep"},
@@ -156,7 +183,6 @@ func TestReadFileDistinguishesZeroWindowFromEmptyFile(t *testing.T) {
 		"/full.txt":  {Content: "contents", Encoding: dabackend.EncodingUTF8},
 		"/empty.txt": {Content: " \n\t", Encoding: dabackend.EncodingUTF8},
 	})
-
 	read := filesystemTool(t, memory, Filesystem{}, "read_file")
 	zero, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/full.txt","limit":0}`), datool.Runtime{})
 	if err != nil {
@@ -178,7 +204,6 @@ func TestReadFilePaginationAndNegativeOffset(t *testing.T) {
 	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/lines.txt": {Content: "first\nsecond\nthird", Encoding: dabackend.EncodingUTF8},
 	})
-
 	read := filesystemTool(t, memory, Filesystem{}, "read_file")
 	page, err := read.Execute(context.Background(), json.RawMessage(`{"file_path":"/lines.txt","limit":2}`), datool.Runtime{})
 	if err != nil {
@@ -232,7 +257,6 @@ func TestExecuteReportsExitStatusAndCaptureTruncation(t *testing.T) {
 
 func TestExecuteArtifactOmitsUnknownExitCodeAndTruncation(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	sandbox := &recordingConfigurableSandbox{Backend: memory, unknown: true}
 	execute := filesystemTool(t, sandbox, Filesystem{}, "execute")
 	result, err := execute.Execute(context.Background(), json.RawMessage(`{"command":"true"}`), datool.Runtime{})
@@ -246,18 +270,16 @@ func TestExecuteArtifactOmitsUnknownExitCodeAndTruncation(t *testing.T) {
 
 func TestFilesystemNonEmptyToolAllowlistRequiresReadFile(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
-	if _, err := compileFilesystem(memory, Filesystem{Tools: []string{"write_file"}}, nil); err == nil || !strings.Contains(err.Error(), "read_file must be included") {
+	if _, err := newFilesystem(memory, Filesystem{Tools: []string{"write_file"}}, nil); err == nil || !strings.Contains(err.Error(), "read_file must be included") {
 		t.Fatalf("allowlist error = %v", err)
 	}
-	if _, err := compileFilesystem(memory, Filesystem{Tools: []string{}}, nil); err != nil {
+	if _, err := newFilesystem(memory, Filesystem{Tools: []string{}}, nil); err != nil {
 		t.Fatalf("empty disabled tool set: %v", err)
 	}
 }
 
 func TestGrepSupportsConfiguredAndPerCallUncappedSearch(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	recording := &recordingGrepBackend{Backend: memory}
 	grep := filesystemTool(t, recording, Filesystem{GrepUncapped: true}, "grep")
 	for _, arguments := range []string{
@@ -282,7 +304,6 @@ func TestGrepSupportsConfiguredAndPerCallUncappedSearch(t *testing.T) {
 
 func TestGrepPreservesPartialMatchesWithBoundedError(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	recording := &recordingGrepBackend{Backend: memory, result: dabackend.GrepResult{
 		Error:   strings.Repeat("failure", 2_000),
 		Matches: []dabackend.GrepMatch{{Path: "/partial.txt", Line: 7, Text: "hit"}},
@@ -300,7 +321,6 @@ func TestGrepPreservesPartialMatchesWithBoundedError(t *testing.T) {
 
 func TestExecuteDistinguishesOmittedAndZeroTimeouts(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	sandbox := &recordingConfigurableSandbox{Backend: memory}
 	execute := filesystemTool(t, sandbox, Filesystem{}, "execute")
 	for _, arguments := range []string{`{"command":"true"}`, `{"command":"true","timeout":0}`, `{"command":"true","timeout":3}`} {
@@ -329,9 +349,7 @@ func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	persistent := dabackend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
-
 	composite := dabackend.NewComposite(shell, map[string]dabackend.Backend{"/common/": mounted, "/memories/": persistent})
-
 	middleware := mustFilesystem(composite, Filesystem{})
 
 	system := damessage.System("base prompt")
@@ -356,9 +374,7 @@ func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
 
 func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	composite := dabackend.NewCompositeWithOptions(memory, dabackend.CompositeOptions{ArtifactsRoot: "/workspace"})
-
 	middleware := mustFilesystem(composite, Filesystem{ToolResultLimit: ContentLimit{Unit: ContentBytes, Amount: 10}})
 
 	response, err := middleware.WrapToolCall(context.Background(), dagent.ToolCallRequest{
@@ -378,9 +394,54 @@ func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
 	}
 }
 
+func TestExecuteUsesCaptureAtSourceForCompatibleSandbox(t *testing.T) {
+	memory := dabackend.NewMemory(nil)
+	sandbox := &recordingCaptureSandbox{Memory: memory}
+	middleware := mustFilesystem(sandbox, Filesystem{
+		ArtifactsRoot:   "/artifacts/results",
+		ToolResultLimit: ContentLimit{Unit: ContentBytes, Amount: 12},
+	})
+	var execute datool.Tool
+	for _, tool := range middleware.Tools {
+		if tool.Definition().Name == "execute" {
+			execute = tool
+			break
+		}
+	}
+	response, err := middleware.WrapToolCall(context.Background(), dagent.ToolCallRequest{
+		Call: damessage.ToolCall{ID: `call/one`, Name: "execute", Arguments: json.RawMessage(`{"command":"produce output","timeout":3}`)},
+	}, func(ctx context.Context, request dagent.ToolCallRequest) (dagent.ToolCallResponse, error) {
+		result, executeErr := execute.Execute(ctx, request.Call.Arguments, datool.Runtime{CallID: request.Call.ID})
+		return dagent.ToolCallResponse{Result: result}, executeErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sandbox.command != "produce output" || sandbox.path != "/artifacts/results/call_one" || sandbox.options.MaxInlineBytes != 12 || sandbox.options.Timeout == nil || *sandbox.options.Timeout != 3*time.Second {
+		t.Fatalf("capture request = command %q, path %q, options %#v", sandbox.command, sandbox.path, sandbox.options)
+	}
+	if text := response.Result.Content[0].Text; !strings.Contains(text, "Result saved to /artifacts/results/call_one") || !strings.Contains(text, "preview") {
+		t.Fatalf("capture result = %q", text)
+	}
+	if _, err := memory.Read(context.Background(), "/artifacts/results/call_one", 0, 10); err == nil {
+		t.Fatal("generic eviction overwrote capture-at-source output")
+	}
+}
+
+func TestExecuteSkipsCaptureWhenCompositeRoutesArtifactPath(t *testing.T) {
+	defaultMemory := dabackend.NewMemory(nil)
+	defaultSandbox := &recordingCaptureSandbox{Memory: defaultMemory}
+	routed := dabackend.NewMemory(nil)
+	composite := dabackend.NewCompositeWithOptions(defaultSandbox, dabackend.CompositeOptions{
+		Routes: map[string]dabackend.Backend{"/artifacts": routed}, ArtifactsRoot: "/artifacts",
+	})
+	if _, ok := dabackend.CaptureOffloaderOf(composite, "/artifacts/large_tool_results/call"); ok {
+		t.Fatal("capture crossed a composite route")
+	}
+}
+
 func TestToolResultOffloadConfinesArtifactAndPreservesMedia(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	middleware := mustFilesystem(memory, Filesystem{
 		ArtifactsRoot:   "/artifacts/large_tool_results",
 		ToolResultLimit: ContentLimit{Unit: ContentBytes, Amount: 10},
@@ -473,7 +534,6 @@ func TestFilesystemSearchResultsUseStableModelFacingShapes(t *testing.T) {
 	}
 
 	memory := dabackend.NewMemory(nil)
-
 	ls := filesystemTool(t, memory, Filesystem{}, "ls")
 	listing, err := ls.Execute(context.Background(), json.RawMessage(`{"path":"/"}`), datool.Runtime{})
 	if err != nil || listing.Content[0].Text != "No files found" {
@@ -489,7 +549,6 @@ func TestFilesystemSearchResultsUseStableModelFacingShapes(t *testing.T) {
 func TestFilesystemGlobBoundsUnresponsiveBackends(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		memory := dabackend.NewMemory(nil)
-
 		release := make(chan struct{})
 		defer close(release)
 		glob := filesystemTool(t, blockingGlobBackend{Backend: memory, release: release}, Filesystem{
@@ -518,7 +577,6 @@ func TestFilesystemGlobBoundsUnresponsiveBackends(t *testing.T) {
 
 func TestFilesystemGlobPreservesBackendTimeoutErrors(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-
 	want := errors.New("backend RPC timeout")
 	glob := filesystemTool(t, blockingGlobBackend{Backend: memory, err: want}, Filesystem{
 		GlobTimeout: time.Second,

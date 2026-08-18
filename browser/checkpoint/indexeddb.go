@@ -49,8 +49,33 @@ type browserWriteRecord struct {
 	Replace      bool   `json:"replace,omitempty"`
 }
 
+type browserCheckpointListRequest struct {
+	Config        *dacheckpoint.Config `json:"config,omitempty"`
+	Metadata      map[string]any       `json:"metadata,omitempty"`
+	Before        *dacheckpoint.Config `json:"before,omitempty"`
+	After         *dacheckpoint.Config `json:"after,omitempty"`
+	Limit         int                  `json:"limit"`
+	AllNamespaces bool                 `json:"all_namespaces,omitempty"`
+}
+
 func NewIndexedDBSaver(store CheckpointStore) *IndexedDBSaver {
+	if nilInterface(store) {
+		panic("browser checkpoint store is required")
+	}
 	return &IndexedDBSaver{store: store, codec: serde.New(serde.Limits{})}
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (saver *IndexedDBSaver) execute(ctx context.Context, operation string, input, output any) error {
@@ -126,9 +151,9 @@ func (saver *IndexedDBSaver) PutWrites(
 	records := make([]browserWriteRecord, 0, len(writes))
 	for index, write := range writes {
 		assigned := index
-		_, replace := dacheckpoint.SpecialWriteIndexes[write.Channel]
+		special, replace := dacheckpoint.SpecialWriteIndex(write.Channel)
 		if replace {
-			assigned = dacheckpoint.SpecialWriteIndexes[write.Channel]
+			assigned = special
 		}
 		encoded, err := saver.codec.Encode(write.Value)
 		if err != nil {
@@ -210,42 +235,28 @@ func (saver *IndexedDBSaver) List(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	var err error
+	options, err = options.Normalized()
+	if err != nil {
+		return nil, err
+	}
 	if config != nil {
 		if err := config.Validate(); err != nil {
 			return nil, err
 		}
 	}
 	var records []browserCheckpointRecord
-	if err := saver.execute(ctx, "list_checkpoints", config, &records); err != nil {
+	request := browserCheckpointListRequest{
+		Config: config, Metadata: options.Metadata, Before: options.Before, Limit: options.Limit,
+	}
+	if err := saver.execute(ctx, "list_checkpoints", request, &records); err != nil {
 		return nil, err
 	}
-	filtered := records[:0]
+	if err := validateBrowserCheckpointList(records, config, options); err != nil {
+		return nil, err
+	}
+	result := make([]dacheckpoint.Tuple, 0, len(records))
 	for _, record := range records {
-		if config != nil && config.CheckpointID != "" && record.CheckpointID != config.CheckpointID {
-			continue
-		}
-		if options.Before != nil && options.Before.CheckpointID != "" && record.CheckpointID >= options.Before.CheckpointID {
-			continue
-		}
-		if !browserMetadataMatches(record.Metadata, options.Metadata) {
-			continue
-		}
-		filtered = append(filtered, record)
-	}
-	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].ThreadID != filtered[j].ThreadID {
-			return filtered[i].ThreadID < filtered[j].ThreadID
-		}
-		if filtered[i].Namespace != filtered[j].Namespace {
-			return filtered[i].Namespace < filtered[j].Namespace
-		}
-		return filtered[i].CheckpointID > filtered[j].CheckpointID
-	})
-	if options.Limit > 0 && len(filtered) > options.Limit {
-		filtered = filtered[:options.Limit]
-	}
-	result := make([]dacheckpoint.Tuple, 0, len(filtered))
-	for _, record := range filtered {
 		tuple, err := saver.decodeTuple(ctx, record)
 		if err != nil {
 			return nil, err
@@ -253,6 +264,66 @@ func (saver *IndexedDBSaver) List(
 		result = append(result, *tuple)
 	}
 	return result, nil
+}
+
+func validateBrowserCheckpointList(records []browserCheckpointRecord, config *dacheckpoint.Config, options dacheckpoint.ListOptions) error {
+	if len(records) > options.Limit {
+		return fmt.Errorf("browser checkpoint list returned %d records for limit %d", len(records), options.Limit)
+	}
+	for index, record := range records {
+		if config != nil && (record.ThreadID != config.ThreadID || record.Namespace != config.Namespace ||
+			(config.CheckpointID != "" && record.CheckpointID != config.CheckpointID)) {
+			return fmt.Errorf("browser checkpoint list returned a record outside the requested config")
+		}
+		if options.Before != nil && options.Before.CheckpointID != "" && record.CheckpointID >= options.Before.CheckpointID {
+			return fmt.Errorf("browser checkpoint list returned a record outside the requested before boundary")
+		}
+		if !browserMetadataMatches(record.Metadata, options.Metadata) {
+			return fmt.Errorf("browser checkpoint list returned a record outside the requested metadata filter")
+		}
+		if index > 0 && !browserCheckpointRecordLess(records[index-1], record) {
+			return fmt.Errorf("browser checkpoint list returned records out of canonical order")
+		}
+	}
+	return nil
+}
+
+func browserCheckpointRecordLess(left, right browserCheckpointRecord) bool {
+	if left.ThreadID != right.ThreadID {
+		return left.ThreadID < right.ThreadID
+	}
+	if left.Namespace != right.Namespace {
+		return left.Namespace < right.Namespace
+	}
+	return left.CheckpointID > right.CheckpointID
+}
+
+func browserCheckpointRecordAfter(record browserCheckpointRecord, after dacheckpoint.Config) bool {
+	if record.ThreadID != after.ThreadID {
+		return record.ThreadID > after.ThreadID
+	}
+	if record.Namespace != after.Namespace {
+		return record.Namespace > after.Namespace
+	}
+	return record.CheckpointID < after.CheckpointID
+}
+
+func validateBrowserCheckpointPage(records []browserCheckpointRecord, threadID string, after *dacheckpoint.Config, limit int) error {
+	if len(records) > limit {
+		return fmt.Errorf("browser checkpoint list returned %d records for limit %d", len(records), limit)
+	}
+	for index, record := range records {
+		if record.ThreadID != threadID {
+			return fmt.Errorf("browser checkpoint list returned a record outside thread %q", threadID)
+		}
+		if after != nil && !browserCheckpointRecordAfter(record, *after) {
+			return fmt.Errorf("browser checkpoint list returned a record before its page cursor")
+		}
+		if index > 0 && !browserCheckpointRecordLess(records[index-1], record) {
+			return fmt.Errorf("browser checkpoint list returned records out of canonical order")
+		}
+	}
+	return nil
 }
 
 func browserMetadataMatches(metadata dacheckpoint.Metadata, filter map[string]any) bool {
@@ -296,8 +367,26 @@ func (saver *IndexedDBSaver) Prune(ctx context.Context, threadIDs []string, stra
 	for _, threadID := range threadIDs {
 		config := dacheckpoint.Config{ThreadID: threadID}
 		var records []browserCheckpointRecord
-		if err := saver.execute(ctx, "list_checkpoints", config, &records); err != nil {
-			return err
+		var after *dacheckpoint.Config
+		for {
+			var page []browserCheckpointRecord
+			request := browserCheckpointListRequest{
+				Config: &config, After: after, Limit: dacheckpoint.DefaultListLimit, AllNamespaces: true,
+			}
+			if err := saver.execute(ctx, "list_checkpoints", request, &page); err != nil {
+				return err
+			}
+			if err := validateBrowserCheckpointPage(page, threadID, after, dacheckpoint.DefaultListLimit); err != nil {
+				return err
+			}
+			records = append(records, page...)
+			if len(page) < dacheckpoint.DefaultListLimit {
+				break
+			}
+			last := page[len(page)-1]
+			after = &dacheckpoint.Config{
+				ThreadID: last.ThreadID, Namespace: last.Namespace, CheckpointID: last.CheckpointID,
+			}
 		}
 		byKey := make(map[string]browserCheckpointRecord, len(records))
 		latest := map[string]string{}

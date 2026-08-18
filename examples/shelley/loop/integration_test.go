@@ -8,6 +8,16 @@ import (
 	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
+func TestNewLoopPanicsForTypedNilModel(t *testing.T) {
+	var model *PredictableService
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewLoop did not panic")
+		}
+	}()
+	NewLoop(model, nil, Config{})
+}
+
 func TestLoopWithClaudeTools(t *testing.T) {
 	var recordedMessages []llm.Message
 
@@ -19,11 +29,11 @@ func TestLoopWithClaudeTools(t *testing.T) {
 	service := NewPredictableService()
 
 	// Create loop with the configured service
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		RecordMessage: recordFunc,
-	})
+	loop := NewLoop(service,
+
+		recordFunc, Config{
+			History: []llm.Message{},
+		})
 
 	// Queue a user message that will trigger a specific predictable response
 	userMessage := llm.Message{
@@ -79,13 +89,13 @@ func TestLoopWithClaudeTools(t *testing.T) {
 
 func TestLoopContextCancellation(t *testing.T) {
 	service := NewPredictableService()
-	loop := NewLoop(Config{
-		Model:   service,
-		History: []llm.Message{},
-		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+	loop := NewLoop(service,
+
+		func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return nil
-		},
-	})
+		}, Config{
+			History: []llm.Message{},
+		})
 
 	// Cancel context immediately
 	ctx, cancel := context.WithCancel(context.Background())
@@ -103,14 +113,14 @@ func TestLoopSystemMessages(t *testing.T) {
 		{Text: "You are a helpful assistant.", Type: "text"},
 	}
 
-	loop := NewLoop(Config{
-		Model:   NewPredictableService(),
-		History: []llm.Message{},
-		System:  system,
-		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+	loop := NewLoop(NewPredictableService(),
+
+		func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return nil
-		},
-	})
+		}, Config{
+			History: []llm.Message{},
+			System:  system,
+		})
 
 	// The system messages are stored and would be passed to LLM
 	loop.mu.Lock()

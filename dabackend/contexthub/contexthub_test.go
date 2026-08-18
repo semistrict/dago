@@ -62,24 +62,7 @@ func (client *fakeClient) Push(ctx context.Context, _ string, changes map[string
 func newTestBackend(t *testing.T, client *fakeClient) *Backend {
 	t.Helper()
 	result := New("-/agent", client)
-
 	return result
-}
-
-func TestNewPanicsForMissingRequiredValues(t *testing.T) {
-	for name, call := range map[string]func(){
-		"identifier": func() { New("", &fakeClient{}) },
-		"client":     func() { New("-/agent", nil) },
-	} {
-		t.Run(name, func(t *testing.T) {
-			defer func() {
-				if recover() == nil {
-					t.Fatal("constructor did not panic")
-				}
-			}()
-			call()
-		})
-	}
 }
 
 func TestLazyPullReadPaginationAndLinkedEntries(t *testing.T) {

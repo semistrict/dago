@@ -76,7 +76,6 @@ func TestDeletePermissionsDistinguishLeafAndSubtree(t *testing.T) {
 		"/work/a.txt":             {Content: "a", Encoding: dabackend.EncodingUTF8},
 		"/work/secrets/token.txt": {Content: "secret", Encoding: dabackend.EncodingUTF8},
 	})
-
 	if deleteTargetMayHaveDescendants(context.Background(), memory, "/work/a.txt", true) {
 		t.Fatal("plain file reported descendants")
 	}
@@ -116,9 +115,7 @@ func TestFilesystemPermissionsAllowOnlyShellInaccessibleRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	persistent := dabackend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
-
 	composite := dabackend.NewComposite(shell, map[string]dabackend.Backend{"/memories/": persistent})
-
 	rules := []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/memories/**"}, Mode: PermissionDeny}}
 	middleware := mustFilesystem(composite, Filesystem{Permissions: rules})
 
@@ -135,7 +132,6 @@ func TestFilesystemPermissionsAllowOnlyShellInaccessibleRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	accessible := dabackend.NewComposite(shell, map[string]dabackend.Backend{"/work/": localRoute})
-
 	requirePanicContaining(t, "cannot constrain execute", func() {
 		mustFilesystem(accessible, Filesystem{Permissions: []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/work/**"}, Mode: PermissionDeny}}})
 	})

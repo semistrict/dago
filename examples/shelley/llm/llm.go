@@ -253,21 +253,30 @@ const (
 // ("default", "off", "minimal", "low", "medium", "high", "xhigh") into a
 // ThinkingLevel. Empty string and unknown values return ThinkingLevelDefault.
 func ParseThinkingLevel(s string) ThinkingLevel {
+	level, _ := ParseThinkingLevelStrict(s)
+	return level
+}
+
+// ParseThinkingLevelStrict parses a user-facing reasoning level and rejects
+// unknown values. Empty and "default" select the provider default.
+func ParseThinkingLevelStrict(s string) (ThinkingLevel, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "default":
+		return ThinkingLevelDefault, nil
 	case "off":
-		return ThinkingLevelOff
+		return ThinkingLevelOff, nil
 	case "minimal":
-		return ThinkingLevelMinimal
+		return ThinkingLevelMinimal, nil
 	case "low":
-		return ThinkingLevelLow
+		return ThinkingLevelLow, nil
 	case "medium":
-		return ThinkingLevelMedium
+		return ThinkingLevelMedium, nil
 	case "high":
-		return ThinkingLevelHigh
+		return ThinkingLevelHigh, nil
 	case "xhigh":
-		return ThinkingLevelXHigh
+		return ThinkingLevelXHigh, nil
 	default:
-		return ThinkingLevelDefault
+		return ThinkingLevelDefault, fmt.Errorf("invalid thinking level %q", s)
 	}
 }
 

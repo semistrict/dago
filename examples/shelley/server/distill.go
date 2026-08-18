@@ -332,21 +332,22 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 	if sourceConv.Slug != nil {
 		sourceSlug = *sourceConv.Slug
 	}
-	statusMsg, err := s.db.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: req.SourceConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData: llm.Message{
-			Role:    llm.MessageRoleAssistant,
-			Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Distilling conversation…"}},
-		},
-		UserData: map[string]string{
-			"distill_status": "in_progress",
-			"source_slug":    sourceSlug,
-			"new_generation": "true",
-			"distill_method": method,
-		},
-		ExcludedFromContext: true,
-	})
+	statusMsg, err := s.db.CreateMessage(ctx,
+		req.SourceConversationID,
+		db.MessageTypeAgent, db.CreateMessageParams{
+
+			LLMData: llm.Message{
+				Role:    llm.MessageRoleAssistant,
+				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Distilling conversation…"}},
+			},
+			UserData: map[string]string{
+				"distill_status": "in_progress",
+				"source_slug":    sourceSlug,
+				"new_generation": "true",
+				"distill_method": method,
+			},
+			ExcludedFromContext: true,
+		})
 	if err != nil {
 		s.logger.Error("Failed to create status message", "conversationID", req.SourceConversationID, "error", err)
 		// WithoutCancel: a client disconnect mid-setup must not strand the

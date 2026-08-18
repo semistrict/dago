@@ -53,10 +53,7 @@ func TestAliasPreservesSchemaAndDelegatesRuntime(t *testing.T) {
 	}, Run: func(_ context.Context, raw json.RawMessage, runtime Runtime) (Result, error) {
 		return TextResult(runtime.CallID + ":" + string(raw)), nil
 	}}
-	alias, err := Alias(target, "bash")
-	if err != nil {
-		t.Fatal(err)
-	}
+	alias := Alias(target, "bash")
 	definition := alias.Definition()
 	if definition.Name != "bash" || !strings.Contains(string(definition.InputSchema), "command") {
 		t.Fatalf("alias definition = %#v", definition)
@@ -64,6 +61,27 @@ func TestAliasPreservesSchemaAndDelegatesRuntime(t *testing.T) {
 	result, err := alias.Execute(context.Background(), json.RawMessage(`{"command":"pwd"}`), Runtime{CallID: "call-1"})
 	if err != nil || result.Content[0].Text != `call-1:{"command":"pwd"}` {
 		t.Fatalf("alias result = %#v, %v", result, err)
+	}
+}
+
+func TestAliasPanicsForInvalidStaticInputs(t *testing.T) {
+	type typedNilTool struct{ Tool }
+	var target *typedNilTool
+	for name, work := range map[string]func(){
+		"nil target":       func() { Alias(nil, "bash") },
+		"typed nil target": func() { Alias(target, "bash") },
+		"invalid name": func() {
+			Alias(Func{Spec: Definition{Name: "execute", Description: "Run.", InputSchema: json.RawMessage(`{"type":"object"}`)}}, "bad name")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("Alias did not panic")
+				}
+			}()
+			work()
+		})
 	}
 }
 

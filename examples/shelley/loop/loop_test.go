@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/dago/dacheckpoint"
 	dmessage "github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/datool"
@@ -32,11 +33,11 @@ func TestNewLoop(t *testing.T) {
 		return nil
 	}
 
-	loop := NewLoop(Config{
-		Model:         NewPredictableService(),
-		History:       history,
-		RecordMessage: recordFunc,
-	})
+	loop := NewLoop(NewPredictableService(),
+
+		recordFunc, Config{
+			History: history,
+		})
 	if loop == nil {
 		t.Fatal("NewLoop returned nil")
 	}
@@ -50,9 +51,47 @@ func TestNewLoop(t *testing.T) {
 	}
 }
 
+func TestNewLoopHandlesTypedNilSaverAndRejectsDuplicateTools(t *testing.T) {
+	var saver *dacheckpoint.MemorySaver
+	runtime := NewLoop(NewPredictableService(), discardRecord, Config{Saver: saver})
+	if runtime.saver == nil {
+		t.Fatal("typed-nil saver did not receive an in-memory default")
+	}
+	tool := datool.MustNew("duplicate", "test", func(context.Context, struct{}) (string, error) { return "", nil })
+	defer func() {
+		if recover() == nil {
+			t.Fatal("duplicate tools were accepted")
+		}
+	}()
+	NewLoop(NewPredictableService(), discardRecord, Config{Tools: []datool.Tool{tool, tool}})
+}
+
+func TestNewLoopRejectsInvalidStaticToolDefinitions(t *testing.T) {
+	tests := map[string]datool.Definition{
+		"whitespace name":   {Name: "bad name", Description: "test", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		"empty description": {Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		"malformed schema":  {Name: "tool", Description: "test", InputSchema: json.RawMessage(`{"type":`)},
+		"non-object schema": {Name: "tool", Description: "test", InputSchema: json.RawMessage(`[]`)},
+	}
+	for name, definition := range tests {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("NewLoop accepted an invalid static tool definition")
+				}
+			}()
+			NewLoop(NewPredictableService(), discardRecord, Config{Tools: []datool.Tool{datool.Func{
+				Spec: definition,
+				Run: func(context.Context, json.RawMessage, datool.Runtime) (datool.Result, error) {
+					return datool.TextResult("unused"), nil
+				},
+			}}})
+		})
+	}
+}
+
 func TestQueueUserMessage(t *testing.T) {
-	loop := NewLoop(Config{
-		Model:   NewPredictableService(),
+	loop := NewLoop(NewPredictableService(), discardRecord, Config{
 		History: []llm.Message{},
 	})
 
@@ -186,11 +225,11 @@ func TestLoopWithPredictableService(t *testing.T) {
 	}
 
 	service := NewPredictableService()
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		RecordMessage: recordFunc,
-	})
+	loop := NewLoop(service,
+
+		recordFunc, Config{
+			History: []llm.Message{},
+		})
 
 	// Queue a user message that triggers a known response
 	userMessage := llm.Message{
@@ -232,14 +271,14 @@ func TestLoopWithTools(t *testing.T) {
 	}
 
 	service := NewPredictableService()
-	loop := NewLoop(Config{
-		Model:   service,
-		History: []llm.Message{},
-		Tools:   []datool.Tool{testTool},
-		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+	loop := NewLoop(service,
+
+		func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return nil
-		},
-	})
+		}, Config{
+			History: []llm.Message{},
+			Tools:   []datool.Tool{testTool},
+		})
 
 	// Queue a user message that triggers the bash tool
 	userMessage := llm.Message{
@@ -272,8 +311,7 @@ func TestGetHistory(t *testing.T) {
 		{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hello"}}},
 	}
 
-	loop := NewLoop(Config{
-		Model:   NewPredictableService(),
+	loop := NewLoop(NewPredictableService(), discardRecord, Config{
 		History: initialHistory,
 	})
 
@@ -292,6 +330,10 @@ func TestGetHistory(t *testing.T) {
 	}
 }
 
+func discardRecord(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error {
+	return nil
+}
+
 func TestLoopWithKeywordTool(t *testing.T) {
 	// Test that keyword tool doesn't crash with nil pointer dereference
 	service := NewPredictableService()
@@ -302,11 +344,11 @@ func TestLoopWithKeywordTool(t *testing.T) {
 		return nil
 	}
 
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		RecordMessage: recordMessage,
-	})
+	loop := NewLoop(service,
+
+		recordMessage, Config{
+			History: []llm.Message{},
+		})
 
 	// Send a user message that will trigger the default response
 	userMessage := llm.Message{
@@ -350,11 +392,11 @@ func TestLoopWithActualKeywordTool(t *testing.T) {
 		return nil
 	}
 
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		RecordMessage: recordMessage,
-	})
+	loop := NewLoop(service,
+
+		recordMessage, Config{
+			History: []llm.Message{},
+		})
 
 	// Send a user message that will trigger the default response
 	userMessage := llm.Message{
@@ -411,27 +453,24 @@ func TestGitStateTracking(t *testing.T) {
 	var mu sync.Mutex
 	var gitStateChanges []*gitstate.GitState
 
-	loop := NewLoop(Config{
-		Model:         NewPredictableService(),
-		History:       []llm.Message{},
-		WorkingDir:    tmpDir,
-		GetWorkingDir: func() string { return tmpDir },
-		OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
-			mu.Lock()
-			gitStateChanges = append(gitStateChanges, state)
-			mu.Unlock()
-		},
-		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
-			return nil
-		},
-	})
+	loop := NewLoop(NewPredictableService(),
 
-	// Verify initial state was captured
-	if loop.lastGitState == nil {
-		t.Fatal("expected initial git state to be captured")
-	}
-	if !loop.lastGitState.IsRepo {
-		t.Error("expected IsRepo to be true")
+		func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+			return nil
+		}, Config{
+			History:       []llm.Message{},
+			WorkingDir:    tmpDir,
+			GetWorkingDir: func() string { return tmpDir },
+			OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
+				mu.Lock()
+				gitStateChanges = append(gitStateChanges, state)
+				mu.Unlock()
+			},
+		})
+
+	// Construction is static: Git discovery is deferred until the turn boundary.
+	if loop.lastGitState != nil {
+		t.Fatal("constructor performed Git discovery")
 	}
 
 	// Process a turn (no state change should occur)
@@ -446,6 +485,9 @@ func TestGitStateTracking(t *testing.T) {
 	err := loop.ProcessOneTurn(ctx)
 	if err != nil {
 		t.Fatalf("ProcessOneTurn failed: %v", err)
+	}
+	if loop.lastGitState == nil || !loop.lastGitState.IsRepo {
+		t.Fatal("turn boundary did not establish the Git baseline")
 	}
 
 	// No state change should have occurred
@@ -514,30 +556,27 @@ func TestGitStateTrackingWorktree(t *testing.T) {
 	var mu sync.Mutex
 	var gitStateChanges []*gitstate.GitState
 
-	loop := NewLoop(Config{
-		Model:         NewPredictableService(),
-		History:       []llm.Message{},
-		WorkingDir:    worktreeDir,
-		GetWorkingDir: func() string { return worktreeDir },
-		OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
-			mu.Lock()
-			gitStateChanges = append(gitStateChanges, state)
-			mu.Unlock()
-		},
-		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
-			return nil
-		},
-	})
+	loop := NewLoop(NewPredictableService(),
 
-	// Verify initial state
-	if loop.lastGitState == nil {
-		t.Fatal("expected initial git state to be captured")
+		func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+			return nil
+		}, Config{
+			History:       []llm.Message{},
+			WorkingDir:    worktreeDir,
+			GetWorkingDir: func() string { return worktreeDir },
+			OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
+				mu.Lock()
+				gitStateChanges = append(gitStateChanges, state)
+				mu.Unlock()
+			},
+		})
+
+	if loop.lastGitState != nil {
+		t.Fatal("constructor performed Git discovery")
 	}
-	if loop.lastGitState.Branch != "feature" {
-		t.Errorf("expected branch 'feature', got %q", loop.lastGitState.Branch)
-	}
-	if loop.lastGitState.Worktree != worktreeDir {
-		t.Errorf("expected worktree %q, got %q", worktreeDir, loop.lastGitState.Worktree)
+	loop.checkGitStateChange(context.Background())
+	if loop.lastGitState == nil || loop.lastGitState.Branch != "feature" || loop.lastGitState.Worktree != worktreeDir {
+		t.Fatalf("unexpected lazy Git baseline: %+v", loop.lastGitState)
 	}
 
 	// Make a commit in the worktree
@@ -822,11 +861,11 @@ func TestProcessLLMRequestError(t *testing.T) {
 		return nil
 	}
 
-	loop := NewLoop(Config{
-		Model:         errorService,
-		History:       []llm.Message{},
-		RecordMessage: recordFunc,
-	})
+	loop := NewLoop(errorService,
+
+		recordFunc, Config{
+			History: []llm.Message{},
+		})
 
 	// Queue a user message
 	userMessage := llm.Message{
@@ -941,34 +980,35 @@ func TestCheckGitStateChange(t *testing.T) {
 	runGit(t, tmpDir, "commit", "-m", "initial")
 
 	// Test with nil OnGitStateChange - should not panic
-	loop := NewLoop(Config{
-		Model:         NewPredictableService(),
-		History:       []llm.Message{},
-		WorkingDir:    tmpDir,
-		GetWorkingDir: func() string { return tmpDir },
+	loop := NewLoop(NewPredictableService(),
+
 		// OnGitStateChange is nil
-		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+		func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return nil
-		},
-	})
+		}, Config{
+			History:       []llm.Message{},
+			WorkingDir:    tmpDir,
+			GetWorkingDir: func() string { return tmpDir },
+		})
 
 	// This should not panic
 	loop.checkGitStateChange(context.Background())
 
 	// Test with actual callback
 	var gitStateChanges []*gitstate.GitState
-	loop = NewLoop(Config{
-		Model:         NewPredictableService(),
-		History:       []llm.Message{},
-		WorkingDir:    tmpDir,
-		GetWorkingDir: func() string { return tmpDir },
-		OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
-			gitStateChanges = append(gitStateChanges, state)
-		},
-		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+	loop = NewLoop(NewPredictableService(),
+
+		func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return nil
-		},
-	})
+		}, Config{
+			History:       []llm.Message{},
+			WorkingDir:    tmpDir,
+			GetWorkingDir: func() string { return tmpDir },
+			OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
+				gitStateChanges = append(gitStateChanges, state)
+			},
+		})
+	loop.checkGitStateChange(context.Background())
 
 	// Make a change
 	if err := os.WriteFile(testFile, []byte("updated"), 0o644); err != nil {
@@ -1005,7 +1045,7 @@ func TestExecuteToolCallsWithMissingTool(t *testing.T) {
 		}
 		return nativeTextResponse("done"), nil
 	}}
-	loop := NewLoop(Config{Model: service, RecordMessage: recordFunc})
+	loop := NewLoop(service, recordFunc, Config{})
 	loop.QueueUserMessage(userStringMessage("call a missing tool"))
 	if err := loop.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1076,11 +1116,11 @@ func TestExecuteToolCallsWithErrorTool(t *testing.T) {
 		}
 		return nativeTextResponse("done"), nil
 	}}
-	loop := NewLoop(Config{
-		Model:         service,
-		Tools:         []datool.Tool{errorTool},
-		RecordMessage: recordFunc,
-	})
+	loop := NewLoop(service,
+
+		recordFunc, Config{
+			Tools: []datool.Tool{errorTool},
+		})
 	loop.QueueUserMessage(userStringMessage("call an error tool"))
 	if err := loop.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1152,11 +1192,11 @@ func TestMaxTokensTruncation(t *testing.T) {
 	}
 
 	service := NewPredictableService()
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		RecordMessage: recordFunc,
-	})
+	loop := NewLoop(service,
+
+		recordFunc, Config{
+			History: []llm.Message{},
+		})
 
 	// Queue a user message that triggers max tokens truncation
 	userMessage := llm.Message{
@@ -1246,11 +1286,11 @@ func TestRefusal(t *testing.T) {
 	}
 
 	service := NewPredictableService()
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		RecordMessage: recordFunc,
-	})
+	loop := NewLoop(service,
+
+		recordFunc, Config{
+			History: []llm.Message{},
+		})
 
 	userMessage := llm.Message{
 		Role:    llm.MessageRoleUser,
@@ -1384,11 +1424,11 @@ func TestRefusalThenRephraseNotInContext(t *testing.T) {
 	var sentRequests []damodel.Request
 	service := NewRequestCapturingService(&mu, &sentRequests)
 
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
-	})
+	loop := NewLoop(service,
+
+		func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil }, Config{
+			History: []llm.Message{},
+		})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -1507,12 +1547,13 @@ func TestLoopRetryAfterPersistentFailure(t *testing.T) {
 		return nil
 	}
 
-	loop := NewLoop(Config{
-		Model:         svc,
-		History:       []llm.Message{},
-		RecordMessage: record,
-		RecordWarning: func(ctx context.Context, _ string) error { return nil },
-	})
+	loop := NewLoop(svc,
+
+		record, Config{
+			History: []llm.Message{},
+
+			RecordWarning: func(ctx context.Context, _ string) error { return nil },
+		})
 
 	loop.QueueUserMessage(llm.Message{
 		Role:    llm.MessageRoleUser,
@@ -1617,11 +1658,11 @@ func TestLoopResolvesPauseTurn(t *testing.T) {
 	}
 
 	svc := &pauseLLMService{}
-	loop := NewLoop(Config{
-		Model:         svc,
-		History:       []llm.Message{},
-		RecordMessage: recordFunc,
-	})
+	loop := NewLoop(svc,
+
+		recordFunc, Config{
+			History: []llm.Message{},
+		})
 
 	loop.QueueUserMessage(userStringMessage("search the web for the answer"))
 
@@ -1749,16 +1790,16 @@ func TestToolOtherUsageAttachedToToolResult(t *testing.T) {
 		otherUsage []llm.PurposedUsage
 	}
 	var records []recorded
-	loop := NewLoop(Config{
-		Model: NewPredictableService(),
-		Tools: []datool.Tool{testTool},
-		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+	loop := NewLoop(NewPredictableService(),
+
+		func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			mu.Lock()
 			defer mu.Unlock()
 			records = append(records, recorded{message, otherUsage})
 			return nil
-		},
-	})
+		}, Config{
+			Tools: []datool.Tool{testTool},
+		})
 
 	loop.QueueUserMessage(llm.Message{
 		Role:    llm.MessageRoleUser,

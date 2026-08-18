@@ -28,7 +28,6 @@ func TestLangSmithClientPullDecodesFilesAndLinks(t *testing.T) {
 	}))
 	defer server.Close()
 	client := NewLangSmithClient(ls.NewClient(option.WithBaseURL(server.URL)))
-
 	tree, err := client.Pull(context.Background(), "-/agent:abc12345")
 	if err != nil {
 		t.Fatal(err)
@@ -123,15 +122,6 @@ func TestParseIdentifier(t *testing.T) {
 func TestNewLangSmithUsesDefaultClient(t *testing.T) {
 	remote := NewLangSmith("-/agent", nil)
 	if remote == nil {
-		t.Fatalf("backend = %#v", remote)
+		t.Fatal("backend is nil")
 	}
-}
-
-func TestNewLangSmithClientPanicsForNilClient(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("nil client did not panic")
-		}
-	}()
-	NewLangSmithClient(nil)
 }

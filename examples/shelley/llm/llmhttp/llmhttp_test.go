@@ -27,6 +27,29 @@ func TestContextFunctions(t *testing.T) {
 	}
 }
 
+func TestIdleTimeoutDefaultsAndRejectsNegative(t *testing.T) {
+	client := NewClientWithIdleTimeout(nil, 0)
+	transport, ok := client.Transport.(*Transport)
+	if !ok || transport.IdleTimeout != DefaultIdleTimeout {
+		t.Fatalf("zero idle timeout = %#v, want default", client.Transport)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("negative idle timeout did not panic")
+		}
+	}()
+	NewClientWithIdleTimeout(nil, -time.Second)
+}
+
+func TestWithUsageCollectorRejectsNil(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil usage collector was accepted")
+		}
+	}()
+	WithUsageCollector(context.Background(), nil)
+}
+
 func TestTransportAddsHeaders(t *testing.T) {
 	// Create a test server that echoes request headers
 	var receivedHeaders http.Header
@@ -212,8 +235,7 @@ func TestIdleTimeoutFiresBeforeFirstByte(t *testing.T) {
 	}
 }
 
-// TestNoIdleTimeoutWhenDisabled verifies that idle timeout of 0 disables the
-// mechanism entirely.
+// TestNoIdleTimeoutWhenDisabled verifies the explicit opt-out.
 func TestNoIdleTimeoutWhenDisabled(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -221,7 +243,7 @@ func TestNoIdleTimeoutWhenDisabled(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithIdleTimeout(nil, 0)
+	client := NewClientWithoutIdleTimeout(nil)
 	req, _ := http.NewRequest("GET", server.URL, nil)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -365,7 +387,7 @@ func TestRequestTraceCapturesIDWhenIdleDisabled(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithIdleTimeout(nil, 0)
+	client := NewClientWithoutIdleTimeout(nil)
 	ctx, trace := WithRequestTrace(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	resp, err := client.Do(req)

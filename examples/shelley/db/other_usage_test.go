@@ -26,19 +26,21 @@ func TestMessageOtherUsageRoundTrip(t *testing.T) {
 		{Purpose: "keyword_search", Usage: llm.Usage{InputTokens: 100, OutputTokens: 10, CostUSD: 0.01, Model: "m1", URL: "u1"}},
 		{Purpose: "llm_one_shot", Usage: llm.Usage{InputTokens: 5, OutputTokens: 1, Model: "m2"}},
 	}
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-		OtherUsageData: otherUsage,
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData:        llm.Message{Role: llm.MessageRoleUser},
+			OtherUsageData: otherUsage,
+		}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeAgent,
-		LLMData:        llm.Message{Role: llm.MessageRoleAssistant},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeAgent, CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleAssistant},
+		}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -95,11 +97,12 @@ func TestCreateSlugMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleUser},
+		}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,12 +160,13 @@ func TestForkDoesNotCopySlugMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-		OtherUsageData: []llm.PurposedUsage{{Purpose: "keyword_search", Usage: llm.Usage{InputTokens: 5, Model: "m"}}},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData:        llm.Message{Role: llm.MessageRoleUser},
+			OtherUsageData: []llm.PurposedUsage{{Purpose: "keyword_search", Usage: llm.Usage{InputTokens: 5, Model: "m"}}},
+		}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.CreateSlugMessage(ctx, conv.ConversationID, []llm.PurposedUsage{
@@ -236,12 +240,13 @@ func TestGetSubagentOtherUsage(t *testing.T) {
 
 	add := func(convID string, entries []llm.PurposedUsage) {
 		t.Helper()
-		if _, err := database.CreateMessage(ctx, CreateMessageParams{
-			ConversationID: convID,
-			Type:           MessageTypeUser,
-			LLMData:        llm.Message{Role: llm.MessageRoleUser},
-			OtherUsageData: entries,
-		}); err != nil {
+		if _, err := database.CreateMessage(ctx,
+			convID,
+			MessageTypeUser, CreateMessageParams{
+
+				LLMData:        llm.Message{Role: llm.MessageRoleUser},
+				OtherUsageData: entries,
+			}); err != nil {
 			t.Fatal(err)
 		}
 	}

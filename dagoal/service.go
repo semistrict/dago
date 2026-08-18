@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
@@ -27,8 +28,11 @@ func ClearBudget() BudgetUpdate { return BudgetUpdate{Update: true} }
 // their current values; Budget.Update controls whether the budget changes.
 type SetRequest struct {
 	Objective *string
-	Status    *Status
-	Budget    BudgetUpdate
+	// Criteria replaces the server-drafted acceptance criteria. A non-nil empty
+	// string explicitly clears the rubric.
+	Criteria *string
+	Status   *Status
+	Budget   BudgetUpdate
 }
 
 // Service performs host-controlled mutations while the owning agent is idle.
@@ -67,6 +71,10 @@ func (service *Service) Set(ctx context.Context, config dacheckpoint.Config, req
 	if request.Status != nil && !request.Status.valid() {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidStatus, *request.Status)
 	}
+	criteria := ""
+	if request.Criteria != nil {
+		criteria = strings.TrimSpace(*request.Criteria)
+	}
 	var objective string
 	if request.Objective != nil {
 		objective, err = validateObjective(*request.Objective)
@@ -92,13 +100,21 @@ func (service *Service) Set(ctx context.Context, config dacheckpoint.Config, req
 		if !request.Budget.Update && service.options.MaxTokenBudget > 0 {
 			budget = new(service.options.MaxTokenBudget)
 		}
-		goal = &Goal{ID: id, Objective: objective, Status: StatusActive, TokenBudget: cloneBudget(budget), CreatedAt: now, UpdatedAt: now}
+		goal = &Goal{ID: id, Objective: objective, Criteria: criteria, Status: StatusActive, TokenBudget: cloneBudget(budget), CreatedAt: now, UpdatedAt: now}
 	} else {
 		if request.Objective != nil {
 			goal.Objective = objective
+			if request.Criteria == nil {
+				// Acceptance criteria belong to an objective; never silently
+				// retain a stale rubric after the objective changes.
+				goal.Criteria = ""
+			}
 		}
 		if request.Budget.Update {
 			goal.TokenBudget = cloneBudget(request.Budget.Value)
+		}
+		if request.Criteria != nil {
+			goal.Criteria = criteria
 		}
 		goal.UpdatedAt = now
 	}
@@ -108,7 +124,9 @@ func (service *Service) Set(ctx context.Context, config dacheckpoint.Config, req
 	if goal.Status == StatusActive && goal.TokenBudget != nil && goal.TokensUsed >= *goal.TokenBudget {
 		goal.Status = StatusBudgetLimited
 	}
-	snapshot, err := service.agent.UpdateState(ctx, config, dastate.Values{StateKey: goalToState(goal)})
+	snapshot, err := service.agent.UpdateState(ctx, config, dastate.Values{
+		StateKey: goalToState(goal), goalCompletionPendingKey: false,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("write goal: %w", err)
 	}
@@ -121,7 +139,9 @@ func (service *Service) Clear(ctx context.Context, config dacheckpoint.Config) (
 	if err != nil || goal == nil {
 		return false, err
 	}
-	if _, err := service.agent.UpdateState(ctx, config, dastate.Values{StateKey: goalState(nil)}); err != nil {
+	if _, err := service.agent.UpdateState(ctx, config, dastate.Values{
+		StateKey: goalState(nil), goalCompletionPendingKey: false,
+	}); err != nil {
 		return false, fmt.Errorf("clear goal: %w", err)
 	}
 	return true, nil

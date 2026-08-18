@@ -63,16 +63,17 @@ func TestSubagentUsageHandler(t *testing.T) {
 
 	addUsage := func(convID, model, url string, in, out int64, costUsd float64) {
 		t.Helper()
-		_, err := database.CreateMessage(ctx, db.CreateMessageParams{
-			ConversationID: convID,
-			Type:           db.MessageTypeAgent,
-			UsageData: map[string]any{
-				"input_tokens": in, "output_tokens": out,
-				"model": model, "cost_usd": costUsd,
-			},
-			ModelName: model,
-			LLMAPIURL: url,
-		})
+		_, err := database.CreateMessage(ctx,
+			convID,
+			db.MessageTypeAgent, db.CreateMessageParams{
+
+				UsageData: map[string]any{
+					"input_tokens": in, "output_tokens": out,
+					"model": model, "cost_usd": costUsd,
+				},
+				ModelName: model,
+				LLMAPIURL: url,
+			})
 		if err != nil {
 			t.Fatal(err)
 		}

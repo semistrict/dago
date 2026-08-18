@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -50,11 +51,9 @@ type GitStateChangeFunc func(ctx context.Context, state *gitstate.GitState)
 
 // Config contains all configuration needed to create a Loop.
 type Config struct {
-	Model            damodel.Chat
 	ModelID          string
 	History          []llm.Message
 	Tools            []datool.Tool
-	RecordMessage    MessageRecordFunc
 	RecordWarning    WarningRecordFunc
 	Logger           *slog.Logger
 	System           []llm.SystemContent
@@ -145,30 +144,47 @@ type Loop struct {
 	runtime          *dagent.Agent
 }
 
-// NewLoop creates a new Loop instance with the provided configuration
-func NewLoop(config Config) *Loop {
+// NewLoop creates a new Loop using the required chat model and optional configuration.
+func NewLoop(model damodel.Chat, recordMessage MessageRecordFunc, config Config) *Loop {
+	if nilChat(model) {
+		panic("shelley loop: model is required")
+	}
+	if recordMessage == nil {
+		panic("shelley loop: message recorder is required")
+	}
+	if config.ThinkingLevel < llm.ThinkingLevelDefault || config.ThinkingLevel > llm.ThinkingLevelXHigh {
+		panic("shelley loop: invalid thinking level")
+	}
+	seenTools := make(map[string]struct{}, len(config.Tools))
+	for _, tool := range config.Tools {
+		if nilValue(tool) {
+			panic("shelley loop: tool is required")
+		}
+		definition := tool.Definition()
+		if err := definition.Validate(); err != nil {
+			panic(fmt.Errorf("shelley loop: tool %q: %w", definition.Name, err))
+		}
+		name := definition.Name
+		if _, exists := seenTools[name]; exists {
+			panic("shelley loop: duplicate tool " + name)
+		}
+		seenTools[name] = struct{}{}
+	}
 	logger := config.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	// Get initial git state
-	workingDir := config.WorkingDir
-	if config.GetWorkingDir != nil {
-		workingDir = config.GetWorkingDir()
-	}
-	initialGitState := gitstate.GetGitState(workingDir)
-
 	saver := config.Saver
-	if saver == nil {
+	if nilValue(saver) {
 		saver = dacheckpoint.NewMemorySaver()
 	}
 	loop := &Loop{
-		model:            config.Model,
+		model:            model,
 		modelID:          config.ModelID,
 		history:          config.History,
 		tools:            append([]datool.Tool(nil), config.Tools...),
-		recordMessage:    config.RecordMessage,
+		recordMessage:    recordMessage,
 		recordWarning:    config.RecordWarning,
 		messageQueue:     make([]llm.Message, 0),
 		logger:           logger,
@@ -176,7 +192,6 @@ func NewLoop(config Config) *Loop {
 		workingDir:       config.WorkingDir,
 		onGitStateChange: config.OnGitStateChange,
 		getWorkingDir:    config.GetWorkingDir,
-		lastGitState:     initialGitState,
 		onToolProgress:   config.OnToolProgress,
 		onStreamDelta:    config.OnStreamDelta,
 		onStreamDone:     config.OnStreamDone,
@@ -197,6 +212,23 @@ func NewLoop(config Config) *Loop {
 		loop.threadID = fmt.Sprintf("shelley-loop-%p", loop)
 	}
 	return loop
+}
+
+func nilChat(model damodel.Chat) bool {
+	return nilValue(model)
+}
+
+func nilValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 // Retry signals the loop to re-attempt the next LLM request without queueing
@@ -307,6 +339,10 @@ func (l *Loop) Go(ctx context.Context) error {
 		l.mu.Unlock()
 
 		if hasQueuedMessages || retryPending {
+			// Snapshot immediately before turn execution. Construction stays
+			// static and I/O-free, while mutations performed by this turn are
+			// still compared against a real pre-turn baseline.
+			l.captureGitStateBaseline()
 			// Send request to LLM
 			l.logger.Debug("processing queued messages", "count", 1)
 			if err := l.processLLMRequest(ctx); err != nil {
@@ -346,6 +382,7 @@ func (l *Loop) ProcessOneTurn(ctx context.Context) error {
 	}
 	l.mu.Unlock()
 
+	l.captureGitStateBaseline()
 	// Process one LLM request and response
 	return l.processLLMRequest(ctx)
 }
@@ -562,10 +599,7 @@ func predictableFilesystemAliases(model damodel.Chat, files dbackend.Backend, se
 	}
 	result := make([]datool.Tool, 0, 2)
 	if execute := byName["execute"]; execute != nil {
-		alias, aliasErr := datool.Alias(execute, "bash")
-		if aliasErr != nil {
-			return nil, fmt.Errorf("create predictable filesystem alias: %w", aliasErr)
-		}
+		alias := datool.Alias(execute, "bash")
 		// The deterministic fixture predates execute's explicit exit-status footer.
 		// Keep its historical exact-output assertions while still executing through
 		// the canonical dago backend and schema.
@@ -997,6 +1031,33 @@ func (l *Loop) recordRuntimeError(ctx context.Context, err error, trace *llmhttp
 	return fmt.Errorf("LLM request failed: %w", err)
 }
 
+// captureGitStateBaseline establishes the first pre-turn snapshot lazily. It
+// is deliberately not called by NewLoop: static construction must not touch
+// Git or the filesystem.
+func (l *Loop) captureGitStateBaseline() {
+	if l.onGitStateChange == nil {
+		return
+	}
+	l.mu.Lock()
+	if l.lastGitState != nil {
+		l.mu.Unlock()
+		return
+	}
+	l.mu.Unlock()
+
+	workingDir := l.workingDir
+	if l.getWorkingDir != nil {
+		workingDir = l.getWorkingDir()
+	}
+	state := gitstate.GetGitState(workingDir)
+
+	l.mu.Lock()
+	if l.lastGitState == nil {
+		l.lastGitState = state
+	}
+	l.mu.Unlock()
+}
+
 // checkGitStateChange checks if the git state has changed and calls the callback if so.
 // This is called at the end of each turn.
 func (l *Loop) checkGitStateChange(ctx context.Context) {
@@ -1016,6 +1077,11 @@ func (l *Loop) checkGitStateChange(ctx context.Context) {
 	// Compare with last known state
 	l.mu.Lock()
 	lastState := l.lastGitState
+	if lastState == nil {
+		l.lastGitState = currentState
+		l.mu.Unlock()
+		return
+	}
 	l.mu.Unlock()
 
 	// Check if state changed

@@ -32,6 +32,21 @@ type CheckpointWriteRecord = {
   replace?: boolean;
 };
 
+type CheckpointConfig = {
+  thread_id: string;
+  checkpoint_ns?: string;
+  checkpoint_id?: string;
+};
+
+type CheckpointListRequest = {
+  config?: CheckpointConfig;
+  metadata?: Record<string, unknown>;
+  before?: CheckpointConfig;
+  after?: CheckpointConfig;
+  limit: number;
+  all_namespaces?: boolean;
+};
+
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -48,6 +63,68 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
     transaction.onabort = () =>
       reject(transaction.error ?? new Error("IndexedDB transaction aborted"));
   });
+}
+
+function compareCheckpointPosition(
+  left: CheckpointRecord,
+  right: CheckpointRecord | CheckpointConfig,
+): number {
+  if (left.thread_id !== right.thread_id)
+    return left.thread_id < right.thread_id ? -1 : 1;
+  const rightNamespace = "namespace" in right ? right.namespace : right.checkpoint_ns || "";
+  if (left.namespace !== rightNamespace)
+    return left.namespace < rightNamespace ? -1 : 1;
+  const rightID = "namespace" in right ? right.checkpoint_id : right.checkpoint_id || "";
+  if (left.checkpoint_id === rightID) return 0;
+  return left.checkpoint_id > rightID ? -1 : 1;
+}
+
+function equalJSON(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => equalJSON(value, right[index]))
+    );
+  }
+  if (
+    left === null ||
+    right === null ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  )
+    return false;
+  const leftObject = left as Record<string, unknown>;
+  const rightObject = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftObject);
+  const rightKeys = Object.keys(rightObject);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(rightObject, key) &&
+        equalJSON(leftObject[key], rightObject[key]),
+    )
+  );
+}
+
+function checkpointMetadataMatches(
+  record: CheckpointRecord,
+  filter: Record<string, unknown> | undefined,
+): boolean {
+  if (!filter || Object.keys(filter).length === 0) return true;
+  const metadata = (record.metadata || {}) as Record<string, unknown>;
+  const values: Record<string, unknown> = {
+    source: metadata.source || "",
+    step: metadata.step || 0,
+    run_id: metadata.run_id || "",
+    ...((metadata.extra || {}) as Record<string, unknown>),
+  };
+  return Object.entries(filter).every(([key, value]) =>
+    equalJSON(values[key], value),
+  );
 }
 
 async function recordsForThread<T>(
@@ -188,28 +265,56 @@ export function createIndexedDBCheckpointStore(
           return JSON.stringify(records);
         }
         case "list_checkpoints": {
-          const config = payload as {
-            thread_id?: string;
-            checkpoint_ns?: string;
-          } | null;
+          const request = payload as CheckpointListRequest;
+          if (!Number.isInteger(request.limit) || request.limit <= 0)
+            throw new Error("checkpoint list limit must be a positive integer");
+          const config = request.config;
           const transaction = database.transaction(
             options.checkpointStore,
             "readonly",
           );
           const store = transaction.objectStore(options.checkpointStore);
-          const records = config?.thread_id
-            ? await requestResult<CheckpointRecord[]>(
-                store
-                  .index("by_thread")
-                  .getAll(IDBKeyRange.only(config.thread_id)),
-              )
-            : await requestResult<CheckpointRecord[]>(store.getAll());
-          const namespace = config?.checkpoint_ns || "";
-          return JSON.stringify(
-            config
-              ? records.filter((record) => record.namespace === namespace)
-              : records,
-          );
+          const cursorRequest = config?.thread_id
+            ? store
+                .index("by_thread")
+                .openCursor(IDBKeyRange.only(config.thread_id))
+            : store.openCursor();
+          const records: CheckpointRecord[] = [];
+          await new Promise<void>((resolve, reject) => {
+            cursorRequest.onerror = () =>
+              reject(
+                cursorRequest.error ??
+                  new Error("IndexedDB checkpoint cursor failed"),
+              );
+            cursorRequest.onsuccess = () => {
+              const cursor = cursorRequest.result;
+              if (!cursor) {
+                resolve();
+                return;
+              }
+              const record = cursor.value as CheckpointRecord;
+              const namespace = config?.checkpoint_ns || "";
+              const matches =
+                (!config ||
+                  (record.thread_id === config.thread_id &&
+                    (request.all_namespaces ||
+                      record.namespace === namespace) &&
+                    (!config.checkpoint_id ||
+                      record.checkpoint_id === config.checkpoint_id))) &&
+                (!request.before?.checkpoint_id ||
+                  record.checkpoint_id < request.before.checkpoint_id) &&
+                (!request.after ||
+                  compareCheckpointPosition(record, request.after) > 0) &&
+                checkpointMetadataMatches(record, request.metadata);
+              if (matches) {
+                records.push(record);
+                records.sort(compareCheckpointPosition);
+                if (records.length > request.limit) records.pop();
+              }
+              cursor.continue();
+            };
+          });
+          return JSON.stringify(records);
         }
         case "delete_thread": {
           const threadID = String(payload?.thread_id || "");

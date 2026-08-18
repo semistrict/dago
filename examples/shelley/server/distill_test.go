@@ -52,14 +52,15 @@ func TestStartNewGenerationFiltersContext(t *testing.T) {
 			t.Fatalf("expected new system prompt at generation 2, got %d", afterBump[0].Generation)
 		}
 
-		_, err = h.db.CreateMessage(ctx, db.CreateMessageParams{
-			ConversationID: convID,
-			Type:           db.MessageTypeUser,
-			LLMData: llm.Message{
-				Role:    llm.MessageRoleUser,
-				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "new context"}},
-			},
-		})
+		_, err = h.db.CreateMessage(ctx,
+			convID,
+			db.MessageTypeUser, db.CreateMessageParams{
+
+				LLMData: llm.Message{
+					Role:    llm.MessageRoleUser,
+					Content: []llm.Content{{Type: llm.ContentTypeText, Text: "new context"}},
+				},
+			})
 		if err != nil {
 			t.Fatalf("failed to create new generation message: %v", err)
 		}
@@ -340,7 +341,7 @@ func waitForConversationDistillingToClear(t *testing.T, server *Server, convID s
 
 func stopActiveConversationLoops(server *Server) {
 	server.mu.Lock()
-	managers := make([]*ConversationManager, 0, len(server.activeConversations))
+	managers := make([]*conversationManager, 0, len(server.activeConversations))
 	for _, manager := range server.activeConversations {
 		managers = append(managers, manager)
 	}

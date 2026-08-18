@@ -15,6 +15,7 @@ import (
 // globalThis. The function receives a JSON Request and resolves to a JSON
 // Response.
 func GlobalExecutor(name string) Executor {
+	name = normalizeExecutorName(name)
 	return func(ctx context.Context, request Request) (Response, error) {
 		execute := js.Global().Get(name)
 		if execute.Type() != js.TypeFunction {

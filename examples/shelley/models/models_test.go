@@ -40,6 +40,24 @@ func predictableBuilt() Built {
 	}
 }
 
+func mustNewManager(t *testing.T, built []Built, cfg Config) *Manager {
+	t.Helper()
+	manager, err := NewManager(built, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager
+}
+
+func mustWrapReasoning(t *testing.T, chat damodel.Chat, endpoint, modelName, support, rawMap string) damodel.Chat {
+	t.Helper()
+	wrapped, err := WrapReasoningConfig(chat, endpoint, modelName, support, rawMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wrapped
+}
+
 func TestAll(t *testing.T) {
 	models := All()
 	if len(models) == 0 {
@@ -129,10 +147,7 @@ func TestIDs(t *testing.T) {
 }
 
 func TestNewManagerRegistersBuiltModels(t *testing.T) {
-	mgr, err := NewManager(&Config{Models: []Built{predictableBuilt()}})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
+	mgr := mustNewManager(t, []Built{predictableBuilt()}, Config{})
 	chat, err := mgr.GetChat("predictable")
 	if err != nil || chat == nil {
 		t.Fatalf("GetChat(predictable) failed: chat=%v err=%v", chat, err)
@@ -149,11 +164,53 @@ func TestNewManagerRegistersBuiltModels(t *testing.T) {
 	}
 }
 
-func TestGetAvailableModelsOrderStable(t *testing.T) {
-	mgr, err := NewManager(&Config{Models: []Built{predictableBuilt()}})
+func TestNewManagerPropagatesInvalidCustomModelWithoutPartialSuccess(t *testing.T) {
+	database, err := db.New(t.TempDir() + "/models.db")
 	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
+		t.Fatal(err)
 	}
+	defer database.Close()
+	if err := database.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateModel(t.Context(), generated.CreateModelParams{
+		ModelID: "broken", DisplayName: "Broken", ProviderType: string(APITypeOpenAIResponses),
+		Endpoint: "https://example.test", ApiKey: "key", ModelName: "broken", MaxTokens: 1,
+		ReasoningSupport: "yes", ReasoningMap: `{"medium":"turbo"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager([]Built{predictableBuilt()}, Config{DB: database})
+	if err == nil || manager != nil {
+		t.Fatalf("NewManager = (%v, %v), want nil and error", manager, err)
+	}
+}
+
+func TestModelConfigurationRejectsInvalidEnumsAndNegativeLimits(t *testing.T) {
+	assertPanic := func(name string, fn func()) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("configuration did not panic")
+				}
+			}()
+			fn()
+		})
+	}
+	assertPanic("reasoning", func() {
+		NewOpenAIResponses("key", "model", "https://example.test", nil, OpenAIResponsesOptions{ReasoningEffort: "turbo"})
+	})
+	assertPanic("negative limit", func() {
+		NewOpenAIResponses("key", "model", "https://example.test", nil, OpenAIResponsesOptions{MaxImageBytes: -1})
+	})
+	if _, err := WrapReasoningConfig(loop.NewPredictableService(), "", "model", "sometimes", ""); err == nil {
+		t.Fatal("WrapReasoningConfig accepted unknown support enum")
+	}
+}
+
+func TestGetAvailableModelsOrderStable(t *testing.T) {
+	mgr := mustNewManager(t, []Built{predictableBuilt()}, Config{})
 	a := mgr.GetAvailableModels()
 	b := mgr.GetAvailableModels()
 	if len(a) == 0 || len(a) != len(b) {
@@ -251,6 +308,18 @@ type mockChat struct {
 	defaultReasoning   string
 }
 
+type mapChat map[string]string
+
+func (mapChat) Invoke(context.Context, damodel.Request) (damodel.Response, error) {
+	return damodel.Response{}, nil
+}
+
+func (mapChat) Stream(context.Context, damodel.Request) (damodel.Stream, error) {
+	return damodel.EmptyStream{}, nil
+}
+
+func (mapChat) Profile() damodel.Profile { return damodel.Profile{} }
+
 func (m *mockChat) Invoke(_ context.Context, request damodel.Request) (damodel.Response, error) {
 	if request.Reasoning != nil {
 		m.gotReasoning = request.Reasoning.Effort
@@ -292,11 +361,40 @@ func (m *mockChat) MaxImageDimension() int {
 	return m.maxImageDimension
 }
 
-func TestManagerGetService(t *testing.T) {
-	mgr, err := NewManager(&Config{Models: []Built{predictableBuilt()}})
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
+func TestNewManagerRejectsInvalidBuiltModels(t *testing.T) {
+	var typedNil *mockChat
+	var typedNilMap mapChat
+	for name, built := range map[string][]Built{
+		"missing ID": {{Chat: &mockChat{}}},
+		"typed nil":  {{ID: "nil", Chat: typedNil}},
+		"nil map":    {{ID: "nil-map", Chat: typedNilMap}},
+		"duplicate":  {{ID: "same", Chat: &mockChat{}}, {ID: "same", Chat: &mockChat{}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("invalid built model was accepted")
+				}
+			}()
+			_, _ = NewManager(built, Config{})
+		})
 	}
+}
+
+func TestResolveModelCapabilitiesRejectInvalidEnums(t *testing.T) {
+	if _, err := ResolveSupportsImages("https://example.test", "model", "sometimes"); err == nil {
+		t.Fatal("ResolveSupportsImages accepted an invalid enum")
+	}
+	if _, err := ResolveSupportsReasoning("https://example.test", "model", "sometimes"); err == nil {
+		t.Fatal("ResolveSupportsReasoning accepted an invalid enum")
+	}
+	if supported, err := ResolveSupportsImages("https://example.test", "unknown", ""); err != nil || !supported {
+		t.Fatalf("ResolveSupportsImages auto = (%v, %v), want true, nil", supported, err)
+	}
+}
+
+func TestManagerGetService(t *testing.T) {
+	mgr := mustNewManager(t, []Built{predictableBuilt()}, Config{})
 	if chat, err := mgr.GetChat("predictable"); err != nil || chat == nil {
 		t.Errorf("GetChat(predictable): chat=%v err=%v", chat, err)
 	}
@@ -306,10 +404,7 @@ func TestManagerGetService(t *testing.T) {
 }
 
 func TestManagerHasModel(t *testing.T) {
-	mgr, err := NewManager(&Config{Models: []Built{predictableBuilt()}})
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
-	}
+	mgr := mustNewManager(t, []Built{predictableBuilt()}, Config{})
 	if !mgr.HasModel("predictable") {
 		t.Error("HasModel(predictable) should return true")
 	}
@@ -346,7 +441,7 @@ func TestUseSimplifiedPatch(t *testing.T) {
 }
 
 func TestRefreshCustomModelsConcurrent(t *testing.T) {
-	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
+	testDB, err := db.New(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatalf("failed to create test db: %v", err)
 	}
@@ -366,10 +461,7 @@ func TestRefreshCustomModelsConcurrent(t *testing.T) {
 		t.Fatalf("failed to create test model: %v", err)
 	}
 
-	mgr, err := NewManager(&Config{DB: testDB})
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
-	}
+	mgr := mustNewManager(t, nil, Config{DB: testDB})
 
 	var wg sync.WaitGroup
 	const N = 10
@@ -396,7 +488,7 @@ func TestRefreshCustomModelsConcurrent(t *testing.T) {
 }
 
 func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testing.T) {
-	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
+	testDB, err := db.New(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatalf("failed to create test db: %v", err)
 	}
@@ -416,21 +508,15 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 		t.Fatalf("failed to create test model: %v", err)
 	}
 
-	mgr, err := NewManager(&Config{
-		Models: []Built{
-			{
-				ID:          "old-built",
-				DisplayName: "Old Built",
-				Provider:    ProviderBuiltIn,
-				Source:      "old source",
-				Chat:        &mockChat{},
-			},
+	mgr := mustNewManager(t, []Built{
+		{
+			ID:          "old-built",
+			DisplayName: "Old Built",
+			Provider:    ProviderBuiltIn,
+			Source:      "old source",
+			Chat:        &mockChat{},
 		},
-		DB: testDB,
-	})
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
-	}
+	}, Config{DB: testDB})
 
 	if err := mgr.RefreshBuiltModels([]Built{
 		{
@@ -479,7 +565,7 @@ func TestPreferredToolModelsAreRegistered(t *testing.T) {
 
 func TestReasoningServiceMapping(t *testing.T) {
 	inner := &mockChat{defaultReasoning: "medium"}
-	svc := WrapReasoningConfig(inner, "", "unknown", "yes", `{"off":"off","minimal":"low","medium":"high"}`)
+	svc := mustWrapReasoning(t, inner, "", "unknown", "yes", `{"off":"off","minimal":"low","medium":"high"}`)
 
 	levels := svc.Profile().ReasoningLevels
 	if !reflect.DeepEqual(levels, []string{"off", "minimal", "medium"}) {
@@ -495,7 +581,7 @@ func TestReasoningServiceMapping(t *testing.T) {
 
 func TestReasoningServiceDisabled(t *testing.T) {
 	inner := &mockChat{}
-	svc := WrapReasoningConfig(inner, "", "unknown", "no", "")
+	svc := mustWrapReasoning(t, inner, "", "unknown", "no", "")
 	if svc.Profile().SupportsReasoning {
 		t.Fatal("disabled service reports reasoning support")
 	}
@@ -508,7 +594,7 @@ func TestReasoningServiceDisabled(t *testing.T) {
 }
 
 func TestReasoningServiceRejectsUnsupportedLevel(t *testing.T) {
-	svc := WrapReasoningConfig(&mockChat{}, "", "unknown", "yes", `{"low":"low"}`)
+	svc := mustWrapReasoning(t, &mockChat{}, "", "unknown", "yes", `{"low":"low"}`)
 	_, err := svc.Invoke(context.Background(), damodel.Request{Reasoning: &damodel.Reasoning{Effort: "high"}})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("error = %v, want unsupported-level error", err)
@@ -517,7 +603,7 @@ func TestReasoningServiceRejectsUnsupportedLevel(t *testing.T) {
 
 func TestReasoningServiceMapsServiceDefault(t *testing.T) {
 	inner := &mockChat{defaultReasoning: "medium"}
-	svc := WrapReasoningConfig(inner, "", "unknown", "yes", `{"medium":"low"}`)
+	svc := mustWrapReasoning(t, inner, "", "unknown", "yes", `{"medium":"low"}`)
 	if got := svc.Profile().DefaultReasoningLevel; got != "low" {
 		t.Fatalf("default = %q, want low", got)
 	}

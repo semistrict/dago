@@ -17,12 +17,14 @@ import (
 	"github.com/semistrict/dago/dacheckpoint/serde"
 )
 
-// Migrations preserves the pinned upstream numbering and history exactly.
-var Migrations = []string{
-	`CREATE TABLE IF NOT EXISTS checkpoint_migrations (
+// migrationStatements preserves the pinned upstream numbering and history
+// exactly without exposing shared mutable storage.
+func migrationStatements() []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS checkpoint_migrations (
     v INTEGER PRIMARY KEY
 );`,
-	`CREATE TABLE IF NOT EXISTS checkpoints (
+		`CREATE TABLE IF NOT EXISTS checkpoints (
     thread_id TEXT NOT NULL,
     checkpoint_ns TEXT NOT NULL DEFAULT '',
     checkpoint_id TEXT NOT NULL,
@@ -32,7 +34,7 @@ var Migrations = []string{
     metadata JSONB NOT NULL DEFAULT '{}',
     PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
 );`,
-	`CREATE TABLE IF NOT EXISTS checkpoint_blobs (
+		`CREATE TABLE IF NOT EXISTS checkpoint_blobs (
     thread_id TEXT NOT NULL,
     checkpoint_ns TEXT NOT NULL DEFAULT '',
     channel TEXT NOT NULL,
@@ -41,7 +43,7 @@ var Migrations = []string{
     blob BYTEA,
     PRIMARY KEY (thread_id, checkpoint_ns, channel, version)
 );`,
-	`CREATE TABLE IF NOT EXISTS checkpoint_writes (
+		`CREATE TABLE IF NOT EXISTS checkpoint_writes (
     thread_id TEXT NOT NULL,
     checkpoint_ns TEXT NOT NULL DEFAULT '',
     checkpoint_id TEXT NOT NULL,
@@ -52,23 +54,22 @@ var Migrations = []string{
     blob BYTEA NOT NULL,
     PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
 );`,
-	`ALTER TABLE checkpoint_blobs ALTER COLUMN blob DROP not null;`,
-	`SELECT 1;`,
-	`CREATE INDEX CONCURRENTLY IF NOT EXISTS checkpoints_thread_id_idx ON checkpoints(thread_id);`,
-	`CREATE INDEX CONCURRENTLY IF NOT EXISTS checkpoint_blobs_thread_id_idx ON checkpoint_blobs(thread_id);`,
-	`CREATE INDEX CONCURRENTLY IF NOT EXISTS checkpoint_writes_thread_id_idx ON checkpoint_writes(thread_id);`,
-	`ALTER TABLE checkpoint_writes ADD COLUMN IF NOT EXISTS task_path TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE checkpoint_blobs ALTER COLUMN blob DROP not null;`,
+		`SELECT 1;`,
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS checkpoints_thread_id_idx ON checkpoints(thread_id);`,
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS checkpoint_blobs_thread_id_idx ON checkpoint_blobs(thread_id);`,
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS checkpoint_writes_thread_id_idx ON checkpoint_writes(thread_id);`,
+		`ALTER TABLE checkpoint_writes ADD COLUMN IF NOT EXISTS task_path TEXT NOT NULL DEFAULT '';`,
+	}
 }
 
-type codec interface {
-	Encode(any) (serde.Typed, error)
-	Decode(serde.Typed) (any, error)
-}
+// Codec is the checkpoint payload codec accepted by NewWithCodec.
+type Codec = serde.Codec
 
 // Saver owns or wraps a database/sql PostgreSQL pool.
 type Saver struct {
 	db    *sql.DB
-	codec codec
+	codec Codec
 	owned bool
 	mu    sync.Mutex
 	ready bool
@@ -79,7 +80,7 @@ func Open(dsn string) (*Saver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open PostgreSQL checkpoint database: %w", err)
 	}
-	saver := New(database, nil)
+	saver := New(database)
 	saver.owned = true
 	if err := saver.Setup(context.Background()); err != nil {
 		_ = database.Close()
@@ -88,11 +89,33 @@ func Open(dsn string) (*Saver, error) {
 	return saver, nil
 }
 
-func New(database *sql.DB, payloadCodec codec) *Saver {
-	if payloadCodec == nil {
-		payloadCodec = serde.New(serde.Limits{})
+// New wraps an existing database/sql PostgreSQL handle with the safe default codec.
+func New(database *sql.DB) *Saver {
+	return NewWithCodec(database, serde.New(serde.Limits{}))
+}
+
+// NewWithCodec wraps an existing database/sql PostgreSQL handle with payloadCodec.
+func NewWithCodec(database *sql.DB, payloadCodec Codec) *Saver {
+	if database == nil {
+		panic("PostgreSQL checkpoint database is required")
+	}
+	if nilInterface(payloadCodec) {
+		panic("PostgreSQL checkpoint codec is required")
 	}
 	return &Saver{db: database, codec: payloadCodec}
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (saver *Saver) Setup(ctx context.Context) error {
@@ -104,14 +127,15 @@ func (saver *Saver) Setup(ctx context.Context) error {
 	if saver.db == nil {
 		return fmt.Errorf("setup PostgreSQL saver: database is nil")
 	}
-	if _, err := saver.db.ExecContext(ctx, Migrations[0]); err != nil {
+	statements := migrationStatements()
+	if _, err := saver.db.ExecContext(ctx, statements[0]); err != nil {
 		return fmt.Errorf("apply PostgreSQL checkpoint migration 0: %w", err)
 	}
 	if _, err := saver.db.ExecContext(ctx,
 		`INSERT INTO checkpoint_migrations (v) VALUES (0) ON CONFLICT (v) DO NOTHING`); err != nil {
 		return err
 	}
-	for version := 1; version < len(Migrations); version++ {
+	for version := 1; version < len(statements); version++ {
 		var applied bool
 		if err := saver.db.QueryRowContext(ctx,
 			`SELECT EXISTS (SELECT 1 FROM checkpoint_migrations WHERE v = $1)`, version,
@@ -121,7 +145,7 @@ func (saver *Saver) Setup(ctx context.Context) error {
 		if applied {
 			continue
 		}
-		if _, err := saver.db.ExecContext(ctx, Migrations[version]); err != nil {
+		if _, err := saver.db.ExecContext(ctx, statements[version]); err != nil {
 			return fmt.Errorf("apply PostgreSQL checkpoint migration %d: %w", version, err)
 		}
 		if _, err := saver.db.ExecContext(ctx,
@@ -258,7 +282,7 @@ func (saver *Saver) PutWrites(
 	}
 	replace := len(writes) > 0
 	for _, write := range writes {
-		if _, special := dacheckpoint.SpecialWriteIndexes[write.Channel]; !special {
+		if _, special := dacheckpoint.SpecialWriteIndex(write.Channel); !special {
 			replace = false
 			break
 		}
@@ -287,7 +311,7 @@ DO UPDATE SET channel = EXCLUDED.channel, type = EXCLUDED.type, blob = EXCLUDED.
 			return fmt.Errorf("encode PostgreSQL write checkpoint=%q channel=%q: %w", config.CheckpointID, write.Channel, err)
 		}
 		assigned := index
-		if special, ok := dacheckpoint.SpecialWriteIndexes[write.Channel]; ok {
+		if special, ok := dacheckpoint.SpecialWriteIndex(write.Channel); ok {
 			assigned = special
 		}
 		if _, err := transaction.ExecContext(ctx, query,
@@ -405,10 +429,15 @@ ORDER BY task_path, task_id, idx`, config.ThreadID, config.Namespace, config.Che
 }
 
 func (saver *Saver) List(ctx context.Context, config *dacheckpoint.Config, options dacheckpoint.ListOptions) ([]dacheckpoint.Tuple, error) {
+	var err error
+	options, err = options.Normalized()
+	if err != nil {
+		return nil, err
+	}
 	if err := saver.Setup(ctx); err != nil {
 		return nil, err
 	}
-	query := `SELECT thread_id, checkpoint_ns, checkpoint_id FROM checkpoints`
+	query := `SELECT thread_id, checkpoint_ns, checkpoint_id, metadata FROM checkpoints`
 	var clauses []string
 	var arguments []any
 	parameter := 1
@@ -443,11 +472,23 @@ func (saver *Saver) List(ctx context.Context, config *dacheckpoint.Config, optio
 	var configs []dacheckpoint.Config
 	for rows.Next() {
 		var item dacheckpoint.Config
-		if err := rows.Scan(&item.ThreadID, &item.Namespace, &item.CheckpointID); err != nil {
+		var metadataData []byte
+		if err := rows.Scan(&item.ThreadID, &item.Namespace, &item.CheckpointID, &metadataData); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		metadata, err := unmarshalMetadata(metadataData)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !matchesMetadata(metadata, options.Metadata) {
+			continue
+		}
 		configs = append(configs, item)
+		if len(configs) >= options.Limit {
+			break
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -458,13 +499,10 @@ func (saver *Saver) List(ctx context.Context, config *dacheckpoint.Config, optio
 		if err != nil {
 			return nil, err
 		}
-		if tuple == nil || !matchesMetadata(tuple.Metadata, options.Metadata) {
+		if tuple == nil {
 			continue
 		}
 		result = append(result, *tuple)
-		if options.Limit > 0 && len(result) >= options.Limit {
-			break
-		}
 	}
 	return result, nil
 }
@@ -766,10 +804,9 @@ func unmarshalMetadata(data []byte) (dacheckpoint.Metadata, error) {
 }
 
 // MigrationStatements returns a defensive copy for schema conformance tests.
-func MigrationStatements() []string { return append([]string(nil), Migrations...) }
+func MigrationStatements() []string { return migrationStatements() }
 
-// SortPendingWrites applies the persisted task_path, task_id, idx order.
-func SortPendingWrites(writes []dacheckpoint.PendingWrite) {
+func sortPendingWrites(writes []dacheckpoint.PendingWrite) {
 	sort.SliceStable(writes, func(i, j int) bool {
 		if writes[i].TaskPath != writes[j].TaskPath {
 			return writes[i].TaskPath < writes[j].TaskPath

@@ -31,7 +31,7 @@ type OpenAIOAuthStatus struct {
 	Error   string `json:"error,omitempty"`
 }
 
-type openAIOAuthLogin func(context.Context, dopenai.OAuthOptions) (dopenai.CredentialSource, error)
+type openAIOAuthLogin func(context.Context, func(string) error, dopenai.OAuthOptions) (dopenai.CredentialSource, error)
 
 // OpenAIOAuth owns Shelley's caller-specific subscription session. The
 // provider owns token refresh and atomic 0600 persistence; this controller
@@ -58,8 +58,8 @@ func NewOpenAIOAuth(storePath string, logger *slog.Logger) *OpenAIOAuth {
 	}
 	controller := &OpenAIOAuth{
 		storePath: storePath,
-		login: func(ctx context.Context, options dopenai.OAuthOptions) (dopenai.CredentialSource, error) {
-			return dopenai.Login(ctx, options)
+		login: func(ctx context.Context, openURL func(string) error, options dopenai.OAuthOptions) (dopenai.CredentialSource, error) {
+			return dopenai.Login(ctx, openURL, options)
 		},
 		logger: logger,
 	}
@@ -113,15 +113,12 @@ func (controller *OpenAIOAuth) BuiltModels() ([]models.Built, error) {
 	if session == nil {
 		return nil, nil
 	}
-	chat, err := dopenai.NewSubscription(session, dopenai.Options{
-		Model: OpenAISubscriptionModelID, ContextWindow: 272000,
+	chat := dopenai.NewSubscription(session, OpenAISubscriptionModelID, dopenai.Options{
+		ContextWindow:    272000,
 		MaxOutputTokens:  32768,
 		DefaultReasoning: &damodel.Reasoning{Effort: "medium", Summary: "auto"},
 		WebSearch:        true,
 	})
-	if err != nil {
-		return nil, err
-	}
 	profiledChat := damodel.WithProfile(chat, func(profile *damodel.Profile) {
 		profile.SupportsImages = true
 		profile.SupportsReasoning = true
@@ -169,17 +166,14 @@ func (controller *OpenAIOAuth) Start() (string, error) {
 		err     error
 	}, 1)
 	go func() {
-		session, err := login(ctx, dopenai.OAuthOptions{
-			StorePath: storePath,
-			OpenURL: func(value string) error {
-				select {
-				case urls <- value:
-					return nil
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			},
-		})
+		session, err := login(ctx, func(value string) error {
+			select {
+			case urls <- value:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}, dopenai.OAuthOptions{StorePath: storePath})
 		results <- struct {
 			session dopenai.CredentialSource
 			err     error

@@ -12,14 +12,15 @@ import (
 // writeAgentMsg writes an agent message with the given content blocks.
 func writeAgentMsg(t *testing.T, database *db.DB, convID string, content []llm.Content) {
 	t.Helper()
-	_, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: convID,
-		Type:           db.MessageTypeAgent,
-		LLMData: llm.Message{
-			Role:    llm.MessageRoleAssistant,
-			Content: content,
-		},
-	})
+	_, err := database.CreateMessage(context.Background(),
+		convID,
+		db.MessageTypeAgent, db.CreateMessageParams{
+
+			LLMData: llm.Message{
+				Role:    llm.MessageRoleAssistant,
+				Content: content,
+			},
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage(%s): %v", convID, err)
 	}

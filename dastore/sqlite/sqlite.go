@@ -2,6 +2,7 @@
 package sqlite
 
 import (
+	"container/heap"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -53,7 +54,12 @@ func Open(path string) (*Store, error) {
 	return result, nil
 }
 
-func New(database *sql.DB) *Store { return &Store{db: database} }
+func New(database *sql.DB) *Store {
+	if database == nil {
+		panic("SQLite store database is required")
+	}
+	return &Store{db: database}
+}
 
 func (storage *Store) Setup(ctx context.Context) error {
 	storage.once.Do(func() {
@@ -125,57 +131,170 @@ func (storage *Store) Delete(ctx context.Context, namespace dastore.Namespace, k
 }
 
 func (storage *Store) Search(ctx context.Context, options dastore.SearchOptions) ([]dastore.Item, error) {
-	if err := validatePrefix(ctx, options.Prefix); err != nil {
-		return nil, err
-	}
-	items, err := storage.all(ctx)
+	var err error
+	options, err = options.Normalized()
 	if err != nil {
 		return nil, err
 	}
+	if err := validatePrefix(ctx, options.Prefix); err != nil {
+		return nil, err
+	}
+	if err := storage.Setup(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := storage.db.QueryContext(ctx, `SELECT namespace, key, value, created_at, updated_at FROM dago_store_items ORDER BY namespace, key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	query := strings.ToLower(options.Query)
-	result := make([]dastore.Item, 0)
-	for _, item := range items {
+	result := make([]dastore.Item, 0, options.Limit)
+	matched := 0
+	for rows.Next() {
+		item, err := scanStoredItem(rows)
+		if err != nil {
+			return nil, err
+		}
 		if !hasPrefix(item.Namespace, options.Prefix) {
 			continue
 		}
 		if query != "" && !strings.Contains(strings.ToLower(item.Key+" "+fmt.Sprint(item.Value)), query) {
 			continue
 		}
+		if matched < options.Offset {
+			matched++
+			continue
+		}
 		result = append(result, item)
+		if len(result) >= options.Limit {
+			break
+		}
 	}
-	if options.Offset >= len(result) {
-		return []dastore.Item{}, nil
-	}
-	if options.Offset > 0 {
-		result = result[options.Offset:]
-	}
-	if options.Limit > 0 && len(result) > options.Limit {
-		result = result[:options.Limit]
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
 
-func (storage *Store) ListNamespaces(ctx context.Context, prefix dastore.Namespace) ([]dastore.Namespace, error) {
-	if err := validatePrefix(ctx, prefix); err != nil {
-		return nil, err
-	}
-	items, err := storage.all(ctx)
+func (storage *Store) ListNamespaces(ctx context.Context, options dastore.ListNamespacesOptions) ([]dastore.Namespace, error) {
+	var err error
+	options, err = options.Normalized()
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]dastore.Namespace{}
-	for _, item := range items {
-		if hasPrefix(item.Namespace, prefix) {
-			encoded, _ := json.Marshal(item.Namespace)
-			seen[string(encoded)] = append(dastore.Namespace(nil), item.Namespace...)
+	if err := validatePrefix(ctx, options.Prefix); err != nil {
+		return nil, err
+	}
+	if err := validatePrefix(ctx, options.Suffix); err != nil {
+		return nil, err
+	}
+	if err := storage.Setup(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := storage.db.QueryContext(ctx, `SELECT DISTINCT namespace FROM dago_store_items`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	window := namespaceWindow(options.Offset, options.Limit)
+	selected := make(namespaceMaxHeap, 0)
+	retained := make(map[string]struct{})
+	for rows.Next() {
+		var encoded string
+		if err := rows.Scan(&encoded); err != nil {
+			return nil, err
+		}
+		var namespace dastore.Namespace
+		if err := json.Unmarshal([]byte(encoded), &namespace); err != nil {
+			return nil, fmt.Errorf("decode store namespace: %w", err)
+		}
+		if !namespaceMatches(namespace, options) {
+			continue
+		}
+		if options.MaxDepth > 0 && len(namespace) > options.MaxDepth {
+			namespace = namespace[:options.MaxDepth]
+		}
+		key := strings.Join(namespace, "\x00")
+		if _, exists := retained[key]; exists {
+			continue
+		}
+		candidate := namespaceCandidate{namespace: append(dastore.Namespace(nil), namespace...), key: key}
+		if len(selected) < window {
+			heap.Push(&selected, candidate)
+			retained[key] = struct{}{}
+		} else if key < selected[0].key {
+			delete(retained, selected[0].key)
+			selected[0] = candidate
+			heap.Fix(&selected, 0)
+			retained[key] = struct{}{}
 		}
 	}
-	result := make([]dastore.Namespace, 0, len(seen))
-	for _, namespace := range seen {
-		result = append(result, namespace)
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	sort.Slice(result, func(i, j int) bool { return strings.Join(result[i], "\x00") < strings.Join(result[j], "\x00") })
+	sort.Slice(selected, func(i, j int) bool { return selected[i].key < selected[j].key })
+	if options.Offset >= len(selected) {
+		return []dastore.Namespace{}, nil
+	}
+	selected = selected[options.Offset:]
+	result := make([]dastore.Namespace, len(selected))
+	for index, candidate := range selected {
+		result[index] = candidate.namespace
+	}
 	return result, nil
+}
+
+func namespaceWindow(offset, limit int) int {
+	maximum := int(^uint(0) >> 1)
+	if offset > maximum-limit {
+		return maximum
+	}
+	return offset + limit
+}
+
+type namespaceCandidate struct {
+	namespace dastore.Namespace
+	key       string
+}
+
+type namespaceMaxHeap []namespaceCandidate
+
+func (namespaces namespaceMaxHeap) Len() int { return len(namespaces) }
+func (namespaces namespaceMaxHeap) Less(i, j int) bool {
+	return namespaces[i].key > namespaces[j].key
+}
+func (namespaces namespaceMaxHeap) Swap(i, j int) {
+	namespaces[i], namespaces[j] = namespaces[j], namespaces[i]
+}
+func (namespaces *namespaceMaxHeap) Push(value any) {
+	*namespaces = append(*namespaces, value.(namespaceCandidate))
+}
+func (namespaces *namespaceMaxHeap) Pop() any {
+	old := *namespaces
+	last := old[len(old)-1]
+	*namespaces = old[:len(old)-1]
+	return last
+}
+
+func namespaceMatches(namespace dastore.Namespace, options dastore.ListNamespacesOptions) bool {
+	return namespacePatternMatches(namespace, options.Prefix, false) &&
+		namespacePatternMatches(namespace, options.Suffix, true)
+}
+
+func namespacePatternMatches(namespace, pattern dastore.Namespace, suffix bool) bool {
+	if len(pattern) > len(namespace) {
+		return false
+	}
+	start := 0
+	if suffix {
+		start = len(namespace) - len(pattern)
+	}
+	for index, segment := range pattern {
+		if segment != "*" && segment != namespace[start+index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (storage *Store) Batch(ctx context.Context, operations []dastore.Operation) ([]dastore.Result, error) {
@@ -261,30 +380,38 @@ func (storage *Store) all(ctx context.Context) ([]dastore.Item, error) {
 	defer rows.Close()
 	var result []dastore.Item
 	for rows.Next() {
-		var encoded, key, created, updated string
-		var payload []byte
-		if err := rows.Scan(&encoded, &key, &payload, &created, &updated); err != nil {
-			return nil, err
-		}
-		var namespace dastore.Namespace
-		var value map[string]any
-		if err := json.Unmarshal([]byte(encoded), &namespace); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(payload, &value); err != nil {
-			return nil, err
-		}
-		createdAt, err := time.Parse(time.RFC3339Nano, created)
+		item, err := scanStoredItem(rows)
 		if err != nil {
 			return nil, err
 		}
-		updatedAt, err := time.Parse(time.RFC3339Nano, updated)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, dastore.Item{Namespace: namespace, Key: key, Value: value, CreatedAt: createdAt, UpdatedAt: updatedAt})
+		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func scanStoredItem(row scanner) (dastore.Item, error) {
+	var encoded, key, created, updated string
+	var payload []byte
+	if err := row.Scan(&encoded, &key, &payload, &created, &updated); err != nil {
+		return dastore.Item{}, err
+	}
+	var namespace dastore.Namespace
+	var value map[string]any
+	if err := json.Unmarshal([]byte(encoded), &namespace); err != nil {
+		return dastore.Item{}, err
+	}
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return dastore.Item{}, err
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return dastore.Item{}, err
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
+		return dastore.Item{}, err
+	}
+	return dastore.Item{Namespace: namespace, Key: key, Value: value, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
 func validateAddress(ctx context.Context, namespace dastore.Namespace, key string) (string, error) {

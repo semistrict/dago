@@ -58,9 +58,26 @@ type workflowCompletedMsg struct {
 	status daworkflow.Status
 }
 
+type workflowRunner interface {
+	StartWorkflow(context.Context, daworkflow.StartRequest) (daworkflow.Status, error)
+	Workflows() []daworkflow.Status
+	RunningWorkflows() int
+	CancelWorkflow(string) bool
+	WaitWorkflowCompletion(context.Context) (daworkflow.Status, bool)
+}
+
+func workflowRuntime(runner agentRunner) (workflowRunner, bool) {
+	runtime, ok := runner.(workflowRunner)
+	return runtime, ok
+}
+
 func waitForWorkflowCompletion(ctx context.Context, runner agentRunner) tea.Cmd {
 	return func() tea.Msg {
-		if status, ok := runner.WaitWorkflowCompletion(ctx); ok {
+		runtime, available := workflowRuntime(runner)
+		if !available {
+			return nil
+		}
+		if status, ok := runtime.WaitWorkflowCompletion(ctx); ok {
 			return workflowCompletedMsg{status: status}
 		}
 		return nil
@@ -84,19 +101,33 @@ One or more background workflows completed. This is trusted host-generated state
 
 func startWorkflow(ctx context.Context, runner agentRunner, reference string) tea.Cmd {
 	return func() tea.Msg {
-		status, err := runner.StartWorkflow(ctx, daworkflow.StartRequest{ScriptPath: reference})
-		return workflowStartedMsg{status: status, runs: runner.Workflows(), err: err}
+		runtime, available := workflowRuntime(runner)
+		if !available {
+			return workflowStartedMsg{err: fmt.Errorf("workflow runtime is unavailable")}
+		}
+		status, err := runtime.StartWorkflow(ctx, daworkflow.StartRequest{ScriptPath: reference})
+		return workflowStartedMsg{status: status, runs: runtime.Workflows(), err: err}
 	}
 }
 
 func loadWorkflows(runner agentRunner) tea.Cmd {
-	return func() tea.Msg { return workflowsLoadedMsg{runs: runner.Workflows()} }
+	return func() tea.Msg {
+		runtime, available := workflowRuntime(runner)
+		if !available {
+			return workflowsLoadedMsg{}
+		}
+		return workflowsLoadedMsg{runs: runtime.Workflows()}
+	}
 }
 
 func cancelWorkflow(runner agentRunner, runID string) tea.Cmd {
 	return func() tea.Msg {
-		cancelled := runner.CancelWorkflow(runID)
-		return workflowCancelledMsg{runID: runID, cancelled: cancelled, runs: runner.Workflows()}
+		runtime, available := workflowRuntime(runner)
+		if !available {
+			return workflowCancelledMsg{runID: runID}
+		}
+		cancelled := runtime.CancelWorkflow(runID)
+		return workflowCancelledMsg{runID: runID, cancelled: cancelled, runs: runtime.Workflows()}
 	}
 }
 
@@ -118,12 +149,14 @@ func (model *tuiModel) finishWorkflowCompletion(status daworkflow.Status) tea.Cm
 	text := fmt.Sprintf("Workflow %s (%s) completed: %s", status.Name, status.RunID, strings.ToUpper(status.Status))
 	if status.Error != "" {
 		kind = itemError
-		text += " — " + status.Error
+		text += " " + model.glyphs.Dash + " " + status.Error
 	}
 	model.appendItem(transcriptItem{kind: kind, text: text})
 	model.pendingWorkflows = append(model.pendingWorkflows, status)
 	if model.workflowPanel != nil {
-		model.updateWorkflowRuns(model.runner.Workflows(), status.RunID)
+		if runtime, available := workflowRuntime(model.runner); available {
+			model.updateWorkflowRuns(runtime.Workflows(), status.RunID)
+		}
 	}
 	model.refreshTranscript()
 	wait := waitForWorkflowCompletion(model.ctx, model.runner)
@@ -286,14 +319,15 @@ func (model *tuiModel) renderWorkflowPanel() string {
 	title := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render("WORKFLOW CONTROL")
 	subtitle := lipgloss.NewStyle().Foreground(colorMuted).Render("deterministic background orchestration")
 	active, complete, failed := workflowStatusCounts(panel.runs)
-	summary := fmt.Sprintf("%d RUNS  ·  %d ACTIVE  ·  %d COMPLETE", len(panel.runs), active, complete)
+	separator := "  " + model.glyphs.Separator + "  "
+	summary := fmt.Sprintf("%d RUNS%s%d ACTIVE%s%d COMPLETE", len(panel.runs), separator, active, separator, complete)
 	if failed > 0 {
-		summary += fmt.Sprintf("  ·  %d ATTENTION", failed)
+		summary += fmt.Sprintf("%s%d ATTENTION", separator, failed)
 	}
 	lines := []string{title + "  " + subtitle, lipgloss.NewStyle().Foreground(colorMuted).Render(summary), ""}
 	switch {
 	case panel.loading && len(panel.runs) == 0:
-		lines = append(lines, lipgloss.NewStyle().Foreground(colorMuted).Render(model.spinner.View()+" Reading workflow journal…"))
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorMuted).Render(model.spinner.View()+" Reading workflow journal"+model.glyphs.Ellipsis))
 	case len(panel.runs) == 0:
 		lines = append(lines,
 			lipgloss.NewStyle().Foreground(colorBody).Bold(true).Render("No workflow runs yet."),
@@ -304,32 +338,35 @@ func (model *tuiModel) renderWorkflowPanel() string {
 		start := max(panel.selected-pageSize+1, 0)
 		end := min(start+pageSize, len(panel.runs))
 		for index := start; index < end; index++ {
-			lines = append(lines, renderWorkflowRow(panel.runs[index], index == panel.selected, width))
+			lines = append(lines, renderWorkflowRow(panel.runs[index], index == panel.selected, width, model.glyphs))
 		}
 		if selected := model.selectedWorkflow(); selected != nil {
-			lines = append(lines, "", renderWorkflowDetail(*selected, width))
+			lines = append(lines, "", renderWorkflowDetailWithGlyphs(*selected, width, model.glyphs))
 		}
 	}
 	if panel.err != nil {
 		lines = append(lines, "", lipgloss.NewStyle().Foreground(colorError).Render(panel.err.Error()))
 	}
-	lines = append(lines, "", lipgloss.NewStyle().Foreground(colorMuted).Render("↑↓ select  ·  c cancel  ·  r refresh  ·  esc return"))
+	lines = append(lines, "", lipgloss.NewStyle().Foreground(colorMuted).Render(
+		model.glyphs.ArrowUp+model.glyphs.ArrowDown+" select"+separator+"c cancel"+separator+"r refresh"+separator+"esc return",
+	))
 	body := strings.Join(lines, "\n")
-	return lipgloss.NewStyle().Foreground(colorBody).Border(lipgloss.RoundedBorder()).
+	return lipgloss.NewStyle().Foreground(colorBody).Border(uiBorder(model.glyphs)).
 		BorderForeground(colorPrimary).Padding(1, 2).Width(max(model.width-2, 1)).Render(body)
 }
 
-func renderWorkflowRow(run daworkflow.Status, selected bool, width int) string {
-	icon, color := workflowStatusStyle(run.Status)
+func renderWorkflowRow(run daworkflow.Status, selected bool, width int, glyphs uiGlyphs) string {
+	icon, color := workflowStatusStyle(run.Status, glyphs)
 	name := run.Name
 	if name == "" {
 		name = "unnamed workflow"
 	}
 	header := lipgloss.NewStyle().Foreground(color).Bold(true).Render(icon+" "+strings.ToUpper(run.Status)) + "  " +
 		lipgloss.NewStyle().Foreground(colorBody).Bold(true).Render(truncate(name, max(width-18, 8)))
-	metadata := fmt.Sprintf("%s  ·  %s  ·  %s", run.RunID, workflowAge(run.UpdatedAt), workflowProgressText(run))
+	separator := "  " + glyphs.Separator + "  "
+	metadata := run.RunID + separator + workflowAge(run.UpdatedAt) + separator + workflowProgressText(run, glyphs)
 	body := header + "\n" + lipgloss.NewStyle().Foreground(colorMuted).Render(truncate(metadata, width-5))
-	style := lipgloss.NewStyle().BorderLeft(true).BorderStyle(lipgloss.ThickBorder()).BorderForeground(colorPanel).
+	style := lipgloss.NewStyle().BorderLeft(true).BorderStyle(uiBorder(glyphs)).BorderForeground(colorPanel).
 		Padding(0, 1).Width(max(width-2, 1))
 	if selected {
 		style = style.BorderForeground(colorPrimary).Background(colorSurface)
@@ -338,6 +375,10 @@ func renderWorkflowRow(run daworkflow.Status, selected bool, width int) string {
 }
 
 func renderWorkflowDetail(run daworkflow.Status, width int) string {
+	return renderWorkflowDetailWithGlyphs(run, width, unicodeUIGlyphs)
+}
+
+func renderWorkflowDetailWithGlyphs(run daworkflow.Status, width int, glyphs uiGlyphs) string {
 	title := lipgloss.NewStyle().Foreground(colorSecondary).Bold(true).Render("SELECTED RUN")
 	lines := []string{title}
 	if run.Description != "" {
@@ -347,18 +388,21 @@ func renderWorkflowDetail(run daworkflow.Status, width int) string {
 		current := currentWorkflowPhase(run.Events)
 		phases := make([]string, 0, len(run.Phases))
 		for _, phase := range run.Phases {
-			marker := "○"
+			marker := glyphs.CircleEmpty
 			style := lipgloss.NewStyle().Foreground(colorMuted)
 			if phase.Title == current {
-				marker = "●"
+				marker = glyphs.CircleFilled
 				style = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true)
 			}
 			phases = append(phases, style.Render(marker+" "+phase.Title))
 		}
-		lines = append(lines, strings.Join(phases, "  ─  "))
+		lines = append(lines, strings.Join(phases, "  "+glyphs.BoxHorizontal+"  "))
 	}
 	if event := latestWorkflowEvent(run.Events); event != nil {
 		activity := event.Label
+		if event.Kind == "agent_failed" && event.Message != "" {
+			activity = event.Message
+		}
 		if activity == "" {
 			activity = event.Message
 		}
@@ -368,12 +412,12 @@ func renderWorkflowDetail(run daworkflow.Status, width int) string {
 		lines = append(lines, lipgloss.NewStyle().Foreground(colorMuted).Render("latest  "+truncate(activity, width-13)))
 	}
 	if agents := activeWorkflowAgents(run); len(agents) > 0 {
-		lines = append(lines, "", renderActiveWorkflowAgents(agents, width, time.Now()))
+		lines = append(lines, "", renderActiveWorkflowAgents(agents, width, time.Now(), glyphs))
 	}
 	if run.Error != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(colorError).Render(truncate(run.Error, width-5)))
 	}
-	return lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorPanel).
+	return lipgloss.NewStyle().Border(uiBorder(glyphs)).BorderForeground(colorPanel).
 		Padding(0, 1).Width(max(width-2, 1)).Render(strings.Join(lines, "\n"))
 }
 
@@ -412,7 +456,7 @@ func activeWorkflowAgents(run daworkflow.Status) []activeWorkflowAgent {
 	return result
 }
 
-func renderActiveWorkflowAgents(agents []activeWorkflowAgent, width int, now time.Time) string {
+func renderActiveWorkflowAgents(agents []activeWorkflowAgent, width int, now time.Time, glyphs uiGlyphs) string {
 	title := lipgloss.NewStyle().Foreground(colorSecondary).Bold(true).Render(fmt.Sprintf("RUNNING AGENTS  %d", len(agents)))
 	lines := []string{title}
 	for _, agent := range agents {
@@ -420,14 +464,14 @@ func renderActiveWorkflowAgents(agents []activeWorkflowAgent, width int, now tim
 		if agent.startedAt.IsZero() || elapsed < 0 {
 			elapsed = 0
 		}
-		metadata := formatWorkflowElapsed(elapsed) + "  ·  " + formatWorkflowTokens(agent.tokens)
+		metadata := formatWorkflowElapsed(elapsed) + "  " + glyphs.Separator + "  " + formatWorkflowTokens(agent.tokens, glyphs)
 		phase := ""
 		if agent.phase != "" {
 			phase = "  " + agent.phase
 		}
 		available := max(width-lipgloss.Width(metadata)-lipgloss.Width(phase)-12, 8)
 		label := truncate(agent.label, available)
-		left := lipgloss.NewStyle().Foreground(colorPrimary).Render("●") + " " +
+		left := lipgloss.NewStyle().Foreground(colorPrimary).Render(glyphs.CircleFilled) + " " +
 			lipgloss.NewStyle().Foreground(colorBody).Bold(true).Render(label) +
 			lipgloss.NewStyle().Foreground(colorMuted).Render(phase)
 		gap := max(width-lipgloss.Width(left)-lipgloss.Width(metadata)-5, 1)
@@ -449,9 +493,9 @@ func formatWorkflowElapsed(elapsed time.Duration) string {
 	return fmt.Sprintf("%dh%02dm", minutes/60, minutes%60)
 }
 
-func formatWorkflowTokens(tokens int64) string {
+func formatWorkflowTokens(tokens int64, glyphs uiGlyphs) string {
 	if tokens <= 0 {
-		return "counting…"
+		return "counting" + glyphs.Ellipsis
 	}
 	if tokens < 1_000 {
 		return fmt.Sprintf("~%d tok", tokens)
@@ -459,14 +503,14 @@ func formatWorkflowTokens(tokens int64) string {
 	return fmt.Sprintf("~%.1fk tok", float64(tokens)/1_000)
 }
 
-func workflowStatusStyle(status string) (string, lipgloss.Color) {
+func workflowStatusStyle(status string, glyphs uiGlyphs) (string, lipgloss.Color) {
 	switch status {
 	case "running":
-		return "▶", colorPrimary
+		return glyphs.Cursor, colorPrimary
 	case "success":
-		return "✓", colorSuccess
+		return glyphs.Checkmark, colorSuccess
 	case "cancelled":
-		return "■", colorWarning
+		return glyphs.Warning, colorWarning
 	default:
 		return "!", colorError
 	}
@@ -486,7 +530,7 @@ func workflowStatusCounts(runs []daworkflow.Status) (active, complete, failed in
 	return active, complete, failed
 }
 
-func workflowProgressText(run daworkflow.Status) string {
+func workflowProgressText(run daworkflow.Status, glyphs uiGlyphs) string {
 	started, finished, failed := 0, 0, 0
 	for _, event := range run.Events {
 		switch event.Kind {
@@ -505,7 +549,8 @@ func workflowProgressText(run daworkflow.Status) string {
 		return "no agent calls"
 	}
 	active := max(started-finished-failed, 0)
-	return fmt.Sprintf("%d done · %d active · %d failed", finished, active, failed)
+	separator := " " + glyphs.Separator + " "
+	return fmt.Sprintf("%d done%s%d active%s%d failed", finished, separator, active, separator, failed)
 }
 
 func currentWorkflowPhase(events []daworkflow.Event) string {

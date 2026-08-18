@@ -42,18 +42,30 @@ func TestIsRetryableAnthropicErr(t *testing.T) {
 	}
 }
 
+func TestRunAgentRejectsUnknownModeBeforeNetwork(t *testing.T) {
+	result, err := runAgent(context.Background(), &Browser{}, "https://app.example", "model", "key", "description", agentConfig{Mode: agentMode(99)})
+	if err == nil || result != nil {
+		t.Fatalf("RunAgent = (%v, %v), want nil and error", result, err)
+	}
+}
+
+func TestRunAPIsRejectNilContextBeforeWork(t *testing.T) {
+	if result, err := Run(nil, "https://app.example", Options{}, "description"); err == nil || result != nil {
+		t.Fatalf("Run = (%v, %v), want nil and error", result, err)
+	}
+	if result, err := runAgent(nil, &Browser{}, "https://app.example", "model", "key", "description", agentConfig{}); err == nil || result != nil {
+		t.Fatalf("RunAgent = (%v, %v), want nil and error", result, err)
+	}
+}
+
 const validResponsesResponse = `{"id":"resp_1","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
 
 func newTestChat(t *testing.T, baseURL string) *retryingChat {
 	t.Helper()
-	client, err := openai.NewAPIKey("test-key", openai.Options{
-		Model:        "gpt-5.6-luna",
+	client := openai.NewAPIKey("test-key", "gpt-5.6-luna", openai.Options{
 		BaseURL:      baseURL,
 		RetryBackoff: []time.Duration{},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	return &retryingChat{inner: client, attempts: modelMaxAttempts, backoff: 0}
 }
 

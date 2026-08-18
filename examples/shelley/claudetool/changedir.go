@@ -20,10 +20,10 @@ func tildeReplace(path string) string {
 	return path
 }
 
-// ChangeDirTool changes the working directory for bash commands.
-type ChangeDirTool struct {
+// changeDirTool changes the working directory for bash commands.
+type changeDirTool struct {
 	// WorkingDir is the shared mutable working directory.
-	WorkingDir *MutableWorkingDir
+	WorkingDir *mutableWorkingDir
 	// OnChange is called after the working directory changes successfully.
 	// This can be used to persist the change to a database.
 	OnChange func(newDir string)
@@ -46,8 +46,11 @@ type changeDirInput struct {
 	Path string `json:"path" description:"The directory path to change to (absolute or relative)" jsonschema:"minLength=1"`
 }
 
-// NativeTool returns the production dago implementation.
-func (c *ChangeDirTool) NativeTool() datool.Tool {
+// nativeTool returns the production dago implementation.
+func (c *changeDirTool) nativeTool() datool.Tool {
+	if c == nil || c.WorkingDir == nil {
+		panic("change-directory tool working directory is required")
+	}
 	return datool.MustNew(changeDirName, changeDirDescription, func(ctx context.Context, input changeDirInput) (string, error) {
 		text, err := c.execute(ctx, input)
 		if err != nil {
@@ -57,7 +60,7 @@ func (c *ChangeDirTool) NativeTool() datool.Tool {
 	})
 }
 
-func (c *ChangeDirTool) execute(_ context.Context, req changeDirInput) (string, error) {
+func (c *changeDirTool) execute(_ context.Context, req changeDirInput) (string, error) {
 	if req.Path == "" {
 		return "", fmt.Errorf("path is required")
 	}

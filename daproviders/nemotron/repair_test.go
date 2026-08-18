@@ -40,6 +40,15 @@ func TestNemotronToolCallShimRepairsArgumentsAndEmptyResult(t *testing.T) {
 	}
 }
 
+func TestNemotronModelRateLimitRetryRejectsNegativeDelay(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("negative retry delay was accepted")
+		}
+	}()
+	ModelRateLimitRetry(-time.Second)
+}
+
 func TestNemotronToolCallShimPreservesExplicitPathAndCommandResult(t *testing.T) {
 	middleware := ToolCallShim()
 	request := dagent.ToolCallRequest{Call: damessage.ToolCall{ID: "call-1", Name: "delete", Arguments: json.RawMessage(`{"path":"/wrong","file_path":"/right"}`)}}

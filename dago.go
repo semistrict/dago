@@ -3,6 +3,8 @@ package dago
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -52,6 +54,7 @@ type agentConfig struct {
 	Metadata          map[string]json.RawMessage
 	Tags              []string
 	Debug             bool
+	Logger            *slog.Logger
 }
 
 // NewAgent constructs a deep agent. It panics when static construction options
@@ -64,24 +67,25 @@ func NewAgent(model damodel.Chat, options ...Option) *dagent.Agent {
 		}
 		current.apply(&config)
 	}
-	agent, err := compileAgent(model, config)
+	agent, err := newAgent(model, config)
 	if err != nil {
 		panic(err)
 	}
 	return agent
 }
 
-func compileAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
-	if model == nil {
+func newAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error) {
+	if nilInterface(model) {
 		return nil, fmt.Errorf("create deep agent: model is nil")
 	}
+	options.Metadata = withVersionMetadata(options.Metadata)
 	if options.SystemMessage.Role != "" && options.SystemMessage.Role != damessage.RoleSystem {
 		return nil, fmt.Errorf("create deep agent: system message role must be system")
 	}
-	if options.Saver == nil && optionsNeedSaver(options) {
+	if nilInterface(options.Saver) && optionsNeedSaver(options) {
 		return nil, fmt.Errorf("human approval requires a checkpointer")
 	}
-	if options.Backend == nil {
+	if nilInterface(options.Backend) {
 		memory := dabackend.NewState("", nil)
 		options.Backend = memory
 	}
@@ -91,6 +95,18 @@ func compileAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error
 	}
 	profileExclusionMatches := map[string]bool{}
 	inheritedTools := append([]datool.Tool(nil), options.Tools...)
+	memoryConfigured := options.Memory.Sources != nil || options.Memory.Contents != nil
+	if memoryConfigured {
+		sources := append([]string(nil), options.Memory.Sources...)
+		if sources == nil {
+			for source := range options.Memory.Contents {
+				sources = append(sources, source)
+			}
+			sort.Strings(sources)
+		}
+		options.Memory.Sources = sources
+		options.Filesystem.managedMemoryPaths = appendUniqueStrings(options.Filesystem.managedMemoryPaths, sources...)
+	}
 	if options.SystemMessage.Role != "" {
 		copy := options.SystemMessage.Clone()
 		profilePrompt := applyProfilePrompt(profile, "", "")
@@ -105,7 +121,8 @@ func compileAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error
 		}
 	}
 	options.Tools = applyToolProfile(options.Tools, profile.ToolDescriptions, nil)
-	filesystem, err := compileFilesystem(options.Backend, configuredFilesystem(options, nil), options.InterruptOn)
+	filesystemConfig := configuredFilesystem(options, nil)
+	filesystem, err := newFilesystem(options.Backend, filesystemConfig, options.InterruptOn)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +132,7 @@ func compileAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error
 		core = append(core, dagent.TodoList())
 	}
 	if options.Skills.Sources != nil || options.Skills.LabeledSources != nil || options.Skills.Catalog != nil {
-		middleware, err := compileSkills(options.Backend, options.Skills)
+		middleware, err := newSkills(options.Backend, options.Skills)
 		if err != nil {
 			return nil, err
 		}
@@ -164,7 +181,7 @@ func compileAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error
 	}
 	if !options.DisableSummary {
 		summaryModel := options.Summarization.modelFor(model)
-		middleware, err := compileSummarization(summaryModel, options.Backend, options.Summarization)
+		middleware, err := newSummarization(summaryModel, options.Backend, options.Summarization)
 		if err != nil {
 			return nil, err
 		}
@@ -182,17 +199,9 @@ func compileAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error
 		}
 		return request.Runtime.TaskID
 	}))
-	if options.Memory.Sources != nil || options.Memory.Contents != nil {
+	if memoryConfigured {
 		memory := options.Memory
-		sources := append([]string(nil), memory.Sources...)
-		if sources == nil {
-			for source := range memory.Contents {
-				sources = append(sources, source)
-			}
-			sort.Strings(sources)
-		}
-		memory.Sources = sources
-		middleware, err := compileMemory(options.Backend, memory, true)
+		middleware, err := newMemory(options.Backend, memory, true)
 		if err != nil {
 			return nil, err
 		}
@@ -223,9 +232,22 @@ func compileAgent(model damodel.Chat, options agentConfig) (*dagent.Agent, error
 		RetainThreadState: options.RetainThreadState,
 		RecursionLimit:    options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
-		Metadata:        options.Metadata, Tags: options.Tags, Debug: options.Debug,
+		Metadata:        options.Metadata, Tags: options.Tags, Debug: options.Debug, Logger: options.Logger,
 	})
 	return compiled, nil
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func privateStateFields(base map[string]dagent.StateField, middleware []dagent.Middleware) map[string]bool {
@@ -269,7 +291,7 @@ func buildDeclarativeSubagents(parentModel damodel.Chat, options agentConfig, in
 		compile := func(output *dagent.StructuredOutput) (Runnable, error) {
 			current := compiledConfig
 			current.StructuredOutput = output
-			return compileAgent(chat, current)
+			return newAgent(chat, current)
 		}
 		compiled, err := compile(compiledConfig.StructuredOutput)
 		if err != nil {
@@ -291,13 +313,14 @@ func inheritedSubagentConfig(parent agentConfig, tools []datool.Tool) agentConfi
 	return agentConfig{
 		Tools: append([]datool.Tool{}, tools...), Backend: parent.Backend,
 		Filesystem: parent.Filesystem, Interpreter: interpreter,
+		Memory:           parent.Memory,
 		DisableSubagents: true, DisableSummary: parent.DisableSummary,
 		Summarization: parent.Summarization, InterruptOn: append([]dagent.ApprovalRule(nil), parent.InterruptOn...),
 		PromptCacheRetention: parent.PromptCacheRetention, StateFields: parent.StateFields,
 		Saver: parent.Saver, Store: parent.Store, Cache: parent.Cache, Deps: parent.Deps,
 		RecursionLimit: parent.RecursionLimit, MaxConcurrency: parent.MaxConcurrency,
 		FailOnToolError: parent.FailOnToolError,
-		Metadata:        parent.Metadata, Tags: append([]string(nil), parent.Tags...), Debug: parent.Debug,
+		Metadata:        parent.Metadata, Tags: append([]string(nil), parent.Tags...), Debug: parent.Debug, Logger: parent.Logger,
 	}
 }
 
@@ -332,7 +355,7 @@ func buildGeneralSubagent(model damodel.Chat, options agentConfig, filesystem da
 		middleware = append(middleware, interpreter)
 	}
 	if !options.DisableSummary {
-		compact, err := compileSummarization(options.Summarization.modelFor(model), options.Backend, options.Summarization)
+		compact, err := newSummarization(options.Summarization.modelFor(model), options.Backend, options.Summarization)
 		if err != nil {
 			return nil, err
 		}
@@ -340,7 +363,7 @@ func buildGeneralSubagent(model damodel.Chat, options agentConfig, filesystem da
 	}
 	middleware = append(middleware, PatchToolCalls())
 	if options.Skills.Sources != nil || options.Skills.LabeledSources != nil || options.Skills.Catalog != nil {
-		skills, err := compileSkills(options.Backend, options.Skills)
+		skills, err := newSkills(options.Backend, options.Skills)
 		if err != nil {
 			return nil, err
 		}
@@ -353,6 +376,13 @@ func buildGeneralSubagent(model damodel.Chat, options agentConfig, filesystem da
 		}
 		return request.Runtime.TaskID
 	}))
+	if options.Memory.Sources != nil || options.Memory.Contents != nil {
+		memory, err := newMemory(options.Backend, options.Memory, true)
+		if err != nil {
+			return nil, err
+		}
+		middleware = append(middleware, memory)
+	}
 	if len(options.InterruptOn) > 0 {
 		middleware = append(middleware, dagent.HumanApproval(options.InterruptOn))
 	}
@@ -393,7 +423,7 @@ func buildGeneralSubagent(model damodel.Chat, options agentConfig, filesystem da
 		Saver:            options.Saver, Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 		RecursionLimit: options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
 		FailOnToolError: options.FailOnToolError,
-		Metadata:        options.Metadata, Tags: options.Tags, Debug: options.Debug,
+		Metadata:        options.Metadata, Tags: options.Tags, Debug: options.Debug, Logger: options.Logger,
 	}), nil
 }
 

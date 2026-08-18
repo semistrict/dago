@@ -42,41 +42,46 @@ func backendContract(t *testing.T, value Backend) {
 
 func TestMemoryAndStoreBackendsShareContract(t *testing.T) {
 	memory := NewMemory(nil)
-
 	backendContract(t, memory)
 	values := memorystore.NewMemory()
 	persistent := NewStore(values, memorystore.Namespace{"files", "test"})
-
 	backendContract(t, persistent)
 	if _, err := persistent.Write(context.Background(), "/persist", "value"); err != nil {
 		t.Fatal(err)
 	}
 	reopened := NewStore(values, memorystore.Namespace{"files", "test"})
-
 	read, err := reopened.Read(context.Background(), "/persist", 0, 10)
 	if err != nil || read.Data.Content != "value" {
 		t.Fatalf("reopened Read = %#v, %v", read, err)
 	}
 }
 
-func TestConstructorsPanicForStaticConfigurationErrors(t *testing.T) {
-	tests := map[string]func(){
-		"memory path":       func() { NewMemory(map[string]FileData{"../escape": {}}) },
-		"state file":        func() { NewState("files", map[string]any{"/bad": 1}) },
-		"store":             func() { NewStore(nil, memorystore.Namespace{"files"}) },
-		"store namespace":   func() { NewStore(memorystore.NewMemory(), nil) },
-		"namespace factory": func() { NewStoreWithOptions(nil) },
-		"composite default": func() { NewComposite(nil, nil) },
+func TestStoreBackendPaginatesBoundedSearches(t *testing.T) {
+	values := memorystore.NewMemory()
+	backend := NewStore(values, memorystore.Namespace{"files"})
+	ctx := context.Background()
+	for index := 0; index <= memorystore.DefaultSearchLimit; index++ {
+		path := fmt.Sprintf("/bounded/file-%03d.txt", index)
+		if _, err := backend.Write(ctx, path, "value"); err != nil {
+			t.Fatal(err)
+		}
 	}
-	for name, call := range tests {
-		t.Run(name, func(t *testing.T) {
-			defer func() {
-				if recover() == nil {
-					t.Fatal("constructor did not panic")
-				}
-			}()
-			call()
-		})
+	listed, err := backend.List(ctx, "/bounded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Entries) != memorystore.DefaultSearchLimit+1 {
+		t.Fatalf("listed entries = %d, want %d", len(listed.Entries), memorystore.DefaultSearchLimit+1)
+	}
+	if _, err := backend.Delete(ctx, "/bounded"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = backend.List(ctx, "/bounded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Entries) != 0 {
+		t.Fatalf("entries after delete = %d", len(listed.Entries))
 	}
 }
 
@@ -122,7 +127,6 @@ func TestBackendsPreserveCanonicalReadWindowsAndLegacyFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	persistent := NewStore(values, memorystore.Namespace{"files"})
-
 	read, err = persistent.Read(context.Background(), "/legacy.txt", 0, 10)
 	if err != nil || read.Data == nil || read.Data.Content != "one\ntwo" || read.Data.Encoding != EncodingUTF8 {
 		t.Fatalf("legacy Store.Read = %#v, %v", read, err)
@@ -192,8 +196,7 @@ func TestStoreBackendResolvesNamespaceAndStorePerRuntime(t *testing.T) {
 			return nil, fmt.Errorf("runtime user is required")
 		}
 		return memorystore.Namespace{"files", user}, nil
-	})
-
+	}, StoreOptions{})
 	if _, err := persistent.Write(context.Background(), "/note.txt", "outside"); err == nil {
 		t.Fatal("runtime-dependent Store.Write succeeded outside a bound run")
 	}
@@ -223,15 +226,27 @@ func TestStoreBackendResolvesNamespaceAndStorePerRuntime(t *testing.T) {
 	}
 }
 
+type typedNilRuntimeStore struct{ memorystore.Store }
+
+func TestStoreBackendTreatsTypedNilOptionalStoreAsOmitted(t *testing.T) {
+	var optional *typedNilRuntimeStore
+	values := memorystore.NewMemory()
+	persistent := NewStoreWithOptions(func(*Runtime) (memorystore.Namespace, error) {
+		return memorystore.Namespace{"files"}, nil
+	}, StoreOptions{Store: optional})
+	bound, err := BindRuntime(context.Background(), persistent, nil, Runtime{Store: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistent.Write(bound, "/note.txt", "value"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStoreBackendRejectsUnsafeDynamicNamespace(t *testing.T) {
-	persistent := NewStoreWithOptions(
-
-		func(*Runtime) (memorystore.Namespace, error) {
-			return memorystore.Namespace{"files", "*"}, nil
-		}, StoreOptions{
-			Store: memorystore.NewMemory(),
-		})
-
+	persistent := NewStoreWithOptions(func(*Runtime) (memorystore.Namespace, error) {
+		return memorystore.Namespace{"files", "*"}, nil
+	}, StoreOptions{Store: memorystore.NewMemory()})
 	if _, err := persistent.Write(context.Background(), "/note.txt", "unsafe"); err == nil || !strings.Contains(err.Error(), "disallowed") {
 		t.Fatalf("unsafe namespace error = %v", err)
 	}
@@ -239,7 +254,6 @@ func TestStoreBackendRejectsUnsafeDynamicNamespace(t *testing.T) {
 
 func TestStateBackendRequiresBindingAndEmitsPlainDataDelta(t *testing.T) {
 	value := NewState("", nil)
-
 	if _, err := value.List(context.Background(), "/"); err == nil {
 		t.Fatal("unbound State.List succeeded")
 	}
@@ -274,7 +288,6 @@ func TestCompositeUsesLongestRouteAndRemapsResults(t *testing.T) {
 	memories := NewMemory(nil)
 	private := NewMemory(nil)
 	composite := NewComposite(root, map[string]Backend{"/memories/": memories, "/memories/private/": private})
-
 	_, _ = composite.Write(context.Background(), "/root.txt", "root")
 	_, _ = composite.Write(context.Background(), "/memories/note.txt", "memory")
 	_, _ = composite.Write(context.Background(), "/memories/private/secret.txt", "private")
@@ -303,9 +316,7 @@ func TestCompositeResolvesDefaultExecutionAndShellRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	persistent := NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
-
 	composite := NewComposite(shell, map[string]Backend{"/common/": mounted, "/memories/": persistent})
-
 	resolved, ok := SandboxOf(composite)
 	if !ok || resolved != shell || !CapabilitiesOf(composite).Execute {
 		t.Fatalf("composite sandbox = %#v, %v", resolved, ok)
@@ -317,7 +328,6 @@ func TestCompositeResolvesDefaultExecutionAndShellRoutes(t *testing.T) {
 
 	plain := NewMemory(nil)
 	withoutShell := NewComposite(plain, map[string]Backend{"/common/": mounted})
-
 	if _, ok := SandboxOf(withoutShell); ok || ShellPathRoutes(withoutShell)[0].Accessible {
 		t.Fatalf("non-shell composite exposed execution: %#v", ShellPathRoutes(withoutShell))
 	}
@@ -351,7 +361,6 @@ func TestLocalShellUsesDynamicRootForEveryOperation(t *testing.T) {
 func TestCompositeArtifactsRootIsNormalized(t *testing.T) {
 	memory := NewMemory(nil)
 	composite := NewCompositeWithOptions(memory, CompositeOptions{ArtifactsRoot: "/workspace/"})
-
 	if root := ArtifactsRootOf(composite); root != "/workspace" {
 		t.Fatalf("artifacts root = %q", root)
 	}
@@ -405,9 +414,14 @@ func TestLocalShellUsesCanonicalIdentityAndEmptyCommandResult(t *testing.T) {
 	if err != nil || result.ExitCode == nil || *result.ExitCode != 1 || result.Output != "Error: Command must be a non-empty string." {
 		t.Fatalf("empty command = %#v, %v", result, err)
 	}
-	if _, err := NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: t.TempDir()}, DefaultTimeout: -time.Second}); err == nil {
-		t.Fatal("negative default timeout succeeded")
-	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("negative default timeout succeeded")
+			}
+		}()
+		_, _ = NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: t.TempDir()}, DefaultTimeout: -time.Second})
+	}()
 }
 
 func TestLocalShellUsesExplicitEnvironmentAndLabelsStderr(t *testing.T) {
@@ -441,11 +455,18 @@ func TestLocalShellUsesExplicitEnvironmentAndLabelsStderr(t *testing.T) {
 		t.Fatalf("inherited environment Execute = %#v, %v", result, err)
 	}
 
-	if _, err := NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: root}, Env: map[string]string{"BAD=NAME": "value"}}); err == nil {
-		t.Fatal("invalid environment variable name accepted")
-	}
-	if _, err := NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: root}, Env: map[string]string{"BAD": "value\x00"}}); err == nil {
-		t.Fatal("NUL environment value accepted")
+	for name, environment := range map[string]map[string]string{
+		"name":  {"BAD=NAME": "value"},
+		"value": {"BAD": "value\x00"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("invalid environment accepted")
+				}
+			}()
+			_, _ = NewLocalShell(LocalShellOptions{Filesystem: FilesystemOptions{Root: root}, Env: environment})
+		})
 	}
 }
 

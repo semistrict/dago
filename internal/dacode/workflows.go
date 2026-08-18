@@ -216,7 +216,10 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 	if modelName == "" {
 		modelName = runner.model
 	}
-	model := runner.authentication.model(modelName, runner.baseURL)
+	model, err := runner.authentication.resolveModel(ctx, modelName, runner.baseURL)
+	if err != nil {
+		return daworkflow.AgentResponse{}, fmt.Errorf("resolve workflow model: %w", err)
+	}
 	system := runner.system + "\n\nYou are a workflow worker. Complete only the assigned prompt and return the requested value without addressing the user or coordinating additional agents. A denied tool call is evidence that only that action was refused: continue with a safe alternative when possible. If the task cannot produce a useful result, call fail_workflow_agent with a concise reason to end this worker as a failed branch."
 	workerTools := append([]datool.Tool(nil), runner.tools...)
 	workerTools = append(workerTools, workflowAgentFailureTool())
@@ -260,9 +263,20 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 		}))
 	}
 	if len(request.Schema) > 0 {
+		options = append(options, dago.WithMiddleware(dagent.Middleware{
+			Name: "workflow_structured_output",
+			WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
+				// Keep workflow schemas out of provider-native JSON mode. A malformed
+				// provider response is otherwise rejected below the agent loop, before
+				// HandleErrors can ask the model to correct it. Requiring a tool call
+				// also prevents a plain-text response from silently ending the worker.
+				request.ToolChoice = &damodel.ToolChoice{Mode: "required"}
+				return next(ctx, request)
+			},
+		}))
 		options = append(options, dago.WithStructuredOutput(&dagent.StructuredOutput{
 			Name: "workflow_result", Description: "Return the workflow worker result.", Schema: request.Schema,
-			Strict: true, HandleErrors: true,
+			Strategy: dagent.StructuredTool, Strict: true, HandleErrors: true,
 		}))
 	}
 	agent := dago.NewAgent(model, options...)

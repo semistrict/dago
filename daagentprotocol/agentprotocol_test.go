@@ -58,7 +58,6 @@ func TestAgentProtocolRunnerLifecycle(t *testing.T) {
 	runner := New(server.URL+"/api/", Options{
 		APIKey: "test-api-key", Headers: map[string]string{"X-Custom": "yes"}, HTTPClient: server.Client(),
 	})
-
 	ctx := context.Background()
 	started, err := runner.Start(ctx, dago.AsyncStartRequest{GraphID: "research", Description: "find it"})
 	if err != nil || started.ThreadID != "thread/1" || started.RunID != "run/1" || started.Status != "running" {
@@ -179,21 +178,21 @@ func TestAgentProtocolDoesNotFollowRedirectsWithCredentials(t *testing.T) {
 
 func TestAgentProtocolConfigurationValidationAndEnvironmentKey(t *testing.T) {
 	for _, value := range []string{"", "localhost:8123", "ftp://example.com"} {
-		requirePanic(t, func() { New(value) })
+		assertAgentProtocolPanics(t, func() { New(value, Options{}) })
 	}
-	requirePanic(t, func() { New("https://example.com", Options{Headers: map[string]string{"X-API-Key": "bad"}}) })
+	assertAgentProtocolPanics(t, func() { New("https://example.com", Options{Headers: map[string]string{"X-API-Key": "bad"}}) })
 	t.Setenv("LANGGRAPH_API_KEY", " test-env-api-key ")
-	runner := New("https://example.com")
+	runner := New("https://example.com", Options{})
 	if runner.headers.Get("x-api-key") != "test-env-api-key" {
 		t.Fatalf("key = %q", runner.headers.Get("x-api-key"))
 	}
 }
 
-func requirePanic(t *testing.T, call func()) {
+func assertAgentProtocolPanics(t *testing.T, call func()) {
 	t.Helper()
 	defer func() {
 		if recover() == nil {
-			t.Fatal("call did not panic")
+			t.Fatal("expected static configuration panic")
 		}
 	}()
 	call()

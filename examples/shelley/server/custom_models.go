@@ -12,6 +12,7 @@ import (
 	"github.com/semistrict/dago/damodel"
 
 	"github.com/semistrict/dago/examples/shelley/db/generated"
+	"github.com/semistrict/dago/examples/shelley/llm"
 	"github.com/semistrict/dago/examples/shelley/models"
 )
 
@@ -87,6 +88,17 @@ func validReasoningSupport(v string) (string, error) {
 	return validSupportSetting("reasoning_support", v)
 }
 
+func validReasoningEffort(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "none" {
+		return v, nil
+	}
+	if _, err := llm.ParseThinkingLevelStrict(v); err != nil {
+		return "", fmt.Errorf("reasoning_effort: %w", err)
+	}
+	return v, nil
+}
+
 func validReasoningMap(raw string) error {
 	if raw == "" {
 		return nil
@@ -97,8 +109,9 @@ func validReasoningMap(raw string) error {
 	}
 	valid := map[string]bool{"off": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true}
 	for from, to := range values {
-		if !valid[from] || strings.TrimSpace(to) == "" {
-			return fmt.Errorf("reasoning_map keys must use off, minimal, low, medium, high, or xhigh and values must be non-empty; got %q: %q", from, to)
+		mapped, err := llm.ParseThinkingLevelStrict(to)
+		if !valid[from] || err != nil || mapped == llm.ThinkingLevelDefault {
+			return fmt.Errorf("reasoning_map keys and values must use off, minimal, low, medium, high, or xhigh; got %q: %q", from, to)
 		}
 	}
 	return nil
@@ -125,7 +138,15 @@ type TestModelRequest struct {
 	ReasoningEffort  *string `json:"reasoning_effort,omitempty"`
 }
 
-func toModelAPI(m generated.Model) ModelAPI {
+func toModelAPI(m generated.Model) (ModelAPI, error) {
+	supportsReasoning, err := models.ResolveSupportsReasoning(m.Endpoint, m.ModelName, m.ReasoningSupport)
+	if err != nil {
+		return ModelAPI{}, err
+	}
+	supportsImages, err := models.ResolveSupportsImages(m.Endpoint, m.ModelName, m.ImageSupport)
+	if err != nil {
+		return ModelAPI{}, err
+	}
 	return ModelAPI{
 		ModelID:           m.ModelID,
 		DisplayName:       m.DisplayName,
@@ -139,9 +160,9 @@ func toModelAPI(m generated.Model) ModelAPI {
 		ImageSupport:      m.ImageSupport,
 		ReasoningSupport:  m.ReasoningSupport,
 		ReasoningMap:      m.ReasoningMap,
-		SupportsReasoning: models.ResolveSupportsReasoning(m.Endpoint, m.ModelName, m.ReasoningSupport),
-		SupportsImages:    models.ResolveSupportsImages(m.Endpoint, m.ModelName, m.ImageSupport),
-	}
+		SupportsReasoning: supportsReasoning,
+		SupportsImages:    supportsImages,
+	}, nil
 }
 
 func (s *Server) handleCustomModels(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +185,11 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 	apiModels := make([]ModelAPI, len(models))
 	for i, m := range models {
-		apiModels[i] = toModelAPI(m)
+		apiModels[i], err = toModelAPI(m)
+		if err != nil {
+			http.Error(w, "Stored model has invalid capability configuration", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -197,9 +222,18 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.MaxTokens < 0 {
+		http.Error(w, "max_tokens cannot be negative", http.StatusBadRequest)
+		return
+	}
 	// Default max tokens
-	if req.MaxTokens <= 0 {
+	if req.MaxTokens == 0 {
 		req.MaxTokens = 200000
+	}
+	reasoningEffort, err := validReasoningEffort(req.ReasoningEffort)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	imageSupport, err := validImageSupport(req.ImageSupport)
@@ -226,7 +260,7 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		ModelName:        req.ModelName,
 		MaxTokens:        req.MaxTokens,
 		Tags:             req.Tags,
-		ReasoningEffort:  req.ReasoningEffort,
+		ReasoningEffort:  reasoningEffort,
 		ImageSupport:     imageSupport,
 		ReasoningSupport: reasoningSupport,
 		ReasoningMap:     req.ReasoningMap,
@@ -241,9 +275,14 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("Failed to refresh custom models cache", "error", err)
 	}
 
+	apiModel, err := toModelAPI(*model)
+	if err != nil {
+		http.Error(w, "Created model has invalid capability configuration", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(toModelAPI(*model))
+	json.NewEncoder(w).Encode(apiModel)
 }
 
 func (s *Server) handleCustomModel(w http.ResponseWriter, r *http.Request) {
@@ -291,7 +330,12 @@ func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request, modelID 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toModelAPI(*model))
+	apiModel, err := toModelAPI(*model)
+	if err != nil {
+		http.Error(w, "Stored model has invalid capability configuration", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(apiModel)
 }
 
 func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request, modelID string) {
@@ -318,8 +362,12 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request, model
 		apiKey = existing.ApiKey
 	}
 
+	if req.MaxTokens < 0 {
+		http.Error(w, "max_tokens cannot be negative", http.StatusBadRequest)
+		return
+	}
 	// Default max tokens
-	if req.MaxTokens <= 0 {
+	if req.MaxTokens == 0 {
 		req.MaxTokens = 200000
 	}
 
@@ -348,7 +396,12 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request, model
 	}
 	reasoningEffort := existing.ReasoningEffort
 	if req.ReasoningEffort != nil {
-		reasoningEffort = *req.ReasoningEffort
+		var err error
+		reasoningEffort, err = validReasoningEffort(*req.ReasoningEffort)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	model, err := s.db.UpdateModel(r.Context(), generated.UpdateModelParams{
@@ -376,7 +429,12 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request, model
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toModelAPI(*model))
+	apiModel, err := toModelAPI(*model)
+	if err != nil {
+		http.Error(w, "Updated model has invalid capability configuration", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(apiModel)
 }
 
 func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request, modelID string) {
@@ -452,9 +510,14 @@ func (s *Server) handleDuplicateModel(w http.ResponseWriter, r *http.Request, mo
 		s.logger.Warn("Failed to refresh custom models cache", "error", err)
 	}
 
+	apiModel, err := toModelAPI(*model)
+	if err != nil {
+		http.Error(w, "Duplicated model has invalid capability configuration", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(toModelAPI(*model))
+	json.NewEncoder(w).Encode(apiModel)
 }
 
 func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
@@ -493,31 +556,34 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 
 	reasoningEffort := ""
 	if req.ReasoningEffort != nil {
-		reasoningEffort = *req.ReasoningEffort
+		var err error
+		reasoningEffort, err = validReasoningEffort(*req.ReasoningEffort)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	if !validCustomProviderType(req.ProviderType) {
 		http.Error(w, "Invalid provider_type", http.StatusBadRequest)
 		return
 	}
+	supportsReasoning, err := models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	options := models.OpenAIResponsesOptions{
 		SupportsImages: true, SupportsWebSearch: true,
-		SupportsReasoning:     models.ResolveSupportsReasoning(req.Endpoint, req.ModelName, req.ReasoningSupport),
+		SupportsReasoning:     supportsReasoning,
 		DefaultReasoningLevel: "medium", ReasoningEffort: reasoningEffort,
 	}
-	var (
-		chat damodel.Chat
-		err  error
-	)
+	var chat damodel.Chat
 	if models.APIType(req.ProviderType) == models.APITypeOpenRouterResponses {
 		options.SupportsWebSearch = false
-		chat, err = models.NewOpenRouterResponses(req.APIKey, req.ModelName, req.Endpoint, nil, options)
+		chat = models.NewOpenRouterResponses(req.APIKey, req.ModelName, req.Endpoint, nil, options)
 	} else {
-		chat, err = models.NewOpenAIResponses(req.APIKey, req.ModelName, req.Endpoint, nil, options)
-	}
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Test failed: %v", err), http.StatusBadRequest)
-		return
+		chat = models.NewOpenAIResponses(req.APIKey, req.ModelName, req.Endpoint, nil, options)
 	}
 	if _, err := validReasoningSupport(req.ReasoningSupport); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -527,7 +593,11 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	chat = models.WrapReasoningConfig(chat, req.Endpoint, req.ModelName, req.ReasoningSupport, req.ReasoningMap)
+	chat, err = models.WrapReasoningConfig(chat, req.Endpoint, req.ModelName, req.ReasoningSupport, req.ReasoningMap)
+	if err != nil {
+		http.Error(w, "Invalid reasoning configuration", http.StatusBadRequest)
+		return
+	}
 
 	// Send a simple test request
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)

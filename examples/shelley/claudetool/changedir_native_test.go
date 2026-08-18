@@ -16,8 +16,8 @@ func TestChangeDirNativeToolUsesNativeContract(t *testing.T) {
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	workingDir := NewMutableWorkingDir(root)
-	executable := (&ChangeDirTool{WorkingDir: workingDir}).NativeTool()
+	workingDir := newMutableWorkingDir(root)
+	executable := (&changeDirTool{WorkingDir: workingDir}).nativeTool()
 	result, err := executable.Execute(context.Background(), json.RawMessage(`{"path":"target"}`), datool.Runtime{CallID: "call-1"})
 	if err != nil {
 		t.Fatal(err)

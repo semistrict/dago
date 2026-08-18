@@ -51,12 +51,12 @@ func ExampleLoop() {
 
 	// Set up a predictable service for this example
 	service := loop.NewPredictableService()
-	myLoop := loop.NewLoop(loop.Config{
-		Model:         service,
-		History:       initialHistory,
-		Tools:         []datool.Tool{testTool},
-		RecordMessage: recordMessage,
-	})
+	myLoop := loop.NewLoop(service,
+
+		recordMessage, loop.Config{
+			History: initialHistory,
+			Tools:   []datool.Tool{testTool},
+		})
 
 	// Queue a user message that triggers a simple response
 	myLoop.QueueUserMessage(llm.Message{

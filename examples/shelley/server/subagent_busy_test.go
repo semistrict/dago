@@ -66,7 +66,7 @@ func TestSubagentRunner_PersistsReasoning(t *testing.T) {
 
 // pendingBatchCount returns the number of queued pending batches (test-only,
 // reads under the manager lock).
-func pendingBatchCount(cm *ConversationManager) int {
+func pendingBatchCount(cm *conversationManager) int {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return len(cm.pendingBatches)

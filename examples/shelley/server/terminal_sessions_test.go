@@ -10,6 +10,47 @@ import (
 	"time"
 )
 
+func TestNewTerminalSessionsDefaultsLogger(t *testing.T) {
+	sessions, err := newTerminalSessions(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessions.logger == nil {
+		t.Fatal("logger default was not applied")
+	}
+}
+
+func TestNewTerminalSessionsPropagatesRecordReadFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "unreadable.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if sessions, err := newTerminalSessions(dir, nil); err == nil || sessions != nil {
+		t.Fatalf("NewTerminalSessions = (%v, %v), want nil and read error", sessions, err)
+	}
+}
+
+func TestTerminalSessionsScanPropagatesDirectoryReadFailure(t *testing.T) {
+	sessions := &terminalSessions{dir: filepath.Join(t.TempDir(), "missing")}
+	if err := sessions.scan(); err == nil {
+		t.Fatal("scan accepted an unreadable directory")
+	}
+}
+
+func TestNewTerminalSessionsSkipsMalformedStaleRecord(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "stale.json"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := newTerminalSessions(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sessions.List(); len(got) != 0 {
+		t.Fatalf("List = %v, want malformed stale record skipped", got)
+	}
+}
+
 // procState returns the single-character process state from /proc/<pid>/stat
 // (e.g. "R", "S", "Z"), or "" if the process no longer exists (fully reaped).
 func procState(pid int) string {
@@ -44,7 +85,7 @@ func TestSpawnSubprocessReapsChild(t *testing.T) {
 		t.Skip("reaping is observed via /proc/<pid>/stat, which is Linux-only")
 	}
 	dir := t.TempDir()
-	ts, err := NewTerminalSessions(dir, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	ts, err := newTerminalSessions(dir, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if err != nil {
 		t.Fatalf("NewTerminalSessions: %v", err)
 	}

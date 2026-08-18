@@ -6,8 +6,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 type route struct {
@@ -110,9 +108,10 @@ func NewComposite(defaultBackend Backend, routes map[string]Backend) *Composite 
 	return NewCompositeWithOptions(defaultBackend, CompositeOptions{Routes: routes})
 }
 
-func NewCompositeWithOptions(defaultBackend Backend, optionValues ...CompositeOptions) *Composite {
-	options := optionvalue.Resolve("composite backend", optionValues)
-	if defaultBackend == nil {
+// NewCompositeWithOptions constructs a routed backend. The default backend is
+// a required positional dependency; invalid static routes panic.
+func NewCompositeWithOptions(defaultBackend Backend, options CompositeOptions) *Composite {
+	if nilInterface(defaultBackend) {
 		panic("composite default backend is required")
 	}
 	if !reflect.TypeOf(defaultBackend).Comparable() {
@@ -124,14 +123,14 @@ func NewCompositeWithOptions(defaultBackend Backend, optionValues ...CompositeOp
 	}
 	artifactsRoot, err := normalizeVirtual(artifactsRoot)
 	if err != nil {
-		panic(fmt.Errorf("composite artifacts root: %w", err))
+		panic(fmt.Sprintf("composite artifacts root: %v", err))
 	}
 	result := &Composite{defaultBackend: defaultBackend, artifactsRoot: strings.TrimSuffix(artifactsRoot, "/")}
 	if result.artifactsRoot == "" {
 		result.artifactsRoot = "/"
 	}
 	for prefix, value := range options.Routes {
-		if value == nil || !strings.HasPrefix(prefix, "/") {
+		if nilInterface(value) || !strings.HasPrefix(prefix, "/") {
 			panic(fmt.Sprintf("composite route %q is invalid", prefix))
 		}
 		if !reflect.TypeOf(value).Comparable() {
@@ -224,6 +223,21 @@ func (composite *Composite) Write(ctx context.Context, value, content string) (W
 	result, err := backend.Write(ctx, inner, content)
 	result.Path = remapPath(result.Path, prefix)
 	return result, err
+}
+func (composite *Composite) WriteDurable(ctx context.Context, value, content string) (WriteResult, error) {
+	backend, inner, prefix := composite.selectBackend(value)
+	result, err := WriteDurable(ctx, backend, inner, content)
+	result.Path = remapPath(result.Path, prefix)
+	return result, err
+}
+func (composite *Composite) IsSymlink(ctx context.Context, value string) (bool, error) {
+	backend, inner, _ := composite.selectBackend(value)
+	if inspector, ok := backend.(interface {
+		IsSymlink(context.Context, string) (bool, error)
+	}); ok {
+		return inspector.IsSymlink(ctx, inner)
+	}
+	return false, nil
 }
 func (composite *Composite) Edit(ctx context.Context, value, old, replacement string, all bool) (EditResult, error) {
 	backend, inner, prefix := composite.selectBackend(value)

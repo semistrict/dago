@@ -20,11 +20,11 @@ import (
 	"github.com/semistrict/dago/examples/shelley/llm/imageutil"
 )
 
-// LLMOneShotTool sends a one-shot prompt to an LLM and returns the result.
-type LLMOneShotTool struct {
+// llmOneShotTool sends a one-shot prompt to an LLM and returns the result.
+type llmOneShotTool struct {
 	LLMProvider     LLMServiceProvider
 	ModelID         string // The conversation's current model ID (used as default)
-	WorkingDir      *MutableWorkingDir
+	WorkingDir      *mutableWorkingDir
 	AvailableModels []AvailableModel // Models the agent can choose from
 }
 
@@ -41,7 +41,7 @@ const (
 const OneShotImageDir = "/tmp/shelley-oneshot-images"
 
 // llmOneShotDescription builds the tool description, including model info when models are available.
-func (t *LLMOneShotTool) llmOneShotDescription() string {
+func (t *llmOneShotTool) llmOneShotDescription() string {
 	base := `Send a one-shot prompt to an LLM and get a response.
 
 Unlike subagents, this is a single request/response with no conversation history or tools.
@@ -90,8 +90,14 @@ type llmOneShotInput struct {
 	SystemPrompt string       `json:"system_prompt,omitempty" description:"Optional system prompt to include."`
 }
 
-// NativeTool executes the one-shot request through dago's tool and model contracts.
-func (t *LLMOneShotTool) NativeTool() datool.Tool {
+// nativeTool executes the one-shot request through dago's tool and model contracts.
+func (t *llmOneShotTool) nativeTool() datool.Tool {
+	if t == nil || nilInterface(t.LLMProvider) {
+		panic("one-shot tool model provider is required")
+	}
+	if t.WorkingDir == nil {
+		panic("one-shot tool working directory is required")
+	}
 	options := []datool.Option{datool.WithPropertyType("prompt_files", []string{"array", "string"})}
 	if len(t.AvailableModels) == 0 {
 		options = append(options, datool.WithoutProperty("model"))
@@ -185,7 +191,7 @@ type oneShotExecution struct {
 	Display any
 }
 
-func (t *LLMOneShotTool) prepare(ctx context.Context, req llmOneShotInput) (oneShotPrepared, error) {
+func (t *llmOneShotTool) prepare(ctx context.Context, req llmOneShotInput) (oneShotPrepared, error) {
 	promptFiles := []string(req.PromptFiles)
 	if len(promptFiles) == 0 {
 		return oneShotPrepared{}, fmt.Errorf("prompt_files is required")

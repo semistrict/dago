@@ -21,7 +21,7 @@ func newCacheKeyTestServer(t *testing.T, requireHeader string) *Server {
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
 	ps := loop.NewPredictableService()
-	svr := NewServer(database, &testLLMManager{service: ps},
+	svr := MustNewServer(database, &testLLMManager{service: ps},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		true, "predictable", requireHeader)

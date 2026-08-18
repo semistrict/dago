@@ -27,9 +27,9 @@ type subagentDoneFixture struct {
 	llmSvc   *loop.PredictableService
 
 	parentID    string
-	parentMgr   *ConversationManager
+	parentMgr   *conversationManager
 	subagentID  string
-	subagentMgr *ConversationManager
+	subagentMgr *conversationManager
 	subSlug     string
 	subResponse string
 }
@@ -258,7 +258,7 @@ func TestCleanupSkipsWorkingConversations(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	ctx := context.Background()
 
-	mkStale := func(working bool) (string, *ConversationManager) {
+	mkStale := func(working bool) (string, *conversationManager) {
 		conv, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
 		if err != nil {
 			t.Fatalf("create conversation: %v", err)
@@ -1380,7 +1380,7 @@ func testSubagentDone_StaleNotificationCoalesced(t *testing.T) {
 
 // countPendingSubagentDone counts queued subagent-done batches in the parent's
 // pending queue that target the given subagent conversation.
-func countPendingSubagentDone(cm *ConversationManager, subagentID string) int {
+func countPendingSubagentDone(cm *conversationManager, subagentID string) int {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	n := 0
@@ -1628,12 +1628,13 @@ func testSubagentDone_GitInfoIgnored(t *testing.T) {
 		Role:    llm.MessageRoleAssistant,
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: `~/exe-subagent-done (subagent-done-notify) now at 7b2a11b65 "shelley: notify parent agent when subagent finishes"`}},
 	}
-	if _, err := f.database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: f.subagentID,
-		Type:           db.MessageTypeGitInfo,
-		LLMData:        gitMsg,
-		UsageData:      llm.Usage{},
-	}); err != nil {
+	if _, err := f.database.CreateMessage(context.Background(),
+		f.subagentID,
+		db.MessageTypeGitInfo, db.CreateMessageParams{
+
+			LLMData:   gitMsg,
+			UsageData: llm.Usage{},
+		}); err != nil {
 		t.Fatalf("create gitinfo msg: %v", err)
 	}
 

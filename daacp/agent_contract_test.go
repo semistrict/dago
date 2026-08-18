@@ -36,7 +36,7 @@ func TestStopReasonProjectsModelOutcomes(t *testing.T) {
 }
 
 func TestPromptMessageRejectsMalformedContentBlocks(t *testing.T) {
-	agent := newProtocolAgent(t.Context(), nil, Options{ImagePrompts: true, AudioPrompts: true, EmbeddedContext: true})
+	agent := newProtocolAgent(t.Context(), nil, nil, Options{ImagePrompts: true, AudioPrompts: true, EmbeddedContext: true})
 	emptyResource := acp.ResourceBlock(acp.EmbeddedResourceResource{})
 	tests := []struct {
 		name  string
@@ -57,7 +57,7 @@ func TestPromptMessageRejectsMalformedContentBlocks(t *testing.T) {
 }
 
 func TestPromptMessageConvertsBlobResourceAndLinkTitle(t *testing.T) {
-	agent := newProtocolAgent(t.Context(), nil, Options{EmbeddedContext: true})
+	agent := newProtocolAgent(t.Context(), nil, nil, Options{EmbeddedContext: true})
 	title := "Guide"
 	mime := "application/octet-stream"
 	link := acp.ResourceLinkBlock("fallback", "file:///guide")

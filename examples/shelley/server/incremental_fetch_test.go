@@ -33,14 +33,15 @@ func seedConversation(t *testing.T, database *db.DB, n int) string {
 			role = llm.MessageRoleAssistant
 			msgType = db.MessageTypeAgent
 		}
-		_, err := database.CreateMessage(ctx, db.CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           msgType,
-			LLMData: llm.Message{
-				Role:    role,
-				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "m" + string(rune('0'+i))}},
-			},
-		})
+		_, err := database.CreateMessage(ctx,
+			conv.ConversationID,
+			msgType, db.CreateMessageParams{
+
+				LLMData: llm.Message{
+					Role:    role,
+					Content: []llm.Content{{Type: llm.ContentTypeText, Text: "m" + string(rune('0'+i))}},
+				},
+			})
 		if err != nil {
 			t.Fatalf("CreateMessage[%d]: %v", i, err)
 		}
@@ -51,7 +52,7 @@ func seedConversation(t *testing.T, database *db.DB, n int) string {
 func newTestStreamServer(t *testing.T, database *db.DB) (*http.ServeMux, *Server) {
 	t.Helper()
 	ps := loop.NewPredictableService()
-	srv := NewServer(database, &testLLMManager{service: ps},
+	srv := MustNewServer(database, &testLLMManager{service: ps},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		true, "predictable", "")

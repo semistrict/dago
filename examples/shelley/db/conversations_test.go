@@ -565,11 +565,12 @@ func TestConversationService_DeleteConversation(t *testing.T) {
 	}
 
 	// Add a message to the conversation
-	_, err = db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData:        map[string]string{"text": "test message"},
-	})
+	_, err = db.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: map[string]string{"text": "test message"},
+		})
 	if err != nil {
 		t.Fatalf("Failed to create test message: %v", err)
 	}
@@ -941,14 +942,15 @@ func TestCreateMessageRemoveQueuedIDAtomic(t *testing.T) {
 	}
 
 	// Insert a real user row AND remove the "drain" entry in one Tx.
-	if _, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: id,
-		Type:           MessageTypeUser,
-		LLMData:        map[string]any{"Role": 0},
-		UsageData:      map[string]any{},
-		BumpTimestamp:  true,
-		RemoveQueuedID: "drain",
-	}); err != nil {
+	if _, err := db.CreateMessage(ctx,
+		id,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData:        map[string]any{"Role": 0},
+			UsageData:      map[string]any{},
+			BumpTimestamp:  true,
+			RemoveQueuedID: "drain",
+		}); err != nil {
 		t.Fatalf("CreateMessage with RemoveQueuedID: %v", err)
 	}
 
@@ -1020,6 +1022,36 @@ func TestQueuedMessagesMutationStrictOnCorruptColumn(t *testing.T) {
 	// An explicit clear is still allowed (hard reset).
 	if _, err := db.ClearQueuedMessages(ctx, id); err != nil {
 		t.Fatalf("ClearQueuedMessages: %v", err)
+	}
+}
+
+func TestConversationOptionsMutationRejectsCorruptAndUnknownEnums(t *testing.T) {
+	database := setupTestDB(t)
+	defer database.Close()
+	ctx := t.Context()
+	conv, err := database.CreateConversation(ctx, new("strict-options"), true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SetConversationThinkingLevel(ctx, conv.ConversationID, "turbo"); err == nil {
+		t.Fatal("SetConversationThinkingLevel accepted unknown enum")
+	}
+	for _, raw := range []string{
+		`{"thinking_level":"turbo"}`,
+		`{"tool_overrides":{"shell":"maybe"}}`,
+		`{"unknown":true}`,
+		`{"thinking_level":"high"} trailing`,
+	} {
+		if err := database.QueriesTx(ctx, func(q *generated.Queries) error {
+			return q.UpdateConversationOptions(ctx, generated.UpdateConversationOptionsParams{
+				ConversationOptions: raw, ConversationID: conv.ConversationID,
+			})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.RegisterConversationHook(ctx, conv.ConversationID, ConversationHook{URL: "https://example.test/hook"}); err == nil {
+			t.Fatalf("RegisterConversationHook accepted %q", raw)
+		}
 	}
 }
 
@@ -1111,25 +1143,24 @@ func TestListConversationsParticipants(t *testing.T) {
 	// bob first, then alice, then bob again: participants must come back
 	// sorted and de-duplicated, not in insertion order.
 	for _, email := range []string{"bob@example.com", "alice@example.com", "bob@example.com"} {
-		if _, err := db.CreateMessage(ctx, CreateMessageParams{
-			ConversationID: shared.ConversationID,
-			Type:           MessageTypeUser,
-			UserEmail:      email,
-		}); err != nil {
+		if _, err := db.CreateMessage(ctx,
+			shared.ConversationID,
+			MessageTypeUser, CreateMessageParams{
+
+				UserEmail: email,
+			}); err != nil {
 			t.Fatalf("create user msg: %v", err)
 		}
 	}
 	// An agent reply and an unauthenticated user message contribute nobody.
-	if _, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: shared.ConversationID,
-		Type:           MessageTypeAgent,
-	}); err != nil {
+	if _, err := db.CreateMessage(ctx,
+		shared.ConversationID,
+		MessageTypeAgent, CreateMessageParams{}); err != nil {
 		t.Fatalf("create agent msg: %v", err)
 	}
-	if _, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: shared.ConversationID,
-		Type:           MessageTypeUser,
-	}); err != nil {
+	if _, err := db.CreateMessage(ctx,
+		shared.ConversationID,
+		MessageTypeUser, CreateMessageParams{}); err != nil {
 		t.Fatalf("create anonymous user msg: %v", err)
 	}
 
@@ -1138,10 +1169,9 @@ func TestListConversationsParticipants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create anon: %v", err)
 	}
-	if _, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: anon.ConversationID,
-		Type:           MessageTypeUser,
-	}); err != nil {
+	if _, err := db.CreateMessage(ctx,
+		anon.ConversationID,
+		MessageTypeUser, CreateMessageParams{}); err != nil {
 		t.Fatalf("create anon msg: %v", err)
 	}
 

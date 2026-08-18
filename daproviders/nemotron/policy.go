@@ -110,13 +110,16 @@ type ProgressBudgetOptions struct {
 // ProgressBudget stops runaway loops before another model call and
 // returns a compact answer grounded in results already gathered this turn.
 func ProgressBudget(options ProgressBudgetOptions) dagent.Middleware {
-	if options.MaxModelCalls <= 0 {
+	if options.MaxModelCalls < 0 || options.MaxToolResults < 0 || options.MaxRepeatedToolCalls < 0 {
+		panic("nemotron progress budget limits cannot be negative")
+	}
+	if options.MaxModelCalls == 0 {
 		options.MaxModelCalls = 16
 	}
-	if options.MaxToolResults <= 0 {
+	if options.MaxToolResults == 0 {
 		options.MaxToolResults = 48
 	}
-	if options.MaxRepeatedToolCalls <= 0 {
+	if options.MaxRepeatedToolCalls == 0 {
 		options.MaxRepeatedToolCalls = 3
 	}
 	return dagent.Middleware{Name: "NemotronProgressBudgetMiddleware", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {

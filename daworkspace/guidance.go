@@ -42,8 +42,11 @@ type GuidanceOptions struct {
 // precedence and content/path deduplication. Unreadable files and directories
 // are ignored so optional customization cannot prevent an application start.
 func DiscoverGuidance(ctx context.Context, options GuidanceOptions) Guidance {
+	if options.Timeout < 0 {
+		panic("workspace guidance timeout cannot be negative")
+	}
 	timeout := options.Timeout
-	if timeout <= 0 {
+	if timeout == 0 {
 		timeout = defaultDiscoveryTimeout
 	}
 	discoveryCtx, cancel := context.WithTimeout(ctx, timeout)

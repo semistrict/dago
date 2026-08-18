@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -154,17 +156,16 @@ type LLMProvider interface {
 }
 
 // NewLLMServiceManager creates a new LLM service manager from config.
-func NewLLMServiceManager(cfg *LLMConfig) LLMProvider {
-	manager, err := models.NewManager(&models.Config{
-		Models: cfg.Models,
+func NewLLMServiceManager(built []models.Built, cfg LLMConfig) (LLMProvider, error) {
+	manager, err := models.NewManager(built, models.Config{
 		Logger: cfg.Logger,
 		DB:     cfg.DB,
 		HTTPC:  cfg.HTTPC,
 	})
 	if err != nil {
-		cfg.Logger.Error("Failed to create models manager", "error", err)
+		return nil, err
 	}
-	return manager
+	return manager, nil
 }
 
 // toAPIMessages converts database messages to API messages.
@@ -351,7 +352,7 @@ type Server struct {
 	db                       *db.DB
 	llmManager               LLMProvider
 	toolSetConfig            claudetool.ToolSetConfig
-	activeConversations      map[string]*ConversationManager
+	activeConversations      map[string]*conversationManager
 	mu                       sync.Mutex
 	logger                   *slog.Logger
 	predictableOnly          bool
@@ -359,7 +360,7 @@ type Server struct {
 	requireHeader            string
 	refreshBuiltModels       func(context.Context) ([]models.Built, error)
 	openAIOAuth              *OpenAIOAuth
-	conversationGroup        singleflight.Group[string, *ConversationManager]
+	conversationGroup        singleflight.Group[string, *conversationManager]
 	notifDispatcher          *notifications.Dispatcher
 	conversationListStream   *conversationListStream
 	conversationListGitCache *conversationListGitCache
@@ -372,7 +373,7 @@ type Server struct {
 	streamPub  *subpub.SubPub[StreamResponse]
 	shutdownCh chan struct{} // Signals background routines to stop
 	listenPort int           // TCP port the server is listening on
-	terminals  *TerminalSessions
+	terminals  *terminalSessions
 
 	// Banner, when non-empty, is shown in a full-width bar at the top of
 	// the UI. Useful for marking demo instances so they're not confused
@@ -403,12 +404,21 @@ type Server struct {
 }
 
 // NewServer creates a new server instance
-func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool.ToolSetConfig, logger *slog.Logger, predictableOnly bool, defaultModel, requireHeader string) *Server {
+func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool.ToolSetConfig, logger *slog.Logger, predictableOnly bool, defaultModel, requireHeader string) (*Server, error) {
+	if database == nil {
+		return nil, errors.New("server database is required")
+	}
+	if nilInterface(llmManager) {
+		return nil, errors.New("server model provider is required")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	s := &Server{
 		db:                  database,
 		llmManager:          llmManager,
 		toolSetConfig:       toolSetConfig,
-		activeConversations: make(map[string]*ConversationManager),
+		activeConversations: make(map[string]*conversationManager),
 		logger:              logger,
 		predictableOnly:     predictableOnly,
 		defaultModel:        defaultModel,
@@ -427,18 +437,23 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	// survive shelley restarts. In tests DBPath is empty; use a unique
 	// per-process dir so concurrent tests don't see each other.
 	var termDir string
+	temporaryTermDir := false
 	if DBPath != "" {
 		termDir = filepath.Join(filepath.Dir(DBPath), "terminals")
 	} else {
 		td, err := os.MkdirTemp("", "shelley-terminals-")
 		if err != nil {
-			panic(fmt.Errorf("terminal sessions tempdir: %w", err))
+			return nil, fmt.Errorf("terminal sessions tempdir: %w", err)
 		}
 		termDir = td
+		temporaryTermDir = true
 	}
-	ts, terr := NewTerminalSessions(termDir, logger)
+	ts, terr := newTerminalSessions(termDir, logger)
 	if terr != nil {
-		panic(fmt.Errorf("init terminal sessions in %s: %w", termDir, terr))
+		if temporaryTermDir {
+			_ = os.RemoveAll(termDir)
+		}
+		return nil, fmt.Errorf("init terminal sessions in %s: %w", termDir, terr)
 	}
 	s.terminals = ts
 
@@ -453,7 +468,31 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	s.toolSetConfig.SubagentDB = &db.SubagentDBAdapter{DB: database}
 	s.toolSetConfig.MaxSubagentDepth = 1 // Only top-level conversations can spawn subagents
 
-	return s
+	return s, nil
+}
+
+// MustNewServer is the compile-or-panic form for static configurations such
+// as deterministic fixtures. Production startup should use NewServer so real
+// filesystem initialization failures are returned to the caller.
+func MustNewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool.ToolSetConfig, logger *slog.Logger, predictableOnly bool, defaultModel, requireHeader string) *Server {
+	server, err := NewServer(database, llmManager, toolSetConfig, logger, predictableOnly, defaultModel, requireHeader)
+	if err != nil {
+		panic(err)
+	}
+	return server
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 // SetModelRefresher configures the user-triggered model catalog refresh.
@@ -926,8 +965,8 @@ func (s *Server) handleCreateDirectory(w http.ResponseWriter, r *http.Request) {
 }
 
 // getOrCreateConversationManager gets an existing conversation manager or creates a new one.
-func (s *Server) getOrCreateConversationManager(ctx context.Context, conversationID, userEmail string) (*ConversationManager, error) {
-	manager, err, _ := s.conversationGroup.Do(conversationID, func() (*ConversationManager, error) {
+func (s *Server) getOrCreateConversationManager(ctx context.Context, conversationID, userEmail string) (*conversationManager, error) {
+	manager, err, _ := s.conversationGroup.Do(conversationID, func() (*conversationManager, error) {
 		s.mu.Lock()
 		if manager, exists := s.activeConversations[conversationID]; exists {
 			s.mu.Unlock()
@@ -950,7 +989,7 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 			s.publishConversationState(state)
 		}
 
-		manager := NewConversationManager(conversationID, s.db, s.logger, s.toolSetConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
+		manager := newConversationManager(conversationID, s.db, s.logger, s.toolSetConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
 		manager.userEmail = userEmail
 		manager.serverPort = s.listenPort
 		// Hydrate runs DB transactions, which fire OnCommit hooks. Those hooks
@@ -979,8 +1018,8 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 // getOrCreateSubagentConversationManager is like getOrCreateConversationManager but
 // uses a toolSetConfig with SubagentDepth incremented by 1, preventing subagents
 // from spawning their own subagents (when MaxSubagentDepth is 1).
-func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, conversationID string) (*ConversationManager, error) {
-	manager, err, _ := s.conversationGroup.Do(conversationID, func() (*ConversationManager, error) {
+func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, conversationID string) (*conversationManager, error) {
+	manager, err, _ := s.conversationGroup.Do(conversationID, func() (*conversationManager, error) {
 		s.mu.Lock()
 		if manager, exists := s.activeConversations[conversationID]; exists {
 			s.mu.Unlock()
@@ -1007,7 +1046,7 @@ func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, con
 		subagentConfig := s.toolSetConfig
 		subagentConfig.SubagentDepth = s.toolSetConfig.SubagentDepth + 1
 
-		manager := NewConversationManager(conversationID, s.db, s.logger, subagentConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
+		manager := newConversationManager(conversationID, s.db, s.logger, subagentConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
 		manager.serverPort = s.listenPort
 		// Wire up done notification: when this subagent finishes, notify the
 		// parent by splicing a synthetic tool_use/result pair into the
@@ -1072,7 +1111,7 @@ func ExtractDisplayData(message llm.Message) interface{} {
 // applying the same message-type detection, display-data extraction, error
 // user_data stamping, and end-of-turn agent-done folding that recordMessage
 // uses. Shared by recordMessage and recordMessages.
-func (s *Server) buildCreateMessageParams(conversationID string, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage, userData ...interface{}) (db.CreateMessageParams, error) {
+func (s *Server) buildCreateMessageParams(conversationID string, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage, userData ...interface{}) (db.MessageType, db.CreateMessageParams, error) {
 	// Log message based on role
 	if message.Role == llm.MessageRoleUser {
 		s.logger.Info("User message", "conversation_id", conversationID, "content_items", len(message.Content))
@@ -1082,7 +1121,7 @@ func (s *Server) buildCreateMessageParams(conversationID string, message llm.Mes
 
 	messageType, err := s.getMessageType(message)
 	if err != nil {
-		return db.CreateMessageParams{}, fmt.Errorf("failed to determine message type: %w", err)
+		return "", db.CreateMessageParams{}, fmt.Errorf("failed to determine message type: %w", err)
 	}
 
 	var ud interface{}
@@ -1117,8 +1156,6 @@ func (s *Server) buildCreateMessageParams(conversationID string, message llm.Mes
 	// before-recordMessage ordering on the Send side.
 	markAgentDone := (messageType == db.MessageTypeAgent || messageType == db.MessageTypeError) && message.EndOfTurn
 	params := db.CreateMessageParams{
-		ConversationID:      conversationID,
-		Type:                messageType,
 		LLMData:             message,
 		UserData:            ud,
 		UsageData:           usage,
@@ -1131,11 +1168,11 @@ func (s *Server) buildCreateMessageParams(conversationID string, message llm.Mes
 	if len(otherUsage) > 0 {
 		params.OtherUsageData = otherUsage
 	}
-	return params, nil
+	return messageType, params, nil
 }
 
 func (s *Server) recordMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage, userData ...interface{}) error {
-	params, err := s.buildCreateMessageParams(conversationID, message, usage, otherUsage, userData...)
+	messageType, params, err := s.buildCreateMessageParams(conversationID, message, usage, otherUsage, userData...)
 	if err != nil {
 		return err
 	}
@@ -1145,7 +1182,7 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 	// recompute on its own commit hook).
 	params.BumpTimestamp = true
 	markAgentDone := params.MarkAgentDone
-	createdMsg, err := s.db.CreateMessage(ctx, params)
+	createdMsg, err := s.db.CreateMessage(ctx, conversationID, messageType, params)
 	if err != nil {
 		return fmt.Errorf("failed to create message: %w", err)
 	}
@@ -1191,14 +1228,14 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 // background context, so it can't be read from the request here); it is
 // stamped onto the new row. Empty when the queuing request carried no header.
 func (s *Server) recordDrainedQueuedMessage(ctx context.Context, conversationID, queuedID string, message llm.Message, userEmail string) error {
-	params, err := s.buildCreateMessageParams(conversationID, message, llm.Usage{}, nil)
+	messageType, params, err := s.buildCreateMessageParams(conversationID, message, llm.Usage{}, nil)
 	if err != nil {
 		return err
 	}
 	params.BumpTimestamp = true
 	params.RemoveQueuedID = queuedID
 	params.UserEmail = userEmail
-	createdMsg, err := s.db.CreateMessage(ctx, params)
+	createdMsg, err := s.db.CreateMessage(ctx, conversationID, messageType, params)
 	if err != nil {
 		return fmt.Errorf("failed to create drained queued message: %w", err)
 	}
@@ -1242,7 +1279,7 @@ func userEmailFromContext(ctx context.Context) string {
 // stale working=false row (the flicker the old ordering guarded against), and
 // we drop two commits (the working flip and the timestamp bump) per turn.
 func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
-	params, err := s.buildCreateMessageParams(conversationID, message, usage, otherUsage)
+	messageType, params, err := s.buildCreateMessageParams(conversationID, message, usage, otherUsage)
 	if err != nil {
 		return err
 	}
@@ -1254,7 +1291,7 @@ func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID stri
 	// serves tool_result rows that carry MessageRoleUser — it's safe to stamp
 	// the email here unconditionally.
 	params.UserEmail = userEmailFromContext(ctx)
-	createdMsg, err := s.db.CreateMessage(ctx, params)
+	createdMsg, err := s.db.CreateMessage(ctx, conversationID, messageType, params)
 	if err != nil {
 		return fmt.Errorf("failed to create turn-start message: %w", err)
 	}
@@ -1280,11 +1317,13 @@ func (s *Server) recordMessages(ctx context.Context, conversationID string, msgs
 		return nil
 	}
 	paramsList := make([]db.CreateMessageParams, 0, len(msgs))
+	messageTypes := make([]db.MessageType, 0, len(msgs))
 	for _, m := range msgs {
-		params, err := s.buildCreateMessageParams(conversationID, m.message, m.usage, m.otherUsage, m.userData...)
+		messageType, params, err := s.buildCreateMessageParams(conversationID, m.message, m.usage, m.otherUsage, m.userData...)
 		if err != nil {
 			return err
 		}
+		messageTypes = append(messageTypes, messageType)
 		paramsList = append(paramsList, params)
 	}
 	// Whether any message ends the turn — used to sync the manager's in-memory
@@ -1297,7 +1336,7 @@ func (s *Server) recordMessages(ctx context.Context, conversationID string, msgs
 			break
 		}
 	}
-	created, err := s.db.CreateMessages(ctx, paramsList)
+	created, err := s.db.CreateMessages(ctx, conversationID, messageTypes, paramsList)
 	if err != nil {
 		return fmt.Errorf("failed to create messages: %w", err)
 	}
@@ -1728,7 +1767,7 @@ func (s *Server) IsAgentWorking(conversationID string) bool {
 // previous unbounded behavior.
 func (s *Server) stopAllConversations(ctx context.Context) {
 	s.mu.Lock()
-	managers := make([]*ConversationManager, 0, len(s.activeConversations))
+	managers := make([]*conversationManager, 0, len(s.activeConversations))
 	for id, manager := range s.activeConversations {
 		managers = append(managers, manager)
 		delete(s.activeConversations, id)
@@ -1743,7 +1782,7 @@ func (s *Server) stopAllConversations(ctx context.Context) {
 		var wg sync.WaitGroup
 		for _, manager := range managers {
 			wg.Add(1)
-			go func(m *ConversationManager) {
+			go func(m *conversationManager) {
 				defer wg.Done()
 				m.stopLoop()
 			}(manager)
@@ -1764,7 +1803,7 @@ func (s *Server) Cleanup() {
 	// Collect managers to clean up under the lock, but don't call stopLoop
 	// while holding s.mu. stopLoop can block on browser shutdown, and holding
 	// s.mu would block all /api/conversations requests and getOrCreateConversationManager.
-	var toCleanup []*ConversationManager
+	var toCleanup []*conversationManager
 	var toCleanupIDs []string
 
 	s.mu.Lock()

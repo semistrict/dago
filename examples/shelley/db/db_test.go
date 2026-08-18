@@ -23,24 +23,24 @@ func setupTestDB(t *testing.T) *DB {
 func TestNew(t *testing.T) {
 	tests := []struct {
 		name    string
-		cfg     Config
+		dsn     string
 		wantErr bool
 	}{
 		{
 			name:    "memory database not supported",
-			cfg:     Config{DSN: ":memory:"},
+			dsn:     ":memory:",
 			wantErr: true,
 		},
 		{
 			name:    "empty DSN",
-			cfg:     Config{DSN: ""},
+			dsn:     "",
 			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, err := New(tt.cfg)
+			db, err := New(tt.dsn)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -54,7 +54,7 @@ func TestNew(t *testing.T) {
 
 func TestDB_Migrate(t *testing.T) {
 	tmpDir := t.TempDir()
-	db, err := New(Config{DSN: tmpDir + "/test.db"})
+	db, err := New(tmpDir + "/test.db")
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestDB_Migrate(t *testing.T) {
 // migration's number, the new migration must still be executed.
 func TestDB_Migrate_TracksByName(t *testing.T) {
 	tmpDir := t.TempDir()
-	db, err := New(Config{DSN: tmpDir + "/test.db"})
+	db, err := New(tmpDir + "/test.db")
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -202,9 +202,9 @@ func TestDB_ForeignKeyConstraints(t *testing.T) {
 		_, err := q.CreateMessage(ctx, generated.CreateMessageParams{
 			MessageID:      "test-msg-1",
 			ConversationID: "non-existent-conversation",
+			Type:           "user",
 			SequenceID:     1,
 			Generation:     1,
-			Type:           "user",
 		})
 		return err
 	})
@@ -315,19 +315,21 @@ func TestDropMessageTypeCheckMigrationPreservesSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	userMsg, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		UserData:       map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "pelican before migration"}}},
-	})
+	userMsg, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			UserData: map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "pelican before migration"}}},
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage user: %v", err)
 	}
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeTool,
-		UserData:       map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "tool noise should not be indexed"}}},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeTool, CreateMessageParams{
+
+			UserData: map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "tool noise should not be indexed"}}},
+		}); err != nil {
 		t.Fatalf("CreateMessage tool: %v", err)
 	}
 
@@ -355,11 +357,12 @@ func TestDropMessageTypeCheckMigrationPreservesSearch(t *testing.T) {
 	assertSearchMisses(t, database, ctx, "pelican")
 	assertSearchHits(t, database, ctx, "albatross", conv.ConversationID)
 
-	agentMsg, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeAgent,
-		LLMData:        map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "cormorant after insert"}}},
-	})
+	agentMsg, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeAgent, CreateMessageParams{
+
+			LLMData: map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "cormorant after insert"}}},
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage agent after migration: %v", err)
 	}
@@ -377,7 +380,7 @@ func setupDBMigratedThrough(t *testing.T, lastMigration int) *DB {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	database, err := New(Config{DSN: tmpDir + "/test.db"})
+	database, err := New(tmpDir + "/test.db")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -512,7 +515,7 @@ func assertSearchMisses(t *testing.T, db *DB, ctx context.Context, query string)
 func TestCheckpoint(t *testing.T) {
 	tmpDir := t.TempDir()
 	dsn := tmpDir + "/test.db"
-	database, err := New(Config{DSN: dsn})
+	database, err := New(dsn)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -594,12 +597,13 @@ func TestCreateMessageWithExplicitCreatedAt(t *testing.T) {
 	// Explicit CreatedAt, far in the past, must be stored verbatim rather
 	// than defaulting to CURRENT_TIMESTAMP.
 	synthetic := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
-	msg, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		UserData:       map[string]any{"n": 1},
-		CreatedAt:      &synthetic,
-	})
+	msg, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			UserData:  map[string]any{"n": 1},
+			CreatedAt: &synthetic,
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage: %v", err)
 	}
@@ -611,11 +615,12 @@ func TestCreateMessageWithExplicitCreatedAt(t *testing.T) {
 	// real insertion time, not the zero value or the previous message's
 	// synthetic time.
 	before := time.Now().Add(-time.Second)
-	msg2, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		UserData:       map[string]any{"n": 2},
-	})
+	msg2, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			UserData: map[string]any{"n": 2},
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage: %v", err)
 	}
@@ -640,11 +645,12 @@ func TestCreateMessages(t *testing.T) {
 
 	// One pre-existing message so we can confirm bulk sequence ids continue
 	// past it rather than restarting.
-	first, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		UserData:       map[string]any{"n": 0},
-	})
+	first, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			UserData: map[string]any{"n": 0},
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage: %v", err)
 	}
@@ -653,11 +659,12 @@ func TestCreateMessages(t *testing.T) {
 	database.Pool().OnCommit(func() { commits++ })
 
 	params := []CreateMessageParams{
-		{ConversationID: conv.ConversationID, Type: MessageTypeUser, UserData: map[string]any{"n": 1}},
-		{ConversationID: conv.ConversationID, Type: MessageTypeAgent, UserData: map[string]any{"n": 2}},
-		{ConversationID: conv.ConversationID, Type: MessageTypeUser, UserData: map[string]any{"n": 3}},
+		{UserData: map[string]any{"n": 1}},
+		{UserData: map[string]any{"n": 2}},
+		{UserData: map[string]any{"n": 3}},
 	}
-	created, err := database.CreateMessages(ctx, params)
+	messageTypes := []MessageType{MessageTypeUser, MessageTypeAgent, MessageTypeUser}
+	created, err := database.CreateMessages(ctx, conv.ConversationID, messageTypes, params)
 	if err != nil {
 		t.Fatalf("CreateMessages: %v", err)
 	}
@@ -686,22 +693,45 @@ func TestCreateMessages(t *testing.T) {
 	}
 
 	// Empty batch is a no-op.
-	got, err := database.CreateMessages(ctx, nil)
+	got, err := database.CreateMessages(ctx, conv.ConversationID, nil, nil)
 	if err != nil || got != nil {
 		t.Fatalf("CreateMessages(nil) = %v, %v; want nil, nil", got, err)
 	}
 
-	// Mixed conversations are rejected.
-	other, err := database.CreateConversation(ctx, new("other"), true, nil, nil, ConversationOptions{})
-	if err != nil {
-		t.Fatalf("CreateConversation other: %v", err)
-	}
-	_, err = database.CreateMessages(ctx, []CreateMessageParams{
-		{ConversationID: conv.ConversationID, Type: MessageTypeUser},
-		{ConversationID: other.ConversationID, Type: MessageTypeUser},
-	})
+	// A mismatched type list is rejected before any transaction begins.
+	_, err = database.CreateMessages(ctx, conv.ConversationID, []MessageType{MessageTypeUser}, params[:2])
 	if err == nil {
-		t.Fatalf("expected error for mixed-conversation batch")
+		t.Fatalf("expected error for mismatched message type count")
+	}
+
+	// Required identity and enum inputs are validated, and a bad member rolls
+	// back the entire batch instead of committing the valid prefix.
+	if message, err := database.CreateMessage(ctx, "", MessageTypeUser, CreateMessageParams{}); err == nil || message != nil {
+		t.Fatalf("empty conversation ID = (%v, %v), want nil and error", message, err)
+	}
+	if message, err := database.CreateMessage(ctx, conv.ConversationID, MessageType("bogus"), CreateMessageParams{}); err == nil || message != nil {
+		t.Fatalf("unknown message type = (%v, %v), want nil and error", message, err)
+	}
+	if messages, err := database.CreateMessages(ctx, "", nil, nil); err == nil || messages != nil {
+		t.Fatalf("empty batch conversation ID = (%v, %v), want nil and error", messages, err)
+	}
+	before, err := database.ListMessages(ctx, conv.ConversationID)
+	if err != nil {
+		t.Fatalf("ListMessages before invalid batch: %v", err)
+	}
+	_, err = database.CreateMessages(ctx, conv.ConversationID,
+		[]MessageType{MessageTypeUser, MessageType("bogus")},
+		[]CreateMessageParams{{UserData: "valid prefix"}, {UserData: "invalid member"}},
+	)
+	if err == nil {
+		t.Fatal("expected invalid batch message type to be rejected")
+	}
+	after, err := database.ListMessages(ctx, conv.ConversationID)
+	if err != nil {
+		t.Fatalf("ListMessages after invalid batch: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("invalid batch committed a partial prefix: before=%d after=%d", len(before), len(after))
 	}
 }
 
@@ -737,12 +767,13 @@ func TestCreateMessageFoldsAgentWorkingAndTimestamp(t *testing.T) {
 	// MarkAgentStart + BumpTimestamp in one Tx (one commit hook).
 	var commits int
 	database.Pool().OnCommit(func() { commits++ })
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		MarkAgentStart: true,
-		BumpTimestamp:  true,
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			MarkAgentStart: true,
+			BumpTimestamp:  true,
+		}); err != nil {
 		t.Fatalf("CreateMessage(start): %v", err)
 	}
 	if commits != 1 {
@@ -761,11 +792,12 @@ func TestCreateMessageFoldsAgentWorkingAndTimestamp(t *testing.T) {
 
 	// MarkAgentDone clears it again in one Tx.
 	commits = 0
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeAgent,
-		MarkAgentDone:  true,
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeAgent, CreateMessageParams{
+
+			MarkAgentDone: true,
+		}); err != nil {
 		t.Fatalf("CreateMessage(done): %v", err)
 	}
 	if commits != 1 {
@@ -780,12 +812,13 @@ func TestCreateMessageFoldsAgentWorkingAndTimestamp(t *testing.T) {
 	}
 
 	// MarkAgentStart and MarkAgentDone are mutually exclusive.
-	if _, err := database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		MarkAgentStart: true,
-		MarkAgentDone:  true,
-	}); err == nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			MarkAgentStart: true,
+			MarkAgentDone:  true,
+		}); err == nil {
 		t.Fatalf("expected error when both MarkAgentStart and MarkAgentDone are set")
 	}
 }

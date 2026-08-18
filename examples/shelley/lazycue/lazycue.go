@@ -21,7 +21,6 @@ import (
 
 // Options configures a lazycue test run.
 type Options struct {
-	BaseURL       string // Base URL of the application under test (required)
 	CacheDir      string // Directory holding cache JSON files (default: ".lazycue")
 	Model         string // OpenAI Responses model (default: "gpt-5.6-luna")
 	OpenAIBaseURL string // OpenAI API base URL (default: OPENAI_BASE_URL or https://api.openai.com/v1)
@@ -101,7 +100,10 @@ type StepResult struct {
 }
 
 // Run executes a single lazy test described by the given plain-English description.
-func Run(ctx context.Context, opts Options, description string) (*TestResult, error) {
+func Run(ctx context.Context, baseURL string, opts Options, description string) (*TestResult, error) {
+	if nilContext(ctx) {
+		return nil, fmt.Errorf("context is required")
+	}
 	totalStart := time.Now()
 	opts.defaults()
 
@@ -111,7 +113,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 	ctx, cancel := context.WithTimeout(ctx, perTestBudget)
 	defer cancel()
 
-	if opts.BaseURL == "" {
+	if strings.TrimSpace(baseURL) == "" {
 		return nil, fmt.Errorf("BaseURL is required")
 	}
 
@@ -137,7 +139,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 	}
 
 	// Step 2: Launch browser
-	logf("[lazycue] launching browser for %s", opts.BaseURL)
+	logf("[lazycue] launching browser for %s", baseURL)
 	browser, err := NewBrowser(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("launch browser: %w", err)
@@ -162,7 +164,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 		steps, parseErr := ParseSteps(cachedTest.Steps)
 		if parseErr == nil {
 			logf("[lazycue] found cached v%d (%d steps)", version, len(steps))
-			results, execErr := browser.ExecuteSteps(ctx, opts.BaseURL, steps)
+			results, execErr := browser.ExecuteSteps(ctx, baseURL, steps)
 			allPassed := execErr == nil
 			for _, r := range results {
 				if !r.Pass {
@@ -182,7 +184,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 					if collector != nil {
 						browser.SetScreenshotSink(collector.sink())
 					}
-					results, execErr = browser.ExecuteSteps(ctx, opts.BaseURL, steps)
+					results, execErr = browser.ExecuteSteps(ctx, baseURL, steps)
 					allPassed = execErr == nil
 					for _, r := range results {
 						if !r.Pass {
@@ -224,17 +226,12 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 			}
 
 			agentStart := time.Now()
-			agentResult, agentErr := RunAgent(ctx, &AgentConfig{
-				Mode:          AgentModeFix,
-				Description:   description,
+			agentResult, agentErr := runAgent(ctx, browser, baseURL, opts.Model, opts.OpenAIAPIKey, description, agentConfig{
+				Mode:          agentModeFix,
 				PreviousSteps: cachedTest.Steps,
 				PreviousError: failureDesc,
 				CacheFilePath: CacheFilePath(opts.CacheDir, description),
-				Browser:       browser,
-				BaseURL:       opts.BaseURL,
-				Model:         opts.Model,
 				OpenAIBaseURL: opts.OpenAIBaseURL,
-				OpenAIAPIKey:  opts.OpenAIAPIKey,
 				Verbose:       opts.Verbose,
 			})
 			agentDur := time.Since(agentStart)
@@ -289,14 +286,9 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 	// Step 4: No cache — generate from scratch
 	logf("[lazycue] no cached test, spawning agent to generate")
 	agentStart := time.Now()
-	agentResult, agentErr := RunAgent(ctx, &AgentConfig{
-		Mode:          AgentModeGenerate,
-		Description:   description,
-		Browser:       browser,
-		BaseURL:       opts.BaseURL,
-		Model:         opts.Model,
+	agentResult, agentErr := runAgent(ctx, browser, baseURL, opts.Model, opts.OpenAIAPIKey, description, agentConfig{
+		Mode:          agentModeGenerate,
 		OpenAIBaseURL: opts.OpenAIBaseURL,
-		OpenAIAPIKey:  opts.OpenAIAPIKey,
 		Verbose:       opts.Verbose,
 	})
 	agentDur := time.Since(agentStart)
@@ -343,7 +335,7 @@ func summarizeFailure(results []StepResult) string {
 // Harness holds options for running lazycue tests. Create one as a
 // package-level var and call Test from each test function:
 //
-//	var browser = lazycue.New(lazycue.Options{BaseURL: "http://localhost:3000"})
+//	var browser = lazycue.New("http://localhost:3000", lazycue.Options{})
 //
 //	func TestLogin(t *testing.T) {
 //	    browser.Test(t, "Navigate to /login and verify the login form is visible")
@@ -352,15 +344,19 @@ func summarizeFailure(results []StepResult) string {
 // A Harness accumulates every TestResult it runs, so a TestMain can emit an
 // aggregate report/summary after all tests finish (see Results).
 type Harness struct {
-	opts Options
+	baseURL string
+	opts    Options
 
 	mu      sync.Mutex
 	results []*TestResult
 }
 
 // New creates a Harness with the given options.
-func New(opts Options) *Harness {
-	return &Harness{opts: opts}
+func New(baseURL string, opts Options) *Harness {
+	if strings.TrimSpace(baseURL) == "" {
+		panic("lazycue base URL is required")
+	}
+	return &Harness{baseURL: baseURL, opts: opts}
 }
 
 // Results returns a copy of every TestResult run through this Harness so far.
@@ -378,7 +374,7 @@ func (h *Harness) Results() []*TestResult {
 // It calls t.Fatal if the test fails or encounters an error.
 func (h *Harness) Test(t testing.TB, description string) {
 	t.Helper()
-	result, err := Run(t.Context(), h.opts, description)
+	result, err := Run(t.Context(), h.baseURL, h.opts, description)
 	if err != nil {
 		t.Fatalf("lazycue: %v", err)
 	}
@@ -435,7 +431,7 @@ func sameSteps(a, b []byte) bool {
 	return true
 }
 
-func buildCacheMetadata(opts Options, agentResult *AgentResult, mode string) *CacheMetadata {
+func buildCacheMetadata(opts Options, agentResult *agentResult, mode string) *CacheMetadata {
 	cost := float64(agentResult.InputTokens)*3.0/1_000_000 + float64(agentResult.OutputTokens)*15.0/1_000_000
 	hostname, _ := os.Hostname()
 	return &CacheMetadata{

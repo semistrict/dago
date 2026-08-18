@@ -9,8 +9,35 @@ import (
 	"testing"
 
 	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/dacheckpoint/serde"
 	"github.com/semistrict/dago/damessage"
 )
+
+func TestConstructorsRejectMissingDatabaseOrCodec(t *testing.T) {
+	t.Run("database", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("nil database was accepted")
+			}
+		}()
+		New(nil)
+	})
+	t.Run("codec", func(t *testing.T) {
+		var payloadCodec *serde.Safe
+		defer func() {
+			if recover() == nil {
+				t.Fatal("typed-nil codec was accepted")
+			}
+		}()
+		NewWithCodec(&sql.DB{}, payloadCodec)
+	})
+}
+
+func TestListRejectsNegativeLimitBeforeDatabaseAccess(t *testing.T) {
+	if _, err := (&Saver{}).List(context.Background(), nil, dacheckpoint.ListOptions{Limit: -1}); err == nil {
+		t.Fatal("negative list limit was accepted")
+	}
+}
 
 func TestMigrationsMatchPinnedSequence(t *testing.T) {
 	statements := MigrationStatements()
@@ -41,7 +68,7 @@ func TestSortPendingWritesUsesTaskPathTaskIDIndex(t *testing.T) {
 		{TaskPath: "a", TaskID: "a", Index: 2},
 		{TaskPath: "a", TaskID: "a", Index: 1},
 	}
-	SortPendingWrites(writes)
+	sortPendingWrites(writes)
 	got := [][3]any{}
 	for _, write := range writes {
 		got = append(got, [3]any{write.TaskPath, write.TaskID, write.Index})
@@ -122,14 +149,14 @@ func TestSaverMigratesPinnedOlderSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	for version := 0; version <= 3; version++ {
-		if _, err := database.ExecContext(ctx, Migrations[version]); err != nil {
+		if _, err := database.ExecContext(ctx, MigrationStatements()[version]); err != nil {
 			t.Fatalf("apply old migration %d: %v", version, err)
 		}
 		if _, err := database.ExecContext(ctx, `INSERT INTO checkpoint_migrations (v) VALUES ($1)`, version); err != nil {
 			t.Fatal(err)
 		}
 	}
-	saver := New(database, nil)
+	saver := New(database)
 	if err := saver.Setup(ctx); err != nil {
 		t.Fatal(err)
 	}

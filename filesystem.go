@@ -85,15 +85,17 @@ type Filesystem struct {
 	VideoExtractor          davideo.Extractor
 	MaxVideoBytes           int
 	VideoSamplingRate       float64
+	managedMemoryPaths      []string
 }
 
 type filesystemRuntime struct {
 	Filesystem
-	toolResultLimit   int
-	toolResultBytes   bool
-	humanMessageLimit int
-	backend           dabackend.Backend
-	approvalOverrides []dagent.ApprovalRule
+	toolResultLimit    int
+	toolResultBytes    bool
+	humanMessageLimit  int
+	backend            dabackend.Backend
+	approvalOverrides  []dagent.ApprovalRule
+	managedMemoryGuard dagent.ToolWrapper
 }
 
 const charactersPerToken = 4
@@ -169,9 +171,9 @@ Regular-expression metacharacters are ordinary characters. Run separate searches
 }
 
 func filesystemExecuteDescription(includeGrep, includeGlob bool) string {
-	description := `Executes a shell command in an explicitly configured sandbox and returns combined output with the exit code.
+	description := `Executes a shell command in the configured local or remote environment and returns combined output with the exit code.
 
-Quote paths containing spaces, use absolute paths where practical, and use read_file instead of cat, head, or tail.`
+	Quote paths containing spaces, use the working directory from the system instructions, and use read_file instead of cat, head, or tail.`
 	if includeGrep && includeGlob {
 		description += " Use grep and glob instead of shell search commands."
 	} else if includeGrep {
@@ -202,16 +204,25 @@ func describeFilesystemTools(values []datool.Tool, custom map[string]string) []d
 	return applyToolProfile(values, descriptions, nil)
 }
 
-func compileFilesystem(backend dabackend.Backend, config Filesystem, approvalOverrides []dagent.ApprovalRule) (dagent.Middleware, error) {
-	if backend == nil {
+func newFilesystem(backend dabackend.Backend, config Filesystem, approvalOverrides []dagent.ApprovalRule) (dagent.Middleware, error) {
+	if nilInterface(backend) {
 		return dagent.Middleware{}, fmt.Errorf("filesystem backend is nil")
+	}
+	if nilInterface(config.VideoExtractor) {
+		config.VideoExtractor = nil
 	}
 	options := filesystemRuntime{
 		Filesystem:        config,
 		backend:           backend,
 		approvalOverrides: append([]dagent.ApprovalRule(nil), approvalOverrides...),
 	}
-	if options.ReadLimit <= 0 {
+	if len(config.managedMemoryPaths) > 0 {
+		options.managedMemoryGuard = ManagedMemoryGuard(backend, config.managedMemoryPaths[0], config.managedMemoryPaths[1:]...).WrapToolCall
+	}
+	if options.ReadLimit < 0 || options.GlobTimeout < 0 || options.MaxExecuteTimeout < 0 || options.MaxVideoBytes < 0 || options.VideoSamplingRate < 0 {
+		return dagent.Middleware{}, fmt.Errorf("filesystem limits cannot be negative")
+	}
+	if options.ReadLimit == 0 {
 		options.ReadLimit = 100
 	}
 	if options.GrepLimit < 0 {
@@ -220,10 +231,10 @@ func compileFilesystem(backend dabackend.Backend, config Filesystem, approvalOve
 	if !options.GrepUncapped && options.GrepLimit == 0 {
 		options.GrepLimit = 1000
 	}
-	if options.GlobTimeout <= 0 {
+	if options.GlobTimeout == 0 {
 		options.GlobTimeout = 10 * time.Second
 	}
-	if options.MaxExecuteTimeout <= 0 {
+	if options.MaxExecuteTimeout == 0 {
 		options.MaxExecuteTimeout = time.Hour
 	}
 	limit, bytes, err := normalizeContentLimit("tool result", options.ToolResultLimit, 20_000)
@@ -246,10 +257,10 @@ func compileFilesystem(backend dabackend.Backend, config Filesystem, approvalOve
 	if options.ConversationHistoryRoot == "" {
 		options.ConversationHistoryRoot = dabackend.ArtifactPath(options.backend, "conversation_history")
 	}
-	if options.MaxVideoBytes <= 0 {
+	if options.MaxVideoBytes == 0 {
 		options.MaxVideoBytes = davideo.DefaultMaxVideoInputBytes
 	}
-	if options.VideoSamplingRate <= 0 {
+	if options.VideoSamplingRate == 0 {
 		options.VideoSamplingRate = davideo.DefaultVideoSamplingRate
 	}
 	if err := validatePermissions(options.Permissions); err != nil {
@@ -837,7 +848,7 @@ func (input *filesystemGrepInput) UnmarshalJSON(data []byte) error {
 }
 
 type filesystemExecuteInput struct {
-	Command string `json:"command" description:"Shell command to execute in the sandbox environment."`
+	Command string `json:"command" description:"Shell command to execute in the configured local or remote environment."`
 	Timeout *int   `json:"timeout,omitempty"`
 }
 
@@ -1093,13 +1104,37 @@ func makeFilesystemTools(options filesystemRuntime) map[string]datool.Tool {
 				value := time.Duration(*input.Timeout) * time.Second
 				timeout = &value
 			}
-			result, err := dabackend.ExecuteSandbox(ctx, sandbox, input.Command, dabackend.ExecuteOptions{Timeout: timeout})
+			var result dabackend.ExecuteResult
+			var err error
+			var offloadedPath string
+			runtime, _ := datool.RuntimeFromContext(ctx)
+			artifactName := sanitizeToolCallID(runtime.CallID)
+			if artifactName != "" && options.toolResultLimit > 0 {
+				candidate := path.Join(options.ArtifactsRoot, artifactName)
+				if offloader, capture := dabackend.CaptureOffloaderOf(options.backend, candidate); capture {
+					offload, executeErr := offloader.ExecuteWithOffload(ctx, input.Command, candidate, dabackend.ExecuteOffloadOptions{
+						MaxInlineBytes: options.toolResultLimit,
+						Timeout:        timeout,
+					})
+					if executeErr != nil {
+						return datool.Result{}, executeErr
+					}
+					result = offload.Response
+					if offload.Offloaded {
+						offloadedPath = candidate
+					}
+				} else {
+					result, err = dabackend.ExecuteSandbox(ctx, sandbox, input.Command, dabackend.ExecuteOptions{Timeout: timeout})
+				}
+			} else {
+				result, err = dabackend.ExecuteSandbox(ctx, sandbox, input.Command, dabackend.ExecuteOptions{Timeout: timeout})
+			}
 			if err != nil {
 				return datool.Result{}, err
 			}
-			artifact := json.RawMessage(`{}`)
+			artifactValue := map[string]any{}
 			if result.ExitCode != nil {
-				artifact, _ = json.Marshal(map[string]any{"exit_code": *result.ExitCode})
+				artifactValue["exit_code"] = *result.ExitCode
 			}
 			text := result.Output
 			if result.ExitCode != nil {
@@ -1112,6 +1147,11 @@ func makeFilesystemTools(options filesystemRuntime) map[string]datool.Tool {
 			if result.Truncated {
 				text += "\n[Output was truncated because it exceeded the capture size limit]"
 			}
+			if offloadedPath != "" {
+				artifactValue["capture_path"] = offloadedPath
+				text = fmt.Sprintf("Result saved to %s. Preview:\n%s", offloadedPath, text)
+			}
+			artifact, _ := json.Marshal(artifactValue)
 			return datool.Result{Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: text}}, Artifact: artifact}, nil
 		}, datool.WithPropertySchema("timeout", map[string]any{
 			"anyOf":       []any{map[string]any{"type": "integer", "minimum": 0, "maximum": int(options.MaxExecuteTimeout / time.Second)}, map[string]any{"type": "null"}},
@@ -1141,11 +1181,18 @@ func filesystemPermissionWrapper(options filesystemRuntime) dagent.ToolWrapper {
 				return dagent.ToolCallResponse{}, fmt.Errorf("permission denied for %s on %s", operation, target)
 			}
 		}
-		response, err := next(ctx, request)
+		handler := next
+		if options.managedMemoryGuard != nil {
+			wrapped := handler
+			handler = func(callCtx context.Context, call dagent.ToolCallRequest) (dagent.ToolCallResponse, error) {
+				return options.managedMemoryGuard(callCtx, call, wrapped)
+			}
+		}
+		response, err := handler(ctx, request)
 		if err != nil {
 			return response, err
 		}
-		if request.Call.Name != "ls" && request.Call.Name != "glob" && request.Call.Name != "grep" && request.Call.Name != "read_file" && request.Call.Name != "edit_file" && request.Call.Name != "write_file" && request.Call.Name != "delete" && options.toolResultLimit > 0 && len(response.Result.Content) > 0 {
+		if request.Call.Name != "ls" && request.Call.Name != "glob" && request.Call.Name != "grep" && request.Call.Name != "read_file" && request.Call.Name != "edit_file" && request.Call.Name != "write_file" && request.Call.Name != "delete" && !captureOffloaded(response.Result) && options.toolResultLimit > 0 && len(response.Result.Content) > 0 {
 			total := 0
 			for _, block := range response.Result.Content {
 				if block.Type != damessage.BlockText {
@@ -1195,6 +1242,16 @@ func filesystemPermissionWrapper(options filesystemRuntime) dagent.ToolWrapper {
 		}
 		return response, nil
 	}
+}
+
+func captureOffloaded(result datool.Result) bool {
+	if len(result.Artifact) == 0 {
+		return false
+	}
+	var artifact struct {
+		Path string `json:"capture_path"`
+	}
+	return json.Unmarshal(result.Artifact, &artifact) == nil && artifact.Path != ""
 }
 
 func filesystemApprovalHook(value dabackend.Backend, rules []FilesystemPermission, overrides []dagent.ApprovalRule) dagent.ToolBatchHook {
@@ -1628,34 +1685,22 @@ func filterGrepMatches(rules []FilesystemPermission, operation FilesystemOperati
 
 func validateFilesystemToolPath(value string, defaultRoot bool) (string, error) {
 	if value == "" && defaultRoot {
-		return "/", nil
+		// Let the backend choose its own default. Virtual backends use their
+		// virtual root, while a local host-path backend uses its configured cwd.
+		return "", nil
 	}
 	if value == "" || strings.ContainsRune(value, '\x00') {
 		return "", fmt.Errorf("invalid filesystem path %q", value)
 	}
-	if len(value) >= 2 && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) && value[1] == ':' {
-		return "", fmt.Errorf("Windows absolute paths are not supported: %s; use a virtual path starting with /", value)
-	}
-	if strings.HasPrefix(value, "~") {
-		return "", fmt.Errorf("path traversal not allowed: %s", value)
-	}
-	posix := strings.ReplaceAll(value, "\\", "/")
-	for _, segment := range strings.Split(posix, "/") {
-		if segment == ".." {
-			return "", fmt.Errorf("path traversal not allowed: %s", value)
-		}
-	}
-	return path.Clean("/" + strings.TrimPrefix(posix, "/")), nil
+	// Path semantics belong to the backend. A local host-path backend permits
+	// absolute paths and parent traversal, while virtual and remote backends
+	// reject paths that escape their own roots.
+	return value, nil
 }
 
 func validateFilesystemGlob(pattern string) error {
-	if pattern == "" || strings.ContainsRune(pattern, '\x00') || strings.HasPrefix(pattern, "~") {
+	if pattern == "" || strings.ContainsRune(pattern, '\x00') {
 		return fmt.Errorf("invalid filesystem glob %q", pattern)
-	}
-	for _, segment := range strings.Split(strings.ReplaceAll(pattern, "\\", "/"), "/") {
-		if segment == ".." {
-			return fmt.Errorf("path traversal not allowed in glob: %s", pattern)
-		}
 	}
 	return nil
 }

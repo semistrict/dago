@@ -7,7 +7,7 @@ database and SSE shapes for the existing HTTP API and UI.
 
 ## Runtime contract
 
-- `Config.Model` is a dago `damodel.Chat` implementation.
+- The first `NewLoop` argument is a dago `damodel.Chat` implementation.
 - `Config.Tools` contains dago `datool.Tool` implementations.
 - `Config.Saver` is a dago `checkpoint.Saver`; the server uses the conversation
   ID as `Config.ThreadID`.
@@ -17,15 +17,13 @@ database and SSE shapes for the existing HTTP API and UI.
 ## Basic usage
 
 ```go
-agentLoop := loop.NewLoop(loop.Config{
-	Model:         chatModel,
+agentLoop := loop.NewLoop(chatModel, recordMessage, loop.Config{
 	ModelID:       "gpt-5.6-luna",
 	History:       history,
 	Tools:         nativeTools,
 	Saver:         saver,
 	ThreadID:      conversationID,
 	System:        systemPrompt,
-	RecordMessage: recordMessage,
 })
 
 agentLoop.QueueUserMessage(llm.UserStringMessage("Help me inspect this project"))
@@ -45,10 +43,7 @@ responses and tool calls used by shelley-in-dago's Go and browser suites:
 
 ```go
 chatModel := loop.NewPredictableService()
-agentLoop := loop.NewLoop(loop.Config{
-	Model:         chatModel,
-	RecordMessage: recordMessage,
-})
+agentLoop := loop.NewLoop(chatModel, recordMessage, loop.Config{})
 ```
 
 Tests can inspect `GetLastRequest` when they need to assert the exact dago

@@ -18,7 +18,6 @@ import (
 	"github.com/semistrict/dago/dastore"
 	"github.com/semistrict/dago/datool"
 	graph "github.com/semistrict/dago/internal/graph"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const defaultSystemPrompt = "You are a helpful assistant."
@@ -45,6 +44,7 @@ type Options struct {
 	Metadata          map[string]json.RawMessage
 	Tags              []string
 	Debug             bool
+	Logger            *slog.Logger
 }
 
 // Agent is a compiled provider-neutral model/tool graph.
@@ -109,18 +109,26 @@ type Interrupt = datool.Interrupt
 
 // New compiles a model/tool graph. It panics when static construction options
 // violate an invariant; invocation and dependency failures remain errors on Agent methods.
-func New(model damodel.Chat, optionValues ...Options) *Agent {
-	options := optionvalue.Resolve("agent", optionValues)
-	agent, err := compileAgent(model, options)
+func New(model damodel.Chat, options Options) *Agent {
+	agent, err := newAgent(model, options)
 	if err != nil {
 		panic(err)
 	}
 	return agent
 }
 
-func compileAgent(model damodel.Chat, options Options) (*Agent, error) {
-	if model == nil {
+func newAgent(model damodel.Chat, options Options) (*Agent, error) {
+	if nilInterface(model) {
 		return nil, fmt.Errorf("create agent: model is nil")
+	}
+	if nilInterface(options.Saver) {
+		options.Saver = nil
+	}
+	if nilInterface(options.Store) {
+		options.Store = nil
+	}
+	if nilInterface(options.Cache) {
+		options.Cache = nil
 	}
 	if options.SystemMessage.Role == "" {
 		options.SystemMessage = damessage.System(defaultSystemPrompt)
@@ -136,10 +144,13 @@ func compileAgent(model damodel.Chat, options Options) (*Agent, error) {
 		return nil, err
 	}
 	options.StructuredOutput = structuredOutput
-	if options.RecursionLimit <= 0 {
+	if options.RecursionLimit < 0 || options.MaxConcurrency < 0 {
+		return nil, fmt.Errorf("create agent: execution limits cannot be negative")
+	}
+	if options.RecursionLimit == 0 {
 		options.RecursionLimit = 9999
 	}
-	if options.MaxConcurrency <= 0 {
+	if options.MaxConcurrency == 0 {
 		options.MaxConcurrency = 16
 	}
 	fields, err := resolveFields(options.StateFields, options.Middleware)
@@ -194,7 +205,7 @@ func compileAgent(model damodel.Chat, options Options) (*Agent, error) {
 		Saver: options.Saver, Store: options.Store, Cache: options.Cache, Deps: options.Deps,
 		RetainThreadState: options.RetainThreadState,
 		RecursionLimit:    options.RecursionLimit, MaxConcurrency: options.MaxConcurrency,
-		Writer: debugGraphWriter(options.Debug),
+		Writer: debugGraphWriter(options.Debug, options.Logger),
 	})
 	if err != nil {
 		return nil, err
@@ -216,17 +227,20 @@ func (agent *Agent) Tools() []datool.Tool {
 	return append([]datool.Tool(nil), agent.tools...)
 }
 
-type debugEventWriter struct{}
+type debugEventWriter struct{ logger *slog.Logger }
 
-func debugGraphWriter(enabled bool) graph.EventWriter {
+func debugGraphWriter(enabled bool, logger *slog.Logger) graph.EventWriter {
 	if !enabled {
 		return nil
 	}
-	return debugEventWriter{}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return debugEventWriter{logger: logger}
 }
 
-func (debugEventWriter) Write(ctx context.Context, event graph.Event) error {
-	slog.DebugContext(ctx, "agent graph event", "mode", event.Mode, "step", event.Step, "node", event.Node, "task_id", event.TaskID)
+func (writer debugEventWriter) Write(ctx context.Context, event graph.Event) error {
+	writer.logger.DebugContext(ctx, "agent graph event", "mode", event.Mode, "step", event.Step, "node", event.Node, "task_id", event.TaskID)
 	return nil
 }
 
@@ -1143,7 +1157,7 @@ func resolveTools(base []datool.Tool, middleware []Middleware) (map[string]datoo
 		all = append(all, item.Tools...)
 	}
 	for _, executable := range all {
-		if executable == nil {
+		if nilInterface(executable) {
 			return nil, fmt.Errorf("agent tool is nil")
 		}
 		definition := executable.Definition()

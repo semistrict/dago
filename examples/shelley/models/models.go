@@ -3,11 +3,13 @@ package models
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -114,9 +116,6 @@ type Built struct {
 // Config holds runtime configuration for the Manager. Built-in models
 // are passed in pre-materialized; custom models are loaded from DB.
 type Config struct {
-	// Models is the set of ready-to-use built-in models, in display order.
-	Models []Built
-
 	Logger *slog.Logger
 
 	// DB holds custom models; optional.
@@ -145,7 +144,8 @@ type OpenAIResponsesOptions struct {
 }
 
 // NewOpenAIResponses constructs a native dago Responses model.
-func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client, options OpenAIResponsesOptions) (damodel.Chat, error) {
+func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client, options OpenAIResponsesOptions) damodel.Chat {
+	validateOpenAIResponsesOptions(options)
 	effort := options.ReasoningEffort
 	if effort == "" {
 		effort = options.DefaultReasoningLevel
@@ -154,14 +154,11 @@ func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client
 	if options.SupportsReasoning && effort != "" && effort != "off" {
 		defaultReasoning = &damodel.Reasoning{Effort: effort, Summary: "auto"}
 	}
-	chat, err := dopenai.NewAPIKey(apiKey, dopenai.Options{
-		Model: modelID, BaseURL: openAIResponsesBaseURL(baseURL), HTTPClient: httpClient,
+	chat := dopenai.NewAPIKey(apiKey, modelID, dopenai.Options{
+		BaseURL: openAIResponsesBaseURL(baseURL), HTTPClient: httpClient,
 		ContextWindow: options.ContextWindow, MaxOutputTokens: options.MaxOutputTokens,
 		DefaultReasoning: defaultReasoning, WebSearch: options.SupportsWebSearch,
 	})
-	if err != nil {
-		return nil, err
-	}
 	return damodel.WithProfile(chat, func(profile *damodel.Profile) {
 		profile.SupportsImages = options.SupportsImages
 		profile.SupportsReasoning = options.SupportsReasoning
@@ -172,14 +169,15 @@ func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client
 		if options.SupportsReasoning {
 			profile.ReasoningLevels = standardReasoningLevels()
 		}
-	}), nil
+	})
 }
 
 // OpenRouterResponsesOptions describes capabilities attached to an OpenRouter Responses model.
 type OpenRouterResponsesOptions = OpenAIResponsesOptions
 
 // NewOpenRouterResponses constructs a native OpenRouter Responses model.
-func NewOpenRouterResponses(apiKey, modelID, baseURL string, httpClient *http.Client, options OpenRouterResponsesOptions) (damodel.Chat, error) {
+func NewOpenRouterResponses(apiKey, modelID, baseURL string, httpClient *http.Client, options OpenRouterResponsesOptions) damodel.Chat {
+	validateOpenAIResponsesOptions(options)
 	effort := options.ReasoningEffort
 	if effort == "" {
 		effort = options.DefaultReasoningLevel
@@ -189,16 +187,13 @@ func NewOpenRouterResponses(apiKey, modelID, baseURL string, httpClient *http.Cl
 		defaultReasoning = &damodel.Reasoning{Effort: effort, Summary: "auto"}
 	}
 	requireParameters := true
-	chat, err := dopenrouter.New(apiKey, dopenrouter.Options{
-		Model: modelID, BaseURL: openRouterResponsesBaseURL(baseURL), HTTPClient: httpClient,
+	chat := dopenrouter.New(apiKey, modelID, dopenrouter.Options{
+		BaseURL: openRouterResponsesBaseURL(baseURL), HTTPClient: httpClient,
 		ContextWindow: options.ContextWindow, MaxOutputTokens: options.MaxOutputTokens,
 		DefaultReasoning: defaultReasoning, WebSearch: options.SupportsWebSearch,
 		AppTitle: "Shelley",
 		Routing:  &dopenrouter.ProviderRouting{RequireParameters: &requireParameters},
 	})
-	if err != nil {
-		return nil, err
-	}
 	return damodel.WithProfile(chat, func(profile *damodel.Profile) {
 		profile.SupportsImages = options.SupportsImages
 		profile.SupportsReasoning = options.SupportsReasoning
@@ -209,7 +204,40 @@ func NewOpenRouterResponses(apiKey, modelID, baseURL string, httpClient *http.Cl
 		if options.SupportsReasoning {
 			profile.ReasoningLevels = standardReasoningLevels()
 		}
-	}), nil
+	})
+}
+
+func validateOpenAIResponsesOptions(options OpenAIResponsesOptions) {
+	if options.ContextWindow < 0 || options.MaxOutputTokens < 0 || options.MaxImageBytes < 0 {
+		panic("shelley models: model limits cannot be negative")
+	}
+	if _, err := validateReasoningEffort(options.DefaultReasoningLevel); err != nil {
+		panic("shelley models: invalid default reasoning level")
+	}
+	if _, err := validateReasoningEffort(options.ReasoningEffort); err != nil {
+		panic("shelley models: invalid reasoning effort")
+	}
+}
+
+func validateReasoningEffort(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "off", "none", "minimal", "low", "medium", "high", "xhigh":
+		return value, nil
+	default:
+		return "", fmt.Errorf("reasoning effort must be off, none, minimal, low, medium, high, or xhigh; got %q", value)
+	}
+}
+
+func validateSupportSetting(field, value string) (string, error) {
+	switch value {
+	case "", "auto":
+		return "auto", nil
+	case "yes", "no":
+		return value, nil
+	default:
+		return "", fmt.Errorf("%s must be auto, yes, or no; got %q", field, value)
+	}
 }
 
 // openAIResponsesModel constructs one catalog entry for OpenAI's Responses API.
@@ -227,7 +255,7 @@ func openAIResponsesModel(id, description string, contextWindow int, supportsRea
 				SupportsImages: true, SupportsReasoning: supportsReasoning,
 				SupportsWebSearch: true, MaxImageBytes: 20 * 1024 * 1024,
 				DefaultReasoningLevel: "medium",
-			})
+			}), nil
 		},
 	}
 }
@@ -448,7 +476,7 @@ func legacyUsage(native *dmessage.Usage, modelID, _ string) llm.Usage {
 
 // NewManager registers the supplied built-in models, then loads custom
 // models from cfg.DB.
-func NewManager(cfg *Config) (*Manager, error) {
+func NewManager(built []Built, cfg Config) (*Manager, error) {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -459,21 +487,27 @@ func NewManager(cfg *Config) (*Manager, error) {
 	}
 	m := &Manager{
 		models: map[string]modelEntry{},
-		logger: cfg.Logger,
+		logger: logger,
 		db:     cfg.DB,
 		httpc:  httpc,
 	}
 
-	m.registerBuiltModelsLocked(cfg.Models)
+	m.registerBuiltModelsLocked(built)
 
-	if err := m.loadCustomModels(); err != nil && cfg.Logger != nil {
-		cfg.Logger.Warn("Failed to load custom models", "error", err)
+	if err := m.loadCustomModels(); err != nil {
+		return nil, fmt.Errorf("load custom models: %w", err)
 	}
 	return m, nil
 }
 
 func (m *Manager) registerBuiltModelsLocked(built []Built) {
 	for _, b := range built {
+		if strings.TrimSpace(b.ID) == "" || nilChat(b.Chat) {
+			panic("shelley models: built model ID and chat are required")
+		}
+		if _, exists := m.models[b.ID]; exists {
+			panic("shelley models: duplicate built model " + b.ID)
+		}
 		dn := b.DisplayName
 		if dn == "" {
 			dn = b.ID
@@ -495,6 +529,19 @@ func (m *Manager) registerBuiltModelsLocked(built []Built) {
 	}
 }
 
+func nilChat(chat damodel.Chat) bool {
+	if chat == nil {
+		return true
+	}
+	value := reflect.ValueOf(chat)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
 func (m *Manager) customModelRows() ([]generated.Model, error) {
 	if m.db == nil {
 		return nil, nil
@@ -507,21 +554,17 @@ func (m *Manager) loadCustomModels() error {
 	if err != nil {
 		return err
 	}
-	m.loadCustomModelsLocked(dbModels)
-	return nil
+	return m.loadCustomModelsLocked(dbModels)
 }
 
-func (m *Manager) loadCustomModelsLocked(dbModels []generated.Model) {
+func (m *Manager) loadCustomModelsLocked(dbModels []generated.Model) error {
 	for _, model := range dbModels {
 		if _, exists := m.models[model.ModelID]; exists {
 			continue
 		}
 		chat, err := m.createChatFromModel(&model)
 		if err != nil {
-			if m.logger != nil {
-				m.logger.Error("Could not configure custom model", "model_id", model.ModelID, "error", err)
-			}
-			continue
+			return fmt.Errorf("configure custom model %q: %w", model.ModelID, err)
 		}
 		m.models[model.ModelID] = modelEntry{
 			chat:        chat,
@@ -533,6 +576,7 @@ func (m *Manager) loadCustomModelsLocked(dbModels []generated.Model) {
 		}
 		m.modelOrder = append(m.modelOrder, model.ModelID)
 	}
+	return nil
 }
 
 // RefreshCustomModels reloads custom models from the database. Call this
@@ -542,19 +586,22 @@ func (m *Manager) RefreshCustomModels() error {
 	if err != nil {
 		return err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	newOrder := make([]string, 0, len(m.modelOrder))
+	candidate := &Manager{models: map[string]modelEntry{}, logger: m.logger, db: m.db, httpc: m.httpc}
+	m.mu.RLock()
 	for _, id := range m.modelOrder {
-		entry, ok := m.models[id]
-		if ok && entry.source != SourceCustomLabel {
-			newOrder = append(newOrder, id)
-		} else {
-			delete(m.models, id)
+		entry := m.models[id]
+		if entry.source != SourceCustomLabel {
+			candidate.models[id] = entry
+			candidate.modelOrder = append(candidate.modelOrder, id)
 		}
 	}
-	m.modelOrder = newOrder
-	m.loadCustomModelsLocked(dbModels)
+	m.mu.RUnlock()
+	if err := candidate.loadCustomModelsLocked(dbModels); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.models, m.modelOrder = candidate.models, candidate.modelOrder
+	m.mu.Unlock()
 	return nil
 }
 
@@ -565,12 +612,14 @@ func (m *Manager) RefreshBuiltModels(built []Built) error {
 	if err != nil {
 		return err
 	}
+	candidate := &Manager{models: map[string]modelEntry{}, logger: m.logger, db: m.db, httpc: m.httpc}
+	candidate.registerBuiltModelsLocked(built)
+	if err := candidate.loadCustomModelsLocked(dbModels); err != nil {
+		return err
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.models = map[string]modelEntry{}
-	m.modelOrder = nil
-	m.registerBuiltModelsLocked(built)
-	m.loadCustomModelsLocked(dbModels)
+	m.models, m.modelOrder = candidate.models, candidate.modelOrder
+	m.mu.Unlock()
 	return nil
 }
 
@@ -705,7 +754,10 @@ func (chat *reasoningChat) configure(request damodel.Request) (damodel.Request, 
 	if len(chat.mapping) == 0 {
 		return copyRequest, nil
 	}
-	level := llm.ParseThinkingLevel(request.Reasoning.Effort)
+	level, err := llm.ParseThinkingLevelStrict(request.Reasoning.Effort)
+	if err != nil {
+		return damodel.Request{}, err
+	}
 	mapped, ok := chat.mapping[level]
 	if !ok {
 		return damodel.Request{}, fmt.Errorf("reasoning level %q is not supported by this model", request.Reasoning.Effort)
@@ -724,23 +776,39 @@ func nativeReasoningEffort(mapped reasoningMapping) string {
 }
 
 // WrapReasoningConfig applies custom-model capability and level mapping.
-func WrapReasoningConfig(chat damodel.Chat, endpoint, modelName, support, rawMap string) damodel.Chat {
-	supported := ResolveSupportsReasoning(endpoint, modelName, support)
-	mapping, levels := parseReasoningMap(rawMap)
-	defaultSource := llm.ParseThinkingLevel(chat.Profile().DefaultReasoningLevel)
+func WrapReasoningConfig(chat damodel.Chat, endpoint, modelName, support, rawMap string) (damodel.Chat, error) {
+	if nilChat(chat) {
+		return nil, errors.New("reasoning model is required")
+	}
+	canonicalSupport, err := validateSupportSetting("reasoning support", support)
+	if err != nil {
+		return nil, err
+	}
+	supported, err := ResolveSupportsReasoning(endpoint, modelName, canonicalSupport)
+	if err != nil {
+		return nil, err
+	}
+	mapping, levels, err := parseReasoningMap(rawMap)
+	if err != nil {
+		return nil, err
+	}
+	defaultSource, err := llm.ParseThinkingLevelStrict(chat.Profile().DefaultReasoningLevel)
+	if err != nil {
+		return nil, fmt.Errorf("default reasoning level: %w", err)
+	}
 	if defaultSource == llm.ThinkingLevelDefault {
 		defaultSource = llm.ThinkingLevelMedium
 	}
-	return &reasoningChat{Chat: chat, supported: supported, levels: levels, mapping: mapping, defaultSource: defaultSource}
+	return &reasoningChat{Chat: chat, supported: supported, levels: levels, mapping: mapping, defaultSource: defaultSource}, nil
 }
 
-func parseReasoningMap(raw string) (map[llm.ThinkingLevel]reasoningMapping, []llm.ThinkingLevel) {
+func parseReasoningMap(raw string) (map[llm.ThinkingLevel]reasoningMapping, []llm.ThinkingLevel, error) {
 	if raw == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var values map[string]string
 	if err := json.Unmarshal([]byte(raw), &values); err != nil {
-		return nil, nil
+		return nil, nil, fmt.Errorf("parse reasoning map: %w", err)
 	}
 	mapping := make(map[llm.ThinkingLevel]reasoningMapping, len(values))
 	levels := make([]llm.ThinkingLevel, 0, len(values))
@@ -749,48 +817,62 @@ func parseReasoningMap(raw string) (map[llm.ThinkingLevel]reasoningMapping, []ll
 		if !ok || mappedName == "" {
 			continue
 		}
-		mapped := llm.ParseThinkingLevel(mappedName)
-		if mapped == llm.ThinkingLevelDefault && mappedName != "default" {
-			// Preserve the generic level as a safe fallback for providers that do
-			// not consume verbatim efforts; providers that do consume it use effort.
-			mapping[level] = reasoningMapping{level: level, effort: mappedName}
-		} else {
-			mapping[level] = reasoningMapping{level: mapped}
+		mapped, err := llm.ParseThinkingLevelStrict(mappedName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("reasoning map %q: %w", level.Name(), err)
 		}
+		mapping[level] = reasoningMapping{level: mapped}
 		levels = append(levels, level)
 	}
-	return mapping, levels
+	if len(mapping) != len(values) {
+		return nil, nil, errors.New("reasoning map contains an unsupported source level")
+	}
+	return mapping, levels, nil
 }
 
 // createChatFromModel creates a native chat model from database configuration.
 func (m *Manager) createChatFromModel(model *generated.Model) (damodel.Chat, error) {
-	supportsImages := ResolveSupportsImages(model.Endpoint, model.ModelName, model.ImageSupport)
+	if strings.TrimSpace(model.ApiKey) == "" || strings.TrimSpace(model.ModelName) == "" {
+		return nil, fmt.Errorf("custom model API key and model name are required")
+	}
+	if model.MaxTokens < 0 {
+		return nil, fmt.Errorf("custom model max tokens cannot be negative")
+	}
+	imageSupport, err := validateSupportSetting("image support", model.ImageSupport)
+	if err != nil {
+		return nil, err
+	}
+	reasoningSupport, err := validateSupportSetting("reasoning support", model.ReasoningSupport)
+	if err != nil {
+		return nil, err
+	}
+	supportsImages, err := ResolveSupportsImages(model.Endpoint, model.ModelName, imageSupport)
+	if err != nil {
+		return nil, err
+	}
 	effort := model.ReasoningEffort
 	if effort == "" {
 		effort = "medium"
+	}
+	if _, err := validateReasoningEffort(effort); err != nil {
+		return nil, err
 	}
 	options := OpenAIResponsesOptions{
 		MaxOutputTokens: int(model.MaxTokens), SupportsImages: supportsImages,
 		SupportsReasoning: true,
 		MaxImageBytes:     20 * 1024 * 1024, DefaultReasoningLevel: "medium", ReasoningEffort: effort,
 	}
-	var (
-		chat damodel.Chat
-		err  error
-	)
+	var chat damodel.Chat
 	switch APIType(model.ProviderType) {
 	case APITypeOpenAIResponses:
 		options.SupportsWebSearch = true
-		chat, err = NewOpenAIResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, options)
+		chat = NewOpenAIResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, options)
 	case APITypeOpenRouterResponses:
-		chat, err = NewOpenRouterResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, options)
+		chat = NewOpenRouterResponses(model.ApiKey, model.ModelName, model.Endpoint, m.httpc, options)
 	default:
 		return nil, fmt.Errorf("unknown provider type %q", model.ProviderType)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return WrapReasoningConfig(chat, model.Endpoint, model.ModelName, model.ReasoningSupport, model.ReasoningMap), nil
+	return WrapReasoningConfig(chat, model.Endpoint, model.ModelName, reasoningSupport, model.ReasoningMap)
 }
 
 func providerForAPIType(value string) Provider {
@@ -806,40 +888,42 @@ func providerForAPIType(value string) Provider {
 
 // ResolveSupportsImages turns a stored image_support value ("auto"|"yes"|"no")
 // into a SupportsImages bool. "auto" is resolved from the model's endpoint URL
-// and name; unknown models default to allowing images.
-func ResolveSupportsImages(endpoint, modelName, imageSupport string) bool {
+// and name; unknown models default to allowing images. Invalid stored enum
+// values return an error rather than enabling a capability.
+func ResolveSupportsImages(endpoint, modelName, imageSupport string) (bool, error) {
 	switch imageSupport {
 	case "yes":
-		return true
+		return true, nil
 	case "no":
-		return false
+		return false, nil
 	case "auto", "":
 		supported, found := modelsdev.LookupImageSupport(endpoint, modelName)
 		if !found {
-			return true
+			return true, nil
 		}
-		return supported
+		return supported, nil
 	default:
-		return true
+		return false, fmt.Errorf("invalid image support %q: want auto, yes, or no", imageSupport)
 	}
 }
 
 // ResolveSupportsReasoning turns a stored reasoning_support value
 // ("auto"|"yes"|"no") into a capability boolean. Unknown models default to
-// supporting reasoning so custom endpoints remain configurable.
-func ResolveSupportsReasoning(endpoint, modelName, reasoningSupport string) bool {
+// supporting reasoning so custom endpoints remain configurable. Invalid stored
+// enum values return an error rather than enabling a capability.
+func ResolveSupportsReasoning(endpoint, modelName, reasoningSupport string) (bool, error) {
 	switch reasoningSupport {
 	case "yes":
-		return true
+		return true, nil
 	case "no":
-		return false
+		return false, nil
 	case "auto", "":
 		supported, found := modelsdev.LookupReasoningSupport(endpoint, modelName)
 		if !found {
-			return true
+			return true, nil
 		}
-		return supported
+		return supported, nil
 	default:
-		return true
+		return false, fmt.Errorf("invalid reasoning support %q: want auto, yes, or no", reasoningSupport)
 	}
 }

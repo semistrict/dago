@@ -89,6 +89,35 @@ func TestNewToolSet(t *testing.T) {
 	}
 }
 
+func TestNewToolSetTreatsTypedNilProviderAsAbsent(t *testing.T) {
+	var provider *mockLLMProvider
+	toolSet := NewToolSet(context.Background(), ToolSetConfig{LLMProvider: provider, ModelID: "test-model"})
+	for _, definition := range toolSet.Tools() {
+		if definition.Name == llmOneShotName || definition.Name == "web_search" {
+			t.Fatalf("typed-nil provider exposed %q", definition.Name)
+		}
+	}
+}
+
+func TestNewToolSetRejectsNegativeDepthAndInvalidEnums(t *testing.T) {
+	for name, config := range map[string]ToolSetConfig{
+		"negative current depth": {SubagentDepth: -1},
+		"negative max depth":     {MaxSubagentDepth: -1},
+		"invalid reasoning":      {ReasoningLevel: "turbo"},
+		"invalid tool override":  {ToolOverrides: map[string]string{"execute": "sometimes"}},
+		"blank tool override":    {ToolOverrides: map[string]string{"  ": "on"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("invalid configuration was accepted")
+				}
+			}()
+			NewToolSet(context.Background(), config)
+		})
+	}
+}
+
 func TestToolSet_Tools(t *testing.T) {
 	provider := &mockLLMProvider{}
 
@@ -123,7 +152,7 @@ func TestToolSet_WorkingDir(t *testing.T) {
 	ctx := context.Background()
 	ts := NewToolSet(ctx, cfg)
 
-	wd := ts.WorkingDir()
+	wd := ts.wd
 	if wd == nil {
 		t.Fatal("WorkingDir() returned nil")
 	}
@@ -166,7 +195,7 @@ func TestNewToolSet_DefaultWorkingDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wd := ts.WorkingDir()
+	wd := ts.wd
 	if wd.Get() != home {
 		t.Errorf("expected default working dir %q, got %q", home, wd.Get())
 	}
@@ -248,8 +277,8 @@ func TestNewToolSet_SubagentDepthLimit(t *testing.T) {
 		}
 	})
 
-	// Depth 0, MaxDepth 0 (unlimited) -> should have subagent tool
-	t.Run("depth 0 max 0 unlimited has subagent", func(t *testing.T) {
+	// Zero max uses the finite default and allows a top-level spawn.
+	t.Run("zero max defaults to one", func(t *testing.T) {
 		cfg := ToolSetConfig{
 			LLMProvider:          provider,
 			ModelID:              "test-model",
@@ -262,21 +291,22 @@ func TestNewToolSet_SubagentDepthLimit(t *testing.T) {
 		}
 		ts := NewToolSet(context.Background(), cfg)
 		if !hasSubagentTool(ts) {
-			t.Error("expected subagent tool at depth 0 with unlimited max")
+			t.Error("expected subagent tool at depth 0 with default max")
 		}
 	})
 
-	// Depth 5, MaxDepth 0 (unlimited) -> should have subagent tool
-	t.Run("depth 5 max 0 unlimited has subagent", func(t *testing.T) {
+	// Explicit unlimited depth remains available for controlled deployments.
+	t.Run("explicit unlimited depth", func(t *testing.T) {
 		cfg := ToolSetConfig{
-			LLMProvider:          provider,
-			ModelID:              "test-model",
-			WorkingDir:           "/test",
-			SubagentRunner:       runner,
-			SubagentDB:           db,
-			ParentConversationID: "parent-123",
-			SubagentDepth:        5,
-			MaxSubagentDepth:     0,
+			LLMProvider:            provider,
+			ModelID:                "test-model",
+			WorkingDir:             "/test",
+			SubagentRunner:         runner,
+			SubagentDB:             db,
+			ParentConversationID:   "parent-123",
+			SubagentDepth:          5,
+			MaxSubagentDepth:       0,
+			UnlimitedSubagentDepth: true,
 		}
 		ts := NewToolSet(context.Background(), cfg)
 		if !hasSubagentTool(ts) {

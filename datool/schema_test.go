@@ -4,9 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func panicMessage(t *testing.T, function func()) string {
+	t.Helper()
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		function()
+	}()
+	if recovered == nil {
+		t.Fatal("function did not panic")
+	}
+	return fmt.Sprint(recovered)
+}
 
 type generatedToolFilter struct {
 	Field string `json:"field" description:"Field to compare"`
@@ -61,7 +75,7 @@ func TestSchemaDerivesObjectFromStructTags(t *testing.T) {
 
 func TestNewGeneratesValidatesAndDecodesTypedInput(t *testing.T) {
 	var received generatedToolInput
-	created, err := New("search", "Search indexed records.", func(
+	created := New("search", "Search indexed records.", func(
 		ctx context.Context,
 		input generatedToolInput,
 	) (Result, error) {
@@ -72,9 +86,6 @@ func TestNewGeneratesValidatesAndDecodesTypedInput(t *testing.T) {
 		}
 		return TextResult(input.Query + ":" + runtime.CallID), nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	definition := created.Definition()
 	if err := definition.Validate(); err != nil {
 		t.Fatal(err)
@@ -134,19 +145,16 @@ func TestNewRejectsInvalidInputTypesAndTags(t *testing.T) {
 	if _, err := Schema[quotedNumber](); err == nil || !strings.Contains(err.Error(), "string option") {
 		t.Fatalf("Schema[quotedNumber]() error = %v", err)
 	}
-	if _, err := New("bad", "Bad.", Handler[generatedToolInput, Result](nil)); err == nil {
-		t.Fatal("New() accepted a nil handler")
+	if message := panicMessage(t, func() { New("bad", "Bad.", Handler[generatedToolInput, Result](nil)) }); !strings.Contains(message, "handler is required") {
+		t.Fatalf("New() panic = %q", message)
 	}
 }
 
 func TestNewConvertsHandlerReturnValues(t *testing.T) {
 	t.Run("string", func(t *testing.T) {
-		created, err := New("greet", "Return a greeting.", func(context.Context, struct{}) (string, error) {
+		created := New("greet", "Return a greeting.", func(context.Context, struct{}) (string, error) {
 			return "hello", nil
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		result, err := created.Execute(context.Background(), json.RawMessage(`{}`), Runtime{})
 		if err != nil {
 			t.Fatal(err)
@@ -160,12 +168,9 @@ func TestNewConvertsHandlerReturnValues(t *testing.T) {
 		type output struct {
 			Answer int `json:"answer"`
 		}
-		created, err := New("answer", "Return an answer.", func(context.Context, struct{}) (output, error) {
+		created := New("answer", "Return an answer.", func(context.Context, struct{}) (output, error) {
 			return output{Answer: 42}, nil
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		result, err := created.Execute(context.Background(), json.RawMessage(`{}`), Runtime{})
 		if err != nil {
 			t.Fatal(err)
@@ -176,12 +181,9 @@ func TestNewConvertsHandlerReturnValues(t *testing.T) {
 	})
 
 	t.Run("Result", func(t *testing.T) {
-		created, err := New("native", "Return a native result.", func(context.Context, struct{}) (Result, error) {
+		created := New("native", "Return a native result.", func(context.Context, struct{}) (Result, error) {
 			return Result{Artifact: json.RawMessage(`{"native":true}`), Update: map[string]any{"done": true}}, nil
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		result, err := created.Execute(context.Background(), json.RawMessage(`{}`), Runtime{})
 		if err != nil {
 			t.Fatal(err)
@@ -192,12 +194,9 @@ func TestNewConvertsHandlerReturnValues(t *testing.T) {
 	})
 
 	t.Run("unsupported", func(t *testing.T) {
-		created, err := New("unsupported", "Return an unsupported value.", func(context.Context, struct{}) (chan int, error) {
+		created := New("unsupported", "Return an unsupported value.", func(context.Context, struct{}) (chan int, error) {
 			return make(chan int), nil
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if _, err := created.Execute(context.Background(), json.RawMessage(`{}`), Runtime{}); err == nil || !strings.Contains(err.Error(), "convert tool result to JSON") {
 			t.Fatalf("Execute() error = %v", err)
 		}
@@ -208,7 +207,7 @@ func TestNewTransformsGeneratedSchema(t *testing.T) {
 	type input struct {
 		Kind string `json:"kind"`
 	}
-	created, err := New("choose", "Choose a configured kind.", func(_ context.Context, input input) (string, error) {
+	created := New("choose", "Choose a configured kind.", func(_ context.Context, input input) (string, error) {
 		return input.Kind, nil
 	}, WithTransformSchema(func(schema json.RawMessage) (json.RawMessage, error) {
 		var document map[string]any
@@ -220,9 +219,6 @@ func TestNewTransformsGeneratedSchema(t *testing.T) {
 		kind["enum"] = []string{"worker", "reviewer"}
 		return json.Marshal(document)
 	}))
-	if err != nil {
-		t.Fatal(err)
-	}
 	if !strings.Contains(string(created.Definition().InputSchema), `"enum":["worker","reviewer"]`) {
 		t.Fatalf("schema = %s", created.Definition().InputSchema)
 	}
@@ -241,16 +237,18 @@ func TestNewTransformsGeneratedSchema(t *testing.T) {
 func TestNewRejectsInvalidSchemaTransforms(t *testing.T) {
 	type input struct{}
 	handler := func(context.Context, input) (string, error) { return "ok", nil }
-	if _, err := New("nil-option", "Reject a nil option.", handler, nil); err == nil || !strings.Contains(err.Error(), "option 0 is nil") {
-		t.Fatalf("New() nil option error = %v", err)
+	if message := panicMessage(t, func() { New("nil-option", "Reject a nil option.", handler, nil) }); !strings.Contains(message, "option 0 is nil") {
+		t.Fatalf("New() nil option panic = %q", message)
 	}
-	if _, err := New("nil-transform", "Reject a nil transform.", handler, WithTransformSchema(nil)); err == nil || !strings.Contains(err.Error(), "schema transform is required") {
-		t.Fatalf("New() nil transform error = %v", err)
+	if message := panicMessage(t, func() { New("nil-transform", "Reject a nil transform.", handler, WithTransformSchema(nil)) }); !strings.Contains(message, "schema transform is required") {
+		t.Fatalf("New() nil transform panic = %q", message)
 	}
-	if _, err := New("invalid-transform", "Reject invalid transformed JSON.", handler, WithTransformSchema(func(json.RawMessage) (json.RawMessage, error) {
-		return json.RawMessage(`{`), nil
-	})); err == nil || !strings.Contains(err.Error(), "returned invalid JSON") {
-		t.Fatalf("New() invalid transform error = %v", err)
+	if message := panicMessage(t, func() {
+		New("invalid-transform", "Reject invalid transformed JSON.", handler, WithTransformSchema(func(json.RawMessage) (json.RawMessage, error) {
+			return json.RawMessage(`{`), nil
+		}))
+	}); !strings.Contains(message, "returned invalid JSON") {
+		t.Fatalf("New() invalid transform panic = %q", message)
 	}
 }
 
@@ -263,7 +261,7 @@ func TestPropertyOptionsCustomizeGeneratedSchema(t *testing.T) {
 		Choice  string `json:"choice"`
 		Removed string `json:"removed"`
 	}
-	created, err := New("properties", "Customize generated properties.", func(context.Context, input) (string, error) {
+	created := New("properties", "Customize generated properties.", func(context.Context, input) (string, error) {
 		return "ok", nil
 	},
 		WithPropertyType("child.value", "string"),
@@ -278,9 +276,6 @@ func TestPropertyOptionsCustomizeGeneratedSchema(t *testing.T) {
 		}),
 		WithoutProperty("removed"),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var schema struct {
 		Properties map[string]json.RawMessage `json:"properties"`
 		Required   []string                   `json:"required"`

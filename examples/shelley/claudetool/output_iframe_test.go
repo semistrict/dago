@@ -38,10 +38,10 @@ func TestOutputIframeRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workingDir := &MutableWorkingDir{}
+	workingDir := &mutableWorkingDir{}
 	workingDir.Set(tmpDir)
 
-	tool := &OutputIframeTool{WorkingDir: workingDir}
+	tool := &outputIframeTool{WorkingDir: workingDir}
 
 	tests := []struct {
 		name         string
@@ -158,7 +158,7 @@ func TestOutputIframeRun(t *testing.T) {
 				t.Fatalf("failed to marshal input: %v", err)
 			}
 
-			result, executeErr := tool.NativeTool().Execute(context.Background(), inputJSON, datool.Runtime{})
+			result, executeErr := tool.nativeTool().Execute(context.Background(), inputJSON, datool.Runtime{})
 
 			if tt.wantErr {
 				if executeErr == nil {
@@ -211,16 +211,16 @@ func TestOutputIframeLibraries(t *testing.T) {
 	if err := os.WriteFile(htmlFile, []byte("<html><head></head><body></body></html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wd := &MutableWorkingDir{}
+	wd := &mutableWorkingDir{}
 	wd.Set(tmpDir)
-	tool := &OutputIframeTool{WorkingDir: wd}
+	tool := &outputIframeTool{WorkingDir: wd}
 
 	t.Run("valid library is recorded", func(t *testing.T) {
 		in, _ := json.Marshal(map[string]any{
 			"path":      "test.html",
 			"libraries": []string{"excalidraw"},
 		})
-		res, err := tool.NativeTool().Execute(context.Background(), in, datool.Runtime{})
+		res, err := tool.nativeTool().Execute(context.Background(), in, datool.Runtime{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -243,7 +243,7 @@ func TestOutputIframeLibraries(t *testing.T) {
 			"path":      "test.html",
 			"libraries": []string{"not-a-real-lib"},
 		})
-		_, err := tool.NativeTool().Execute(context.Background(), in, datool.Runtime{})
+		_, err := tool.nativeTool().Execute(context.Background(), in, datool.Runtime{})
 		if err == nil {
 			t.Errorf("expected error for unknown library, got none")
 		}
@@ -254,7 +254,7 @@ func TestOutputIframeLibraries(t *testing.T) {
 			"path":      "test.html",
 			"libraries": []string{"excalidraw", "excalidraw"},
 		})
-		res, err := tool.NativeTool().Execute(context.Background(), in, datool.Runtime{})
+		res, err := tool.nativeTool().Execute(context.Background(), in, datool.Runtime{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -391,10 +391,10 @@ func TestInjectFiles(t *testing.T) {
 }
 
 func TestOutputIframeToolSchema(t *testing.T) {
-	workingDir := &MutableWorkingDir{}
+	workingDir := &mutableWorkingDir{}
 	workingDir.Set("/tmp")
-	tool := &OutputIframeTool{WorkingDir: workingDir}
-	nativeTool := tool.NativeTool()
+	tool := &outputIframeTool{WorkingDir: workingDir}
+	nativeTool := tool.nativeTool()
 	definition := nativeTool.Definition()
 
 	if definition.Name != "output_iframe" {

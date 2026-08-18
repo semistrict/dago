@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damodel"
@@ -37,6 +38,81 @@ type GeneralPurposeSubagentProfile struct {
 	Mode         GeneralPurposeSubagentMode
 	Description  *string
 	SystemPrompt *string
+}
+
+var harnessProfileRegistry = struct {
+	sync.RWMutex
+	profiles map[string]Profile
+}{profiles: map[string]Profile{}}
+
+// HarnessProfilePlugin identifies an explicitly imported harness-profile
+// plugin. Register may call RegisterHarnessProfile one or more times.
+//
+// Go does not provide a portable equivalent of Python package entry points,
+// so applications must import plugin packages and pass their registration
+// functions to LoadHarnessProfilePlugins (or rely on an imported package's
+// init function calling RegisterHarnessProfile).
+type HarnessProfilePlugin struct {
+	Name     string
+	Register func() error
+}
+
+// RegisterHarnessProfile additively registers a provider or provider:model
+// harness profile. An incoming profile layers on top of an existing profile
+// under the same key. Registration is safe to call concurrently and stores a
+// defensive copy.
+//
+// Registered profiles layer over built-ins during agent construction, while
+// profiles passed with WithProfiles remain caller-owned and have final
+// precedence.
+func RegisterHarnessProfile(key string, profile Profile) error {
+	if err := validateProfileKey(key); err != nil {
+		return err
+	}
+	if err := validateProfile(profile); err != nil {
+		return err
+	}
+	profile = cloneProfile(profile)
+	harnessProfileRegistry.Lock()
+	defer harnessProfileRegistry.Unlock()
+	if existing, ok := harnessProfileRegistry.profiles[key]; ok {
+		profile = MergeProfiles(existing, profile)
+	}
+	harnessProfileRegistry.profiles[key] = profile
+	return nil
+}
+
+// LoadHarnessProfilePlugins invokes explicitly supplied plugins in order. A
+// returned error or panic is captured for that plugin and does not prevent
+// later plugins from loading. Registrations completed before a failure remain
+// registered, matching the additive plugin contract.
+func LoadHarnessProfilePlugins(plugins ...HarnessProfilePlugin) []error {
+	var failures []error
+	for index, plugin := range plugins {
+		if err := loadHarnessProfilePlugin(plugin, index); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return failures
+}
+
+func loadHarnessProfilePlugin(plugin HarnessProfilePlugin, index int) (err error) {
+	label := plugin.Name
+	if label == "" {
+		label = fmt.Sprintf("plugin %d", index)
+	}
+	if plugin.Register == nil {
+		return fmt.Errorf("harness profile plugin %q: registration function is nil", label)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("harness profile plugin %q panicked: %v", label, recovered)
+		}
+	}()
+	if err := plugin.Register(); err != nil {
+		return fmt.Errorf("harness profile plugin %q: %w", label, err)
+	}
+	return nil
 }
 
 func validateProfileKey(name string) error {
@@ -87,10 +163,13 @@ func MergeProfiles(profiles ...Profile) Profile {
 }
 
 func resolveProfiles(chat damodel.Chat, explicit []Profile) (Profile, error) {
-	values := make([]Profile, 0, len(explicit)+2)
+	values := make([]Profile, 0, len(explicit)+3)
 	modelProfile := chat.Profile()
 	if builtin, exists := builtinHarnessProfile(modelProfile.Provider, modelProfile.Model); exists {
 		values = append(values, builtin)
+	}
+	if registered, exists := registeredHarnessProfile(modelProfile.Provider, modelProfile.Model); exists {
+		values = append(values, registered)
 	}
 	for index, profile := range explicit {
 		if err := validateProfile(profile); err != nil {
@@ -99,6 +178,23 @@ func resolveProfiles(chat damodel.Chat, explicit []Profile) (Profile, error) {
 	}
 	values = append(values, explicit...)
 	return MergeProfiles(values...), nil
+}
+
+func registeredHarnessProfile(provider, model string) (Profile, bool) {
+	harnessProfileRegistry.RLock()
+	defer harnessProfileRegistry.RUnlock()
+	base, hasBase := harnessProfileRegistry.profiles[provider]
+	exact, hasExact := harnessProfileRegistry.profiles[provider+":"+model]
+	switch {
+	case hasBase && hasExact:
+		return MergeProfiles(base, exact), true
+	case hasExact:
+		return cloneProfile(exact), true
+	case hasBase:
+		return cloneProfile(base), true
+	default:
+		return Profile{}, false
+	}
 }
 
 func cloneProfile(profile Profile) Profile {

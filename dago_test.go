@@ -141,8 +141,12 @@ func TestAgentPreservesExplicitConstructionMetadataAndTags(t *testing.T) {
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	inspected := false
 	metadataMiddleware := dagent.Middleware{Name: "inspect_invocation_metadata", WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
-		if len(request.InvocationMetadata) != 1 || string(request.InvocationMetadata["tenant"]) != `"alpha"` {
+		if len(request.InvocationMetadata) != 2 || string(request.InvocationMetadata["tenant"]) != `"alpha"` {
 			return dagent.ModelResponse{}, fmt.Errorf("invocation metadata = %#v", request.InvocationMetadata)
+		}
+		var versions map[string]string
+		if err := json.Unmarshal(request.InvocationMetadata["lc_versions"], &versions); err != nil || versions["dago"] != Version() {
+			return dagent.ModelResponse{}, fmt.Errorf("version metadata = %#v, %v", versions, err)
 		}
 		if len(request.InvocationTags) != 1 || request.InvocationTags[0] != "integration" {
 			return dagent.ModelResponse{}, fmt.Errorf("invocation tags = %#v", request.InvocationTags)
@@ -167,8 +171,7 @@ func TestAgentBindsRuntimeScopedStoreBackend(t *testing.T) {
 	files := dabackend.NewStoreWithOptions(func(runtime *dabackend.Runtime) (dastore.Namespace, error) {
 		user, _ := dabackend.DepsAs[string](runtime)
 		return dastore.Namespace{"files", user}, nil
-	})
-
+	}, dabackend.StoreOptions{})
 	script := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/note.txt","content":"private"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
@@ -196,8 +199,8 @@ func TestAgentStreamProjectsNestedSubagentLifecycle(t *testing.T) {
 		return datool.TextResult(input.Value), nil
 	}}
 	child := modeltest.New(damodel.Profile{ToolCalling: true},
-		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "child-echo", Name: "echo", Arguments: json.RawMessage(`{"value":"nested"}`)}}}}},
-		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child done")}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "child-echo", Name: "echo", Arguments: json.RawMessage(`{"value":"nested"}`)}}, Usage: &damessage.Usage{InputTokens: 10, OutputTokens: 2, Provider: "test", Model: "child"}}}},
+		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, Content: damessage.Assistant("child done").Content, Usage: &damessage.Usage{InputTokens: 20, OutputTokens: 4, Provider: "test", Model: "child"}}}},
 	)
 	parent := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "parent-task", Name: "task", Arguments: json.RawMessage(`{"description":"do work","subagent_type":"worker"}`)}}}}},
@@ -222,8 +225,18 @@ func TestAgentStreamProjectsNestedSubagentLifecycle(t *testing.T) {
 			childEvents = append(childEvents, *event.Child)
 		}
 	}
-	if _, err := stream.Result(context.Background()); err != nil {
+	result, err := stream.Result(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	var transferred []damessage.PurposedUsage
+	for _, message := range result.Messages {
+		if message.Role == damessage.RoleTool && message.ToolCallID == "parent-task" {
+			transferred = message.OtherUsage
+		}
+	}
+	if len(transferred) != 2 || transferred[0].Purpose != "subagent" || transferred[1].Purpose != "subagent" {
+		t.Fatalf("transferred child usage = %#v", transferred)
 	}
 	if len(childEvents) < 3 || childEvents[0].Phase != dagent.ChildStarted || childEvents[len(childEvents)-1].Phase != dagent.ChildCompleted {
 		t.Fatalf("child lifecycle = %#v", childEvents)
@@ -366,7 +379,6 @@ func TestExplicitApprovalOverridesFilesystemPermissionApproval(t *testing.T) {
 	memory := dabackend.NewMemory(map[string]dabackend.FileData{
 		"/secret.txt": {Content: "backend secret", Encoding: dabackend.EncodingUTF8},
 	})
-
 	script := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/secret.txt"}`)}}}}},
 		modeltest.Step{Check: func(request damodel.Request) error {
@@ -783,7 +795,6 @@ func TestDeclarativeSubagentInheritsToolsAndUsesOwnModelAndPrompt(t *testing.T) 
 
 func TestDeclarativeSubagentPropagatesNonMessageState(t *testing.T) {
 	files := dabackend.NewState("", nil)
-
 	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "declarative-write", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"/declarative.txt","content":"from declarative child"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("created")}},
@@ -1169,7 +1180,6 @@ func TestApprovalConfigurationRequiresCheckpointer(t *testing.T) {
 
 func TestSubagentCanPropagateSelectedStateWithoutMessageLeak(t *testing.T) {
 	files := dabackend.NewState("", nil)
-
 	childModel := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Check: func(request damodel.Request) error {
 			messages := messagesWithoutSystem(request)
@@ -1380,7 +1390,6 @@ func TestSummarizationClipsTrailingToolBatchOnOverflow(t *testing.T) {
 
 func TestSummarizationPersistsOverflowArtifactsInStateBackend(t *testing.T) {
 	files := dabackend.NewState("", nil)
-
 	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("summary")}})
 	mainModel := modeltest.New(damodel.Profile{},
 		modeltest.Step{Error: damodel.ErrContextOverflow},

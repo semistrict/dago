@@ -4,6 +4,7 @@ package db
 //go:generate go tool github.com/sqlc-dev/sqlc/cmd/sqlc generate -f ../sqlc.yaml
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -11,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -49,24 +51,19 @@ type DB struct {
 	saver *checkpointsqlite.Saver
 }
 
-// Config holds database configuration
-type Config struct {
-	DSN string // Data Source Name for SQLite database
-}
-
-// New creates a new database connection with the given configuration
-func New(cfg Config) (*DB, error) {
-	if cfg.DSN == "" {
+// New creates a new database connection for the required SQLite data source.
+func New(dsn string) (*DB, error) {
+	if dsn == "" {
 		return nil, fmt.Errorf("database DSN cannot be empty")
 	}
 
-	if cfg.DSN == ":memory:" {
+	if dsn == ":memory:" {
 		return nil, fmt.Errorf(":memory: database not supported (requires multiple connections); use a temp file")
 	}
 
 	// Ensure directory exists for file-based SQLite databases
-	if cfg.DSN != ":memory:" {
-		dir := filepath.Dir(cfg.DSN)
+	if dsn != ":memory:" {
+		dir := filepath.Dir(dsn)
 		if dir != "." && dir != "" {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return nil, fmt.Errorf("failed to create database directory: %w", err)
@@ -75,14 +72,13 @@ func New(cfg Config) (*DB, error) {
 	}
 
 	// Create connection pool with 3 readers
-	dsn := cfg.DSN
 	if !strings.Contains(dsn, "?") {
 		dsn += "?_foreign_keys=on"
 	} else if !strings.Contains(dsn, "_foreign_keys") {
 		dsn += "&_foreign_keys=on"
 	}
 
-	pool, err := NewPool(dsn, 3)
+	pool, err := newPool(dsn, 3)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
@@ -291,8 +287,53 @@ func ParseConversationOptions(s string) ConversationOptions {
 	return opts
 }
 
+// ParseConversationOptionsStrict parses persisted options for a read-modify-
+// write operation. Unlike ParseConversationOptions, it refuses corruption,
+// trailing JSON, unknown fields, and unsupported enum values so a mutation can
+// never silently replace damaged state with a partial zero value.
+func ParseConversationOptionsStrict(s string) (ConversationOptions, error) {
+	if strings.TrimSpace(s) == "" {
+		return ConversationOptions{}, nil
+	}
+	var opts ConversationOptions
+	decoder := json.NewDecoder(bytes.NewBufferString(s))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&opts); err != nil {
+		return ConversationOptions{}, fmt.Errorf("parse conversation options: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return ConversationOptions{}, errors.New("parse conversation options: trailing JSON")
+		}
+		return ConversationOptions{}, fmt.Errorf("parse conversation options: %w", err)
+	}
+	if err := validateConversationOptions(opts); err != nil {
+		return ConversationOptions{}, err
+	}
+	return opts, nil
+}
+
+func validateConversationOptions(opts ConversationOptions) error {
+	if _, err := llm.ParseThinkingLevelStrict(opts.ThinkingLevel); err != nil {
+		return err
+	}
+	for name, state := range opts.ToolOverrides {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("conversation tool override name must not be empty")
+		}
+		if state != "on" && state != "off" {
+			return fmt.Errorf("conversation tool override %q must be on or off", name)
+		}
+	}
+	return nil
+}
+
 // UpdateConversationOptions replaces a conversation's stored options JSON.
 func (db *DB) UpdateConversationOptions(ctx context.Context, conversationID string, opts ConversationOptions) error {
+	if err := validateConversationOptions(opts); err != nil {
+		return err
+	}
 	optsJSON, err := json.Marshal(opts)
 	if err != nil {
 		return fmt.Errorf("failed to marshal conversation options: %w", err)
@@ -315,7 +356,10 @@ func (db *DB) RegisterConversationHook(ctx context.Context, conversationID strin
 		if err != nil {
 			return err
 		}
-		opts = ParseConversationOptions(raw)
+		opts, err = ParseConversationOptionsStrict(raw)
+		if err != nil {
+			return err
+		}
 		for _, existing := range opts.EndOfTurnHooks {
 			if existing.URL == hook.URL {
 				return nil
@@ -339,6 +383,9 @@ func (db *DB) RegisterConversationHook(ctx context.Context, conversationID strin
 // returns the resulting options. reasoning is a user-facing level name
 // ("off", "minimal", "low", "medium", "high", "xhigh").
 func (db *DB) SetConversationThinkingLevel(ctx context.Context, conversationID, reasoning string) (ConversationOptions, error) {
+	if _, err := llm.ParseThinkingLevelStrict(reasoning); err != nil {
+		return ConversationOptions{}, err
+	}
 	var opts ConversationOptions
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
@@ -346,7 +393,10 @@ func (db *DB) SetConversationThinkingLevel(ctx context.Context, conversationID, 
 		if err != nil {
 			return err
 		}
-		opts = ParseConversationOptions(raw)
+		opts, err = ParseConversationOptionsStrict(raw)
+		if err != nil {
+			return err
+		}
 		if opts.ThinkingLevel == reasoning {
 			return nil
 		}
@@ -365,6 +415,9 @@ func (db *DB) SetConversationThinkingLevel(ctx context.Context, conversationID, 
 
 // CreateConversation creates a new conversation with an optional slug.
 func (db *DB) CreateConversation(ctx context.Context, slug *string, userInitiated bool, cwd, model *string, opts ConversationOptions) (*generated.Conversation, error) {
+	if err := validateConversationOptions(opts); err != nil {
+		return nil, err
+	}
 	conversationID, err := generateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
@@ -394,6 +447,9 @@ func (db *DB) CreateConversation(ctx context.Context, slug *string, userInitiate
 // the chat handler. They appear in the normal conversation list and can
 // be deleted like any other conversation.
 func (db *DB) CreateDraftConversation(ctx context.Context, cwd, model *string, opts ConversationOptions, draft string) (*generated.Conversation, error) {
+	if err := validateConversationOptions(opts); err != nil {
+		return nil, err
+	}
 	conversationID, err := generateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
@@ -454,6 +510,9 @@ func (db *DB) UpdateDraft(ctx context.Context, conversationID string, draft, mod
 func (db *DB) PromoteDraft(ctx context.Context, conversationID string, cwd, model *string, opts *ConversationOptions) (*generated.Conversation, error) {
 	var optsJSON []byte
 	if opts != nil {
+		if err := validateConversationOptions(*opts); err != nil {
+			return nil, err
+		}
 		var err error
 		optsJSON, err = json.Marshal(*opts)
 		if err != nil {
@@ -1149,13 +1208,21 @@ const (
 	MessageTypeSlug MessageType = "slug"
 )
 
+func validMessageType(messageType MessageType) bool {
+	switch messageType {
+	case MessageTypeUser, MessageTypeAgent, MessageTypeTool, MessageTypeSystem, MessageTypeError,
+		MessageTypeGitInfo, MessageTypeWarning, MessageTypeModelChange, MessageTypeSlug:
+		return true
+	default:
+		return false
+	}
+}
+
 // CreateMessageParams contains parameters for creating a message
 type CreateMessageParams struct {
-	ConversationID string
-	Type           MessageType
-	LLMData        interface{} // Will be JSON marshalled
-	UserData       interface{} // Will be JSON marshalled
-	UsageData      interface{} // Will be JSON marshalled
+	LLMData   interface{} // Will be JSON marshalled
+	UserData  interface{} // Will be JSON marshalled
+	UsageData interface{} // Will be JSON marshalled
 	// LLMAPIURL and ModelName promote the LLM endpoint URL and the
 	// provider-reported model name out of UsageData into first-class
 	// columns so they can be queried directly. Empty strings are stored as
@@ -1272,7 +1339,13 @@ func marshalMessageJSON(params CreateMessageParams) (llmDataJSON, userDataJSON, 
 // insertMessageTx inserts one message within an open Tx, allocating its
 // sequence_id and stamping the conversation's current generation. Shared by
 // CreateMessage and CreateMessages so single and bulk inserts are identical.
-func insertMessageTx(ctx context.Context, q *generated.Queries, params CreateMessageParams) (generated.Message, error) {
+func insertMessageTx(ctx context.Context, q *generated.Queries, conversationID string, messageType MessageType, params CreateMessageParams) (generated.Message, error) {
+	if strings.TrimSpace(conversationID) == "" {
+		return generated.Message{}, errors.New("conversation ID is required")
+	}
+	if !validMessageType(messageType) {
+		return generated.Message{}, fmt.Errorf("invalid message type %q", messageType)
+	}
 	if params.MarkAgentDone && params.MarkAgentStart {
 		return generated.Message{}, fmt.Errorf("insertMessageTx: MarkAgentDone and MarkAgentStart are mutually exclusive")
 	}
@@ -1280,20 +1353,20 @@ func insertMessageTx(ctx context.Context, q *generated.Queries, params CreateMes
 	if err != nil {
 		return generated.Message{}, err
 	}
-	sequenceID, err := q.GetNextSequenceID(ctx, params.ConversationID)
+	sequenceID, err := q.GetNextSequenceID(ctx, conversationID)
 	if err != nil {
 		return generated.Message{}, fmt.Errorf("failed to get next sequence ID: %w", err)
 	}
-	conversation, err := q.GetConversation(ctx, params.ConversationID)
+	conversation, err := q.GetConversation(ctx, conversationID)
 	if err != nil {
 		return generated.Message{}, fmt.Errorf("failed to get conversation generation: %w", err)
 	}
 	message, err := q.CreateMessage(ctx, generated.CreateMessageParams{
 		MessageID:           uuid.New().String(),
-		ConversationID:      params.ConversationID,
+		ConversationID:      conversationID,
 		SequenceID:          sequenceID,
 		Generation:          conversation.CurrentGeneration,
-		Type:                string(params.Type),
+		Type:                string(messageType),
 		LlmData:             llmDataJSON,
 		UserData:            userDataJSON,
 		UsageData:           usageDataJSON,
@@ -1311,13 +1384,13 @@ func insertMessageTx(ctx context.Context, q *generated.Queries, params CreateMes
 	if params.MarkAgentDone || params.MarkAgentStart {
 		if err := q.SetConversationAgentWorking(ctx, generated.SetConversationAgentWorkingParams{
 			AgentWorking:   params.MarkAgentStart,
-			ConversationID: params.ConversationID,
+			ConversationID: conversationID,
 		}); err != nil {
 			return generated.Message{}, err
 		}
 	}
 	if params.RemoveQueuedID != "" {
-		raw, err := q.GetConversationQueuedMessages(ctx, params.ConversationID)
+		raw, err := q.GetConversationQueuedMessages(ctx, conversationID)
 		if err != nil {
 			return generated.Message{}, err
 		}
@@ -1339,13 +1412,13 @@ func insertMessageTx(ctx context.Context, q *generated.Queries, params CreateMes
 		// satisfies the re-sort even when BumpTimestamp wasn't set.
 		if err := q.UpdateConversationQueuedMessages(ctx, generated.UpdateConversationQueuedMessagesParams{
 			QueuedMessages: jsonStr,
-			ConversationID: params.ConversationID,
+			ConversationID: conversationID,
 		}); err != nil {
 			return generated.Message{}, err
 		}
 	}
 	if params.BumpTimestamp {
-		if err := q.UpdateConversationTimestamp(ctx, params.ConversationID); err != nil {
+		if err := q.UpdateConversationTimestamp(ctx, conversationID); err != nil {
 			return generated.Message{}, err
 		}
 	}
@@ -1353,14 +1426,17 @@ func insertMessageTx(ctx context.Context, q *generated.Queries, params CreateMes
 }
 
 // CreateMessage creates a new message
-func (db *DB) CreateMessage(ctx context.Context, params CreateMessageParams) (*generated.Message, error) {
+func (db *DB) CreateMessage(ctx context.Context, conversationID string, messageType MessageType, params CreateMessageParams) (*generated.Message, error) {
 	var message generated.Message
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		var err error
-		message, err = insertMessageTx(ctx, generated.New(tx.Conn()), params)
+		message, err = insertMessageTx(ctx, generated.New(tx.Conn()), conversationID, messageType, params)
 		return err
 	})
-	return &message, err
+	if err != nil {
+		return nil, err
+	}
+	return &message, nil
 }
 
 // CreateMessages inserts several messages and bumps the conversation timestamp
@@ -1370,19 +1446,26 @@ func (db *DB) CreateMessage(ctx context.Context, params CreateMessageParams) (*g
 // doing each in its own Tx triggered a full-list recompute per message, which
 // is visibly slow on a large conversation list. Returns the created rows in
 // input order. All messages must target the same conversation.
-func (db *DB) CreateMessages(ctx context.Context, paramsList []CreateMessageParams) ([]generated.Message, error) {
+func (db *DB) CreateMessages(ctx context.Context, conversationID string, messageTypes []MessageType, paramsList []CreateMessageParams) ([]generated.Message, error) {
+	if strings.TrimSpace(conversationID) == "" {
+		return nil, errors.New("conversation ID is required")
+	}
+	if len(messageTypes) != len(paramsList) {
+		return nil, errors.New("CreateMessages: message type count must match parameter count")
+	}
+	for _, messageType := range messageTypes {
+		if !validMessageType(messageType) {
+			return nil, fmt.Errorf("invalid message type %q", messageType)
+		}
+	}
 	if len(paramsList) == 0 {
 		return nil, nil
 	}
-	conversationID := paramsList[0].ConversationID
 	out := make([]generated.Message, 0, len(paramsList))
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
-		for _, params := range paramsList {
-			if params.ConversationID != conversationID {
-				return fmt.Errorf("CreateMessages: all messages must share a conversation (%q != %q)", params.ConversationID, conversationID)
-			}
-			msg, err := insertMessageTx(ctx, q, params)
+		for index, params := range paramsList {
+			msg, err := insertMessageTx(ctx, q, conversationID, messageTypes[index], params)
 			if err != nil {
 				return err
 			}

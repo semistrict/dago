@@ -11,9 +11,45 @@ import (
 	"github.com/semistrict/dago/damessage"
 )
 
+func TestIndexedDBSaverListAppliesFiniteDefaultAndRejectsNegativeLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryBrowserCheckpointStore()
+	saver := NewIndexedDBSaver(store)
+	root := dacheckpoint.Config{ThreadID: "bounded"}
+	for index := 0; index < dacheckpoint.DefaultListLimit*10; index++ {
+		checkpoint, err := dacheckpoint.Empty(index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkpoint.ID = fmt.Sprintf("cp-%03d", index)
+		if _, err := saver.Put(ctx, root, checkpoint, dacheckpoint.Metadata{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tuples, err := saver.List(ctx, &root, dacheckpoint.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tuples) != dacheckpoint.DefaultListLimit {
+		t.Fatalf("default list length = %d, want %d", len(tuples), dacheckpoint.DefaultListLimit)
+	}
+	if store.lastListLimit != dacheckpoint.DefaultListLimit {
+		t.Fatalf("bridge list limit = %d, want %d", store.lastListLimit, dacheckpoint.DefaultListLimit)
+	}
+	if store.maxListResponse > dacheckpoint.DefaultListLimit {
+		t.Fatalf("bridge returned a page of %d records for limit %d", store.maxListResponse, dacheckpoint.DefaultListLimit)
+	}
+	if _, err := saver.List(ctx, &root, dacheckpoint.ListOptions{Limit: -1}); err == nil {
+		t.Fatal("negative list limit was accepted")
+	}
+}
+
 type memoryBrowserCheckpointStore struct {
-	checkpoints map[string]browserCheckpointRecord
-	writes      map[string]browserWriteRecord
+	checkpoints       map[string]browserCheckpointRecord
+	writes            map[string]browserWriteRecord
+	maxListResponse   int
+	lastListLimit     int
+	checkpointScanned int
 }
 
 func newMemoryBrowserCheckpointStore() *memoryBrowserCheckpointStore {
@@ -100,20 +136,41 @@ func (store *memoryBrowserCheckpointStore) Execute(ctx context.Context, operatio
 		}
 		return encodeStoreResult(result)
 	case "list_checkpoints":
-		var config *dacheckpoint.Config
-		if string(payload) != "null" {
-			value, err := decodeStorePayload[dacheckpoint.Config](payload)
-			if err != nil {
-				return nil, err
-			}
-			config = &value
+		request, err := decodeStorePayload[browserCheckpointListRequest](payload)
+		if err != nil {
+			return nil, err
 		}
+		if request.Limit <= 0 {
+			return nil, fmt.Errorf("checkpoint list limit must be positive")
+		}
+		store.lastListLimit = request.Limit
 		result := make([]browserCheckpointRecord, 0)
 		for _, record := range store.checkpoints {
-			if config != nil && (record.ThreadID != config.ThreadID || record.Namespace != config.Namespace) {
+			store.checkpointScanned++
+			if request.Config != nil && (record.ThreadID != request.Config.ThreadID ||
+				(!request.AllNamespaces && record.Namespace != request.Config.Namespace)) {
+				continue
+			}
+			if request.Config != nil && request.Config.CheckpointID != "" && record.CheckpointID != request.Config.CheckpointID {
+				continue
+			}
+			if request.Before != nil && request.Before.CheckpointID != "" && record.CheckpointID >= request.Before.CheckpointID {
+				continue
+			}
+			if request.After != nil && !browserCheckpointRecordAfter(record, *request.After) {
+				continue
+			}
+			if !browserMetadataMatches(record.Metadata, request.Metadata) {
 				continue
 			}
 			result = append(result, record)
+		}
+		sort.Slice(result, func(i, j int) bool { return browserCheckpointRecordLess(result[i], result[j]) })
+		if len(result) > request.Limit {
+			result = result[:request.Limit]
+		}
+		if len(result) > store.maxListResponse {
+			store.maxListResponse = len(result)
 		}
 		return encodeStoreResult(result)
 	case "delete_thread":
@@ -174,6 +231,77 @@ func (store *memoryBrowserCheckpointStore) Execute(ctx context.Context, operatio
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unsupported operation %q", operation)
+	}
+}
+
+type fixedListCheckpointStore struct {
+	records []browserCheckpointRecord
+}
+
+func (store fixedListCheckpointStore) Execute(_ context.Context, operation string, _ []byte) ([]byte, error) {
+	if operation != "list_checkpoints" {
+		return nil, fmt.Errorf("unexpected operation %q", operation)
+	}
+	return json.Marshal(store.records)
+}
+
+func TestIndexedDBSaverRejectsOutOfContractListResponses(t *testing.T) {
+	config := dacheckpoint.Config{ThreadID: "thread"}
+	record := func(id string) browserCheckpointRecord {
+		return browserCheckpointRecord{ThreadID: "thread", CheckpointID: id, Metadata: dacheckpoint.Metadata{Source: "input"}}
+	}
+	tests := []struct {
+		name    string
+		records []browserCheckpointRecord
+		options dacheckpoint.ListOptions
+	}{
+		{name: "over limit", records: []browserCheckpointRecord{record("cp-002"), record("cp-001")}, options: dacheckpoint.ListOptions{Limit: 1}},
+		{name: "wrong config", records: []browserCheckpointRecord{{ThreadID: "other", CheckpointID: "cp-001"}}, options: dacheckpoint.ListOptions{Limit: 1}},
+		{name: "before", records: []browserCheckpointRecord{record("cp-006")}, options: dacheckpoint.ListOptions{Limit: 1, Before: &dacheckpoint.Config{CheckpointID: "cp-005"}}},
+		{name: "metadata", records: []browserCheckpointRecord{record("cp-001")}, options: dacheckpoint.ListOptions{Limit: 1, Metadata: map[string]any{"source": "loop"}}},
+		{name: "order", records: []browserCheckpointRecord{record("cp-001"), record("cp-002")}, options: dacheckpoint.ListOptions{Limit: 2}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			saver := NewIndexedDBSaver(fixedListCheckpointStore{records: test.records})
+			if _, err := saver.List(context.Background(), &config, test.options); err == nil {
+				t.Fatal("out-of-contract bridge response was accepted")
+			}
+		})
+	}
+}
+
+func TestIndexedDBSaverPruneReadsLargeHistoriesInFinitePages(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryBrowserCheckpointStore()
+	saver := NewIndexedDBSaver(store)
+	config := dacheckpoint.Config{ThreadID: "paged-prune"}
+	for index := 0; index < dacheckpoint.DefaultListLimit*2+5; index++ {
+		checkpoint := testBrowserCheckpoint(fmt.Sprintf("cp-%03d", index))
+		target := config
+		if index%2 == 1 {
+			target.Namespace = "child"
+		}
+		if _, err := saver.Put(ctx, target, checkpoint, dacheckpoint.Metadata{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := saver.Prune(ctx, []string{config.ThreadID}, dacheckpoint.PruneKeepLatest); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.checkpoints) != 2 {
+		t.Fatalf("remaining checkpoints = %d, want 2 (latest in each namespace)", len(store.checkpoints))
+	}
+	if store.maxListResponse > dacheckpoint.DefaultListLimit {
+		t.Fatalf("prune bridge returned a page of %d records for limit %d", store.maxListResponse, dacheckpoint.DefaultListLimit)
+	}
+}
+
+func testBrowserCheckpoint(id string) dacheckpoint.Checkpoint {
+	return dacheckpoint.Checkpoint{
+		Version: dacheckpoint.LatestVersion, ID: id, Timestamp: id,
+		ChannelValues: map[string]any{}, ChannelVersions: map[string]string{},
+		VersionsSeen: map[string]map[string]string{},
 	}
 }
 
@@ -254,4 +382,14 @@ func TestIndexedDBSaverPersistsTypedCheckpointsAndWrites(t *testing.T) {
 	if err != nil || deleted != nil {
 		t.Fatalf("deleted tuple = %#v, %v", deleted, err)
 	}
+}
+
+func TestNewIndexedDBSaverRejectsTypedNilStore(t *testing.T) {
+	var store *memoryBrowserCheckpointStore
+	defer func() {
+		if recover() == nil {
+			t.Fatal("typed-nil checkpoint store was accepted")
+		}
+	}()
+	NewIndexedDBSaver(store)
 }

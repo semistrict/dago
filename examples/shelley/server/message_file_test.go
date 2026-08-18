@@ -107,11 +107,12 @@ func setupFileServer(t *testing.T, cwd, msgText string) (*httptest.Server, strin
 		Role:    llm.MessageRoleAssistant,
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: msgText}},
 	}
-	created, err := database.CreateMessage(context.Background(), db.CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData:        msg,
-	})
+	created, err := database.CreateMessage(context.Background(),
+		conv.ConversationID,
+		db.MessageTypeAgent, db.CreateMessageParams{
+
+			LLMData: msg,
+		})
 	if err != nil {
 		t.Fatal(err)
 	}

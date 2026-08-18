@@ -6,7 +6,9 @@
   "packageManager": "pnpm@10.34.0",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test:e2e": "pnpm run build && playwright test"
+    "test:e2e": "pnpm run build && playwright test",
+    "test:e2e:interactions": "pnpm run build && playwright test e2e/command-interactions.spec.ts",
+    "test:e2e:polish": "pnpm run build && playwright test e2e/polish.spec.ts"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",

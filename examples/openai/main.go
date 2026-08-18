@@ -20,6 +20,9 @@ func main() {
 	if modelName == "" {
 		modelName = "gpt-5"
 	}
+	if key == "" {
+		log.Fatal("OPENAI_API_KEY is required")
+	}
 	chat := openai.NewAPIKey(key, modelName, openai.Options{ContextWindow: 128_000})
 	workspace, err := dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: "."})
 	if err != nil {

@@ -7,9 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"reflect"
 	"strings"
 	"time"
 )
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
 
 // ErrPayloadTooLarge identifies a bounded read rejected before its payload was
 // allocated or returned.
@@ -155,6 +169,22 @@ type Backend interface {
 	Grep(context.Context, string, GrepOptions) (GrepResult, error)
 	Upload(context.Context, []Upload) []UploadResult
 	Download(context.Context, []string) []DownloadResult
+}
+
+// DurableWriter is an optional backend extension for atomic, crash-resistant
+// file replacement. Backends without a durable storage boundary need not
+// implement it.
+type DurableWriter interface {
+	WriteDurable(context.Context, string, string) (WriteResult, error)
+}
+
+// WriteDurable uses a backend's durable replacement boundary when available
+// and otherwise falls back to the ordinary write contract.
+func WriteDurable(ctx context.Context, backend Backend, path, content string) (WriteResult, error) {
+	if writer, ok := backend.(DurableWriter); ok {
+		return writer.WriteDurable(ctx, path, content)
+	}
+	return backend.Write(ctx, path, content)
 }
 
 // BoundedBinaryReader is an optional extension used for video reads. It must

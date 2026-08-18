@@ -1,0 +1,53 @@
+name: openwiki update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openwiki-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment: openwiki
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10.34.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+
+      - name: Update maintainer wiki
+        run: pnpm dlx openwiki@0.2.1 code --update --print
+        env:
+          OPENWIKI_PROVIDER: openai
+          OPENAI_API_KEY: ${{ secrets.OPENWIKI_OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENWIKI_OPENAI_BASE_URL }}
+          OPENWIKI_MODEL_ID: gpt-5.6-terra
+
+      - name: Create wiki update pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          add-paths: openwiki
+          branch: openwiki/update
+          commit-message: "docs(repo): update maintainer wiki"
+          title: "docs(repo): update maintainer wiki"
+          body: Automated maintainer-wiki update for review.

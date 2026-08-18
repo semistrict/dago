@@ -135,24 +135,24 @@ func NewDelta[T any](
 	reducer DeltaReducer[T],
 	cloner Cloner[T],
 	options ...DeltaOption,
-) (*Delta[T], error) {
+) *Delta[T] {
 	if initial == nil {
-		return nil, fmt.Errorf("create delta channel: initial value factory is required")
+		panic("create delta channel: initial value factory is required")
 	}
 	if reducer == nil {
-		return nil, fmt.Errorf("create delta channel: reducer is required")
+		panic("create delta channel: reducer is required")
 	}
 	if cloner == nil {
-		return nil, fmt.Errorf("create delta channel: cloner is required")
+		panic("create delta channel: cloner is required")
 	}
 
 	config := deltaConfig{snapshotFrequency: DefaultDeltaSnapshotFrequency}
 	for _, option := range options {
 		if option == nil {
-			return nil, fmt.Errorf("create delta channel: nil option")
+			panic("create delta channel: nil option")
 		}
 		if err := option(&config); err != nil {
-			return nil, fmt.Errorf("create delta channel: %w", err)
+			panic(fmt.Errorf("create delta channel: %w", err))
 		}
 	}
 
@@ -162,7 +162,7 @@ func NewDelta[T any](
 		clone:             cloner,
 		snapshotFrequency: config.snapshotFrequency,
 		ownedReducerInput: config.ownedReducerInput,
-	}, nil
+	}
 }
 
 // Restore returns an independent channel initialized from a checkpoint value.

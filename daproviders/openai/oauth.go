@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -41,14 +42,13 @@ type OAuthTokens struct {
 
 // OAuthOptions configures an authorization-code flow with PKCE.
 type OAuthOptions struct {
-	ClientID   string
-	Issuer     string
+	ClientID string
+	Issuer   string
+	// Port selects the loopback callback port. Zero selects the default; values
+	// outside the TCP port range are static configuration errors.
 	Port       int
 	HTTPClient *http.Client
 	StorePath  string
-	// OpenURL receives the authorization URL. A CLI can open a browser; a server
-	// can print or otherwise deliver it. Login does not launch processes itself.
-	OpenURL func(string) error
 	// Listener is primarily useful for embedding and deterministic tests. Its
 	// address must be registered with the authorization server.
 	Listener net.Listener
@@ -62,8 +62,12 @@ type OAuthSession struct {
 }
 
 // Login performs a local-loopback authorization-code flow with PKCE and returns
-// a refreshable session. It validates both callback state and PKCE exchange data.
-func Login(ctx context.Context, options OAuthOptions) (*OAuthSession, error) {
+// a refreshable session. openURL receives the authorization URL and is a required
+// positional dependency; Login does not launch processes itself.
+func Login(ctx context.Context, openURL func(string) error, options OAuthOptions) (*OAuthSession, error) {
+	if openURL == nil {
+		panic("openai: OAuth URL callback is required")
+	}
 	options = oauthDefaults(options)
 	listener := options.Listener
 	var err error
@@ -144,11 +148,7 @@ func Login(ctx context.Context, options OAuthOptions) (*OAuthSession, error) {
 		serveDone <- err
 	}()
 
-	if options.OpenURL == nil {
-		_ = server.Shutdown(context.Background())
-		return nil, fmt.Errorf("openai: OAuth OpenURL callback is required; authorization URL: %s", authorizeURL)
-	}
-	if err := options.OpenURL(authorizeURL); err != nil {
+	if err := openURL(authorizeURL); err != nil {
 		_ = server.Shutdown(context.Background())
 		return nil, fmt.Errorf("openai: deliver authorization URL: %w", err)
 	}
@@ -238,6 +238,9 @@ func (session *OAuthSession) Tokens() OAuthTokens {
 }
 
 func oauthDefaults(options OAuthOptions) OAuthOptions {
+	if options.Port < 0 || options.Port > 65535 {
+		panic("openai: OAuth callback port must be between 1 and 65535, or zero for the default")
+	}
 	if options.ClientID == "" {
 		options.ClientID = DefaultOAuthClientID
 	}
@@ -251,7 +254,23 @@ func oauthDefaults(options OAuthOptions) OAuthOptions {
 	if options.HTTPClient == nil {
 		options.HTTPClient = http.DefaultClient
 	}
+	if nilOAuthListener(options.Listener) {
+		options.Listener = nil
+	}
 	return options
+}
+
+func nilOAuthListener(listener net.Listener) bool {
+	if listener == nil {
+		return true
+	}
+	value := reflect.ValueOf(listener)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func listenOAuth(port int) (net.Listener, error) {

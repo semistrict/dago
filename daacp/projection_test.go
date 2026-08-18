@@ -239,7 +239,7 @@ func startProjectorTestConnection(t *testing.T, client *testClient) *projector {
 	t.Helper()
 	clientToServerReader, clientToServerWriter := io.Pipe()
 	serverToClientReader, serverToClientWriter := io.Pipe()
-	agent := newProtocolAgent(t.Context(), nil, Options{})
+	agent := newProtocolAgent(t.Context(), nil, nil, Options{})
 	serverConnection := acp.NewAgentSideConnection(agent, serverToClientWriter, clientToServerReader)
 	clientConnection := acp.NewClientSideConnection(client, clientToServerWriter, serverToClientReader)
 	agent.setConnection(serverConnection)

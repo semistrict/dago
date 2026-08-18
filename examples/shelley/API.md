@@ -5,6 +5,41 @@ clients (the web UI, the iOS app, the CLI in `client/`, and tests). All
 routes are mounted under `/api/` unless noted; the version endpoint is at
 `/version`.
 
+## Construction contracts
+
+Required dependencies are positional. The loop model and message recorder,
+LazyCue application URL, LazyCue agent browser/model/key, dtach socket/command,
+model catalog, and server database/model provider are not hidden inside option
+structs. Static invalid configuration panics immediately; constructors that
+initialize files or databases return genuine I/O errors and never return a
+partially usable value.
+
+Zero values select finite operational defaults for HTTP/browser idle timeouts,
+image limits, accessibility depth, subagent depth, and terminal scrollback.
+Unbounded behavior, where supported, uses a named explicit opt-out rather than
+an ambiguous zero. Negative limits are rejected.
+
+`MustNewServer` is retained as an explicit compile-or-panic boundary for
+deterministic fixtures and static embedded configurations. Production startup
+uses `NewServer` and handles its error. Exported wire DTOs remain public because
+the browser UI and generated type workflow consume them; implementation helpers
+remain package-private.
+
+Stored model capability resolvers accept only `auto`, `yes`, `no`, or the empty
+legacy spelling of `auto`; invalid enum values return an error rather than
+silently enabling a capability. Terminal-session startup propagates directory
+and record read failures. A syntactically malformed record is the sole scan
+exception: it is treated as stale crash residue and skipped without making the
+otherwise healthy terminal store unavailable.
+
+Two low-level construction surfaces intentionally remain public. `db.Pool` and
+`DB.Pool` are the SQLite integration boundary used for commit notifications,
+read-only diagnostic transactions, and controlled maintenance in embedders;
+ordinary persistence should use `DB` methods. `server.NewSubagentRunner` is the
+adapter boundary for external tool-set composition and black-box stream
+conformance tests. In contrast, conversation-manager construction and the
+LazyCue agent loop are application implementation details and are package-private.
+
 ## Capabilities
 
 ```

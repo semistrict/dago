@@ -33,20 +33,24 @@ func (memory *Memory) Snapshot() map[string]FileData {
 	return result
 }
 
+// NewMemory constructs an in-process backend. Invalid initial virtual paths are
+// static construction mistakes and panic; operation failures remain errors.
 func NewMemory(initial map[string]FileData) *Memory {
-	result, err := restoreMemory(initial)
+	result, err := LoadMemory(initial)
 	if err != nil {
 		panic(err)
 	}
 	return result
 }
 
-func restoreMemory(initial map[string]FileData) (*Memory, error) {
+// LoadMemory validates an externally supplied snapshot before constructing an
+// in-process backend. Prefer NewMemory for static application configuration.
+func LoadMemory(initial map[string]FileData) (*Memory, error) {
 	result := &Memory{files: map[string]FileData{}, now: time.Now}
 	for name, data := range initial {
 		normalized, err := normalizeVirtual(name)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("memory backend initial path %q: %w", name, err)
 		}
 		result.files[normalized] = data
 	}

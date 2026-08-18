@@ -40,6 +40,15 @@ func TestSafeTypedTags(t *testing.T) {
 	}
 }
 
+func TestNewRejectsNegativeLimits(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("negative serializer limit did not panic")
+		}
+	}()
+	New(Limits{MaxBytes: -1})
+}
+
 func TestSafeNamedScalarsRoundTripAsPortablePrimitives(t *testing.T) {
 	type decision string
 	type count int32

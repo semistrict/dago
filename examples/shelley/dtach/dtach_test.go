@@ -18,12 +18,19 @@ func TestRingDropsOldest(t *testing.T) {
 	}
 }
 
-func serveInBackground(t *testing.T, opts ServerOptions) <-chan error {
+func TestServeRejectsNegativeScrollback(t *testing.T) {
+	err := Serve(filepath.Join(t.TempDir(), "socket"), "cat", ServerOptions{ScrollbackBytes: -1})
+	if err == nil {
+		t.Fatal("negative scrollback was accepted")
+	}
+}
+
+func serveInBackground(t *testing.T, socket, command string, opts ServerOptions) <-chan error {
 	t.Helper()
 	ready := make(chan struct{})
 	opts.Ready = ready
 	done := make(chan error, 1)
-	go func() { done <- Serve(opts) }()
+	go func() { done <- Serve(socket, command, opts) }()
 	select {
 	case <-ready:
 	case err := <-done:
@@ -42,10 +49,7 @@ func TestServeAttachSurvivesDetach(t *testing.T) {
 	// A fast-exiting command would race the test: the session can tear down
 	// (closing and unlinking the socket) before the test gets a chance to
 	// attach.
-	serverDone := serveInBackground(t, ServerOptions{
-		SocketPath: sock,
-		Command:    "cat",
-	})
+	serverDone := serveInBackground(t, sock, "cat", ServerOptions{})
 
 	c, err := Attach(sock)
 	if err != nil {
@@ -100,10 +104,7 @@ func TestAttachReplaysScrollbackToLateClient(t *testing.T) {
 	// Use `cat` so the session stays alive until we send EOF. While running,
 	// any output we feed it should appear in the scrollback for late
 	// attachers.
-	done := serveInBackground(t, ServerOptions{
-		SocketPath: sock,
-		Command:    "cat",
-	})
+	done := serveInBackground(t, sock, "cat", ServerOptions{})
 
 	c1, err := Attach(sock)
 	if err != nil {

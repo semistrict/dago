@@ -19,11 +19,12 @@ func TestSearchConversationsFTS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create active: %v", err)
 	}
-	if _, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: active.ConversationID,
-		Type:           MessageTypeUser,
-		UserData:       map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "I saw a pelican by the bay"}}},
-	}); err != nil {
+	if _, err := db.CreateMessage(ctx,
+		active.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			UserData: map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "I saw a pelican by the bay"}}},
+		}); err != nil {
 		t.Fatalf("create user msg: %v", err)
 	}
 
@@ -32,11 +33,12 @@ func TestSearchConversationsFTS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create archived: %v", err)
 	}
-	if _, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: archived.ConversationID,
-		Type:           MessageTypeAgent,
-		LLMData:        map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "A pelican is a large waterbird"}}},
-	}); err != nil {
+	if _, err := db.CreateMessage(ctx,
+		archived.ConversationID,
+		MessageTypeAgent, CreateMessageParams{
+
+			LLMData: map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "A pelican is a large waterbird"}}},
+		}); err != nil {
 		t.Fatalf("create agent msg: %v", err)
 	}
 	if _, err := db.ArchiveConversation(ctx, archived.ConversationID); err != nil {
@@ -140,11 +142,12 @@ func TestSearchConversationsFTSStripsCitationMarkers(t *testing.T) {
 		t.Fatalf("create conversation: %v", err)
 	}
 	text := "A pelican is a large waterbird\ue200cite\ue202turn1search0\ue201 that fishes in flocks."
-	if _, err := db.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeAgent,
-		LLMData:        map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": text}}},
-	}); err != nil {
+	if _, err := db.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeAgent, CreateMessageParams{
+
+			LLMData: map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": text}}},
+		}); err != nil {
 		t.Fatalf("create agent msg: %v", err)
 	}
 

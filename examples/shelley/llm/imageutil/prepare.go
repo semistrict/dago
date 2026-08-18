@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+const (
+	DefaultMaxDimension = 4096
+	DefaultMaxBytes     = 20 << 20
+)
+
 // Prepared contains image bytes ready to send to an LLM.
 type Prepared struct {
 	Data      []byte
@@ -49,6 +54,15 @@ type Prepared struct {
 // instead of sending a request the provider will reject. source is included in
 // errors so the caller knows which input needs attention.
 func Prepare(data []byte, source string, maxDimension, maxBytes int) (Prepared, error) {
+	if maxDimension < 0 || maxBytes < 0 {
+		return Prepared{}, fmt.Errorf("image limits must not be negative")
+	}
+	if maxDimension == 0 {
+		maxDimension = DefaultMaxDimension
+	}
+	if maxBytes == 0 {
+		maxBytes = DefaultMaxBytes
+	}
 	converted := false
 	if IsHEIC(data) {
 		var err error

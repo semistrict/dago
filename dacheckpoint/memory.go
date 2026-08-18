@@ -1,6 +1,7 @@
 package dacheckpoint
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"sort"
@@ -11,6 +12,50 @@ type memoryKey struct {
 	threadID  string
 	namespace string
 	id        string
+}
+
+func memoryKeyLess(left, right memoryKey) bool {
+	if left.threadID != right.threadID {
+		return left.threadID < right.threadID
+	}
+	if left.namespace != right.namespace {
+		return left.namespace < right.namespace
+	}
+	return left.id > right.id
+}
+
+type memoryKeyMaxHeap []memoryKey
+
+func (keys memoryKeyMaxHeap) Len() int           { return len(keys) }
+func (keys memoryKeyMaxHeap) Less(i, j int) bool { return memoryKeyLess(keys[j], keys[i]) }
+func (keys memoryKeyMaxHeap) Swap(i, j int)      { keys[i], keys[j] = keys[j], keys[i] }
+func (keys *memoryKeyMaxHeap) Push(value any)    { *keys = append(*keys, value.(memoryKey)) }
+func (keys *memoryKeyMaxHeap) Pop() any {
+	old := *keys
+	last := old[len(old)-1]
+	*keys = old[:len(old)-1]
+	return last
+}
+
+type boundedMemoryKeys struct {
+	limit int
+	keys  memoryKeyMaxHeap
+}
+
+func (selection *boundedMemoryKeys) Add(key memoryKey) {
+	if len(selection.keys) < selection.limit {
+		heap.Push(&selection.keys, key)
+	} else if memoryKeyLess(key, selection.keys[0]) {
+		selection.keys[0] = key
+		heap.Fix(&selection.keys, 0)
+	}
+}
+
+func (selection *boundedMemoryKeys) Sorted() []memoryKey {
+	sort.Slice(selection.keys, func(i, j int) bool {
+		return memoryKeyLess(selection.keys[i], selection.keys[j])
+	})
+	return selection.keys
 }
 
 type blobKey struct {
@@ -118,7 +163,7 @@ func (saver *MemorySaver) PutWrites(
 	}
 	for index, write := range writes {
 		assigned := index
-		if special, ok := SpecialWriteIndexes[write.Channel]; ok {
+		if special, ok := SpecialWriteIndex(write.Channel); ok {
 			assigned = special
 		}
 		writeKey := writeKey{taskID: taskID, index: assigned}
@@ -204,6 +249,11 @@ func (saver *MemorySaver) List(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	var err error
+	options, err = options.Normalized()
+	if err != nil {
+		return nil, err
+	}
 	if config != nil {
 		if err := config.Validate(); err != nil {
 			return nil, err
@@ -211,7 +261,7 @@ func (saver *MemorySaver) List(
 	}
 	saver.mu.RLock()
 	defer saver.mu.RUnlock()
-	keys := make([]memoryKey, 0, len(saver.records))
+	selected := boundedMemoryKeys{limit: options.Limit}
 	for key, record := range saver.records {
 		if config != nil {
 			if key.threadID != config.ThreadID {
@@ -230,20 +280,9 @@ func (saver *MemorySaver) List(
 		if !metadataMatches(record.metadata, options.Metadata) {
 			continue
 		}
-		keys = append(keys, key)
+		selected.Add(key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].threadID != keys[j].threadID {
-			return keys[i].threadID < keys[j].threadID
-		}
-		if keys[i].namespace != keys[j].namespace {
-			return keys[i].namespace < keys[j].namespace
-		}
-		return keys[i].id > keys[j].id
-	})
-	if options.Limit > 0 && len(keys) > options.Limit {
-		keys = keys[:options.Limit]
-	}
+	keys := selected.Sorted()
 	result := make([]Tuple, 0, len(keys))
 	for _, key := range keys {
 		tuple, err := saver.getTupleLocked(Config{key.threadID, key.namespace, key.id})

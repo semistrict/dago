@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/semistrict/dago/damessage"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -63,18 +62,20 @@ type FFmpegExtractor struct {
 	decodeTimeout   time.Duration
 }
 
-func NewFFmpeg(optionValues ...FFmpegOptions) *FFmpegExtractor {
-	options := optionvalue.Resolve("FFmpeg extractor", optionValues)
+func NewFFmpeg(options FFmpegOptions) *FFmpegExtractor {
+	if options.MaxFrames < 0 || options.MaxEmittedBytes < 0 || options.DecodeTimeout < 0 {
+		panic("ffmpeg extractor limits cannot be negative")
+	}
 	if options.Executable == "" {
 		options.Executable = "ffmpeg"
 	}
-	if options.MaxFrames <= 0 {
+	if options.MaxFrames == 0 {
 		options.MaxFrames = DefaultMaxVideoFrames
 	}
-	if options.MaxEmittedBytes <= 0 {
+	if options.MaxEmittedBytes == 0 {
 		options.MaxEmittedBytes = DefaultMaxVideoEmittedBytes
 	}
-	if options.DecodeTimeout <= 0 {
+	if options.DecodeTimeout == 0 {
 		options.DecodeTimeout = DefaultVideoDecodeTimeout
 	}
 	return &FFmpegExtractor{

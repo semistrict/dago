@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
+	"strings"
 	"sync"
 
 	dago "github.com/semistrict/dago"
@@ -12,28 +14,29 @@ import (
 	"github.com/semistrict/dago/datool"
 
 	"github.com/semistrict/dago/examples/shelley/claudetool/browse"
+	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
-// WorkingDir is a thread-safe mutable working directory.
-type MutableWorkingDir struct {
+// mutableWorkingDir is a thread-safe mutable working directory.
+type mutableWorkingDir struct {
 	mu  sync.RWMutex
 	dir string
 }
 
-// NewMutableWorkingDir creates a new MutableWorkingDir with the given initial directory.
-func NewMutableWorkingDir(dir string) *MutableWorkingDir {
-	return &MutableWorkingDir{dir: dir}
+// newMutableWorkingDir creates a working-directory holder.
+func newMutableWorkingDir(dir string) *mutableWorkingDir {
+	return &mutableWorkingDir{dir: dir}
 }
 
 // Get returns the current working directory.
-func (w *MutableWorkingDir) Get() string {
+func (w *mutableWorkingDir) Get() string {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.dir
 }
 
 // Set updates the working directory.
-func (w *MutableWorkingDir) Set(dir string) {
+func (w *mutableWorkingDir) Set(dir string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.dir = dir
@@ -84,9 +87,10 @@ type ToolSetConfig struct {
 	SubagentDepth int
 	// MaxSubagentDepth is the maximum nesting depth for subagents.
 	// Subagent tool is only available when SubagentDepth < MaxSubagentDepth.
-	// A value of 0 means no limit (but SubagentRunner/SubagentDB must still be set).
-	// Set to 1 to allow only top-level conversations (depth 0) to spawn subagents.
+	// Zero defaults to 1, allowing only top-level conversations to spawn.
 	MaxSubagentDepth int
+	// UnlimitedSubagentDepth explicitly opts out of the finite depth bound.
+	UnlimitedSubagentDepth bool
 	// BuildAvailableModels, if set, is called by NewToolSet to compute the
 	// list of models that subagent / llm_one_shot tools can choose from.
 	// It is invoked each time a ToolSet is built so new conversations pick
@@ -107,7 +111,7 @@ type ToolSet struct {
 	nativeTools []datool.Tool
 	filesystem  []string
 	cleanup     func()
-	wd          *MutableWorkingDir
+	wd          *mutableWorkingDir
 }
 
 // Tools returns display-safe definitions for all local and provider-hosted tools.
@@ -139,9 +143,9 @@ func (ts *ToolSet) Cleanup() {
 	}
 }
 
-// WorkingDir returns the shared working directory.
-func (ts *ToolSet) WorkingDir() *MutableWorkingDir {
-	return ts.wd
+// CurrentWorkingDir returns the current shared working directory.
+func (ts *ToolSet) CurrentWorkingDir() string {
+	return ts.wd.Get()
 }
 
 // serverSideTools returns display definitions for provider-hosted tools.
@@ -158,6 +162,23 @@ func serverSideTools(profile damodel.Profile) []datool.Definition {
 
 // NewToolSet creates a new set of tools for a conversation.
 func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
+	if nilInterface(ctx) {
+		panic("tool set context is required")
+	}
+	if cfg.SubagentDepth < 0 || cfg.MaxSubagentDepth < 0 {
+		panic("subagent depths must not be negative")
+	}
+	if cfg.MaxSubagentDepth == 0 {
+		cfg.MaxSubagentDepth = 1
+	}
+	if _, err := llm.ParseThinkingLevelStrict(cfg.ReasoningLevel); err != nil {
+		panic(err)
+	}
+	for name, state := range cfg.ToolOverrides {
+		if strings.TrimSpace(name) == "" || (state != "on" && state != "off") {
+			panic("tool overrides require a non-empty name and on/off state")
+		}
+	}
 	workingDir := cfg.WorkingDir
 	if workingDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -166,27 +187,31 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			workingDir = "/"
 		}
 	}
-	wd := NewMutableWorkingDir(workingDir)
+	wd := newMutableWorkingDir(workingDir)
+	llmProvider := cfg.LLMProvider
+	if nilInterface(llmProvider) {
+		llmProvider = nil
+	}
 
 	env := cfg.Env
 	env.ConversationID = cfg.ConversationID
 
-	changeDirTool := &ChangeDirTool{
+	changeDirTool := &changeDirTool{
 		WorkingDir: wd,
 		OnChange:   cfg.OnWorkingDirChange,
 	}
 
-	outputIframeTool := &OutputIframeTool{WorkingDir: wd}
+	outputIframeTool := &outputIframeTool{WorkingDir: wd}
 
-	nativeTools := []datool.Tool{changeDirTool.NativeTool(), outputIframeTool.NativeTool()}
+	nativeTools := []datool.Tool{changeDirTool.nativeTool(), outputIframeTool.nativeTool()}
 	filesystemTools := selectedNativeFilesystemTools(cfg.ToolOverrides, cfg.DisableAllTools)
 	// Shelley's yielding shell remains an application-specific opt-in. The
 	// ordinary command path is dago's execute tool.
 	if IsToolEnabled("shell", cfg.ToolOverrides, cfg.DisableAllTools) {
-		nativeTools = append(nativeTools, (&ShellTool{
-			WorkingDir: wd, LLMProvider: cfg.LLMProvider, EnableJITInstall: cfg.EnableJITInstall,
+		nativeTools = append(nativeTools, (&shellTool{
+			WorkingDir: wd, LLMProvider: llmProvider, EnableJITInstall: cfg.EnableJITInstall,
 			Env: env, BackgroundCtx: ctx,
-		}).NativeTool())
+		}).nativeTool())
 	}
 
 	// Build the available models list (shared by subagent and llm_one_shot tools).
@@ -195,33 +220,30 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	var availableModels []AvailableModel
 	if cfg.BuildAvailableModels != nil {
 		availableModels = cfg.BuildAvailableModels()
-	} else if cfg.LLMProvider != nil {
-		for _, id := range cfg.LLMProvider.GetAvailableModels() {
+	} else if llmProvider != nil {
+		for _, id := range llmProvider.GetAvailableModels() {
 			availableModels = append(availableModels, AvailableModel{ID: id})
 		}
 	}
 
 	// Add subagent tool if configured and depth limit not reached.
-	// MaxSubagentDepth of 0 means no limit; otherwise, only add if depth < max.
-	canSpawnSubagents := cfg.SubagentRunner != nil && cfg.SubagentDB != nil && cfg.ParentConversationID != ""
-	if canSpawnSubagents && (cfg.MaxSubagentDepth == 0 || cfg.SubagentDepth < cfg.MaxSubagentDepth) {
-		nativeTools = append(nativeTools, dago.ConversationSubagentTool(cfg.SubagentDB, cfg.SubagentRunner, wd.Get, dago.ConversationSubagentOptions{
-			ParentConversationID: cfg.ParentConversationID,
-			ModelID:              cfg.ModelID,
-			AvailableModels:      availableModels,
-			ParentReasoning:      cfg.ReasoningLevel,
+	canSpawnSubagents := !nilInterface(cfg.SubagentRunner) && !nilInterface(cfg.SubagentDB) && cfg.ParentConversationID != "" && cfg.ModelID != ""
+	if canSpawnSubagents && (cfg.UnlimitedSubagentDepth || cfg.SubagentDepth < cfg.MaxSubagentDepth) {
+		nativeTools = append(nativeTools, dago.ConversationSubagentTool(cfg.SubagentDB, cfg.SubagentRunner, wd.Get, cfg.ParentConversationID, cfg.ModelID, dago.ConversationSubagentOptions{
+			AvailableModels: availableModels,
+			ParentReasoning: cfg.ReasoningLevel,
 		}))
 	}
 
 	// Add LLM one-shot tool if LLM provider is configured
-	if cfg.LLMProvider != nil {
-		llmOneShotTool := &LLMOneShotTool{
-			LLMProvider:     cfg.LLMProvider,
+	if llmProvider != nil {
+		llmOneShotTool := &llmOneShotTool{
+			LLMProvider:     llmProvider,
 			ModelID:         cfg.ModelID,
 			WorkingDir:      wd,
 			AvailableModels: availableModels,
 		}
-		nativeTools = append(nativeTools, llmOneShotTool.NativeTool())
+		nativeTools = append(nativeTools, llmOneShotTool.nativeTool())
 	}
 
 	var cleanup func()
@@ -241,8 +263,8 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			// at run time via the native model profile in its tool context,
 			// so the combined browser tool stays available.
 			modelSupportsImages := true
-			if cfg.LLMProvider != nil && cfg.ModelID != "" {
-				if chat, err := cfg.LLMProvider.GetChat(cfg.ModelID); err == nil {
+			if llmProvider != nil && cfg.ModelID != "" {
+				if chat, err := llmProvider.GetChat(cfg.ModelID); err == nil {
 					modelSupportsImages = chat.Profile().SupportsImages
 				}
 			}
@@ -278,8 +300,8 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 
 	// Add provider-hosted tools to display metadata. They are configured on the
 	// model and are not dispatched through the local tool executor.
-	if cfg.LLMProvider != nil && cfg.ModelID != "" {
-		if chat, err := cfg.LLMProvider.GetChat(cfg.ModelID); err == nil {
+	if llmProvider != nil && cfg.ModelID != "" {
+		if chat, err := llmProvider.GetChat(cfg.ModelID); err == nil {
 			for _, definition := range serverSideTools(chat.Profile()) {
 				if IsToolEnabled(definition.Name, cfg.ToolOverrides, cfg.DisableAllTools) {
 					definitions = append(definitions, definition)
@@ -293,6 +315,19 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		filesystem:  filesystemTools,
 		cleanup:     cleanup,
 		wd:          wd,
+	}
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
 	}
 }
 

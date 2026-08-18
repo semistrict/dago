@@ -16,6 +16,7 @@ import (
 type projector struct {
 	connection *acp.AgentSideConnection
 	sessionID  acp.SessionId
+	meta       map[string]any
 	tools      map[string]toolProjection
 	streamed   bool
 	fallback   []damessage.ContentBlock
@@ -299,7 +300,9 @@ func approvalOptions(decisions []dagent.ApprovalDecision) []acp.PermissionOption
 }
 
 func (projector *projector) send(ctx context.Context, update acp.SessionUpdate) error {
-	if err := projector.connection.SessionUpdate(ctx, acp.SessionNotification{SessionId: projector.sessionID, Update: update}); err != nil {
+	if err := projector.connection.SessionUpdate(ctx, acp.SessionNotification{
+		Meta: projector.meta, SessionId: projector.sessionID, Update: update,
+	}); err != nil {
 		return fmt.Errorf("send ACP session update: %w", err)
 	}
 	return nil

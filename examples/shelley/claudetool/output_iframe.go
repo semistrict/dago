@@ -12,13 +12,16 @@ import (
 	"github.com/semistrict/dago/datool"
 )
 
-// OutputIframeTool displays sandboxed HTML content to the user.
-// It requires a MutableWorkingDir to resolve relative file paths.
-type OutputIframeTool struct {
-	WorkingDir *MutableWorkingDir
+// outputIframeTool displays sandboxed HTML content to the user.
+// It requires a mutable working directory to resolve relative file paths.
+type outputIframeTool struct {
+	WorkingDir *mutableWorkingDir
 }
 
-func (t *OutputIframeTool) NativeTool() datool.Tool {
+func (t *outputIframeTool) nativeTool() datool.Tool {
+	if t == nil || t.WorkingDir == nil {
+		panic("output-iframe tool working directory is required")
+	}
 	return datool.MustNew(outputIframeName, outputIframeDescription, func(_ context.Context, input outputIframeInput) (datool.Result, error) {
 		display, err := t.execute(input)
 		if err != nil {
@@ -250,7 +253,7 @@ type outputIframeInput struct {
 	Libraries []string          `json:"libraries,omitempty" description:"Names of hosted runtime libraries to load. Allowed: excalidraw."`
 }
 
-func (t *OutputIframeTool) execute(input outputIframeInput) (OutputIframeDisplay, error) {
+func (t *outputIframeTool) execute(input outputIframeInput) (OutputIframeDisplay, error) {
 	if input.Path == "" {
 		return OutputIframeDisplay{}, fmt.Errorf("path is required")
 	}

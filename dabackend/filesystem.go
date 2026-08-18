@@ -3,7 +3,9 @@ package dabackend
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,8 +18,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 type FilesystemOptions struct {
@@ -59,8 +59,11 @@ type rootedFilesystem interface {
 	Lstat(name string) (fs.FileInfo, error)
 	MkdirAll(path string, perm fs.FileMode) error
 	Open(name string) (*os.File, error)
+	OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error)
 	ReadFile(name string) ([]byte, error)
+	Remove(name string) error
 	RemoveAll(path string) error
+	Rename(oldname, newname string) error
 	Stat(name string) (fs.FileInfo, error)
 	WriteFile(name string, data []byte, perm fs.FileMode) error
 }
@@ -138,8 +141,10 @@ func (backend *Filesystem) currentRoot() (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
-func NewFilesystem(optionValues ...FilesystemOptions) (*Filesystem, error) {
-	options := optionvalue.Resolve("filesystem", optionValues)
+func NewFilesystem(options FilesystemOptions) (*Filesystem, error) {
+	if options.MaxFileSize < 0 || options.MaxVideoSize < 0 || options.MaxResults < 0 {
+		panic("filesystem limits cannot be negative")
+	}
 	root := options.Root
 	if options.GetRoot != nil {
 		root = options.GetRoot()
@@ -159,13 +164,13 @@ func NewFilesystem(optionValues ...FilesystemOptions) (*Filesystem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("filesystem root: %w", err)
 	}
-	if options.MaxFileSize <= 0 {
+	if options.MaxFileSize == 0 {
 		options.MaxFileSize = 10 << 20
 	}
-	if options.MaxResults <= 0 {
+	if options.MaxResults == 0 {
 		options.MaxResults = 1000
 	}
-	if options.MaxVideoSize <= 0 {
+	if options.MaxVideoSize == 0 {
 		options.MaxVideoSize = 1 << 30
 	}
 	return &Filesystem{root: filepath.Clean(resolved), getRoot: options.GetRoot, virtual: !options.AllowHostPaths, maxFileSize: options.MaxFileSize, maxVideoSize: options.MaxVideoSize, maxResults: options.MaxResults}, nil
@@ -304,6 +309,140 @@ func (backend *Filesystem) Write(ctx context.Context, path, content string) (Wri
 	return WriteResult{Path: backend.displayPath(opened, name)}, nil
 }
 
+// WriteDurable atomically replaces one confined file, flushes its contents,
+// and flushes the containing directory before returning success.
+func (backend *Filesystem) WriteDurable(ctx context.Context, path, content string) (WriteResult, error) {
+	if err := ctx.Err(); err != nil {
+		return WriteResult{}, err
+	}
+	opened, err := backend.openPath(path)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	defer opened.Close()
+	permission := fs.FileMode(0o644)
+	var info fs.FileInfo
+	if opened.root != nil {
+		info, _ = opened.root.Lstat(opened.name)
+	} else {
+		info, _ = os.Lstat(opened.host)
+	}
+	if info != nil && info.Mode().IsRegular() {
+		permission = info.Mode().Perm()
+	}
+	if info != nil && info.Mode()&os.ModeSymlink != 0 {
+		return WriteResult{}, fmt.Errorf("durable write %q: final symlink is not allowed", path)
+	}
+	if opened.root != nil {
+		err = opened.root.MkdirAll(filepath.Dir(opened.name), 0o755)
+	} else {
+		err = os.MkdirAll(filepath.Dir(opened.host), 0o755)
+	}
+	if err == nil {
+		err = durableFilesystemReplace(opened, []byte(content), permission)
+	}
+	if err != nil {
+		return WriteResult{}, normalizeFileError(path, err)
+	}
+	name := opened.name
+	if opened.root == nil {
+		name = opened.host
+	}
+	return WriteResult{Path: backend.displayPath(opened, name)}, nil
+}
+
+// IsSymlink reports whether the final confined path component is a symbolic
+// link without following it. A missing path reports false without an error.
+func (backend *Filesystem) IsSymlink(ctx context.Context, path string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	opened, err := backend.openPath(path)
+	if err != nil {
+		return false, err
+	}
+	defer opened.Close()
+	var info fs.FileInfo
+	if opened.root != nil {
+		info, err = opened.root.Lstat(opened.name)
+	} else {
+		info, err = os.Lstat(opened.host)
+	}
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, normalizeFileError(path, err)
+	}
+	return info.Mode()&os.ModeSymlink != 0, nil
+}
+
+func durableFilesystemReplace(opened filesystemPath, content []byte, permission fs.FileMode) error {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return fmt.Errorf("create durable-write name: %w", err)
+	}
+	target := opened.name
+	if opened.root == nil {
+		target = opened.host
+	}
+	temporary := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".dago-write-"+hex.EncodeToString(random[:]))
+	var file *os.File
+	var err error
+	if opened.root != nil {
+		file, err = opened.root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, permission)
+	} else {
+		file, err = os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, permission)
+	}
+	if err != nil {
+		return err
+	}
+	cleanup := func() {
+		_ = file.Close()
+		if opened.root != nil {
+			_ = opened.root.Remove(temporary)
+		} else {
+			_ = os.Remove(temporary)
+		}
+	}
+	if _, err := file.Write(content); err != nil {
+		cleanup()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if opened.root != nil {
+		err = opened.root.Rename(temporary, target)
+	} else {
+		err = os.Rename(temporary, target)
+	}
+	if err != nil {
+		cleanup()
+		return err
+	}
+	var directory *os.File
+	if opened.root != nil {
+		directory, err = opened.root.Open(filepath.Dir(target))
+	} else {
+		directory, err = os.Open(filepath.Dir(target))
+	}
+	if err != nil {
+		return err
+	}
+	err = directory.Sync()
+	closeErr := directory.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
 func (backend *Filesystem) Edit(ctx context.Context, path, old, replacement string, replaceAll bool) (EditResult, error) {
 	if old == "" || old == replacement {
 		return EditResult{}, fmt.Errorf("edit %q: old string must be non-empty and differ from replacement", path)
@@ -377,6 +516,9 @@ func (backend *Filesystem) Delete(ctx context.Context, path string) (DeleteResul
 func (backend *Filesystem) Glob(ctx context.Context, pattern, base string) (GlobResult, error) {
 	if base == "" {
 		base = "/"
+		if !backend.virtual {
+			base = "."
+		}
 	}
 	opened, err := backend.openPath(base)
 	if err != nil {
@@ -438,6 +580,9 @@ func (backend *Filesystem) Grep(ctx context.Context, pattern string, options Gre
 	base := options.Path
 	if base == "" {
 		base = "/"
+		if !backend.virtual {
+			base = "."
+		}
 	}
 	opened, err := backend.openPath(base)
 	if err != nil {

@@ -63,14 +63,12 @@ func runDtachNew(args []string) {
 		os.Exit(2)
 	}
 	rest := fs.Args()
-	if err := dtach.Serve(dtach.ServerOptions{
-		SocketPath: *socket,
-		Command:    rest[0],
-		Args:       rest[1:],
-		Dir:        *cwd,
-		Cols:       uint16(*cols),
-		Rows:       uint16(*rows),
-		Env:        ptyEnv(),
+	if err := dtach.Serve(*socket, rest[0], dtach.ServerOptions{
+		Args: rest[1:],
+		Dir:  *cwd,
+		Cols: uint16(*cols),
+		Rows: uint16(*rows),
+		Env:  ptyEnv(),
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

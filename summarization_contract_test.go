@@ -19,7 +19,7 @@ import (
 )
 
 func mustSummarization(model damodel.Chat, backend dabackend.Backend, options Summarization) dagent.Middleware {
-	middleware, err := compileSummarization(options.modelFor(model), backend, options)
+	middleware, err := newSummarization(options.modelFor(model), backend, options)
 	if err != nil {
 		panic(err)
 	}
@@ -71,7 +71,10 @@ func TestHistoryOffloadAppendsPerThreadAndFiltersSyntheticSummaries(t *testing.T
 
 func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("durable facts")}})
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{
+		Role: damessage.RoleAssistant, Content: damessage.Assistant("durable facts").Content,
+		Usage: &damessage.Usage{InputTokens: 12, OutputTokens: 3, Provider: "test", Model: "summary"},
+	}}})
 	mainModel := modeltest.New(damodel.Profile{}, modeltest.Step{Check: func(request damodel.Request) error {
 		if !strings.Contains(request.Messages[0].TextContent(), "durable facts") || strings.Contains(request.Messages[0].TextContent(), "has been saved") {
 			return errors.New("invalid degraded summary")
@@ -98,6 +101,13 @@ func TestSummarizationContinuesWhenHistoryOffloadFails(t *testing.T) {
 	}
 	if len(summary.Metadata["history_offload_error"]) == 0 || string(summary.Metadata["lc_source"]) != `"summarization"` {
 		t.Fatalf("summary metadata = %#v", summary.Metadata)
+	}
+	if len(summary.OtherUsage) != 1 || summary.OtherUsage[0].Purpose != "offload" || summary.OtherUsage[0].TotalTokens != 0 || summary.OtherUsage[0].InputTokens != 12 {
+		t.Fatalf("summary usage = %#v", summary.OtherUsage)
+	}
+	updates, _ := response.Update[dagent.MessagesKey].([]damessage.Message)
+	if len(updates) == 0 || len(updates[len(updates)-1].OtherUsage) != 1 || updates[len(updates)-1].OtherUsage[0].Purpose != "offload" {
+		t.Fatalf("durable summary usage update = %#v", updates)
 	}
 }
 
@@ -337,5 +347,24 @@ func TestManualSummarizationToolIsOptInAndSharesEventState(t *testing.T) {
 	}
 	if got := applySummarizationEvent(messages, result.Update[summarizationEventKey]); len(got) != 3 || got[0].ID != summary.ID || got[1].TextContent() != "recent" {
 		t.Fatalf("effective messages = %#v", got)
+	}
+}
+
+func TestManualSummarizationToolForceBypassesOnlyTheTriggerThreshold(t *testing.T) {
+	memory := dabackend.NewMemory(nil)
+	summaryModel := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("forced summary")}})
+	manual := SummarizationTool(summaryModel, memory, SummarizationToolOptions{Summarization: Summarization{
+		TriggerClauses: []SummarizationTriggerClause{{Messages: 100}}, KeepMessages: 1,
+	}})
+	messages := []damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}
+	result, err := manual.Tools[0].Execute(context.Background(), json.RawMessage(`{"force":true}`), datool.Runtime{
+		CallID: "forced-compact", ThreadID: "thread", State: dastate.Values{dagent.MessagesKey: messages},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff, summary, _, ok := decodeSummarizationEvent(result.Update[summarizationEventKey])
+	if !ok || cutoff != 1 || !strings.Contains(summary.TextContent(), "forced summary") {
+		t.Fatalf("forced event = %#v", result.Update[summarizationEventKey])
 	}
 }

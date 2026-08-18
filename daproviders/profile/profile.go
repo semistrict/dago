@@ -2,16 +2,243 @@
 package profile
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
+	"sync"
+
+	"github.com/semistrict/dago/damodel"
 )
+
+var (
+	// ErrInvalidModelSpec marks a model specification that does not use the
+	// provider:model form required for string resolution.
+	ErrInvalidModelSpec = errors.New("invalid model specification")
+	// ErrProviderUnavailable marks a syntactically valid model specification
+	// whose provider has no configured construction factory.
+	ErrProviderUnavailable = errors.New("model provider unavailable")
+)
+
+// Factory constructs a chat model from a provider:model specification and the
+// fully merged provider options. Factories should treat options as read-only.
+type Factory func(modelSpec string, options map[string]any) (damodel.Chat, error)
+
+// Resolver turns provider:model strings into chat models. Profiles are applied
+// before the selected factory is called, and caller options take precedence.
+// Factories and profiles are explicit so applications retain ownership of
+// credentials and optional provider dependencies.
+type Resolver struct {
+	// Profiles selects construction profiles. Nil uses Builtin, including
+	// registered plugin overlays; a non-nil set is used exactly as supplied.
+	Profiles  Profiles
+	Factories map[string]Factory
+}
+
+// Resolve constructs the model named by modelSpec. Known spelling aliases are
+// normalized only for factory selection; the original specification is passed
+// to profiles, hooks, and the factory.
+func (resolver Resolver) Resolve(modelSpec string, callerOptions map[string]any) (damodel.Chat, error) {
+	provider, _, valid := splitProviderSpec(modelSpec)
+	if !valid || !strings.Contains(modelSpec, ":") {
+		return nil, fmt.Errorf("%w %q: expected provider:model", ErrInvalidModelSpec, modelSpec)
+	}
+	factory := resolver.Factories[normalizeProvider(provider)]
+	if factory == nil {
+		return nil, fmt.Errorf("%w: %s", ErrProviderUnavailable, provider)
+	}
+	profiles := resolver.Profiles
+	if profiles == nil {
+		profiles = Builtin()
+	}
+	options, err := profiles.ApplyWithPreInit(modelSpec, callerOptions)
+	if err != nil {
+		return nil, err
+	}
+	model, err := factory(modelSpec, options)
+	if err != nil {
+		return nil, fmt.Errorf("construct model %q: %w", modelSpec, err)
+	}
+	if nilModel(model) {
+		return nil, fmt.Errorf("construct model %q: factory returned nil", modelSpec)
+	}
+	return model, nil
+}
+
+// ModelMatchesSpec reports whether model advertises the provider and identifier
+// named by spec. A bare spec compares only identifiers. When a model does not
+// advertise its provider, a provider-prefixed spec falls back to identifier
+// matching for compatibility with custom model implementations.
+func ModelMatchesSpec(model damodel.Chat, spec string) bool {
+	if nilModel(model) {
+		return false
+	}
+	current := model.Profile()
+	if current.Model == "" {
+		return false
+	}
+	if spec == current.Model {
+		return true
+	}
+	provider, identifier, found := strings.Cut(spec, ":")
+	if !found || provider == "" || identifier != current.Model {
+		return false
+	}
+	return current.Provider == "" || normalizeProvider(provider) == normalizeProvider(current.Provider)
+}
+
+// IsBedrockModel reports whether a provider:model string or chat model targets
+// AWS Bedrock. Bare Amazon Nova identifiers, including regional inference
+// profile identifiers, are recognized as well.
+func IsBedrockModel(model any) bool {
+	switch value := model.(type) {
+	case string:
+		if isBedrockNovaIdentifier(value) {
+			return true
+		}
+		provider, _, found := strings.Cut(value, ":")
+		return found && isBedrockProvider(provider)
+	case damodel.Chat:
+		if nilModel(value) {
+			return false
+		}
+		profile := value.Profile()
+		if isBedrockProvider(profile.Provider) || isBedrockNovaIdentifier(profile.Model) {
+			return true
+		}
+		name := reflect.Indirect(reflect.ValueOf(value)).Type().Name()
+		switch name {
+		case "ChatAnthropicBedrock", "ChatBedrock", "ChatBedrockConverse", "ChatBedrockNovaSonic":
+			return true
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func nilModel(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
+
+func normalizeProvider(provider string) string {
+	value := strings.ReplaceAll(strings.ToLower(provider), "-", "_")
+	switch value {
+	case "azure_openai":
+		return "azure"
+	case "mistralai":
+		return "mistral"
+	default:
+		return value
+	}
+}
+
+func isBedrockProvider(provider string) bool {
+	switch normalizeProvider(provider) {
+	case "amazon_bedrock", "anthropic_bedrock", "aws", "bedrock", "bedrock_converse":
+		return true
+	default:
+		return false
+	}
+}
+
+func isBedrockNovaIdentifier(identifier string) bool {
+	for _, prefix := range []string{"apac.", "amer.", "au.", "eu.", "global.", "jp.", "sa.", "us.", "us-gov."} {
+		if strings.HasPrefix(identifier, prefix) {
+			identifier = strings.TrimPrefix(identifier, prefix)
+			break
+		}
+	}
+	return strings.HasPrefix(identifier, "amazon.nova-")
+}
 
 // Profile supplies defaults and hooks to a caller that constructs a model.
 type Profile struct {
 	Options        map[string]any
 	PreInit        func(modelSpec string) error
 	OptionsFactory func() (map[string]any, error)
+}
+
+var providerProfileRegistry = struct {
+	sync.RWMutex
+	profiles Profiles
+}{profiles: Profiles{}}
+
+// ProviderProfilePlugin identifies an explicitly imported provider-profile
+// plugin. Register may call RegisterProviderProfile one or more times.
+//
+// Go does not provide a portable equivalent of Python package entry points,
+// so applications must import plugin packages and pass their registration
+// functions to LoadProviderProfilePlugins (or rely on an imported package's
+// init function calling RegisterProviderProfile).
+type ProviderProfilePlugin struct {
+	Name     string
+	Register func() error
+}
+
+// RegisterProviderProfile additively registers a provider or provider:model
+// construction profile. Existing hooks and factories run first; incoming
+// options and factory results win on conflicts. Registration is safe to call
+// concurrently and defensively copies the profile's static options.
+//
+// Registered profiles are included by Builtin. They are deliberately not
+// injected into arbitrary Profiles values, so callers that construct an
+// explicit set retain complete ownership of that set.
+func RegisterProviderProfile(key string, profile Profile) error {
+	if err := validateProfileKey(key); err != nil {
+		return err
+	}
+	profile = cloneProfile(profile)
+	providerProfileRegistry.Lock()
+	defer providerProfileRegistry.Unlock()
+	if existing, ok := providerProfileRegistry.profiles[key]; ok {
+		profile = Merge(existing, profile)
+	}
+	providerProfileRegistry.profiles[key] = profile
+	return nil
+}
+
+// LoadProviderProfilePlugins invokes explicitly supplied plugins in order.
+// A returned error or panic is captured for that plugin and does not prevent
+// later plugins from loading. Registrations completed before a failure remain
+// registered, matching the additive plugin contract.
+func LoadProviderProfilePlugins(plugins ...ProviderProfilePlugin) []error {
+	var failures []error
+	for index, plugin := range plugins {
+		if err := loadProviderProfilePlugin(plugin, index); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return failures
+}
+
+func loadProviderProfilePlugin(plugin ProviderProfilePlugin, index int) (err error) {
+	label := plugin.Name
+	if label == "" {
+		label = fmt.Sprintf("plugin %d", index)
+	}
+	if plugin.Register == nil {
+		return fmt.Errorf("provider profile plugin %q: registration function is nil", label)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("provider profile plugin %q panicked: %v", label, recovered)
+		}
+	}()
+	if err := plugin.Register(); err != nil {
+		return fmt.Errorf("provider profile plugin %q: %w", label, err)
+	}
+	return nil
 }
 
 // Profiles is an explicit set of provider and provider:model construction profiles.
@@ -159,7 +386,7 @@ func cloneMap(value map[string]any) map[string]any {
 }
 
 func validateProfileKey(name string) error {
-	if name == "" || name != strings.TrimSpace(name) || strings.Count(name, ":") > 1 {
+	if name == "" || name != strings.TrimSpace(name) {
 		return fmt.Errorf("invalid provider profile key %q", name)
 	}
 	if provider, model, found := strings.Cut(name, ":"); found && (provider == "" || model == "" || provider != strings.TrimSpace(provider) || model != strings.TrimSpace(model)) {
@@ -173,15 +400,26 @@ const (
 	openRouterAppTitle = "Deep Agents"
 )
 
-// Builtin returns the standard provider-construction defaults as a fresh set.
+// Builtin returns the standard provider-construction defaults plus registered
+// third-party overlays as a fresh set. Built-ins are applied first.
 func Builtin() Profiles {
-	return Profiles{
+	result := Profiles{
 		"openai": {Options: map[string]any{"use_responses_api": true}},
 		"nvidia": {OptionsFactory: func() (map[string]any, error) {
 			return map[string]any{"default_headers": map[string]string{"X-BILLING-INVOKE-ORIGIN": "DeepAgents"}}, nil
 		}},
 		"openrouter": {OptionsFactory: openRouterDefaults},
 	}
+	providerProfileRegistry.RLock()
+	defer providerProfileRegistry.RUnlock()
+	for key, profile := range providerProfileRegistry.profiles {
+		if existing, ok := result[key]; ok {
+			result[key] = Merge(existing, profile)
+		} else {
+			result[key] = cloneProfile(profile)
+		}
+	}
+	return result
 }
 
 func openRouterDefaults() (map[string]any, error) {

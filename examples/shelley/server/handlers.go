@@ -2288,7 +2288,7 @@ type ModelInfo struct {
 //
 // The change drops the in-memory loop (pinned to the old model/reasoning) and
 // records a user-visible modelchange marker so the log shows where it happened.
-func (s *Server) handleModelCommand(ctx context.Context, w http.ResponseWriter, conversationID, currentModel string, manager *ConversationManager, message string) bool {
+func (s *Server) handleModelCommand(ctx context.Context, w http.ResponseWriter, conversationID, currentModel string, manager *conversationManager, message string) bool {
 	fields := strings.Fields(strings.TrimSpace(message))
 	if len(fields) == 0 || fields[0] != "/model" {
 		return false
@@ -2532,7 +2532,7 @@ func modelCommandStatus(currentModel, currentReasoning string, modelList []Model
 
 // recordModelCommandReply records a modelchange marker carrying an informational
 // reply (bare /model, already-using, or an error) without actually switching.
-func (s *Server) recordModelCommandReply(ctx context.Context, conversationID string, manager *ConversationManager, text string) {
+func (s *Server) recordModelCommandReply(ctx context.Context, conversationID string, manager *conversationManager, text string) {
 	if err := manager.recordModelCommandInfo(ctx, text); err != nil {
 		s.logger.Error("Failed to record /model reply", "conversationID", conversationID, "error", err)
 	}
@@ -3290,7 +3290,10 @@ func (s *Server) applyForkPointModelState(ctx context.Context, sourceID, forkID 
 		if err != nil {
 			return fmt.Errorf("reload fork: %w", err)
 		}
-		opts := db.ParseConversationOptions(fork.ConversationOptions)
+		opts, err := db.ParseConversationOptionsStrict(fork.ConversationOptions)
+		if err != nil {
+			return fmt.Errorf("load fork options: %w", err)
+		}
 		opts.ThinkingLevel = reasoningAtFork
 		if err := s.db.UpdateConversationOptions(ctx, forkID, opts); err != nil {
 			return fmt.Errorf("set fork reasoning: %w", err)

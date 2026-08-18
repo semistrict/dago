@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/semistrict/dago/dacheckpoint"
@@ -42,13 +41,15 @@ type Factory func(context.Context, Runtime) (Graph, error)
 // AdaptFactory preserves a factory's concrete graph return type while adapting
 // it to the server contract.
 func AdaptFactory[T Graph](factory func(context.Context, Runtime) (T, error)) Factory {
+	if factory == nil {
+		panic("Agent Server graph factory is required")
+	}
 	return func(ctx context.Context, runtime Runtime) (Graph, error) {
 		graph, err := factory(ctx, runtime)
 		if err != nil {
 			return nil, err
 		}
-		value := reflect.ValueOf(graph)
-		if !value.IsValid() || (value.Kind() == reflect.Pointer && value.IsNil()) {
+		if nilDependency(graph) {
 			return nil, fmt.Errorf("graph factory returned nil")
 		}
 		return graph, nil

@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+func TestNewBrowserPanicsForNilContext(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewBrowser did not panic")
+		}
+	}()
+	_, _ = NewBrowser(nil)
+}
+
 // newBrowserOrSkip launches a headless browser, skipping the test cleanly when
 // none is available (or when the integration env var is unset). Mirrors the
 // gating used by the test/ package's LazyCue integration tests.

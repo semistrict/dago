@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dastore"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // Server is an embeddable local Agent Server compatible with LangSmith Studio.
@@ -43,18 +43,28 @@ type Server struct {
 
 // New validates graph registrations, restores local metadata, and starts the
 // in-process development run queue.
-func New(graphs []GraphRegistration, optionValues ...Options) (*Server, error) {
+func New(graphs []GraphRegistration, options Options) (*Server, error) {
+	if options.QueueWorkers < 0 {
+		panic("Agent Server queue workers cannot be negative")
+	}
 	if len(graphs) == 0 {
 		panic("Agent Server requires at least one graph")
 	}
-	options := optionvalue.Resolve("Agent Server", optionValues)
-	if options.Saver == nil {
+	compiledGraphs := make(map[string]GraphRegistration, len(graphs))
+	for _, registration := range graphs {
+		validateRegistration(&registration)
+		if _, exists := compiledGraphs[registration.ID]; exists {
+			panic(fmt.Sprintf("Agent Server graph ID %q is registered more than once", registration.ID))
+		}
+		compiledGraphs[registration.ID] = registration
+	}
+	if nilDependency(options.Saver) {
 		options.Saver = dacheckpoint.NewMemorySaver()
 	}
-	if options.Store == nil {
+	if nilDependency(options.Store) {
 		options.Store = dastore.NewMemory()
 	}
-	if options.QueueWorkers <= 0 {
+	if options.QueueWorkers == 0 {
 		options.QueueWorkers = 10
 	}
 	if options.Now == nil {
@@ -62,7 +72,7 @@ func New(graphs []GraphRegistration, optionValues ...Options) (*Server, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &Server{
-		graphs: map[string]GraphRegistration{}, assistants: map[string]*Assistant{},
+		graphs: compiledGraphs, assistants: map[string]*Assistant{},
 		threads: map[string]*Thread{}, runs: map[string]*Run{}, events: map[string]*eventLog{},
 		active: map[string]context.CancelFunc{}, threadLocks: map[string]*sync.Mutex{},
 		saver: options.Saver, store: options.Store, context: options.Deps,
@@ -74,13 +84,6 @@ func New(graphs []GraphRegistration, optionValues ...Options) (*Server, error) {
 		if origin != "" {
 			server.origins[origin] = true
 		}
-	}
-	for _, registration := range graphs {
-		if err := validateRegistration(&registration); err != nil {
-			cancel()
-			return nil, err
-		}
-		server.graphs[registration.ID] = registration
 	}
 	if err := server.loadState(); err != nil {
 		cancel()
@@ -99,13 +102,13 @@ func New(graphs []GraphRegistration, optionValues ...Options) (*Server, error) {
 	return server, nil
 }
 
-func validateRegistration(registration *GraphRegistration) error {
+func validateRegistration(registration *GraphRegistration) {
 	registration.ID = strings.TrimSpace(registration.ID)
 	if registration.ID == "" || strings.ContainsAny(registration.ID, "\x00/\\") {
-		return fmt.Errorf("Agent Server graph ID %q is invalid", registration.ID)
+		panic(fmt.Sprintf("Agent Server graph ID %q is invalid", registration.ID))
 	}
 	if registration.Factory == nil {
-		return fmt.Errorf("Agent Server graph %q requires a factory", registration.ID)
+		panic(fmt.Sprintf("Agent Server graph %q requires a factory", registration.ID))
 	}
 	if registration.Name == "" {
 		registration.Name = registration.ID
@@ -131,13 +134,25 @@ func validateRegistration(registration *GraphRegistration) error {
 		"context": registration.ContextSchema,
 	} {
 		if !json.Valid(schema) {
-			return fmt.Errorf("Agent Server graph %q has invalid %s schema", registration.ID, name)
+			panic(fmt.Sprintf("Agent Server graph %q has invalid %s schema", registration.ID, name))
 		}
 	}
 	if len(registration.Graph.Nodes) == 0 {
 		registration.Graph = defaultDrawableGraph()
 	}
-	return nil
+}
+
+func nilDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (server *Server) registerDefaultAssistants() {
@@ -193,9 +208,16 @@ func (server *Server) graphForAssistant(ctx context.Context, assistant *Assistan
 	if assistant.Context != nil {
 		runtimeContext = cloneJSON(assistant.Context)
 	}
-	return registration.Factory(ctx, Runtime{
+	graph, err := registration.Factory(ctx, Runtime{
 		Saver: server.saver, Store: server.store, Config: config, Deps: runtimeContext,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if nilDependency(graph) {
+		return nil, fmt.Errorf("graph factory returned nil")
+	}
+	return graph, nil
 }
 
 func (server *Server) threadLock(threadID string) *sync.Mutex {

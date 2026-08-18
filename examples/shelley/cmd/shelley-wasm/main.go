@@ -29,10 +29,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	app, err := browserapp.NewWithWorkspaceAndSaver(filesystem, justbash.GlobalExecutor("shelleyJustBashExecute"), saver)
-	if err != nil {
-		panic(err)
-	}
+	app := browserapp.NewWithWorkspaceAndSaver(filesystem, justbash.GlobalExecutor("shelleyJustBashExecute"), saver)
 
 	registry.Register("shelleyWasmRequest", func(arguments []js.Value) any {
 		if len(arguments) == 0 {
@@ -90,9 +87,7 @@ func main() {
 			},
 			InvokeGlobal: "shelleyWebGPUInvoke", InterruptGlobal: "shelleyWebGPUInterrupt",
 		})
-		if err := app.ConfigureWebGPUModel(model); err != nil {
-			return err.Error()
-		}
+		app.ConfigureWebGPUModel(model)
 		return ""
 	})
 	registry.Register("shelleyWasmFilesystem", func(arguments []js.Value) any {

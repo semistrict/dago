@@ -12,6 +12,7 @@ import (
 	"io"
 	"iter"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -167,27 +168,27 @@ type App struct {
 // New constructs a browser-safe Shelley application with the deterministic
 // local model. A remote model bridge can replace this model without changing
 // the UI transport or persistence protocol.
-func New() (*App, error) {
+func New() *App {
 	return newApp(nil, nil)
 }
 
 // NewWithShell constructs the browser application with an isolated shell
 // executor. The executor never receives host filesystem or process access.
-func NewWithShell(executor ShellExecutor) (*App, error) {
+func NewWithShell(executor ShellExecutor) *App {
 	if executor == nil {
-		return nil, fmt.Errorf("browser shell executor is required")
+		panic("browser shell executor is required")
 	}
 	return newApp(executor, nil)
 }
 
 // NewWithShellAndSaver constructs the browser application with durable graph
 // checkpoints and an isolated browser shell executor.
-func NewWithShellAndSaver(executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
+func NewWithShellAndSaver(executor ShellExecutor, saver dacheckpoint.Saver) *App {
 	if executor == nil {
-		return nil, fmt.Errorf("browser shell executor is required")
+		panic("browser shell executor is required")
 	}
-	if saver == nil {
-		return nil, fmt.Errorf("browser checkpoint saver is required")
+	if nilInterface(saver) {
+		panic("browser checkpoint saver is required")
 	}
 	return newApp(executor, saver)
 }
@@ -195,41 +196,53 @@ func NewWithShellAndSaver(executor ShellExecutor, saver dacheckpoint.Saver) (*Ap
 // NewWithWorkspaceAndSaver constructs the WASM application around a shared
 // browser workspace. The workspace owns file persistence independently, so
 // application snapshots contain conversations rather than file bodies.
-func NewWithWorkspaceAndSaver(workspace Workspace, executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
-	if workspace == nil {
-		return nil, fmt.Errorf("browser workspace is required")
+func NewWithWorkspaceAndSaver(workspace Workspace, executor ShellExecutor, saver dacheckpoint.Saver) *App {
+	if nilInterface(workspace) {
+		panic("browser workspace is required")
 	}
 	if executor == nil {
-		return nil, fmt.Errorf("browser shell executor is required")
+		panic("browser shell executor is required")
 	}
-	if saver == nil {
-		return nil, fmt.Errorf("browser checkpoint saver is required")
+	if nilInterface(saver) {
+		panic("browser checkpoint saver is required")
 	}
 	return newAppWithWorkspace(workspace, executor, saver)
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 // ConfigureWebGPUModel installs the browser worker's local inference bridge.
 // Model weights and execution remain owned by the worker; the Go application
 // only sees the provider-neutral model contract.
-func (app *App) ConfigureWebGPUModel(model damodel.Chat) error {
-	if model == nil {
-		return fmt.Errorf("browser WebGPU model is required")
+func (app *App) ConfigureWebGPUModel(model damodel.Chat) {
+	if nilInterface(model) {
+		panic("browser WebGPU model is required")
 	}
 	app.mu.RLock()
 	backend := app.backend
 	app.mu.RUnlock()
 	agent, err := newAgent(backend, model, webGPUModelID, app.saver)
 	if err != nil {
-		return err
+		panic(fmt.Sprintf("configure browser WebGPU model: %v", err))
 	}
 	app.mu.Lock()
 	app.webGPUModel = model
 	app.agents[webGPUModelID] = agent
 	app.mu.Unlock()
-	return nil
 }
 
-func newApp(executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
+func newApp(executor ShellExecutor, saver dacheckpoint.Saver) *App {
 	workspace, err := newBrowserWorkspace(map[string]dabackend.FileData{
 		workspaceRoot + "/README.md": {
 			Content:  "# Browser workspace\n\nFiles created by the agent are stored in this browser.\n",
@@ -237,19 +250,19 @@ func newApp(executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
 		},
 	})
 	if err != nil {
-		return nil, err
+		panic(fmt.Sprintf("create built-in browser workspace: %v", err))
 	}
 	return newAppWithWorkspace(workspace, executor, saver)
 }
 
-func newAppWithWorkspace(workspace Workspace, executor ShellExecutor, saver dacheckpoint.Saver) (*App, error) {
+func newAppWithWorkspace(workspace Workspace, executor ShellExecutor, saver dacheckpoint.Saver) *App {
 	backend := dabackend.Backend(workspace)
 	if executor != nil {
 		backend = &browserSandbox{Workspace: workspace, execute: executor}
 	}
 	agent, err := newAgent(backend, newPredictableModel(), modelID, saver)
 	if err != nil {
-		return nil, err
+		panic(fmt.Sprintf("create built-in browser agent: %v", err))
 	}
 	return &App{
 		agents: map[string]*dagent.Agent{modelID: agent}, customModels: map[string]CustomModel{},
@@ -257,7 +270,7 @@ func newAppWithWorkspace(workspace Workspace, executor ShellExecutor, saver dach
 		saver:          saver,
 		workspace:      workspace, backend: backend, shellExecutor: executor,
 		conversations: map[string]*record{}, now: time.Now,
-	}, nil
+	}
 }
 
 // SetEventSink installs the unified-stream publisher. The sink must return
@@ -1795,7 +1808,10 @@ func (app *App) setCustomModel(model CustomModel, replacing bool) (CustomModel, 
 	if model.ProviderType != "openai-responses" && model.ProviderType != "openrouter-responses" {
 		return CustomModel{}, fmt.Errorf("provider_type must be 'openai-responses' or 'openrouter-responses'")
 	}
-	if model.MaxTokens <= 0 {
+	if model.MaxTokens < 0 {
+		return CustomModel{}, fmt.Errorf("max_tokens cannot be negative")
+	}
+	if model.MaxTokens == 0 {
 		model.MaxTokens = 200000
 	}
 	if model.ImageSupport == "" {

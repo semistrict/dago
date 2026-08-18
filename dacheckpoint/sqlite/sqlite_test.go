@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,48 @@ import (
 	"github.com/semistrict/dago/dacheckpoint/serde"
 	"github.com/semistrict/dago/damessage"
 )
+
+func TestConstructorsRejectMissingDatabaseOrCodec(t *testing.T) {
+	t.Run("database", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("nil database was accepted")
+			}
+		}()
+		New(nil)
+	})
+	t.Run("codec", func(t *testing.T) {
+		var payloadCodec *serde.Safe
+		defer func() {
+			if recover() == nil {
+				t.Fatal("typed-nil codec was accepted")
+			}
+		}()
+		NewWithCodec(&sql.DB{}, payloadCodec)
+	})
+}
+
+func TestSaverListAppliesFiniteDefaultAndRejectsNegativeLimit(t *testing.T) {
+	saver := openTestSaver(t)
+	ctx := context.Background()
+	root := dacheckpoint.Config{ThreadID: "bounded"}
+	for index := 0; index <= dacheckpoint.DefaultListLimit; index++ {
+		checkpoint := testCheckpoint(fmt.Sprintf("cp-%03d", index), nil)
+		if _, err := saver.Put(ctx, root, checkpoint, dacheckpoint.Metadata{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tuples, err := saver.List(ctx, &root, dacheckpoint.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tuples) != dacheckpoint.DefaultListLimit {
+		t.Fatalf("default list length = %d, want %d", len(tuples), dacheckpoint.DefaultListLimit)
+	}
+	if _, err := saver.List(ctx, &root, dacheckpoint.ListOptions{Limit: -1}); err == nil {
+		t.Fatal("negative list limit was accepted")
+	}
+}
 
 func TestSchemaMatchesPinnedPythonSaver(t *testing.T) {
 	saver := openTestSaver(t)

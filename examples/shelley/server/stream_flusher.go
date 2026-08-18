@@ -13,7 +13,7 @@ import (
 // causing subscriber disconnections. Instead, we accumulate deltas and flush
 // the combined text every interval (e.g., 50ms), yielding ~20 updates/second.
 type streamFlusher struct {
-	cm       *ConversationManager
+	cm       *conversationManager
 	interval time.Duration
 
 	mu      sync.Mutex
@@ -30,7 +30,7 @@ func (sf *streamFlusher) nextSeq() int64 {
 	return sf.cm.streamDeltaSeq.Add(1)
 }
 
-func newStreamFlusher(cm *ConversationManager, interval time.Duration) *streamFlusher {
+func newStreamFlusher(cm *conversationManager, interval time.Duration) *streamFlusher {
 	return &streamFlusher{
 		cm:       cm,
 		interval: interval,

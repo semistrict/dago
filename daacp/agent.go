@@ -26,6 +26,7 @@ var errPermissionCancelled = errors.New("ACP permission request cancelled")
 type protocolAgent struct {
 	root    context.Context
 	runner  Runner
+	factory AgentFactory
 	options Options
 
 	connectionReady chan struct{}
@@ -36,10 +37,11 @@ type protocolAgent struct {
 }
 
 type session struct {
-	cwd    string
-	runner Runner
-	closer io.Closer
-	active *activeTurn
+	context   AgentSessionContext
+	runner    Runner
+	closer    io.Closer
+	active    *activeTurn
+	switching bool
 }
 
 type activeTurn struct {
@@ -47,9 +49,9 @@ type activeTurn struct {
 	done   chan struct{}
 }
 
-func newProtocolAgent(ctx context.Context, runner Runner, options Options) *protocolAgent {
+func newProtocolAgent(ctx context.Context, runner Runner, factory AgentFactory, options Options) *protocolAgent {
 	return &protocolAgent{
-		root: ctx, runner: runner, options: options,
+		root: ctx, runner: runner, factory: factory, options: options,
 		connectionReady: make(chan struct{}), sessions: map[string]*session{},
 	}
 }
@@ -65,7 +67,7 @@ func (agent *protocolAgent) Initialize(_ context.Context, _ acp.InitializeReques
 		AgentCapabilities: acp.AgentCapabilities{
 			LoadSession: agent.options.LoadSession,
 			McpCapabilities: acp.McpCapabilities{
-				Http: agent.options.SessionFactory != nil, Sse: agent.options.SessionFactory != nil,
+				Http: agent.factory != nil, Sse: agent.factory != nil,
 			},
 			PromptCapabilities: acp.PromptCapabilities{
 				Image: agent.options.ImagePrompts, Audio: agent.options.AudioPrompts,
@@ -84,25 +86,26 @@ func (agent *protocolAgent) NewSession(ctx context.Context, request acp.NewSessi
 	if err := validateSessionRoots(request.Cwd, request.AdditionalDirectories); err != nil {
 		return acp.NewSessionResponse{}, err
 	}
-	if len(request.McpServers) > 0 && agent.options.SessionFactory == nil {
+	if len(request.McpServers) > 0 && agent.factory == nil {
 		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{"mcpServers": "MCP-over-ACP is not supported"})
 	}
 	id, err := sessionID()
 	if err != nil {
 		return acp.NewSessionResponse{}, fmt.Errorf("create session id: %w", err)
 	}
-	runner, closer, err := agent.makeRunner(ctx, SessionConfig{
+	sessionContext := AgentSessionContext{
 		ID: id, CWD: request.Cwd, AdditionalDirectories: request.AdditionalDirectories,
-		MCPServers: request.McpServers,
-	})
+		MCPServers: request.McpServers, Model: defaultModelSelection(agent.options.ConfigOptions),
+	}
+	runner, closer, err := agent.makeRunner(ctx, sessionContext)
 	if err != nil {
 		return acp.NewSessionResponse{}, fmt.Errorf("create ACP session runner: %w", err)
 	}
 	agent.mu.Lock()
-	agent.sessions[id] = &session{cwd: request.Cwd, runner: runner, closer: closer}
+	agent.sessions[id] = &session{context: cloneAgentSessionContext(sessionContext), runner: runner, closer: closer}
 	agent.mu.Unlock()
 	return acp.NewSessionResponse{
-		SessionId: acp.SessionId(id), ConfigOptions: append([]acp.SessionConfigOption(nil), agent.options.ConfigOptions...),
+		SessionId: acp.SessionId(id), ConfigOptions: configOptionsWithModel(agent.options.ConfigOptions, sessionContext.Model),
 	}, nil
 }
 
@@ -114,10 +117,11 @@ func (agent *protocolAgent) LoadSession(ctx context.Context, request acp.LoadSes
 		return acp.LoadSessionResponse{}, err
 	}
 	id := string(request.SessionId)
-	runner, closer, err := agent.makeRunner(ctx, SessionConfig{
+	sessionContext := AgentSessionContext{
 		ID: id, CWD: request.Cwd, AdditionalDirectories: request.AdditionalDirectories,
-		MCPServers: request.McpServers,
-	})
+		MCPServers: request.McpServers, Model: defaultModelSelection(agent.options.ConfigOptions),
+	}
+	runner, closer, err := agent.makeRunner(ctx, sessionContext)
 	if err != nil {
 		return acp.LoadSessionResponse{}, fmt.Errorf("load ACP session runner: %w", err)
 	}
@@ -128,25 +132,48 @@ func (agent *protocolAgent) LoadSession(ctx context.Context, request acp.LoadSes
 		}
 		return acp.LoadSessionResponse{}, fmt.Errorf("load ACP session: runner does not support durable transcripts")
 	}
-	messages, err := loader.LoadSession(ctx, id)
+	state, err := loader.LoadACPSession(ctx, id)
 	if err != nil {
 		if closer != nil {
 			_ = closer.Close()
 		}
 		return acp.LoadSessionResponse{}, err
 	}
+	if !filepath.IsAbs(state.CWD) || filepath.Clean(state.CWD) != filepath.Clean(request.Cwd) {
+		if closer != nil {
+			_ = closer.Close()
+		}
+		return acp.LoadSessionResponse{}, acp.NewInvalidParams(map[string]any{
+			"cwd": "must match the working directory used to create the session",
+		})
+	}
+	if state.Model != "" && state.Model != sessionContext.Model && modelSelectionSupported(agent.options.ConfigOptions, state.Model) {
+		restoredContext := cloneAgentSessionContext(sessionContext)
+		restoredContext.Model = state.Model
+		restoredRunner, restoredCloser, restoreErr := agent.makeRunner(ctx, restoredContext)
+		if restoreErr != nil {
+			if closer != nil {
+				_ = closer.Close()
+			}
+			return acp.LoadSessionResponse{}, fmt.Errorf("restore ACP session model %q: %w", state.Model, restoreErr)
+		}
+		if closer != nil {
+			_ = closer.Close()
+		}
+		runner, closer, sessionContext = restoredRunner, restoredCloser, restoredContext
+	}
 	agent.mu.Lock()
 	previous := agent.sessions[id]
-	agent.sessions[id] = &session{cwd: request.Cwd, runner: runner, closer: closer}
+	agent.sessions[id] = &session{context: cloneAgentSessionContext(sessionContext), runner: runner, closer: closer}
 	agent.mu.Unlock()
 	if previous != nil {
 		agent.closeSessionResources(previous)
 	}
-	if err := agent.replayMessages(ctx, request.SessionId, messages); err != nil {
+	if err := agent.replayMessages(ctx, request.SessionId, state.Messages); err != nil {
 		agent.removeSession(id)
 		return acp.LoadSessionResponse{}, err
 	}
-	return acp.LoadSessionResponse{ConfigOptions: append([]acp.SessionConfigOption(nil), agent.options.ConfigOptions...)}, nil
+	return acp.LoadSessionResponse{ConfigOptions: configOptionsWithModel(agent.options.ConfigOptions, sessionContext.Model)}, nil
 }
 
 func (agent *protocolAgent) Prompt(requestContext context.Context, request acp.PromptRequest) (acp.PromptResponse, error) {
@@ -168,7 +195,7 @@ func (agent *protocolAgent) Prompt(requestContext context.Context, request acp.P
 	if configurable == nil {
 		configurable = map[string]any{}
 	}
-	configurable[ConfigurableCWD] = snapshot.cwd
+	configurable[ConfigurableCWD] = snapshot.context.CWD
 
 	input := dagent.Input{
 		Config:   dacheckpoint.Config{ThreadID: string(request.SessionId)},
@@ -263,7 +290,7 @@ func (*protocolAgent) ResumeSession(context.Context, acp.ResumeSessionRequest) (
 	return acp.ResumeSessionResponse{}, acp.NewMethodNotFound(acp.AgentMethodSessionResume)
 }
 
-func (agent *protocolAgent) SetSessionConfigOption(_ context.Context, request acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
+func (agent *protocolAgent) SetSessionConfigOption(ctx context.Context, request acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
 	var id string
 	if request.ValueId != nil {
 		id = string(request.ValueId.SessionId)
@@ -272,19 +299,114 @@ func (agent *protocolAgent) SetSessionConfigOption(_ context.Context, request ac
 		id = string(request.Boolean.SessionId)
 	}
 	agent.mu.Lock()
-	_, ok := agent.sessions[id]
+	current, ok := agent.sessions[id]
+	currentModel := ""
+	if ok {
+		currentModel = current.context.Model
+	}
 	agent.mu.Unlock()
 	if !ok {
 		return acp.SetSessionConfigOptionResponse{}, acp.NewInvalidParams(map[string]any{"sessionId": "unknown session"})
 	}
-	if err := validateConfigOption(agent.options.ConfigOptions, request); err != nil {
+	options := configOptionsWithModel(agent.options.ConfigOptions, currentModel)
+	if err := validateConfigOption(options, request); err != nil {
 		return acp.SetSessionConfigOptionResponse{}, err
 	}
-	return acp.SetSessionConfigOptionResponse{ConfigOptions: append([]acp.SessionConfigOption(nil), agent.options.ConfigOptions...)}, nil
+	if request.ValueId == nil || request.ValueId.ConfigId != modelConfigID || string(request.ValueId.Value) == currentModel {
+		return acp.SetSessionConfigOptionResponse{ConfigOptions: options}, nil
+	}
+	if agent.factory == nil {
+		return acp.SetSessionConfigOptionResponse{}, acp.NewInvalidParams(map[string]any{
+			"configId": string(request.ValueId.ConfigId), "value": "requires a session agent factory",
+		})
+	}
+	model := string(request.ValueId.Value)
+	if err := agent.switchSessionModel(ctx, id, current, model); err != nil {
+		return acp.SetSessionConfigOptionResponse{}, err
+	}
+	return acp.SetSessionConfigOptionResponse{
+		ConfigOptions: configOptionsWithModel(agent.options.ConfigOptions, model),
+	}, nil
 }
 
 func (*protocolAgent) SetSessionMode(context.Context, acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
 	return acp.SetSessionModeResponse{}, acp.NewMethodNotFound(acp.AgentMethodSessionSetMode)
+}
+
+func (agent *protocolAgent) switchSessionModel(ctx context.Context, id string, expected *session, model string) error {
+	agent.mu.Lock()
+	current, ok := agent.sessions[id]
+	if !ok || current != expected {
+		agent.mu.Unlock()
+		return acp.NewInvalidParams(map[string]any{"sessionId": "unknown session"})
+	}
+	if current.switching {
+		agent.mu.Unlock()
+		return acp.NewInvalidParams(map[string]any{"sessionId": "session configuration is already changing"})
+	}
+	current.switching = true
+	active := current.active
+	nextContext := cloneAgentSessionContext(current.context)
+	nextContext.Model = model
+	agent.mu.Unlock()
+
+	abort := func() {
+		agent.mu.Lock()
+		if agent.sessions[id] == current {
+			current.switching = false
+		}
+		agent.mu.Unlock()
+	}
+	if active != nil {
+		active.cancel()
+		select {
+		case <-active.done:
+		case <-ctx.Done():
+			abort()
+			return context.Cause(ctx)
+		}
+	}
+
+	runner, closer, err := agent.makeRunner(ctx, nextContext)
+	if err != nil {
+		abort()
+		return fmt.Errorf("switch ACP session model to %q: %w", model, err)
+	}
+	closeReplacement := func() {
+		if closer != nil {
+			_ = closer.Close()
+		}
+	}
+	if agent.options.LoadSession {
+		saver, ok := runner.(SessionConfigSaver)
+		if !ok {
+			closeReplacement()
+			abort()
+			return fmt.Errorf("switch ACP session model: runner does not support durable configuration")
+		}
+		if err := saver.SaveACPModelSelection(ctx, id, model); err != nil {
+			closeReplacement()
+			abort()
+			return fmt.Errorf("persist ACP session model %q: %w", model, err)
+		}
+	}
+
+	agent.mu.Lock()
+	if agent.sessions[id] != current {
+		agent.mu.Unlock()
+		closeReplacement()
+		return acp.NewInvalidParams(map[string]any{"sessionId": "unknown session"})
+	}
+	previousCloser := current.closer
+	current.context = cloneAgentSessionContext(nextContext)
+	current.runner = runner
+	current.closer = closer
+	current.switching = false
+	agent.mu.Unlock()
+	if previousCloser != nil {
+		_ = previousCloser.Close()
+	}
+	return nil
 }
 
 func (agent *protocolAgent) beginTurn(requestContext context.Context, id string) (session, context.Context, func(), error) {
@@ -294,12 +416,16 @@ func (agent *protocolAgent) beginTurn(requestContext context.Context, id string)
 		agent.mu.Unlock()
 		return session{}, nil, nil, acp.NewInvalidParams(map[string]any{"sessionId": "unknown session"})
 	}
+	if current.switching {
+		agent.mu.Unlock()
+		return session{}, nil, nil, acp.NewInvalidParams(map[string]any{"sessionId": "session configuration is changing"})
+	}
 	turnContext, cancel := context.WithCancel(requestContext)
 	stopRoot := context.AfterFunc(agent.root, cancel)
 	active := &activeTurn{cancel: cancel, done: make(chan struct{})}
 	previous := current.active
 	current.active = active
-	snapshot := session{cwd: current.cwd, runner: current.runner}
+	snapshot := session{context: cloneAgentSessionContext(current.context), runner: current.runner}
 	agent.mu.Unlock()
 	if previous != nil {
 		previous.cancel()
@@ -374,10 +500,56 @@ func (agent *protocolAgent) cleanupCancelled(runner Runner, input dagent.Input) 
 }
 
 func (agent *protocolAgent) makeRunner(ctx context.Context, config SessionConfig) (Runner, io.Closer, error) {
-	if agent.options.SessionFactory == nil {
+	if agent.factory == nil {
 		return agent.runner, nil, nil
 	}
-	return agent.options.SessionFactory(ctx, config)
+	runner, closer, err := agent.factory(ctx, cloneAgentSessionContext(config))
+	if err != nil {
+		if closer != nil {
+			_ = closer.Close()
+		}
+		return nil, nil, err
+	}
+	if nilRunner(runner) {
+		if closer != nil {
+			_ = closer.Close()
+		}
+		return nil, nil, fmt.Errorf("ACP session factory returned a nil runner")
+	}
+	return runner, closer, nil
+}
+
+func cloneAgentSessionContext(value AgentSessionContext) AgentSessionContext {
+	value.AdditionalDirectories = append([]string(nil), value.AdditionalDirectories...)
+	servers := value.MCPServers
+	value.MCPServers = make([]acp.McpServer, len(servers))
+	for index, server := range servers {
+		if server.Http != nil {
+			copy := *server.Http
+			copy.Meta = cloneAnyMap(server.Http.Meta)
+			copy.Headers = append([]acp.HttpHeader(nil), server.Http.Headers...)
+			value.MCPServers[index].Http = &copy
+		}
+		if server.Sse != nil {
+			copy := *server.Sse
+			copy.Meta = cloneAnyMap(server.Sse.Meta)
+			copy.Headers = append([]acp.HttpHeader(nil), server.Sse.Headers...)
+			value.MCPServers[index].Sse = &copy
+		}
+		if server.Acp != nil {
+			copy := *server.Acp
+			copy.Meta = cloneAnyMap(server.Acp.Meta)
+			value.MCPServers[index].Acp = &copy
+		}
+		if server.Stdio != nil {
+			copy := *server.Stdio
+			copy.Meta = cloneAnyMap(server.Stdio.Meta)
+			copy.Args = append([]string(nil), server.Stdio.Args...)
+			copy.Env = append([]acp.EnvVariable(nil), server.Stdio.Env...)
+			value.MCPServers[index].Stdio = &copy
+		}
+	}
+	return value
 }
 
 func validateSessionRoots(cwd string, additional []string) error {
@@ -396,12 +568,15 @@ func validateSessionRoots(cwd string, additional []string) error {
 }
 
 func validateConfigOption(options []acp.SessionConfigOption, request acp.SetSessionConfigOptionRequest) error {
+	if (request.ValueId == nil) == (request.Boolean == nil) {
+		return acp.NewInvalidParams(map[string]any{"configOption": "request must contain exactly one value"})
+	}
 	if request.ValueId != nil {
 		for _, option := range options {
 			if option.Select == nil || option.Select.Id != request.ValueId.ConfigId {
 				continue
 			}
-			if option.Select.CurrentValue != request.ValueId.Value {
+			if option.Select.CurrentValue != request.ValueId.Value && !selectOptionSupports(*option.Select, request.ValueId.Value) {
 				return acp.NewInvalidParams(map[string]any{
 					"configId": string(request.ValueId.ConfigId), "value": "is not supported by this agent process",
 				})
@@ -439,8 +614,17 @@ func (agent *protocolAgent) closeSessionResources(current *session) {
 	if current == nil {
 		return
 	}
-	if current.active != nil {
-		current.active.cancel()
+	agent.mu.Lock()
+	active := current.active
+	agent.mu.Unlock()
+	if active != nil {
+		active.cancel()
+		waitContext, cancel := context.WithTimeout(context.Background(), cancelCleanupTimeout)
+		select {
+		case <-active.done:
+		case <-waitContext.Done():
+		}
+		cancel()
 	}
 	if current.closer != nil {
 		_ = current.closer.Close()
@@ -452,29 +636,51 @@ func (agent *protocolAgent) replayMessages(ctx context.Context, id acp.SessionId
 	if err != nil {
 		return err
 	}
+	projector := newProjector(connection, id)
+	projector.meta = map[string]any{"isReplay": true}
 	for _, message := range messages {
-		if message.Role != damessage.RoleHuman && message.Role != damessage.RoleAssistant {
-			continue
-		}
-		for _, block := range message.Content {
-			var content acp.ContentBlock
-			switch block.Type {
-			case damessage.BlockText:
-				content = acp.TextBlock(block.Text)
-			case damessage.BlockImage:
-				content = acp.ImageBlock(base64.StdEncoding.EncodeToString(block.Data), block.MIMEType)
-			case damessage.BlockAudio:
-				content = acp.AudioBlock(base64.StdEncoding.EncodeToString(block.Data), block.MIMEType)
-			default:
-				continue
+		switch message.Role {
+		case damessage.RoleHuman, damessage.RoleAssistant:
+			for _, block := range message.Content {
+				var update acp.SessionUpdate
+				switch block.Type {
+				case damessage.BlockText:
+					content := acp.TextBlock(block.Text)
+					update = acp.UpdateAgentMessage(content)
+					if message.Role == damessage.RoleHuman {
+						update = acp.UpdateUserMessage(content)
+					}
+				case damessage.BlockImage:
+					content := acp.ImageBlock(base64.StdEncoding.EncodeToString(block.Data), block.MIMEType)
+					update = acp.UpdateAgentMessage(content)
+					if message.Role == damessage.RoleHuman {
+						update = acp.UpdateUserMessage(content)
+					}
+				case damessage.BlockAudio:
+					content := acp.AudioBlock(base64.StdEncoding.EncodeToString(block.Data), block.MIMEType)
+					update = acp.UpdateAgentMessage(content)
+					if message.Role == damessage.RoleHuman {
+						update = acp.UpdateUserMessage(content)
+					}
+				case damessage.BlockReasoning:
+					if message.Role != damessage.RoleAssistant {
+						continue
+					}
+					update = acp.UpdateAgentThoughtText(block.Reasoning)
+				default:
+					continue
+				}
+				if err := projector.send(ctx, update); err != nil {
+					return fmt.Errorf("replay ACP session: %w", err)
+				}
 			}
-			update := acp.UpdateAgentMessage(content)
-			if message.Role == damessage.RoleHuman {
-				update = acp.UpdateUserMessage(content)
+			if message.Role == damessage.RoleAssistant && len(message.ToolCalls) > 0 {
+				if err := projector.updateMessages(ctx, []damessage.Message{message}); err != nil {
+					return fmt.Errorf("replay ACP session: %w", err)
+				}
 			}
-			if err := connection.SessionUpdate(ctx, acp.SessionNotification{
-				Meta: map[string]any{"isReplay": true}, SessionId: id, Update: update,
-			}); err != nil {
+		case damessage.RoleTool:
+			if err := projector.updateMessages(ctx, []damessage.Message{message}); err != nil {
 				return fmt.Errorf("replay ACP session: %w", err)
 			}
 		}

@@ -10,8 +10,8 @@ import (
 
 // ListenAndServe runs an Agent Server until ctx is canceled. The listener is
 // created before this function blocks, so bind errors are returned immediately.
-func ListenAndServe(ctx context.Context, address string, graphs []GraphRegistration, options ...Options) error {
-	server, err := New(graphs, options...)
+func ListenAndServe(ctx context.Context, address string, graphs []GraphRegistration, options Options) error {
+	server, err := New(graphs, options)
 	if err != nil {
 		return err
 	}

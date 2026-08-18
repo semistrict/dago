@@ -151,11 +151,10 @@ func TestNewCreatesHardenedOwnedContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := &fakeEngine{}
-	backend, err := newBackend(context.Background(),
-		"example:local", Options{
-			Workspace: workspace, User: "123:456", Name: "sandbox-name",
-			Env: map[string]string{"ZED": "last", "ALPHA": "first"},
-		}, engine, nil)
+	backend, err := newBackend(context.Background(), "example:local", Options{
+		Workspace: workspace, User: "123:456", Name: "sandbox-name",
+		Env: map[string]string{"ZED": "last", "ALPHA": "first"},
+	}, engine, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,41 +361,46 @@ func TestShutdownHonorsContextWhileAnotherOperationOwnsSandbox(t *testing.T) {
 }
 
 func TestInvalidOptionsFailBeforeContainerCreation(t *testing.T) {
-	tests := []Options{
-		{Workdir: "relative"},
-		{Workdir: "/"},
-		{Workdir: "/tmp"},
-		{Workdir: "/work/../escape"},
-		{DefaultTimeout: -time.Second},
-		{MemoryBytes: -1},
-		{Env: map[string]string{"BAD=NAME": "value"}},
+	tests := []struct {
+		image   string
+		options Options
+	}{
+		{},
+		{image: "image", options: Options{Workdir: "relative"}},
+		{image: "image", options: Options{Workdir: "/"}},
+		{image: "image", options: Options{Workdir: "/tmp"}},
+		{image: "image", options: Options{Workdir: "/work/../escape"}},
+		{image: "image", options: Options{DefaultTimeout: -time.Second}},
+		{image: "image", options: Options{MemoryBytes: -1}},
+		{image: "image", options: Options{Env: map[string]string{"BAD=NAME": "value"}}},
 	}
-	for _, options := range tests {
-		options.Workspace = t.TempDir()
-		options.User = "1000:1000"
-		engine := &fakeEngine{}
-		if _, err := newBackend(context.Background(), "image", options, engine, nil); err == nil {
-			t.Fatalf("options %#v unexpectedly succeeded", options)
-		}
-		creates, _, _, _, _, _ := engine.snapshot()
-		if len(creates) != 0 {
-			t.Fatalf("invalid options invoked Engine: %#v", creates)
-		}
+	for _, test := range tests {
+		t.Run(test.image+test.options.Workdir, func(t *testing.T) {
+			options := test.options
+			options.Workspace = t.TempDir()
+			options.User = "1000:1000"
+			engine := &fakeEngine{}
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("options %#v unexpectedly succeeded", options)
+				}
+				creates, _, _, _, _, _ := engine.snapshot()
+				if len(creates) != 0 {
+					t.Fatalf("invalid options invoked Engine: %#v", creates)
+				}
+			}()
+			_, _ = newBackend(context.Background(), test.image, options, engine, nil)
+		})
 	}
 }
 
-func TestEmptyImagePanicsBeforeContainerCreation(t *testing.T) {
-	engine := &fakeEngine{}
+func TestNewBackendPanicsForNilContext(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Fatal("empty image did not panic")
-		}
-		creates, _, _, _, _, _ := engine.snapshot()
-		if len(creates) != 0 {
-			t.Fatalf("empty image invoked Engine: %#v", creates)
+			t.Fatal("newBackend accepted a nil context")
 		}
 	}()
-	_, _ = newBackend(context.Background(), "", Options{}, engine, nil)
+	_, _ = newBackend(nil, "image", Options{}, &fakeEngine{}, nil)
 }
 
 func TestCreateAndStartFailuresCleanUp(t *testing.T) {

@@ -3,6 +3,7 @@ package lazycue
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,9 @@ func (b *Browser) SetScreenshotSink(sink func(stepIndex int, action string, png 
 
 // NewBrowser launches a headless Chrome instance with Pixel 5 viewport (393x851).
 func NewBrowser(parentCtx context.Context) (*Browser, error) {
+	if nilContext(parentCtx) {
+		panic("lazycue browser: parent context is required")
+	}
 	opts := append(
 		chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("no-sandbox", true),
@@ -68,6 +72,19 @@ func NewBrowser(parentCtx context.Context) (*Browser, error) {
 		ctxCancel:   ctxCancel,
 		ctx:         ctx,
 	}, nil
+}
+
+func nilContext(ctx context.Context) bool {
+	if ctx == nil {
+		return true
+	}
+	value := reflect.ValueOf(ctx)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // Close shuts down the browser and waits for the Chrome process to exit.

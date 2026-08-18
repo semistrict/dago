@@ -68,21 +68,22 @@ func TestInjectMessagesMidTurn(t *testing.T) {
 	}
 
 	var calls atomic.Int64
-	loop := NewLoop(Config{
-		Model: service,
-		Tools: []datool.Tool{echoTool},
-		RecordMessage: func(ctx context.Context, message llm.Message, usage llm.Usage, purposed []llm.PurposedUsage) error {
+	loop := NewLoop(service,
+
+		func(ctx context.Context, message llm.Message, usage llm.Usage, purposed []llm.PurposedUsage) error {
 			return nil
-		},
-		InjectMessages: func(ctx context.Context) []llm.Message {
-			// The first call happens before the first request; inject only on
-			// the call after the tool round.
-			if calls.Add(1) == 2 {
-				return injectedPair
-			}
-			return nil
-		},
-	})
+		}, Config{
+			Tools: []datool.Tool{echoTool},
+
+			InjectMessages: func(ctx context.Context) []llm.Message {
+				// The first call happens before the first request; inject only on
+				// the call after the tool round.
+				if calls.Add(1) == 2 {
+					return injectedPair
+				}
+				return nil
+			},
+		})
 
 	loop.QueueUserMessage(llm.Message{
 		Role:    llm.MessageRoleUser,

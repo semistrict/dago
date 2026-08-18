@@ -26,13 +26,14 @@ func userStringMessage(text string) llm.Message {
 func TestLoopUsesNativeChatWithoutLegacyRoundTrip(t *testing.T) {
 	chat := &nativeRuntimeChat{}
 	var recorded []llm.Message
-	runtime := NewLoop(Config{
-		Model: chat, ThinkingLevel: llm.ThinkingLevelHigh,
-		RecordMessage: func(_ context.Context, item llm.Message, _ llm.Usage, _ []llm.PurposedUsage) error {
+	runtime := NewLoop(chat,
+
+		func(_ context.Context, item llm.Message, _ llm.Usage, _ []llm.PurposedUsage) error {
 			recorded = append(recorded, item)
 			return nil
-		},
-	})
+		}, Config{
+			ThinkingLevel: llm.ThinkingLevelHigh,
+		})
 	runtime.QueueUserMessage(userStringMessage("hello"))
 	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
@@ -92,10 +93,11 @@ func TestNativeServerToolProjectionPreservesOpenAIOutputItem(t *testing.T) {
 
 func TestLoopNativeHarnessExposesCanonicalAgentTools(t *testing.T) {
 	chat := &harnessSurfaceChat{}
-	runtime := NewLoop(Config{
-		Model: chat, WorkingDir: t.TempDir(), FilesystemTools: []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"},
-		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
-	})
+	runtime := NewLoop(chat,
+
+		func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil }, Config{
+			WorkingDir: t.TempDir(), FilesystemTools: []string{"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"},
+		})
 	runtime.QueueUserMessage(userStringMessage("inspect"))
 	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
@@ -118,10 +120,11 @@ func TestLoopNativeHarnessAcceptsShelleyHostPaths(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: dmessage.Assistant("done")}},
 	)
-	runtime := NewLoop(Config{
-		Model: script, WorkingDir: workingDir, FilesystemTools: []string{"read_file", "ls"},
-		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
-	})
+	runtime := NewLoop(script,
+
+		func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil }, Config{
+			WorkingDir: workingDir, FilesystemTools: []string{"read_file", "ls"},
+		})
 	runtime.QueueUserMessage(userStringMessage("list files"))
 	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
@@ -151,11 +154,12 @@ func TestLoopNativeHarnessObservesWorkingDirectoryChangesWithinTurn(t *testing.T
 			return nil
 		}, Response: damodel.Response{Message: dmessage.Assistant("done")}},
 	)
-	runtime := NewLoop(Config{
-		Model: script, WorkingDir: first, GetWorkingDir: func() string { return current },
-		Tools: []datool.Tool{changeDir}, FilesystemTools: []string{"read_file", "execute"},
-		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
-	})
+	runtime := NewLoop(script,
+
+		func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil }, Config{
+			WorkingDir: first, GetWorkingDir: func() string { return current },
+			Tools: []datool.Tool{changeDir}, FilesystemTools: []string{"read_file", "execute"},
+		})
 	runtime.QueueUserMessage(userStringMessage("change directory and list files"))
 	if err := runtime.ProcessOneTurn(t.Context()); err != nil {
 		t.Fatal(err)
@@ -178,14 +182,15 @@ func TestNativeRuntimeDelegatesDanglingToolRepairToNative(t *testing.T) {
 		}
 		return fmt.Errorf("dago did not patch dangling call: %#v", request.Messages)
 	}, Response: damodel.Response{Message: dmessage.Assistant("continued")}})
-	runtime := NewLoop(Config{
-		Model: chat, WorkingDir: t.TempDir(),
-		History: []llm.Message{
-			{Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeToolUse, ID: "dangling", ToolName: "lookup"}}},
-			userStringMessage("continue"),
-		},
-		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
-	})
+	runtime := NewLoop(chat,
+
+		func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil }, Config{
+			WorkingDir: t.TempDir(),
+			History: []llm.Message{
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeToolUse, ID: "dangling", ToolName: "lookup"}}},
+				userStringMessage("continue"),
+			},
+		})
 	if err := runtime.ProcessOneTurn(context.Background()); err != nil {
 		t.Fatal(err)
 	}

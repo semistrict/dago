@@ -60,7 +60,7 @@ func TestRetryDoubleClickDeduped(t *testing.T) {
 	gate := make(chan struct{})
 	gllm := &gatingTestLLM{inner: ps, err: fmt.Errorf("connection error: EOF"), gate: gate}
 
-	svr := NewServer(database, &testLLMManager{service: gllm},
+	svr := MustNewServer(database, &testLLMManager{service: gllm},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		true, "predictable", "")

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"reflect"
 	"time"
 
 	"github.com/semistrict/dago/damessage"
@@ -252,16 +253,30 @@ type profiledChat struct {
 }
 
 // WithProfile returns a chat model whose advertised capabilities are modified
-// by configure. Tool binding preserves the configured profile.
+// by configure. Tool binding preserves the configured profile. A nil or
+// typed-nil chat is a static construction error and panics.
 func WithProfile(chat Chat, configure func(*Profile)) Chat {
-	if chat == nil {
-		return nil
+	if nilChat(chat) {
+		panic("damodel: profile chat is required")
 	}
 	profile := cloneProfile(chat.Profile())
 	if configure != nil {
 		configure(&profile)
 	}
 	return &profiledChat{Chat: chat, profile: profile}
+}
+
+func nilChat(chat Chat) bool {
+	if chat == nil {
+		return true
+	}
+	value := reflect.ValueOf(chat)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (chat *profiledChat) Profile() Profile { return cloneProfile(chat.profile) }

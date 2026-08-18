@@ -34,6 +34,15 @@ func TestValidateVideoWindow(t *testing.T) {
 	}
 }
 
+func TestNewFFmpegRejectsNegativeLimits(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("negative frame limit did not panic")
+		}
+	}()
+	NewFFmpeg(FFmpegOptions{MaxFrames: -1})
+}
+
 func TestFormatVideoTimestamp(t *testing.T) {
 	tests := map[float64]string{
 		-1:          "00:00:00.000",

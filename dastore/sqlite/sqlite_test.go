@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -9,6 +10,88 @@ import (
 
 	"github.com/semistrict/dago/dastore"
 )
+
+func TestNewRejectsNilDatabase(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil database was accepted")
+		}
+	}()
+	New(nil)
+}
+
+func TestSearchAppliesFiniteDefaultAndRejectsNegativeValues(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "bounded.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	operations := make([]dastore.Operation, dastore.DefaultSearchLimit+1)
+	for index := range operations {
+		operations[index] = dastore.Operation{
+			Namespace: dastore.Namespace{"bounded"},
+			Key:       fmt.Sprintf("item-%03d", index),
+			PutValue:  map[string]any{"index": index},
+		}
+	}
+	if _, err := storage.Batch(context.Background(), operations); err != nil {
+		t.Fatal(err)
+	}
+	items, err := storage.Search(context.Background(), dastore.SearchOptions{Prefix: dastore.Namespace{"bounded"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != dastore.DefaultSearchLimit {
+		t.Fatalf("default search length = %d, want %d", len(items), dastore.DefaultSearchLimit)
+	}
+	for _, options := range []dastore.SearchOptions{{Limit: -1}, {Offset: -1}} {
+		if _, err := storage.Search(context.Background(), options); err == nil {
+			t.Fatalf("Search(%+v) accepted a negative value", options)
+		}
+	}
+}
+
+func TestListNamespacesAppliesFiniteDefaultAndFiltersLargeCardinality(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "namespaces.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	operations := make([]dastore.Operation, dastore.DefaultListNamespacesLimit+25)
+	for index := range operations {
+		operations[index] = dastore.Operation{
+			Namespace: dastore.Namespace{"tenant", fmt.Sprintf("%03d", index), "tail"},
+			Key:       "item",
+			PutValue:  map[string]any{"index": index},
+		}
+	}
+	if _, err := storage.Batch(context.Background(), operations); err != nil {
+		t.Fatal(err)
+	}
+	namespaces, err := storage.ListNamespaces(context.Background(), dastore.ListNamespacesOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(namespaces) != dastore.DefaultListNamespacesLimit {
+		t.Fatalf("default namespace length = %d, want %d", len(namespaces), dastore.DefaultListNamespacesLimit)
+	}
+	namespaces, err = storage.ListNamespaces(context.Background(), dastore.ListNamespacesOptions{
+		Prefix: dastore.Namespace{"tenant", "*"}, Suffix: dastore.Namespace{"tail"},
+		MaxDepth: 2, Limit: 3, Offset: 98,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []dastore.Namespace{{"tenant", "098"}, {"tenant", "099"}, {"tenant", "100"}}
+	if !reflect.DeepEqual(namespaces, want) {
+		t.Fatalf("filtered namespaces = %#v, want %#v", namespaces, want)
+	}
+	for _, options := range []dastore.ListNamespacesOptions{{Limit: -1}, {Offset: -1}, {MaxDepth: -1}} {
+		if _, err := storage.ListNamespaces(context.Background(), options); err == nil {
+			t.Fatalf("ListNamespaces(%+v) accepted a negative value", options)
+		}
+	}
+}
 
 func TestDurableStoreOperationsAndRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.db")
@@ -44,7 +127,7 @@ func TestDurableStoreOperationsAndRestart(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("items = %#v, %v", items, err)
 	}
-	namespaces, err := second.ListNamespaces(context.Background(), dastore.Namespace{"users"})
+	namespaces, err := second.ListNamespaces(context.Background(), dastore.ListNamespacesOptions{Prefix: dastore.Namespace{"users"}})
 	if err != nil || !reflect.DeepEqual(namespaces, []dastore.Namespace{namespace}) {
 		t.Fatalf("namespaces = %#v, %v", namespaces, err)
 	}

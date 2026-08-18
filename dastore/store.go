@@ -2,6 +2,7 @@
 package dastore
 
 import (
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
@@ -46,8 +47,61 @@ type Item struct {
 type SearchOptions struct {
 	Prefix Namespace
 	Query  string
-	Limit  int
+	// Limit defaults to DefaultSearchLimit and cannot be negative.
+	Limit int
+	// Offset cannot be negative.
 	Offset int
+}
+
+// DefaultSearchLimit bounds searches whose caller does not specify a limit.
+const DefaultSearchLimit = 10
+
+// Normalized returns a validated copy with the finite default limit applied.
+func (options SearchOptions) Normalized() (SearchOptions, error) {
+	if options.Limit < 0 {
+		return SearchOptions{}, fmt.Errorf("store search limit cannot be negative")
+	}
+	if options.Offset < 0 {
+		return SearchOptions{}, fmt.Errorf("store search offset cannot be negative")
+	}
+	if options.Limit == 0 {
+		options.Limit = DefaultSearchLimit
+	}
+	return options, nil
+}
+
+// ListNamespacesOptions filters and paginates namespace listings.
+type ListNamespacesOptions struct {
+	Prefix Namespace
+	Suffix Namespace
+	// MaxDepth truncates namespaces to this depth before de-duplication. Zero
+	// preserves their full depth and negative values are invalid.
+	MaxDepth int
+	// Limit defaults to DefaultListNamespacesLimit and cannot be negative.
+	Limit int
+	// Offset cannot be negative.
+	Offset int
+}
+
+// DefaultListNamespacesLimit bounds namespace listings whose caller does not
+// specify a limit.
+const DefaultListNamespacesLimit = 100
+
+// Normalized returns a validated copy with the finite default limit applied.
+func (options ListNamespacesOptions) Normalized() (ListNamespacesOptions, error) {
+	if options.MaxDepth < 0 {
+		return ListNamespacesOptions{}, fmt.Errorf("store namespace maximum depth cannot be negative")
+	}
+	if options.Limit < 0 {
+		return ListNamespacesOptions{}, fmt.Errorf("store namespace limit cannot be negative")
+	}
+	if options.Offset < 0 {
+		return ListNamespacesOptions{}, fmt.Errorf("store namespace offset cannot be negative")
+	}
+	if options.Limit == 0 {
+		options.Limit = DefaultListNamespacesLimit
+	}
+	return options, nil
 }
 
 // Operation is one atomic batch operation. Exactly one of PutValue or Delete must
@@ -69,7 +123,7 @@ type Store interface {
 	Put(context.Context, Namespace, string, map[string]any) error
 	Delete(context.Context, Namespace, string) error
 	Search(context.Context, SearchOptions) ([]Item, error)
-	ListNamespaces(context.Context, Namespace) ([]Namespace, error)
+	ListNamespaces(context.Context, ListNamespacesOptions) ([]Namespace, error)
 	Batch(context.Context, []Operation) ([]Result, error)
 }
 
@@ -141,6 +195,11 @@ func (memory *Memory) Search(ctx context.Context, options SearchOptions) ([]Item
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	var err error
+	options, err = options.Normalized()
+	if err != nil {
+		return nil, err
+	}
 	if len(options.Prefix) > 0 {
 		if err := options.Prefix.Validate(); err != nil {
 			return nil, err
@@ -148,57 +207,200 @@ func (memory *Memory) Search(ctx context.Context, options SearchOptions) ([]Item
 	}
 	memory.mu.RLock()
 	defer memory.mu.RUnlock()
-	var result []Item
+	window := boundedWindow(options.Offset, options.Limit)
+	selected := boundedItemSelection{limit: window}
 	query := strings.ToLower(options.Query)
 	for _, items := range memory.items {
 		for _, item := range items {
 			if !hasPrefix(item.Namespace, options.Prefix) || (query != "" && !matchesQuery(item, query)) {
 				continue
 			}
-			result = append(result, cloneItem(item))
+			selected.Add(item)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool {
-		left, right := namespaceKey(result[i].Namespace), namespaceKey(result[j].Namespace)
-		if left != right {
-			return left < right
-		}
-		return result[i].Key < result[j].Key
-	})
-	if options.Offset >= len(result) {
+	items := selected.Sorted()
+	if options.Offset >= len(items) {
 		return []Item{}, nil
 	}
-	if options.Offset > 0 {
-		result = result[options.Offset:]
-	}
-	if options.Limit > 0 && len(result) > options.Limit {
-		result = result[:options.Limit]
+	items = items[options.Offset:]
+	result := make([]Item, len(items))
+	for index, item := range items {
+		result[index] = cloneItem(item)
 	}
 	return result, nil
 }
 
-func (memory *Memory) ListNamespaces(ctx context.Context, prefix Namespace) ([]Namespace, error) {
+func (memory *Memory) ListNamespaces(ctx context.Context, options ListNamespacesOptions) ([]Namespace, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if len(prefix) > 0 {
-		if err := prefix.Validate(); err != nil {
-			return nil, err
+	var err error
+	options, err = options.Normalized()
+	if err != nil {
+		return nil, err
+	}
+	for _, pattern := range []Namespace{options.Prefix, options.Suffix} {
+		if len(pattern) > 0 {
+			if err := pattern.Validate(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	memory.mu.RLock()
 	defer memory.mu.RUnlock()
-	var result []Namespace
+	window := boundedWindow(options.Offset, options.Limit)
+	selected := boundedNamespaceSelection{limit: window}
 	for _, items := range memory.items {
 		for _, item := range items {
-			if hasPrefix(item.Namespace, prefix) {
-				result = append(result, cloneNamespace(item.Namespace))
+			if !namespaceMatches(item.Namespace, options) {
+				break
 			}
+			candidate := item.Namespace
+			if options.MaxDepth > 0 && len(candidate) > options.MaxDepth {
+				candidate = candidate[:options.MaxDepth]
+			}
+			selected.Add(candidate)
 			break
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return namespaceKey(result[i]) < namespaceKey(result[j]) })
+	namespaces := selected.Sorted()
+	if options.Offset >= len(namespaces) {
+		return []Namespace{}, nil
+	}
+	namespaces = namespaces[options.Offset:]
+	result := make([]Namespace, len(namespaces))
+	for index, candidate := range namespaces {
+		result[index] = candidate.namespace
+	}
 	return result, nil
+}
+
+func boundedWindow(offset, limit int) int {
+	maximum := int(^uint(0) >> 1)
+	if offset > maximum-limit {
+		return maximum
+	}
+	return offset + limit
+}
+
+func itemLess(left, right Item) bool {
+	leftNamespace, rightNamespace := namespaceKey(left.Namespace), namespaceKey(right.Namespace)
+	if leftNamespace != rightNamespace {
+		return leftNamespace < rightNamespace
+	}
+	return left.Key < right.Key
+}
+
+type itemMaxHeap []Item
+
+func (items itemMaxHeap) Len() int           { return len(items) }
+func (items itemMaxHeap) Less(i, j int) bool { return itemLess(items[j], items[i]) }
+func (items itemMaxHeap) Swap(i, j int)      { items[i], items[j] = items[j], items[i] }
+func (items *itemMaxHeap) Push(value any)    { *items = append(*items, value.(Item)) }
+func (items *itemMaxHeap) Pop() any {
+	old := *items
+	last := old[len(old)-1]
+	*items = old[:len(old)-1]
+	return last
+}
+
+type boundedItemSelection struct {
+	limit int
+	items itemMaxHeap
+}
+
+func (selection *boundedItemSelection) Add(item Item) {
+	if len(selection.items) < selection.limit {
+		heap.Push(&selection.items, item)
+	} else if itemLess(item, selection.items[0]) {
+		selection.items[0] = item
+		heap.Fix(&selection.items, 0)
+	}
+}
+
+func (selection *boundedItemSelection) Sorted() []Item {
+	sort.Slice(selection.items, func(i, j int) bool {
+		return itemLess(selection.items[i], selection.items[j])
+	})
+	return selection.items
+}
+
+type namespaceCandidate struct {
+	namespace Namespace
+	key       string
+}
+
+type namespaceMaxHeap []namespaceCandidate
+
+func (namespaces namespaceMaxHeap) Len() int { return len(namespaces) }
+func (namespaces namespaceMaxHeap) Less(i, j int) bool {
+	return namespaces[i].key > namespaces[j].key
+}
+func (namespaces namespaceMaxHeap) Swap(i, j int) {
+	namespaces[i], namespaces[j] = namespaces[j], namespaces[i]
+}
+func (namespaces *namespaceMaxHeap) Push(value any) {
+	*namespaces = append(*namespaces, value.(namespaceCandidate))
+}
+func (namespaces *namespaceMaxHeap) Pop() any {
+	old := *namespaces
+	last := old[len(old)-1]
+	*namespaces = old[:len(old)-1]
+	return last
+}
+
+type boundedNamespaceSelection struct {
+	limit    int
+	items    namespaceMaxHeap
+	retained map[string]struct{}
+}
+
+func (selection *boundedNamespaceSelection) Add(namespace Namespace) {
+	key := namespaceKey(namespace)
+	if _, exists := selection.retained[key]; exists {
+		return
+	}
+	if selection.retained == nil {
+		selection.retained = make(map[string]struct{})
+	}
+	candidate := namespaceCandidate{namespace: cloneNamespace(namespace), key: key}
+	if len(selection.items) < selection.limit {
+		heap.Push(&selection.items, candidate)
+		selection.retained[key] = struct{}{}
+	} else if key < selection.items[0].key {
+		delete(selection.retained, selection.items[0].key)
+		selection.items[0] = candidate
+		heap.Fix(&selection.items, 0)
+		selection.retained[key] = struct{}{}
+	}
+}
+
+func (selection *boundedNamespaceSelection) Sorted() []namespaceCandidate {
+	sort.Slice(selection.items, func(i, j int) bool {
+		return selection.items[i].key < selection.items[j].key
+	})
+	return selection.items
+}
+
+func namespaceMatches(namespace Namespace, options ListNamespacesOptions) bool {
+	return namespacePatternMatches(namespace, options.Prefix, false) &&
+		namespacePatternMatches(namespace, options.Suffix, true)
+}
+
+func namespacePatternMatches(namespace, pattern Namespace, suffix bool) bool {
+	if len(pattern) > len(namespace) {
+		return false
+	}
+	start := 0
+	if suffix {
+		start = len(namespace) - len(pattern)
+	}
+	for index, segment := range pattern {
+		if segment != "*" && segment != namespace[start+index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (memory *Memory) Batch(ctx context.Context, operations []Operation) ([]Result, error) {

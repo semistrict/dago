@@ -1,6 +1,6 @@
-.PHONY: check checkpoint-interop coverage dacode-e2e drift fmt fmt-check generate openrouter-e2e test test-openai-live test-race tinygo vet
+.PHONY: check checkpoint-interop coverage dacode-e2e drift fmt fmt-check generate module-floor openrouter-e2e test test-openai-live test-race tinygo vet
 
-check: fmt-check drift vet test test-race
+check: fmt-check drift module-floor vet test test-race
 
 fmt:
 	go fmt ./...
@@ -14,6 +14,12 @@ generate:
 drift:
 	go run ./internal/conformance/cmd/generate -check
 	sh scripts/check-upstream.sh
+
+# Go release binaries contain one immutable selected module graph. Verify its
+# checksums and reject a go.mod/go.sum pair below the source-declared floors.
+module-floor:
+	go mod verify
+	go mod tidy -diff
 
 vet:
 	go vet ./...

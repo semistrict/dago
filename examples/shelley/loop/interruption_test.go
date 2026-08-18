@@ -90,12 +90,12 @@ func TestInterruptionDuringToolExecution(t *testing.T) {
 		},
 	}
 
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		Tools:         []datool.Tool{slowTool},
-		RecordMessage: recordMessage,
-	})
+	loop := NewLoop(service,
+
+		recordMessage, Config{
+			History: []llm.Message{},
+			Tools:   []datool.Tool{slowTool},
+		})
 
 	// Queue initial user message that will trigger tool use
 	loop.QueueUserMessage(llm.Message{
@@ -190,12 +190,12 @@ func TestInterruptionDuringMultiToolChain(t *testing.T) {
 		},
 	}
 
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		Tools:         []datool.Tool{multiTool},
-		RecordMessage: recordMessage,
-	})
+	loop := NewLoop(service,
+
+		recordMessage, Config{
+			History: []llm.Message{},
+			Tools:   []datool.Tool{multiTool},
+		})
 
 	// Queue initial user message
 	loop.QueueUserMessage(llm.Message{
@@ -321,12 +321,12 @@ func TestNoInterruptionNormalFlow(t *testing.T) {
 		},
 	}
 
-	loop := NewLoop(Config{
-		Model:         service,
-		History:       []llm.Message{},
-		Tools:         []datool.Tool{multiTool},
-		RecordMessage: recordMessage,
-	})
+	loop := NewLoop(service,
+
+		recordMessage, Config{
+			History: []llm.Message{},
+			Tools:   []datool.Tool{multiTool},
+		})
 
 	// Queue initial user message (no interruption)
 	loop.QueueUserMessage(llm.Message{

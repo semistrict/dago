@@ -73,31 +73,38 @@ type ConversationSubagentDisplay struct {
 
 // ConversationSubagentOptions configures a persistent conversation subagent tool.
 type ConversationSubagentOptions struct {
-	ParentConversationID string
-	ModelID              string
-	AvailableModels      []ConversationSubagentModel
-	ParentReasoning      string
-	ReasoningLevels      []string
-	DefaultTimeout       time.Duration
-	MaxTimeout           time.Duration
+	AvailableModels []ConversationSubagentModel
+	ParentReasoning string
+	ReasoningLevels []string
+	DefaultTimeout  time.Duration
+	MaxTimeout      time.Duration
 }
 
 var defaultConversationSubagentReasoningLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
 
 // ConversationSubagentTool creates a tool that delegates work to named,
 // persistent child conversations.
-func ConversationSubagentTool(store ConversationSubagentStore, runner ConversationSubagentRunner, workingDirectory func() string, options ConversationSubagentOptions) datool.Tool {
-	if store == nil || runner == nil || workingDirectory == nil {
+func ConversationSubagentTool(store ConversationSubagentStore, runner ConversationSubagentRunner, workingDirectory func() string, parentConversationID, modelID string, options ConversationSubagentOptions) datool.Tool {
+	if nilInterface(store) || nilInterface(runner) || workingDirectory == nil {
 		panic("conversation subagent store, runner, and working directory are required")
+	}
+	if strings.TrimSpace(parentConversationID) == "" || strings.TrimSpace(modelID) == "" {
+		panic("conversation subagent parent conversation ID and model ID are required")
 	}
 	if len(options.ReasoningLevels) == 0 {
 		options.ReasoningLevels = append([]string(nil), defaultConversationSubagentReasoningLevels...)
 	}
-	if options.DefaultTimeout <= 0 {
+	if options.DefaultTimeout < 0 || options.MaxTimeout < 0 {
+		panic("conversation subagent timeouts cannot be negative")
+	}
+	if options.DefaultTimeout == 0 {
 		options.DefaultTimeout = 15 * time.Minute
 	}
-	if options.MaxTimeout <= 0 {
+	if options.MaxTimeout == 0 {
 		options.MaxTimeout = 60 * time.Minute
+	}
+	if options.DefaultTimeout > options.MaxTimeout {
+		panic("conversation subagent default timeout cannot exceed maximum timeout")
 	}
 	defaultSeconds := int(options.DefaultTimeout / time.Second)
 	maxSeconds := int(options.MaxTimeout / time.Second)
@@ -117,13 +124,13 @@ func ConversationSubagentTool(store ConversationSubagentStore, runner Conversati
 	return datool.MustNew(
 		"subagent", conversationSubagentDescription(options),
 		func(ctx context.Context, input ConversationSubagentInput) (datool.Result, error) {
-			return executeConversationSubagent(ctx, store, runner, workingDirectory, options, input)
+			return executeConversationSubagent(ctx, store, runner, workingDirectory, parentConversationID, modelID, options, input)
 		},
 		toolOptions...,
 	)
 }
 
-func executeConversationSubagent(ctx context.Context, store ConversationSubagentStore, runner ConversationSubagentRunner, workingDirectory func() string, options ConversationSubagentOptions, input ConversationSubagentInput) (datool.Result, error) {
+func executeConversationSubagent(ctx context.Context, store ConversationSubagentStore, runner ConversationSubagentRunner, workingDirectory func() string, parentConversationID, defaultModelID string, options ConversationSubagentOptions, input ConversationSubagentInput) (datool.Result, error) {
 	if input.Slug == "" {
 		return datool.Result{}, fmt.Errorf("slug is required")
 	}
@@ -146,7 +153,7 @@ func executeConversationSubagent(ctx context.Context, store ConversationSubagent
 	if input.Wait != nil {
 		wait = *input.Wait
 	}
-	modelID := options.ModelID
+	modelID := defaultModelID
 	if input.Model != "" {
 		if len(options.AvailableModels) > 0 && !conversationSubagentModelExists(options.AvailableModels, input.Model) {
 			ids := make([]string, 0, len(options.AvailableModels))
@@ -165,7 +172,7 @@ func executeConversationSubagent(ctx context.Context, store ConversationSubagent
 		reasoning = input.Reasoning
 	}
 	conversation, err := store.GetOrCreateSubagentConversation(ctx, ConversationSubagentConversationRequest{
-		Slug: input.Slug, ParentConversationID: options.ParentConversationID, WorkingDirectory: workingDirectory(),
+		Slug: input.Slug, ParentConversationID: parentConversationID, WorkingDirectory: workingDirectory(),
 	})
 	if err != nil {
 		return datool.Result{}, fmt.Errorf("failed to get/create subagent conversation: %w", err)

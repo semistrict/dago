@@ -130,10 +130,10 @@ func prepareWorkflow(ctx context.Context, shared *workflowShared, script string,
 		_, value, _, err := executeWorkflow(ctx, shared, source, childArgs, depth+1, childID*1_000_000)
 		return value, err
 	}
-	engine, err := quickjs.New(ctx, nil, quickjs.Options{
+	engine, err := quickjs.New(ctx, quickjs.Options{
 		MemoryLimit: shared.opts.MemoryLimit, StackLimit: shared.opts.StackLimit,
-		Timeout: shared.opts.Timeout, HostFunctions: hosts,
-	})
+		HostFunctions: hosts,
+	}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create workflow JavaScript runtime: %w", err)
 	}

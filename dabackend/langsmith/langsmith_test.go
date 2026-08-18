@@ -48,7 +48,6 @@ func (fake *fakeSandbox) Run(_ context.Context, params ls.SandboxBoxRunParams, _
 func TestBackendConformsAndUsesNativeFileTransfer(t *testing.T) {
 	fake := &fakeSandbox{files: map[string][]byte{"/work/a.txt": []byte("one\r\ntwo\rthree\n")}}
 	remote := newBackend("sandbox", fake, Options{})
-
 	var _ dabackend.Sandbox = remote
 	read, err := remote.Read(context.Background(), "/work/a.txt", 1, 1)
 	if err != nil {
@@ -71,15 +70,6 @@ func TestBackendConformsAndUsesNativeFileTransfer(t *testing.T) {
 	if string(fake.files["/new dir/quote's.txt"]) != "content" {
 		t.Fatal("native write did not preserve content")
 	}
-}
-
-func TestNewPanicsForNilSandbox(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("nil sandbox did not panic")
-		}
-	}()
-	New(nil)
 }
 
 func TestListParsesNULTerminatedMetadata(t *testing.T) {

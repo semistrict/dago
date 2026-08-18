@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -25,7 +28,7 @@ import (
 	"github.com/semistrict/dago/examples/shelley/version"
 )
 
-type GlobalConfig struct {
+type globalConfig struct {
 	DBPath           string
 	Debug            bool
 	PredictableOnly  bool
@@ -42,7 +45,7 @@ type shelleyConfig struct {
 // global. Extracted from main so tests can parse flags through a fresh FlagSet
 // and assert defaults (notably that -default-model defaults to empty, which is
 // what lets shelley.json's default_model take effect on VMs).
-func registerGlobalFlags(fs *flag.FlagSet, global *GlobalConfig) {
+func registerGlobalFlags(fs *flag.FlagSet, global *globalConfig) {
 	fs.StringVar(&global.DBPath, "db", "shelley.db", "Path to SQLite database file")
 	fs.BoolVar(&global.Debug, "debug", false, "Enable debug logging")
 	fs.BoolVar(&global.PredictableOnly, "predictable-only", false, "Use only the predictable service, ignoring all other models")
@@ -53,7 +56,7 @@ func registerGlobalFlags(fs *flag.FlagSet, global *GlobalConfig) {
 
 func main() {
 	// Define global flags
-	var global GlobalConfig
+	var global globalConfig
 	registerGlobalFlags(flag.CommandLine, &global)
 
 	// Custom usage function
@@ -162,7 +165,7 @@ func runSkill(args []string) {
 	}
 }
 
-func runServe(global GlobalConfig, args []string) {
+func runServe(global globalConfig, args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.String("port", "9000", "Port to listen on")
 	listenHost := fs.String("listen-host", "127.0.0.1", "Host or IP address to listen on")
@@ -195,14 +198,18 @@ func runServe(global GlobalConfig, args []string) {
 	server.DBPath = global.DBPath
 
 	// Build LLM configuration
-	llmConfig, err := buildLLMConfigWithOAuth(global, logger, database, openAIOAuth)
+	builtModels, llmConfig, err := buildLLMConfigWithOAuth(global, logger, database, openAIOAuth)
 	if err != nil {
 		logger.Error("Failed to load config", "path", global.ConfigPath, "error", err)
 		os.Exit(1)
 	}
 
 	// Initialize LLM service manager (includes custom model support via database)
-	llmManager := server.NewLLMServiceManager(llmConfig)
+	llmManager, err := server.NewLLMServiceManager(builtModels, *llmConfig)
+	if err != nil {
+		logger.Error("Failed to initialize model manager", "error", err)
+		os.Exit(1)
+	}
 
 	// Log available models
 	availableModels := llmManager.GetAvailableModels()
@@ -212,7 +219,11 @@ func runServe(global GlobalConfig, args []string) {
 	toolSetConfig.TrustWorkspaceGuidance = *trustWorkspaceGuidance
 
 	// Create server
-	svr := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.DefaultModel, *requireHeader)
+	svr, err := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.DefaultModel, *requireHeader)
+	if err != nil {
+		logger.Error("Failed to initialize server", "error", err)
+		os.Exit(1)
+	}
 	svr.SetModelRefresher(llmConfig.RefreshBuiltModels)
 	svr.SetOpenAIOAuth(openAIOAuth)
 	svr.Banner = *banner
@@ -290,7 +301,7 @@ func setupLogging(debug bool) *slog.Logger {
 }
 
 func setupDatabase(dbPath string, logger *slog.Logger) *db.DB {
-	database, err := db.New(db.Config{DSN: dbPath})
+	database, err := db.New(dbPath)
 	if err != nil {
 		logger.Error("Failed to initialize database", "error", err)
 		os.Exit(1)
@@ -373,29 +384,36 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 
 // buildLLMConfig composes models from local provider credentials, OpenAI
 // account authentication, and the deterministic test model.
-func buildLLMConfigWithOAuth(global GlobalConfig, logger *slog.Logger, database *db.DB, openAIOAuth *server.OpenAIOAuth) (*server.LLMConfig, error) {
+func buildLLMConfigWithOAuth(global globalConfig, logger *slog.Logger, database *db.DB, openAIOAuth *server.OpenAIOAuth) ([]models.Built, *server.LLMConfig, error) {
 	config, err := loadConfig(global.ConfigPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defaultModel, sources := buildLLMModelSources(global, config, logger)
 
 	httpc := llmhttp.NewClient(nil)
-	builtModels, err := buildModels(modelsources.Build(models.All(), sources, httpc, logger), openAIOAuth)
+	builtModels, err := modelsources.Build(models.All(), sources, httpc, logger)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	builtModels, err = buildModels(builtModels, openAIOAuth)
+	if err != nil {
+		return nil, nil, err
 	}
 	if defaultModel == "" && len(builtModels) > 0 && builtModels[0].ID == server.OpenAISubscriptionModelID {
 		defaultModel = server.OpenAISubscriptionModelID
 	}
-	return &server.LLMConfig{
-		Models:       builtModels,
+	return builtModels, &server.LLMConfig{
 		DefaultModel: defaultModel,
 		DB:           database,
 		HTTPC:        httpc,
 		RefreshBuiltModels: func(_ context.Context) ([]models.Built, error) {
 			_, sources := buildLLMModelSources(global, config, logger)
-			return buildModels(modelsources.Build(models.All(), sources, httpc, logger), openAIOAuth)
+			refreshed, err := modelsources.Build(models.All(), sources, httpc, logger)
+			if err != nil {
+				return nil, err
+			}
+			return buildModels(refreshed, openAIOAuth)
 		},
 		Logger: logger,
 	}, nil
@@ -418,7 +436,7 @@ func buildModels(base []models.Built, openAIOAuth *server.OpenAIOAuth) ([]models
 	return result, nil
 }
 
-func setupOpenAIOAuth(global GlobalConfig, logger *slog.Logger) (*server.OpenAIOAuth, error) {
+func setupOpenAIOAuth(global globalConfig, logger *slog.Logger) (*server.OpenAIOAuth, error) {
 	storePath := strings.TrimSpace(global.OpenAIOAuthStore)
 	if storePath == "none" {
 		return nil, nil
@@ -445,13 +463,21 @@ func loadConfig(path string) (shelleyConfig, error) {
 		return shelleyConfig{}, fmt.Errorf("read config file: %w", err)
 	}
 	var config shelleyConfig
-	if err := json.Unmarshal(data, &config); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
 		return shelleyConfig{}, fmt.Errorf("parse config file: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return shelleyConfig{}, fmt.Errorf("parse config file: trailing data: %w", err)
 	}
 	return config, nil
 }
 
-func buildLLMModelSources(global GlobalConfig, config shelleyConfig, logger *slog.Logger) (string, []modelsources.Source) {
+func buildLLMModelSources(global globalConfig, config shelleyConfig, logger *slog.Logger) (string, []modelsources.Source) {
 	defaultModel := global.DefaultModel
 	openAIKey := os.Getenv("OPENAI_API_KEY")
 	var sources []modelsources.Source
@@ -487,7 +513,7 @@ func modelsCommandDefaultID(configured string, modelList []models.Built, predict
 // would expose, without starting the server. Useful for confirming that
 // integrations/gateway/env-var precedence and discovery are configured
 // correctly. Does NOT include custom (DB-backed) models.
-func runModels(global GlobalConfig, args []string) {
+func runModels(global globalConfig, args []string) {
 	fs := flag.NewFlagSet("models", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: shelley [global-flags] models\n\n")
@@ -509,17 +535,17 @@ func runModels(global GlobalConfig, args []string) {
 	if openAIOAuth != nil {
 		defer openAIOAuth.Close()
 	}
-	llmCfg, err := buildLLMConfigWithOAuth(global, logger, nil, openAIOAuth)
+	builtModels, llmCfg, err := buildLLMConfigWithOAuth(global, logger, nil, openAIOAuth)
 	if err != nil {
 		logger.Error("Failed to load config", "path", global.ConfigPath, "error", err)
 		os.Exit(1)
 	}
 
-	defaultID := modelsCommandDefaultID(llmCfg.DefaultModel, llmCfg.Models, global.PredictableOnly)
+	defaultID := modelsCommandDefaultID(llmCfg.DefaultModel, builtModels, global.PredictableOnly)
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tPROVIDER\tAPI TYPE\tBASE URL\tSOURCE\tDEFAULT")
-	for _, m := range llmCfg.Models {
+	for _, m := range builtModels {
 		mark := ""
 		if m.ID == defaultID {
 			mark = "*"
@@ -527,7 +553,7 @@ func runModels(global GlobalConfig, args []string) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.ID, m.Provider, m.APIType, m.BaseURL, m.Source, mark)
 	}
 	tw.Flush()
-	fmt.Printf("\n%d models\n", len(llmCfg.Models))
+	fmt.Printf("\n%d models\n", len(builtModels))
 }
 
 // systemdListener returns a net.Listener from systemd socket activation.

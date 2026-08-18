@@ -89,13 +89,10 @@ func TestDeltaRestoreDistinguishesMissingFromPresentNil(t *testing.T) {
 		copy := *value
 		return &copy
 	}
-	spec, err := NewDelta(func() *string {
+	spec := NewDelta(func() *string {
 		value := "initial"
 		return &value
 	}, reducer, cloner)
-	if err != nil {
-		t.Fatalf("NewDelta() error = %v", err)
-	}
 
 	missing, err := restoreDelta(t, spec, MissingCheckpoint[*string]()).Get()
 	if err != nil {
@@ -116,7 +113,7 @@ func TestDeltaRestoreDistinguishesMissingFromPresentNil(t *testing.T) {
 
 func TestDeltaReducerFailureDoesNotReplaceState(t *testing.T) {
 	wantErr := errors.New("reducer failed")
-	spec, err := NewDelta(
+	spec := NewDelta(
 		func() []string { return []string{} },
 		func(current []string, writes [][]string) ([]string, error) {
 			current = append(current, "mutated clone")
@@ -124,9 +121,6 @@ func TestDeltaReducerFailureDoesNotReplaceState(t *testing.T) {
 		},
 		cloneStrings,
 	)
-	if err != nil {
-		t.Fatalf("NewDelta() error = %v", err)
-	}
 	channel := restoreDelta(t, spec, LegacyCheckpoint([]string{"stable"}))
 
 	updated, err := channel.Apply([]DeltaWrite[[]string]{UpdateValue([]string{"write"})})
@@ -220,12 +214,16 @@ func TestDeltaValidatesConfiguration(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := NewDelta(test.initial, test.reducer, test.cloner, test.options...)
-			if err == nil {
-				t.Fatal("NewDelta() error = nil, want non-nil")
+			var recovered any
+			func() {
+				defer func() { recovered = recover() }()
+				NewDelta(test.initial, test.reducer, test.cloner, test.options...)
+			}()
+			if recovered == nil {
+				t.Fatal("NewDelta() did not panic")
 			}
-			if test.wantErr != nil && !errors.Is(err, test.wantErr) {
-				t.Fatalf("NewDelta() error = %v, want %v", err, test.wantErr)
+			if recoveredErr, ok := recovered.(error); test.wantErr != nil && (!ok || !errors.Is(recoveredErr, test.wantErr)) {
+				t.Fatalf("NewDelta() panic = %v, want %v", recovered, test.wantErr)
 			}
 		})
 	}
@@ -240,14 +238,11 @@ func newStringSliceDelta(t *testing.T) *Delta[[]string] {
 		}
 		return result, nil
 	}
-	channel, err := NewDelta(
+	channel := NewDelta(
 		func() []string { return []string{} },
 		reducer,
 		cloneStrings,
 	)
-	if err != nil {
-		t.Fatalf("NewDelta() error = %v", err)
-	}
 	return channel
 }
 

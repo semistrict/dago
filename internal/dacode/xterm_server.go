@@ -246,6 +246,7 @@ func xtermSessionEnvironment(environment []string) []string {
 		"COLORTERM":      "truecolor",
 		"CLICOLOR":       "1",
 		"CLICOLOR_FORCE": "1",
+		"DACODE_XTERMJS": "1",
 	}
 	result := make([]string, 0, len(environment)+len(overrides))
 	for _, entry := range environment {
@@ -258,7 +259,7 @@ func xtermSessionEnvironment(environment []string) []string {
 		}
 		result = append(result, entry)
 	}
-	for _, name := range []string{"TERM", "COLORTERM", "CLICOLOR", "CLICOLOR_FORCE"} {
+	for _, name := range []string{"TERM", "COLORTERM", "CLICOLOR", "CLICOLOR_FORCE", "DACODE_XTERMJS"} {
 		result = append(result, name+"="+overrides[name])
 	}
 	return result

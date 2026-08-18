@@ -34,40 +34,43 @@ func TestSubagentUsageIncludesOtherUsage(t *testing.T) {
 	}
 
 	// Child main-loop usage: 1M in + 1M out of gpt-5.5 = $35 estimated.
-	if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: child.ConversationID,
-		Type:           db.MessageTypeAgent,
-		UsageData: map[string]any{
-			"input_tokens": 1_000_000, "output_tokens": 1_000_000, "cost_usd": 1.25,
-		},
-		ModelName: "gpt-5.5",
-		LLMAPIURL: "https://api.example.test/v1/responses",
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		child.ConversationID,
+		db.MessageTypeAgent, db.CreateMessageParams{
+
+			UsageData: map[string]any{
+				"input_tokens": 1_000_000, "output_tokens": 1_000_000, "cost_usd": 1.25,
+			},
+			ModelName: "gpt-5.5",
+			LLMAPIURL: "https://api.example.test/v1/responses",
+		}); err != nil {
 		t.Fatal(err)
 	}
 	// Child indirect usage (a tool-result message's other_usage_data): another
 	// 1M in of the same model = $5 estimated.
-	if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: child.ConversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-		OtherUsageData: []llm.PurposedUsage{{
-			Purpose: "keyword_search",
-			Usage:   llm.Usage{InputTokens: 1_000_000, CostUSD: 0.75, Model: "gpt-5.5", URL: "https://api.example.test/v1/responses"},
-		}},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		child.ConversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleUser},
+			OtherUsageData: []llm.PurposedUsage{{
+				Purpose: "keyword_search",
+				Usage:   llm.Usage{InputTokens: 1_000_000, CostUSD: 0.75, Model: "gpt-5.5", URL: "https://api.example.test/v1/responses"},
+			}},
+		}); err != nil {
 		t.Fatal(err)
 	}
 	// The parent's own indirect usage must NOT be counted.
-	if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: parent.ConversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-		OtherUsageData: []llm.PurposedUsage{{
-			Purpose: "compaction",
-			Usage:   llm.Usage{InputTokens: 999, CostUSD: 9, Model: "gpt-5.5", URL: "https://api.example.test/v1/responses"},
-		}},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		parent.ConversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleUser},
+			OtherUsageData: []llm.PurposedUsage{{
+				Purpose: "compaction",
+				Usage:   llm.Usage{InputTokens: 999, CostUSD: 9, Model: "gpt-5.5", URL: "https://api.example.test/v1/responses"},
+			}},
+		}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -112,12 +115,14 @@ func TestCompactionRecordsUsage(t *testing.T) {
 		t.Cleanup(cleanup)
 		ps := loop.NewPredictableService()
 		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
-		mgr := NewLLMServiceManager(&LLMConfig{
-			Models: []models.Built{{ID: "predictable", Provider: models.ProviderBuiltIn, Source: "test", Chat: ps}},
+		mgr, err := NewLLMServiceManager([]models.Built{{ID: "predictable", Provider: models.ProviderBuiltIn, Source: "test", Chat: ps}}, LLMConfig{
 			DB:     database,
 			Logger: logger,
 		})
-		srv := NewServer(database, mgr, claudetool.ToolSetConfig{EnableBrowser: false}, logger, true, "predictable", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := MustNewServer(database, mgr, claudetool.ToolSetConfig{EnableBrowser: false}, logger, true, "predictable", "")
 		srv.hooksDir = t.TempDir()
 		if srv.terminals != nil {
 			srv.terminals.SetSpawner(InProcessSpawner)

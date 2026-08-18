@@ -11,7 +11,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/semistrict/dago/dastore"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // Store persists virtual files in a namespaced runtime Store.
@@ -113,7 +112,7 @@ type storeSession struct {
 }
 
 func NewStore(values dastore.Store, namespace dastore.Namespace) *Store {
-	if values == nil {
+	if nilInterface(values) {
 		panic("backend store is required")
 	}
 	if err := namespace.Validate(); err != nil {
@@ -127,11 +126,13 @@ func NewStore(values dastore.Store, namespace dastore.Namespace) *Store {
 
 // NewStoreWithOptions constructs a persistent backend whose namespace and,
 // optionally, store are resolved from each agent invocation.
-func NewStoreWithOptions(namespace NamespaceFactory, optionValues ...StoreOptions) *Store {
+func NewStoreWithOptions(namespace NamespaceFactory, options StoreOptions) *Store {
 	if namespace == nil {
 		panic("backend store namespace factory is required")
 	}
-	options := optionvalue.Resolve("store backend", optionValues)
+	if nilInterface(options.Store) {
+		options.Store = nil
+	}
 	result := &Store{store: options.Store, namespaceFactory: namespace, locks: newStorePathLocks()}
 	result.session.owner = result
 	return result
@@ -191,7 +192,7 @@ func (backend *Store) snapshot(ctx context.Context) (*Memory, error) {
 	if err != nil {
 		return nil, err
 	}
-	items, err := values.Search(ctx, dastore.SearchOptions{Prefix: namespace})
+	items, err := searchAllStoreItems(ctx, values, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +207,25 @@ func (backend *Store) snapshot(ctx context.Context) (*Memory, error) {
 		}
 		files[item.Key] = data
 	}
-	return restoreMemory(files)
+	return LoadMemory(files)
+}
+
+func searchAllStoreItems(ctx context.Context, values dastore.Store, namespace dastore.Namespace) ([]dastore.Item, error) {
+	var items []dastore.Item
+	for {
+		page, err := values.Search(ctx, dastore.SearchOptions{
+			Prefix: namespace,
+			Limit:  dastore.DefaultSearchLimit,
+			Offset: len(items),
+		})
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, page...)
+		if len(page) < dastore.DefaultSearchLimit {
+			return items, nil
+		}
+	}
 }
 
 func (backend *Store) loadFile(ctx context.Context, name string) (dastore.Store, dastore.Namespace, FileData, bool, error) {
@@ -333,7 +352,7 @@ func (backend *Store) Delete(ctx context.Context, path string) (DeleteResult, er
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	items, err := values.Search(ctx, dastore.SearchOptions{Prefix: namespace})
+	items, err := searchAllStoreItems(ctx, values, namespace)
 	if err != nil {
 		return DeleteResult{}, err
 	}

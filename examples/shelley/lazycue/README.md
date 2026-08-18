@@ -69,7 +69,7 @@ PASS  [cached v1]  1.317s
 Or from Go tests:
 
 ```go
-var app = lazycue.New(lazycue.Options{BaseURL: "http://localhost:3000"})
+var app = lazycue.New("http://localhost:3000", lazycue.Options{})
 
 func TestHomepage(t *testing.T) {
     app.Test(t, `Navigate to / and verify the page title is "My App". The login button should be visible.`)

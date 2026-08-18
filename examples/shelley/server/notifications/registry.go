@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"tailscale.com/syncs"
 )
@@ -18,6 +19,13 @@ var registry syncs.Map[string, ChannelFactory]
 // Register adds a channel factory to the global registry.
 // Channel implementations call this in their init() functions.
 func Register(typeName string, factory ChannelFactory) {
+	typeName = strings.TrimSpace(typeName)
+	if typeName == "" || factory == nil {
+		panic("notification type and factory are required")
+	}
+	if _, exists := registry.Load(typeName); exists {
+		panic("duplicate notification channel type: " + typeName)
+	}
 	registry.Store(typeName, factory)
 }
 
@@ -35,6 +43,7 @@ func RegisteredTypes() []string {
 // the "type" field in the registry and calling the corresponding factory.
 func CreateFromConfig(config map[string]any, logger *slog.Logger) (Channel, error) {
 	typeName, ok := config["type"].(string)
+	typeName = strings.TrimSpace(typeName)
 	if !ok || typeName == "" {
 		return nil, fmt.Errorf("notification channel config missing \"type\" field")
 	}
@@ -45,5 +54,15 @@ func CreateFromConfig(config map[string]any, logger *slog.Logger) (Channel, erro
 		return nil, fmt.Errorf("unknown notification channel type: %q", typeName)
 	}
 
-	return factory(config, logger)
+	channel, err := factory(config, logger)
+	if err != nil {
+		return nil, err
+	}
+	if nilChannel(channel) {
+		return nil, fmt.Errorf("notification channel factory %q returned nil", typeName)
+	}
+	if strings.TrimSpace(channel.Name()) == "" {
+		return nil, fmt.Errorf("notification channel factory %q returned an unnamed channel", typeName)
+	}
+	return channel, nil
 }

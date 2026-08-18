@@ -52,6 +52,12 @@ func Validate(data []byte) error {
 // Returns the resized image bytes and the format ("png" or "jpeg").
 // If no resize is needed, returns the original data unchanged.
 func ResizeImage(data []byte, maxDimension int) (resized []byte, format string, didResize bool, err error) {
+	if maxDimension < 0 {
+		return nil, "", false, fmt.Errorf("maximum image dimension must not be negative")
+	}
+	if maxDimension == 0 {
+		maxDimension = DefaultMaxDimension
+	}
 	img, detectedFormat, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", false, fmt.Errorf("failed to decode image: %w", err)
@@ -69,10 +75,10 @@ func ResizeImage(data []byte, maxDimension int) (resized []byte, format string, 
 	newWidth, newHeight := width, height
 	if width > height {
 		newWidth = maxDimension
-		newHeight = height * maxDimension / width
+		newHeight = max(1, height*maxDimension/width)
 	} else {
 		newHeight = maxDimension
-		newWidth = width * maxDimension / height
+		newWidth = max(1, width*maxDimension/height)
 	}
 
 	// Create resized image

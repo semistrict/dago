@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDiscoverGuidancePreservesPrecedenceAndScopedFiles(t *testing.T) {
@@ -28,6 +29,15 @@ func TestDiscoverGuidancePreservesPrecedenceAndScopedFiles(t *testing.T) {
 	if len(guidance.Subdirectories) != 1 || guidance.Subdirectories[0] != filepath.Join(root, "pkg", "AGENTS.md") {
 		t.Fatalf("subdirectory guidance = %#v", guidance.Subdirectories)
 	}
+}
+
+func TestDiscoverGuidanceRejectsNegativeTimeout(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("negative discovery timeout did not panic")
+		}
+	}()
+	DiscoverGuidance(t.Context(), GuidanceOptions{Timeout: -time.Second})
 }
 
 func TestDiscoverGuidanceCanExcludeWorkspace(t *testing.T) {

@@ -26,6 +26,9 @@ type SubagentRunner struct {
 
 // NewSubagentRunner creates a new SubagentRunner.
 func NewSubagentRunner(s *Server) *SubagentRunner {
+	if s == nil {
+		panic("subagent server is required")
+	}
 	return &SubagentRunner{server: s}
 }
 
@@ -239,7 +242,7 @@ func (r *SubagentRunner) runSubagent(ctx context.Context, conversationID, prompt
 // done=true), the deadline passes (done=false), or ctx is cancelled (err).
 // It does not send anything; it only waits for an in-flight turn to end so a
 // follow-up can be sent without interrupting work.
-func (r *SubagentRunner) waitForIdle(ctx context.Context, manager *ConversationManager, conversationID string, deadline time.Time) (done bool, err error) {
+func (r *SubagentRunner) waitForIdle(ctx context.Context, manager *conversationManager, conversationID string, deadline time.Time) (done bool, err error) {
 	pollInterval := 500 * time.Millisecond
 	for {
 		select {
@@ -268,13 +271,13 @@ func (r *SubagentRunner) waitForIdle(ctx context.Context, manager *ConversationM
 // onDone would otherwise have fired. This covers the timeout and
 // context-cancellation paths, where the tool's return value is not the
 // subagent's final answer.
-func (r *SubagentRunner) endWait(manager *ConversationManager, conversationID string, delivered bool) {
+func (r *SubagentRunner) endWait(manager *conversationManager, conversationID string, delivered bool) {
 	if manager.finishSubagentWait(delivered) {
 		r.server.dispatchSubagentDone(conversationID)
 	}
 }
 
-func (r *SubagentRunner) waitForResponse(ctx context.Context, manager *ConversationManager, conversationID, modelID string, deadline time.Time) (string, error) {
+func (r *SubagentRunner) waitForResponse(ctx context.Context, manager *conversationManager, conversationID, modelID string, deadline time.Time) (string, error) {
 	s := r.server
 
 	pollInterval := 500 * time.Millisecond

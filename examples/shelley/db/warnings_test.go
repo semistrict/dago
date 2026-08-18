@@ -60,14 +60,15 @@ func TestCreateWarningMessageCapsConsecutiveWarnings(t *testing.T) {
 		t.Fatalf("last warning suppressed = %v", userData["suppressed"])
 	}
 
-	_, err = database.CreateMessage(ctx, CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           MessageTypeUser,
-		LLMData: llm.Message{
-			Role:    llm.MessageRoleUser,
-			Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}},
-		},
-	})
+	_, err = database.CreateMessage(ctx,
+		conv.ConversationID,
+		MessageTypeUser, CreateMessageParams{
+
+			LLMData: llm.Message{
+				Role:    llm.MessageRoleUser,
+				Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}},
+			},
+		})
 	if err != nil {
 		t.Fatalf("CreateMessage: %v", err)
 	}

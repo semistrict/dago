@@ -70,3 +70,19 @@ func TestWithProfilePreservesOverridesAcrossBinding(t *testing.T) {
 		t.Fatal("underlying model was not bound")
 	}
 }
+
+func TestWithProfilePanicsForNilChats(t *testing.T) {
+	for name, chat := range map[string]Chat{
+		"nil":       nil,
+		"typed nil": (*profileTestChat)(nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("WithProfile did not panic")
+				}
+			}()
+			WithProfile(chat, nil)
+		})
+	}
+}

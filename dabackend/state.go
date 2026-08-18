@@ -84,6 +84,16 @@ type State struct {
 // standard "files" field. Initial values use the same plain-data records that
 // are persisted in checkpoints.
 func NewState(key string, initial map[string]any) *State {
+	value, err := LoadState(key, initial)
+	if err != nil {
+		panic(err)
+	}
+	return value
+}
+
+// LoadState validates externally supplied initial checkpoint data. Prefer
+// NewState for static application configuration.
+func LoadState(key string, initial map[string]any) (*State, error) {
 	if key == "" {
 		key = "files"
 	}
@@ -91,10 +101,17 @@ func NewState(key string, initial map[string]any) *State {
 	value.session.owner = value
 	cloned, err := cloneStateFiles(initial)
 	if err != nil {
-		panic(fmt.Errorf("state backend initial files: %w", err))
+		return nil, fmt.Errorf("state backend initial files: %w", err)
+	}
+	decoded, err := decodeStateFiles(cloned)
+	if err != nil {
+		return nil, fmt.Errorf("state backend initial files: %w", err)
+	}
+	if _, err := LoadMemory(decoded); err != nil {
+		return nil, fmt.Errorf("state backend initial files: %w", err)
 	}
 	value.initial = cloned
-	return value
+	return value, nil
 }
 
 func (backend *State) BindRuntime(ctx context.Context, reader StateReader) (context.Context, error) {
@@ -112,7 +129,7 @@ func (backend *State) BindRuntime(ctx context.Context, reader StateReader) (cont
 	if err != nil {
 		return nil, err
 	}
-	memory, err := restoreMemory(decoded)
+	memory, err := LoadMemory(decoded)
 	if err != nil {
 		return nil, err
 	}

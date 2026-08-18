@@ -2,6 +2,7 @@ package dago
 
 import (
 	"encoding/json"
+	"log/slog"
 
 	"github.com/semistrict/dago/dabackend"
 	"github.com/semistrict/dago/dacache"
@@ -58,7 +59,11 @@ func WithBackend(backend dabackend.Backend) Option {
 
 // WithFilesystem sets filesystem tool and permission configuration.
 func WithFilesystem(filesystem Filesystem) Option {
-	return optionFunc(func(options *agentConfig) { options.Filesystem = filesystem })
+	return optionFunc(func(options *agentConfig) {
+		managedMemoryPaths := options.Filesystem.managedMemoryPaths
+		options.Filesystem = filesystem
+		options.Filesystem.managedMemoryPaths = appendUniqueStrings(options.Filesystem.managedMemoryPaths, managedMemoryPaths...)
+	})
 }
 
 // WithFilesystemPermissions sets filesystem permissions while preserving the
@@ -201,4 +206,13 @@ func WithTags(tags ...string) Option {
 // WithDebug enables graph debug logging.
 func WithDebug() Option {
 	return optionFunc(func(options *agentConfig) { options.Debug = true })
+}
+
+// WithLogger routes enabled graph debug events to logger. An omitted logger
+// preserves slog.Default behavior; a nil explicit logger is a static error.
+func WithLogger(logger *slog.Logger) Option {
+	if logger == nil {
+		panic("create deep agent: logger is nil")
+	}
+	return optionFunc(func(options *agentConfig) { options.Logger = logger })
 }

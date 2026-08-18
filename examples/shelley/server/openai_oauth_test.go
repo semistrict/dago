@@ -58,8 +58,8 @@ func TestOpenAIOAuthStartCompletesOnlyAfterCatalogRefresh(t *testing.T) {
 	releaseLogin := make(chan struct{})
 	refreshStarted := make(chan struct{})
 	releaseRefresh := make(chan struct{})
-	controller.login = func(ctx context.Context, options dopenai.OAuthOptions) (dopenai.CredentialSource, error) {
-		if err := options.OpenURL("https://auth.example/authorize"); err != nil {
+	controller.login = func(ctx context.Context, openURL func(string) error, _ dopenai.OAuthOptions) (dopenai.CredentialSource, error) {
+		if err := openURL("https://auth.example/authorize"); err != nil {
 			return nil, err
 		}
 		select {
@@ -106,8 +106,8 @@ func TestOpenAIOAuthClearCancelsPendingLoginAndRemovesCredentials(t *testing.T) 
 	controller.session = staticOAuthCredentials{}
 	controller.state = "complete"
 	loginCanceled := make(chan struct{})
-	controller.login = func(ctx context.Context, options dopenai.OAuthOptions) (dopenai.CredentialSource, error) {
-		if err := options.OpenURL("https://auth.example/authorize"); err != nil {
+	controller.login = func(ctx context.Context, openURL func(string) error, _ dopenai.OAuthOptions) (dopenai.CredentialSource, error) {
+		if err := openURL("https://auth.example/authorize"); err != nil {
 			return nil, err
 		}
 		<-ctx.Done()
@@ -135,8 +135,8 @@ func TestOpenAIOAuthClearCancelsPendingLoginAndRemovesCredentials(t *testing.T) 
 func TestOpenAIOAuthHTTPRoutes(t *testing.T) {
 	controller := NewOpenAIOAuth(filepath.Join(t.TempDir(), "openai-oauth.json"), oauthTestLogger())
 	release := make(chan struct{})
-	controller.login = func(ctx context.Context, options dopenai.OAuthOptions) (dopenai.CredentialSource, error) {
-		if err := options.OpenURL("https://auth.example/authorize"); err != nil {
+	controller.login = func(ctx context.Context, openURL func(string) error, _ dopenai.OAuthOptions) (dopenai.CredentialSource, error) {
+		if err := openURL("https://auth.example/authorize"); err != nil {
 			return nil, err
 		}
 		select {

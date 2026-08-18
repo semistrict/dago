@@ -46,7 +46,7 @@ func TestChangeDirAffectsBash(t *testing.T) {
 	toolSetConfig := claudetool.ToolSetConfig{
 		WorkingDir: tmpDir,
 	}
-	server := NewServer(database, llmManager, toolSetConfig, logger, true, "predictable", "")
+	server := MustNewServer(database, llmManager, toolSetConfig, logger, true, "predictable", "")
 
 	// Create conversation
 	conversation, err := database.CreateConversation(context.Background(), nil, true, nil, nil, db.ConversationOptions{})
@@ -182,7 +182,7 @@ func TestChangeDirBroadcastsCwdUpdate(t *testing.T) {
 	toolSetConfig := claudetool.ToolSetConfig{
 		WorkingDir: tmpDir,
 	}
-	server := NewServer(database, llmManager, toolSetConfig, logger, true, "predictable", "")
+	server := MustNewServer(database, llmManager, toolSetConfig, logger, true, "predictable", "")
 
 	// Create test server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -300,7 +300,7 @@ func TestChangeDirBroadcastsConversationListPatch(t *testing.T) {
 	defer cleanup()
 	predictableService := loop.NewPredictableService()
 	llmManager := &testLLMManager{service: predictableService}
-	server := NewServer(database, llmManager, claudetool.ToolSetConfig{WorkingDir: tmpDir}, slog.Default(), true, "predictable", "")
+	server := MustNewServer(database, llmManager, claudetool.ToolSetConfig{WorkingDir: tmpDir}, slog.Default(), true, "predictable", "")
 
 	conversation, err := database.CreateConversation(context.Background(), nil, true, &tmpDir, nil, db.ConversationOptions{})
 	if err != nil {

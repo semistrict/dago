@@ -18,7 +18,6 @@ import (
 	ls "github.com/langchain-ai/langsmith-go"
 	"github.com/langchain-ai/langsmith-go/option"
 	"github.com/semistrict/dago/dabackend"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 type sandboxAPI interface {
@@ -44,11 +43,10 @@ type Backend struct {
 }
 
 // New wraps an existing SDK sandbox.
-func New(sandbox *ls.Sandbox, optionValues ...Options) *Backend {
+func New(sandbox *ls.Sandbox, options Options) *Backend {
 	if sandbox == nil {
 		panic("langsmith backend: sandbox is required")
 	}
-	options := optionvalue.Resolve("langsmith backend", optionValues)
 	name := sandbox.Name
 	if name == "" {
 		name = sandbox.ID
@@ -60,13 +58,16 @@ func newBackend(id string, sandbox sandboxAPI, options Options) *Backend {
 	if sandbox == nil {
 		panic("langsmith backend: sandbox is required")
 	}
-	if options.MaxFileSize <= 0 {
+	if options.MaxFileSize < 0 || options.MaxResults < 0 || options.MaxOutput < 0 {
+		panic("langsmith backend: limits cannot be negative")
+	}
+	if options.MaxFileSize == 0 {
 		options.MaxFileSize = 10 << 20
 	}
-	if options.MaxResults <= 0 {
+	if options.MaxResults == 0 {
 		options.MaxResults = 1000
 	}
-	if options.MaxOutput <= 0 {
+	if options.MaxOutput == 0 {
 		options.MaxOutput = 1 << 20
 	}
 	return &Backend{id: id, sandbox: sandbox, maxFileSize: options.MaxFileSize, maxResults: options.MaxResults, maxOutput: options.MaxOutput}

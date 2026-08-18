@@ -10,10 +10,10 @@ import (
 
 func TestShellNativeToolUsesNativeContract(t *testing.T) {
 	root := t.TempDir()
-	executable := (&ShellTool{
-		WorkingDir: NewMutableWorkingDir(root),
+	executable := (&shellTool{
+		WorkingDir: newMutableWorkingDir(root),
 		TempDir:    t.TempDir(),
-	}).NativeTool()
+	}).nativeTool()
 	result, err := executable.Execute(context.Background(), json.RawMessage(`{"command":"printf native-shell"}`), datool.Runtime{CallID: "call-1"})
 	if err != nil {
 		t.Fatal(err)

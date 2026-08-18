@@ -41,15 +41,13 @@ CREATE TABLE IF NOT EXISTS writes (
     PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
 );`
 
-type codec interface {
-	Encode(any) (serde.Typed, error)
-	Decode(serde.Typed) (any, error)
-}
+// Codec is the checkpoint payload codec accepted by NewWithCodec.
+type Codec = serde.Codec
 
 // Saver stores checkpoints in the exact standard SQLite table layout.
 type Saver struct {
 	db    *sql.DB
-	codec codec
+	codec Codec
 	owned bool
 	once  sync.Once
 	err   error
@@ -64,7 +62,7 @@ func Open(path string) (*Saver, error) {
 	// The standard Python saver serializes access through one connection. Keeping one
 	// connection also makes :memory: behave as one database under database/sql.
 	database.SetMaxOpenConns(1)
-	saver := New(database, nil)
+	saver := New(database)
 	saver.owned = true
 	if err := saver.Setup(context.Background()); err != nil {
 		_ = database.Close()
@@ -73,12 +71,33 @@ func Open(path string) (*Saver, error) {
 	return saver, nil
 }
 
-// New wraps an existing database/sql SQLite handle.
-func New(database *sql.DB, payloadCodec codec) *Saver {
-	if payloadCodec == nil {
-		payloadCodec = serde.New(serde.Limits{})
+// New wraps an existing database/sql SQLite handle with the safe default codec.
+func New(database *sql.DB) *Saver {
+	return NewWithCodec(database, serde.New(serde.Limits{}))
+}
+
+// NewWithCodec wraps an existing database/sql SQLite handle with payloadCodec.
+func NewWithCodec(database *sql.DB, payloadCodec Codec) *Saver {
+	if database == nil {
+		panic("SQLite checkpoint database is required")
+	}
+	if nilInterface(payloadCodec) {
+		panic("SQLite checkpoint codec is required")
 	}
 	return &Saver{db: database, codec: payloadCodec}
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (saver *Saver) Setup(ctx context.Context) error {
@@ -156,7 +175,7 @@ func (saver *Saver) PutWrites(
 	}
 	replace := len(writes) > 0
 	for _, write := range writes {
-		if _, special := dacheckpoint.SpecialWriteIndexes[write.Channel]; !special {
+		if _, special := dacheckpoint.SpecialWriteIndex(write.Channel); !special {
 			replace = false
 			break
 		}
@@ -179,7 +198,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 			return fmt.Errorf("encode SQLite write %q: %w", write.Channel, err)
 		}
 		assigned := index
-		if special, ok := dacheckpoint.SpecialWriteIndexes[write.Channel]; ok {
+		if special, ok := dacheckpoint.SpecialWriteIndex(write.Channel); ok {
 			assigned = special
 		}
 		if _, err := transaction.ExecContext(ctx, query,
@@ -293,6 +312,11 @@ func (saver *Saver) List(
 	config *dacheckpoint.Config,
 	options dacheckpoint.ListOptions,
 ) ([]dacheckpoint.Tuple, error) {
+	var err error
+	options, err = options.Normalized()
+	if err != nil {
+		return nil, err
+	}
 	if err := saver.Setup(ctx); err != nil {
 		return nil, err
 	}
@@ -325,19 +349,32 @@ func (saver *Saver) List(
 	type listedRow struct {
 		threadID, namespace, id string
 		parent, typeTag         sql.NullString
-		payload, metadata       []byte
+		payload                 []byte
+		metadata                dacheckpoint.Metadata
 	}
 	var rawRows []listedRow
 	for rows.Next() {
 		var row listedRow
+		var metadataData []byte
 		if err := rows.Scan(
 			&row.threadID, &row.namespace, &row.id, &row.parent, &row.typeTag,
-			&row.payload, &row.metadata,
+			&row.payload, &metadataData,
 		); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		row.metadata, err = unmarshalMetadata(metadataData)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !matchesMetadata(row.metadata, options.Metadata) {
+			continue
+		}
 		rawRows = append(rawRows, row)
+		if len(rawRows) >= options.Limit {
+			break
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -347,13 +384,6 @@ func (saver *Saver) List(
 	}
 	var result []dacheckpoint.Tuple
 	for _, row := range rawRows {
-		metadata, err := unmarshalMetadata(row.metadata)
-		if err != nil {
-			return nil, err
-		}
-		if !matchesMetadata(metadata, options.Metadata) {
-			continue
-		}
 		decoded, err := saver.codec.Decode(serde.Typed{Type: row.typeTag.String, Data: row.payload})
 		if err != nil {
 			return nil, serde.WithContext(err, row.id, "$checkpoint", row.typeTag.String)
@@ -367,15 +397,12 @@ func (saver *Saver) List(
 		if err != nil {
 			return nil, err
 		}
-		tuple := dacheckpoint.Tuple{Config: rowConfig, Checkpoint: value, Metadata: metadata, PendingWrites: writes}
+		tuple := dacheckpoint.Tuple{Config: rowConfig, Checkpoint: value, Metadata: row.metadata, PendingWrites: writes}
 		if row.parent.Valid && row.parent.String != "" {
 			parentConfig := dacheckpoint.Config{ThreadID: row.threadID, Namespace: row.namespace, CheckpointID: row.parent.String}
 			tuple.Parent = &parentConfig
 		}
 		result = append(result, tuple)
-		if options.Limit > 0 && len(result) >= options.Limit {
-			break
-		}
 	}
 	return result, nil
 }
@@ -677,8 +704,7 @@ func unmarshalMetadata(data []byte) (dacheckpoint.Metadata, error) {
 // SchemaSQL returns the exact idempotent schema setup script for introspection tests.
 func SchemaSQL() string { return schema }
 
-// SortPendingWrites exposes the Python ordering rule for package conformance tests.
-func SortPendingWrites(writes []dacheckpoint.PendingWrite) {
+func sortPendingWrites(writes []dacheckpoint.PendingWrite) {
 	sort.SliceStable(writes, func(i, j int) bool {
 		if writes[i].TaskID != writes[j].TaskID {
 			return writes[i].TaskID < writes[j].TaskID

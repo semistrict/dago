@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -65,14 +66,29 @@ type Backend struct {
 	commitHash string
 }
 
+// New constructs a lazy Context Hub backend. It performs no remote I/O;
+// invalid static dependencies panic and operation failures remain errors.
 func New(identifier string, client Client) *Backend {
 	if strings.TrimSpace(identifier) == "" {
 		panic("context hub backend: identifier is required")
 	}
-	if client == nil {
+	if nilInterface(client) {
 		panic("context hub backend: client is required")
 	}
 	return &Backend{identifier: identifier, client: client}
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (remote *Backend) loadLocked(ctx context.Context) error {

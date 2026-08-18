@@ -19,7 +19,7 @@ import (
 	"github.com/semistrict/dago/examples/shelley/claudetool/bashkit"
 )
 
-// ShellTool runs commands without unconditionally killing
+// shellTool runs commands without unconditionally killing
 // commands on timeout. Instead, if the command does not finish within
 // yield_time_seconds, the tool returns to the LLM with the tail of output,
 // the PID of the still-running process, and the path to a temp log file the
@@ -27,13 +27,13 @@ import (
 //
 // This lets the agent supervise long-running but bounded jobs (builds,
 // tests, big rsync) without committing the whole tool call to a hard timeout.
-type ShellTool struct {
+type shellTool struct {
 	// CheckPermission is called before running any command, if set.
 	CheckPermission PermissionCallback
 	// EnableJITInstall enables just-in-time tool installation for missing commands.
 	EnableJITInstall bool
 	// WorkingDir is the shared mutable working directory.
-	WorkingDir *MutableWorkingDir
+	WorkingDir *mutableWorkingDir
 	// LLMProvider provides access to LLM services for tool validation.
 	LLMProvider LLMServiceProvider
 	// Env holds the conversation context exposed to invoked commands as
@@ -108,35 +108,35 @@ func secondsCeil(d time.Duration) int {
 	return int((d + time.Second - 1) / time.Second)
 }
 
-func (s *ShellTool) defaultYield() time.Duration {
+func (s *shellTool) defaultYield() time.Duration {
 	if s.DefaultYield > 0 {
 		return s.DefaultYield
 	}
 	return shellDefaultYield
 }
 
-func (s *ShellTool) maxYield() time.Duration {
+func (s *shellTool) maxYield() time.Duration {
 	if s.MaxYield > 0 {
 		return s.MaxYield
 	}
 	return shellMaxYield
 }
 
-func (s *ShellTool) tempDir() string {
+func (s *shellTool) tempDir() string {
 	if s.TempDir != "" {
 		return s.TempDir
 	}
 	return os.TempDir()
 }
 
-func (s *ShellTool) backgroundCtx() context.Context {
+func (s *shellTool) backgroundCtx() context.Context {
 	if s.BackgroundCtx != nil {
 		return s.BackgroundCtx
 	}
 	return context.Background()
 }
 
-func (s *ShellTool) yieldDuration(req shellInput) time.Duration {
+func (s *shellTool) yieldDuration(req shellInput) time.Duration {
 	d := s.defaultYield()
 	if req.YieldTimeSeconds > 0 {
 		d = time.Duration(req.YieldTimeSeconds) * time.Second
@@ -150,13 +150,21 @@ func (s *ShellTool) yieldDuration(req shellInput) time.Duration {
 	return d
 }
 
-// NativeTool executes shell commands through dago's tool contract.
-func (s *ShellTool) NativeTool() datool.Tool {
-	def := max(secondsCeil(s.defaultYield()), 1)
-	maximum := max(secondsCeil(s.maxYield()), 1)
-	if def > maximum {
-		def = maximum
+// nativeTool executes shell commands through dago's tool contract.
+func (s *shellTool) nativeTool() datool.Tool {
+	if s == nil || s.WorkingDir == nil {
+		panic("shell tool working directory is required")
 	}
+	if s.DefaultYield < 0 || s.MaxYield < 0 {
+		panic("shell yield durations must not be negative")
+	}
+	defaultYield := s.defaultYield()
+	maximumYield := s.maxYield()
+	if defaultYield > maximumYield {
+		panic("shell default yield must not exceed maximum yield")
+	}
+	def := max(secondsCeil(defaultYield), 1)
+	maximum := max(secondsCeil(maximumYield), 1)
 	return datool.MustNew(shellName, strings.TrimSpace(shellDescription), func(ctx context.Context, input shellInput) (datool.Result, error) {
 		execution, err := s.execute(ctx, input, true)
 		if err != nil {
@@ -176,7 +184,7 @@ func (s *ShellTool) NativeTool() datool.Tool {
 	)
 }
 
-func (s *ShellTool) execute(ctx context.Context, req shellInput, nativeModelCalls bool) (shellExecution, error) {
+func (s *shellTool) execute(ctx context.Context, req shellInput, nativeModelCalls bool) (shellExecution, error) {
 	wd := s.WorkingDir.Get()
 	if _, err := os.Stat(wd); err != nil {
 		if os.IsNotExist(err) {

@@ -174,19 +174,17 @@ func newSeededHistoryBenchmarkFixture(b *testing.B, priorTurns int) *agentBenchm
 	// the measured request exercises restoration instead of first-run import.
 	seededTurns := priorTurns - 1
 	messages := make([]db.CreateMessageParams, 0, seededTurns*2)
+	messageTypes := make([]db.MessageType, 0, seededTurns*2)
 	for turn := range seededTurns {
+		messageTypes = append(messageTypes, db.MessageTypeUser, db.MessageTypeAgent)
 		messages = append(messages,
 			db.CreateMessageParams{
-				ConversationID: conversation.ConversationID,
-				Type:           db.MessageTypeUser,
 				LLMData: llm.Message{
 					Role:    llm.MessageRoleUser,
 					Content: []llm.Content{{Type: llm.ContentTypeText, Text: fmt.Sprintf("prior request %d", turn)}},
 				},
 			},
 			db.CreateMessageParams{
-				ConversationID: conversation.ConversationID,
-				Type:           db.MessageTypeAgent,
 				LLMData: llm.Message{
 					Role:      llm.MessageRoleAssistant,
 					Content:   []llm.Content{{Type: llm.ContentTypeText, Text: fmt.Sprintf("prior response %d", turn)}},
@@ -195,7 +193,7 @@ func newSeededHistoryBenchmarkFixture(b *testing.B, priorTurns int) *agentBenchm
 			},
 		)
 	}
-	if _, err := fixture.database.CreateMessages(ctx, messages); err != nil {
+	if _, err := fixture.database.CreateMessages(ctx, conversation.ConversationID, messageTypes, messages); err != nil {
 		b.Fatal(err)
 	}
 
@@ -224,7 +222,7 @@ func newAgentBenchmarkFixture(b *testing.B, workspace string, gated bool) *agent
 	}
 	model := newAgentBenchmarkModel(workspace, gated)
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	server := NewServer(
+	server := MustNewServer(
 		database,
 		&agentBenchmarkLLMManager{model: model},
 		claudetool.ToolSetConfig{WorkingDir: workspace, EnableBrowser: false},

@@ -9,13 +9,117 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/dastore"
 )
+
+type mapGraph map[string]any
+
+func (mapGraph) Stream(context.Context, dagent.Input) *dagent.Stream { return nil }
+func (mapGraph) State(context.Context, dacheckpoint.Config) (dagent.Snapshot, error) {
+	return dagent.Snapshot{}, nil
+}
+func (mapGraph) UpdateState(context.Context, dacheckpoint.Config, dastate.Values) (dagent.Snapshot, error) {
+	return dagent.Snapshot{}, nil
+}
+func (mapGraph) History(context.Context, dacheckpoint.Config, dacheckpoint.ListOptions) ([]dacheckpoint.Tuple, error) {
+	return nil, nil
+}
+func (mapGraph) Fork(context.Context, string, string) error { return nil }
+func (mapGraph) DeleteThread(context.Context, string) error { return nil }
+
+func TestAdaptFactoryRejectsNilStaticFactoryAndTypedNilResult(t *testing.T) {
+	var missing func(context.Context, Runtime) (Graph, error)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("AdaptFactory accepted a nil factory")
+			}
+		}()
+		AdaptFactory(missing)
+	}()
+
+	adapted := AdaptFactory(func(context.Context, Runtime) (mapGraph, error) { return nil, nil })
+	if _, err := adapted(context.Background(), Runtime{}); err == nil || !strings.Contains(err.Error(), "returned nil") {
+		t.Fatalf("typed-nil graph error = %v", err)
+	}
+}
+
+func TestGraphForAssistantRejectsTypedNilFromDirectFactory(t *testing.T) {
+	server := &Server{graphs: map[string]GraphRegistration{
+		"agent": {ID: "agent", Factory: func(context.Context, Runtime) (Graph, error) {
+			var graph mapGraph
+			return graph, nil
+		}},
+	}}
+	if _, err := server.graphForAssistant(context.Background(), &Assistant{GraphID: "agent"}); err == nil || !strings.Contains(err.Error(), "returned nil") {
+		t.Fatalf("typed-nil direct graph error = %v", err)
+	}
+}
+
+func TestNilDependencyCoversEveryNilableKind(t *testing.T) {
+	var pointer *int
+	var mapping map[string]int
+	var function func()
+	var slice []int
+	var channel chan int
+	var interfaceValue any
+	for name, value := range map[string]any{
+		"pointer": pointer, "map": mapping, "function": function,
+		"slice": slice, "channel": channel, "interface": interfaceValue,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !nilDependency(value) {
+				t.Fatal("typed nil was not detected")
+			}
+		})
+	}
+}
+
+func TestNewPanicsForInvalidStaticGraphConfiguration(t *testing.T) {
+	factory := func(context.Context, Runtime) (Graph, error) { return nil, nil }
+	for name, graphs := range map[string][]GraphRegistration{
+		"missing graph":   nil,
+		"missing factory": {{ID: "agent"}},
+		"invalid id":      {{ID: "bad/id", Factory: factory}},
+		"invalid schema":  {{ID: "agent", Factory: factory, InputSchema: json.RawMessage(`{`)}},
+		"duplicate id":    {{ID: "agent", Factory: factory}, {ID: " agent ", Factory: factory}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("New did not panic")
+				}
+			}()
+			_, _ = New(graphs, Options{})
+		})
+	}
+}
+
+func TestNewTreatsTypedNilOptionalStoresAsOmitted(t *testing.T) {
+	var saver *dacheckpoint.MemorySaver
+	var store *dastore.Memory
+	server, err := New([]GraphRegistration{{
+		ID: "agent", Factory: func(context.Context, Runtime) (Graph, error) { return nil, nil },
+	}}, Options{Saver: saver, Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.saver == nil || server.store == nil {
+		t.Fatal("typed-nil optional dependencies did not select defaults")
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func testServer(t *testing.T, delay time.Duration) (*Server, *http.Client, string) {
 	t.Helper()
@@ -28,7 +132,7 @@ func testServer(t *testing.T, delay time.Duration) (*Server, *http.Client, strin
 					Saver: runtime.Saver, Store: runtime.Store,
 				}), nil
 		},
-	}})
+	}}, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,6 +313,50 @@ func TestAssistantThreadRunAndStoreResources(t *testing.T) {
 	wrongResponse.Body.Close()
 	if wrongResponse.StatusCode != http.StatusNotFound {
 		t.Fatalf("wrong-thread stream status = %d", wrongResponse.StatusCode)
+	}
+}
+
+func TestStoreNamespacesEndpointUsesBoundedOptions(t *testing.T) {
+	server, client, endpoint := testServer(t, 0)
+	operations := make([]dastore.Operation, dastore.DefaultListNamespacesLimit+5)
+	for index := range operations {
+		operations[index] = dastore.Operation{
+			Namespace: dastore.Namespace{"tenant", fmt.Sprintf("%03d", index), "tail"},
+			Key:       "item", PutValue: map[string]any{"index": index},
+		}
+	}
+	if _, err := server.store.Batch(context.Background(), operations); err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Namespaces []dastore.Namespace `json:"namespaces"`
+	}
+	requestJSON(t, client, http.MethodPost, endpoint+"/store/namespaces", map[string]any{}, &result)
+	if len(result.Namespaces) != dastore.DefaultListNamespacesLimit {
+		t.Fatalf("default namespace length = %d, want %d", len(result.Namespaces), dastore.DefaultListNamespacesLimit)
+	}
+	requestJSON(t, client, http.MethodPost, endpoint+"/store/namespaces", map[string]any{
+		"prefix": []string{"tenant", "*"}, "suffix": []string{"tail"},
+		"max_depth": 2, "limit": 2, "offset": 98,
+	}, &result)
+	want := []dastore.Namespace{{"tenant", "098"}, {"tenant", "099"}}
+	if !reflect.DeepEqual(result.Namespaces, want) {
+		t.Fatalf("filtered namespaces = %#v, want %#v", result.Namespaces, want)
+	}
+
+	body := bytes.NewBufferString(`{"limit":-1}`)
+	request, err := http.NewRequest(http.MethodPost, endpoint+"/store/namespaces", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("negative namespace limit status = %d, want %d", response.StatusCode, http.StatusBadRequest)
 	}
 }
 

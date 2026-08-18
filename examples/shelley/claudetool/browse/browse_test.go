@@ -25,6 +25,23 @@ import (
 	"github.com/semistrict/dago/examples/shelley/llm"
 )
 
+type mapContext map[string]any
+
+func (mapContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (mapContext) Done() <-chan struct{}       { return nil }
+func (mapContext) Err() error                  { return nil }
+func (mapContext) Value(any) any               { return nil }
+
+func TestNewBrowseToolsRejectsTypedNilContext(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewBrowseTools accepted a typed-nil context")
+		}
+	}()
+	var ctx mapContext
+	NewBrowseTools(ctx, 0)
+}
+
 func TestCombinedTool(t *testing.T) {
 	tools := NewBrowseTools(context.Background(), 0)
 	t.Cleanup(func() {
@@ -770,6 +787,15 @@ func TestRegisterBrowserTools(t *testing.T) {
 		}
 	}
 	cleanup()
+}
+
+func TestNewBrowseToolsRejectsNegativeIdleTimeout(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("negative idle timeout was accepted")
+		}
+	}()
+	NewBrowseTools(context.Background(), -time.Second)
 }
 
 // TestGetScreenshotPath tests the GetScreenshotPath function

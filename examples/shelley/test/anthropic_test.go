@@ -30,7 +30,7 @@ func TestWithAnthropicAPI(t *testing.T) {
 
 	// Create temporary database
 	tempDB := t.TempDir() + "/anthropic_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -46,11 +46,14 @@ func TestWithAnthropicAPI(t *testing.T) {
 		Level: slog.LevelInfo, // Less verbose for real API test
 	}))
 	srcs := []modelsources.Source{modelsources.Env(apiKey)}
-	llmConfig := &server.LLMConfig{
-		Models: modelsources.Build(models.All(), srcs, nil, logger),
-		Logger: logger,
+	built, err := modelsources.Build(models.All(), srcs, nil, logger)
+	if err != nil {
+		t.Fatal(err)
 	}
-	llmManager := server.NewLLMServiceManager(llmConfig)
+	llmManager, err := server.NewLLMServiceManager(built, server.LLMConfig{Logger: logger})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Set up tools config
 	toolSetConfig := claudetool.ToolSetConfig{
@@ -60,7 +63,7 @@ func TestWithAnthropicAPI(t *testing.T) {
 	}
 
 	// Create server
-	svr := server.NewServer(database, llmManager, toolSetConfig, logger, false, "", "")
+	svr := server.MustNewServer(database, llmManager, toolSetConfig, logger, false, "", "")
 
 	// Set up HTTP server
 	mux := http.NewServeMux()
@@ -259,11 +262,12 @@ func TestWithAnthropicAPI(t *testing.T) {
 				{Type: llm.ContentTypeText, Text: "Hello streaming test"},
 			},
 		}
-		_, err = database.CreateMessage(context.Background(), db.CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           db.MessageTypeUser,
-			LLMData:        testMsg,
-		})
+		_, err = database.CreateMessage(context.Background(),
+			conv.ConversationID,
+			db.MessageTypeUser, db.CreateMessageParams{
+
+				LLMData: testMsg,
+			})
 		if err != nil {
 			t.Fatalf("Failed to create message: %v", err)
 		}

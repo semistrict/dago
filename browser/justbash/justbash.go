@@ -2,7 +2,23 @@
 // sandboxed just-bash shell beside a Go WebAssembly agent.
 package justbash
 
-import "context"
+import (
+	"context"
+	"strings"
+)
+
+// DefaultExecutorGlobal is the JavaScript function selected by an empty name.
+const DefaultExecutorGlobal = "dagoJustBashExecute"
+
+func normalizeExecutorName(name string) string {
+	if name == "" {
+		return DefaultExecutorGlobal
+	}
+	if strings.TrimSpace(name) != name {
+		panic("just-bash executor name must not contain surrounding whitespace")
+	}
+	return name
+}
 
 // Request contains only command execution data. Files are shared through the
 // mounted filesystem and never serialized across this boundary.

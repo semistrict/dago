@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +22,68 @@ import (
 	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/datool"
 )
+
+type modelSelectionStore struct {
+	sync.Mutex
+	values map[string]SessionState
+}
+
+type durableModelTestRunner struct {
+	*dagent.Agent
+	cwd        string
+	model      string
+	selections *modelSelectionStore
+}
+
+func (runner *durableModelTestRunner) LoadACPSession(ctx context.Context, id string) (SessionState, error) {
+	snapshot, err := runner.State(ctx, dacheckpoint.Config{ThreadID: id})
+	if err != nil {
+		return SessionState{}, err
+	}
+	messages, ok := snapshot.State[dagent.MessagesKey].([]damessage.Message)
+	if !ok {
+		return SessionState{}, fmt.Errorf("session %q has no transcript", id)
+	}
+	runner.selections.Lock()
+	selection, ok := runner.selections.values[id]
+	runner.selections.Unlock()
+	if !ok {
+		return SessionState{}, fmt.Errorf("session %q has no model selection", id)
+	}
+	selection.Messages = make([]damessage.Message, len(messages))
+	for index := range messages {
+		selection.Messages[index] = messages[index].Clone()
+	}
+	return selection, nil
+}
+
+func (runner *durableModelTestRunner) SaveACPModelSelection(_ context.Context, id, model string) error {
+	runner.selections.Lock()
+	runner.selections.values[id] = SessionState{CWD: runner.cwd, Model: model}
+	runner.selections.Unlock()
+	return nil
+}
+
+func testModelConfigOptions(models ...string) []acp.SessionConfigOption {
+	values := make(acp.SessionConfigSelectOptionsUngrouped, len(models))
+	for index, model := range models {
+		values[index] = acp.SessionConfigSelectOption{Name: model, Value: acp.SessionConfigValueId(model)}
+	}
+	category := acp.SessionConfigOptionCategoryModel
+	return []acp.SessionConfigOption{{Select: &acp.SessionConfigOptionSelect{
+		Id: modelConfigID, Name: "Model", Category: &category, CurrentValue: acp.SessionConfigValueId(models[0]),
+		Options: acp.SessionConfigSelectOptions{Ungrouped: &values},
+	}}}
+}
+
+func currentModelOption(options []acp.SessionConfigOption) string {
+	for _, option := range options {
+		if option.Select != nil && option.Select.Id == modelConfigID {
+			return string(option.Select.CurrentValue)
+		}
+	}
+	return ""
+}
 
 func TestServerSupportsSuccessivePromptsInOneSession(t *testing.T) {
 	var requests atomic.Int32
@@ -122,7 +186,7 @@ func TestSessionFactoryKeepsConcurrentEditorSessionsIsolated(t *testing.T) {
 		return dagent.New(model, dagent.Options{Saver: dacheckpoint.NewMemorySaver()}), closerFunc(func() error { return nil }), nil
 	}
 	client := &testClient{}
-	connection, stop := startTestConnection(t, New(nil, Options{SessionFactory: factory}), client)
+	connection, stop := startTestConnection(t, NewFactory(factory, Options{}), client)
 	defer stop()
 	created := make([]acp.NewSessionResponse, 2)
 	for index, cwd := range []string{"/workspace/one", "/workspace/two"} {
@@ -166,6 +230,147 @@ func TestSessionFactoryKeepsConcurrentEditorSessionsIsolated(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing session updates: %#v", want)
+	}
+}
+
+func TestSessionModelSwitchRebuildsWithHistoryAndRestoresOnLoad(t *testing.T) {
+	saver := dacheckpoint.NewMemorySaver()
+	selections := &modelSelectionStore{values: map[string]SessionState{}}
+	var mu sync.Mutex
+	var contexts []AgentSessionContext
+	var closed atomic.Int32
+	factory := func(_ context.Context, config AgentSessionContext) (Runner, io.Closer, error) {
+		mu.Lock()
+		contexts = append(contexts, cloneAgentSessionContext(config))
+		mu.Unlock()
+		step := modeltest.Step{Chunks: responseChunks("alpha response")}
+		if config.Model == "beta" {
+			step = modeltest.Step{
+				Check: func(request damodel.Request) error {
+					var transcript []string
+					for _, message := range request.Messages {
+						if message.Role == damessage.RoleHuman || message.Role == damessage.RoleAssistant {
+							transcript = append(transcript, string(message.Role)+":"+message.TextContent())
+						}
+					}
+					want := []string{"human:first", "assistant:alpha response", "human:second"}
+					if !slices.Equal(transcript, want) {
+						return fmt.Errorf("transcript = %#v, want %#v", transcript, want)
+					}
+					return nil
+				},
+				Chunks: responseChunks("beta response"),
+			}
+		}
+		runner := &durableModelTestRunner{
+			Agent: dagent.New(modeltest.New(damodel.Profile{NativeStreaming: true}, step), dagent.Options{Saver: saver}),
+			cwd:   config.CWD, model: config.Model, selections: selections,
+		}
+		return runner, closerFunc(func() error { closed.Add(1); return nil }), nil
+	}
+	options := Options{LoadSession: true, ConfigOptions: testModelConfigOptions("alpha", "beta")}
+	root := t.TempDir()
+	firstClient := &testClient{}
+	connection, stop := startTestConnection(t, NewFactory(factory, options), firstClient)
+	created, err := connection.NewSession(t.Context(), acp.NewSessionRequest{Cwd: root, McpServers: []acp.McpServer{}})
+	if err != nil {
+		stop()
+		t.Fatal(err)
+	}
+	if got := currentModelOption(created.ConfigOptions); got != "alpha" {
+		stop()
+		t.Fatalf("new session model = %q", got)
+	}
+	if _, err := connection.Prompt(t.Context(), acp.PromptRequest{
+		SessionId: created.SessionId, Prompt: []acp.ContentBlock{acp.TextBlock("first")},
+	}); err != nil {
+		stop()
+		t.Fatal(err)
+	}
+	configured, err := connection.SetSessionConfigOption(t.Context(), acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{
+		SessionId: created.SessionId, ConfigId: modelConfigID, Value: "beta",
+	}})
+	if err != nil {
+		stop()
+		t.Fatal(err)
+	}
+	if got := currentModelOption(configured.ConfigOptions); got != "beta" {
+		stop()
+		t.Fatalf("configured model = %q", got)
+	}
+	if _, err := connection.Prompt(t.Context(), acp.PromptRequest{
+		SessionId: created.SessionId, Prompt: []acp.ContentBlock{acp.TextBlock("second")},
+	}); err != nil {
+		stop()
+		t.Fatal(err)
+	}
+	sessionID := string(created.SessionId)
+	stop()
+
+	secondClient := &testClient{}
+	restarted, stopRestarted := startTestConnection(t, NewFactory(factory, options), secondClient)
+	defer stopRestarted()
+	loaded, err := restarted.LoadSession(t.Context(), acp.LoadSessionRequest{
+		SessionId: acp.SessionId(sessionID), Cwd: root, McpServers: []acp.McpServer{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := currentModelOption(loaded.ConfigOptions); got != "beta" {
+		t.Fatalf("loaded model = %q", got)
+	}
+	mu.Lock()
+	gotContexts := append([]AgentSessionContext(nil), contexts...)
+	mu.Unlock()
+	if len(gotContexts) != 4 || gotContexts[0].Model != "alpha" || gotContexts[1].Model != "beta" || gotContexts[2].Model != "alpha" || gotContexts[3].Model != "beta" {
+		t.Fatalf("factory contexts = %#v", gotContexts)
+	}
+	if _, err := restarted.CloseSession(t.Context(), acp.CloseSessionRequest{SessionId: acp.SessionId(sessionID)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := closed.Load(); got != 4 {
+		t.Fatalf("closed runners = %d, want 4", got)
+	}
+}
+
+func TestSessionModelSwitchPersistenceFailureKeepsCurrentRunner(t *testing.T) {
+	var alphaClosed atomic.Int32
+	var betaClosed atomic.Int32
+	factory := func(_ context.Context, config AgentSessionContext) (Runner, io.Closer, error) {
+		steps := []modeltest.Step(nil)
+		closed := &betaClosed
+		if config.Model == "alpha" {
+			steps = append(steps, modeltest.Step{Chunks: responseChunks("still alpha")})
+			closed = &alphaClosed
+		}
+		runner := &loadableTestRunner{
+			Runner: dagent.New(modeltest.New(damodel.Profile{NativeStreaming: true}, steps...), dagent.Options{}),
+			cwd:    config.CWD,
+		}
+		return runner, closerFunc(func() error { closed.Add(1); return nil }), nil
+	}
+	connection, stop := startTestConnection(t, NewFactory(factory, Options{
+		LoadSession: true, ConfigOptions: testModelConfigOptions("alpha", "beta"),
+	}), &testClient{})
+	defer stop()
+	created, err := connection.NewSession(t.Context(), acp.NewSessionRequest{Cwd: t.TempDir(), McpServers: []acp.McpServer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = connection.SetSessionConfigOption(t.Context(), acp.SetSessionConfigOptionRequest{ValueId: &acp.SetSessionConfigOptionValueId{
+		SessionId: created.SessionId, ConfigId: modelConfigID, Value: "beta",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "durable configuration") {
+		t.Fatalf("set model error = %v", err)
+	}
+	if betaClosed.Load() != 1 || alphaClosed.Load() != 0 {
+		t.Fatalf("closed alpha = %d, beta = %d", alphaClosed.Load(), betaClosed.Load())
+	}
+	response, err := connection.Prompt(t.Context(), acp.PromptRequest{
+		SessionId: created.SessionId, Prompt: []acp.ContentBlock{acp.TextBlock("continue")},
+	})
+	if err != nil || response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("prompt = %#v, %v", response, err)
 	}
 }
 

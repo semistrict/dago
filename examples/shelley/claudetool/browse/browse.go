@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -101,13 +102,14 @@ type BrowseTools struct {
 // NewBrowseTools creates a new set of browser automation tools.
 // idleTimeout is how long to wait before shutting down an idle browser (0 uses default).
 func NewBrowseTools(ctx context.Context, idleTimeout time.Duration) *BrowseTools {
-	if idleTimeout <= 0 {
-		idleTimeout = DefaultIdleTimeout
+	if nilContext(ctx) {
+		panic("browse context is required")
 	}
-	for _, dir := range []string{ScreenshotDir, UploadDir, DownloadDir, ConsoleLogsDir} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			log.Printf("Failed to create directory %s: %v", dir, err)
-		}
+	if idleTimeout < 0 {
+		panic("browse idle timeout must not be negative")
+	}
+	if idleTimeout == 0 {
+		idleTimeout = DefaultIdleTimeout
 	}
 
 	bt := &BrowseTools{
@@ -122,10 +124,28 @@ func NewBrowseTools(ctx context.Context, idleTimeout time.Duration) *BrowseTools
 	return bt
 }
 
+func nilContext(ctx context.Context) bool {
+	if ctx == nil {
+		return true
+	}
+	value := reflect.ValueOf(ctx)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
 // GetBrowserContext returns the browser context, initializing if needed and resetting the idle timer.
 func (b *BrowseTools) GetBrowserContext() (context.Context, error) {
 	b.mux.Lock()
 	defer b.mux.Unlock()
+	for _, dir := range []string{ScreenshotDir, UploadDir, DownloadDir, ConsoleLogsDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("prepare browser state directory: %w", err)
+		}
+	}
 
 	// If browser exists, check if it's still alive
 	if b.browserCtx != nil {
@@ -692,7 +712,7 @@ Network monitoring (network_* actions):
 
 Accessibility tree inspection (accessibility_* actions):
 - action: "accessibility_help" — Show accessibility help.
-- action: "accessibility_tree" — Dump the accessibility tree. Parameters: depth (int, 0=unlimited).
+- action: "accessibility_tree" — Dump the accessibility tree. Parameters: depth (int, default 12), unlimited_depth (bool).
 - action: "accessibility_query" — Find nodes by name/role. Parameters: name, role.
 - action: "accessibility_node" — Inspect the node for a CSS selector. Parameters: selector.
 
@@ -793,7 +813,12 @@ Performance profiling (profile_* actions):
 			},
 			"depth": {
 				"type": "integer",
-				"description": "Maximum accessibility tree depth (accessibility_tree action, 0=unlimited)"
+				"minimum": 0,
+				"description": "Maximum accessibility tree depth (accessibility_tree action, default 12)"
+			},
+			"unlimited_depth": {
+				"type": "boolean",
+				"description": "Explicitly request an unlimited accessibility tree"
 			},
 			"name": {
 				"type": "string",
@@ -906,9 +931,10 @@ type combinedInput struct {
 	Filter string `json:"filter,omitempty" description:"Filter requests by URL substring"`
 
 	// Accessibility fields (accessibility_* actions).
-	Depth int    `json:"depth,omitempty" description:"Maximum accessibility tree depth"`
-	Name  string `json:"name,omitempty" description:"Accessible name to search for"`
-	Role  string `json:"role,omitempty" description:"ARIA role to search for"`
+	Depth          int    `json:"depth,omitempty" description:"Maximum accessibility tree depth"`
+	UnlimitedDepth bool   `json:"unlimited_depth,omitempty" description:"Explicitly request an unlimited accessibility tree"`
+	Name           string `json:"name,omitempty" description:"Accessible name to search for"`
+	Role           string `json:"role,omitempty" description:"ARIA role to search for"`
 
 	// Profiling fields (profile_* actions).
 	Categories string `json:"categories,omitempty" description:"Comma-separated trace categories"`
@@ -1000,7 +1026,7 @@ func (b *BrowseTools) executeCombined(ctx context.Context, input combinedInput) 
 	case "accessibility_help":
 		return b.accessibilityHelp()
 	case "accessibility_tree":
-		return b.accessibilityTree(input.Depth)
+		return b.accessibilityTree(input.Depth, input.UnlimitedDepth)
 	case "accessibility_query":
 		return b.accessibilityQuery(input.Name, input.Role)
 	case "accessibility_node":
@@ -1130,7 +1156,7 @@ func readImageDisplay(path string, prepared imageutil.Prepared) (map[string]any,
 func imageLimits(ctx context.Context) (maxDimension, maxBytes int) {
 	profile, ok := llm.ModelProfileFromContext(ctx)
 	if !ok {
-		return 0, 0
+		return imageutil.DefaultMaxDimension, imageutil.DefaultMaxBytes
 	}
 	return profile.MaxImageDimension, profile.MaxImageBytes
 }

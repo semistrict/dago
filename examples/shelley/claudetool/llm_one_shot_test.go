@@ -64,8 +64,8 @@ type oneShotResult struct {
 	Display    any
 }
 
-func runOneShot(tool *LLMOneShotTool, input []byte) oneShotResult {
-	result, err := tool.NativeTool().Execute(context.Background(), input, datool.Runtime{})
+func runOneShot(tool *llmOneShotTool, input []byte) oneShotResult {
+	result, err := tool.nativeTool().Execute(context.Background(), input, datool.Runtime{})
 	var display any
 	if len(result.Artifact) > 0 {
 		_ = json.Unmarshal(result.Artifact, &display)
@@ -91,10 +91,10 @@ func TestLLMOneShotShortResult(t *testing.T) {
 		},
 	}
 
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider:     provider,
 		ModelID:         "test-model",
-		WorkingDir:      NewMutableWorkingDir(dir),
+		WorkingDir:      newMutableWorkingDir(dir),
 		AvailableModels: []AvailableModel{{ID: "test-model"}},
 	}
 
@@ -125,10 +125,10 @@ func TestLLMOneShotLongResult(t *testing.T) {
 		},
 	}
 
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider:     provider,
 		ModelID:         "test-model",
-		WorkingDir:      NewMutableWorkingDir(dir),
+		WorkingDir:      newMutableWorkingDir(dir),
 		AvailableModels: []AvailableModel{{ID: "test-model"}},
 	}
 
@@ -163,10 +163,10 @@ func TestLLMOneShotExplicitOutputFile(t *testing.T) {
 		},
 	}
 
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider:     provider,
 		ModelID:         "test-model",
-		WorkingDir:      NewMutableWorkingDir(dir),
+		WorkingDir:      newMutableWorkingDir(dir),
 		AvailableModels: []AvailableModel{{ID: "test-model"}},
 	}
 
@@ -203,10 +203,10 @@ func TestLLMOneShotAlternateModel(t *testing.T) {
 		},
 	}
 
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider: provider,
 		ModelID:     "default-model",
-		WorkingDir:  NewMutableWorkingDir(dir),
+		WorkingDir:  newMutableWorkingDir(dir),
 		AvailableModels: []AvailableModel{
 			{ID: "default-model"},
 			{ID: "other-model"},
@@ -238,10 +238,10 @@ func TestLLMOneShotUnknownModel(t *testing.T) {
 		},
 	}
 
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider:     provider,
 		ModelID:         "test-model",
-		WorkingDir:      NewMutableWorkingDir(dir),
+		WorkingDir:      newMutableWorkingDir(dir),
 		AvailableModels: []AvailableModel{{ID: "test-model"}},
 	}
 
@@ -265,10 +265,10 @@ func TestLLMOneShotMissingFile(t *testing.T) {
 		},
 	}
 
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider:     provider,
 		ModelID:         "test-model",
-		WorkingDir:      NewMutableWorkingDir(dir),
+		WorkingDir:      newMutableWorkingDir(dir),
 		AvailableModels: []AvailableModel{{ID: "test-model"}},
 	}
 
@@ -293,10 +293,10 @@ func TestLLMOneShotEmptyPrompt(t *testing.T) {
 		},
 	}
 
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider:     provider,
 		ModelID:         "test-model",
-		WorkingDir:      NewMutableWorkingDir(dir),
+		WorkingDir:      newMutableWorkingDir(dir),
 		AvailableModels: []AvailableModel{{ID: "test-model"}},
 	}
 
@@ -312,17 +312,17 @@ func TestLLMOneShotEmptyPrompt(t *testing.T) {
 }
 
 func TestLLMOneShotToolDescription(t *testing.T) {
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider: &oneShotMockProvider{},
 		ModelID:     "model-a",
-		WorkingDir:  NewMutableWorkingDir("/tmp"),
+		WorkingDir:  newMutableWorkingDir("/tmp"),
 		AvailableModels: []AvailableModel{
 			{ID: "model-a"},
 			{ID: "model-b", DisplayName: "Model B (fancy)"},
 		},
 	}
 
-	llmTool := tool.NativeTool().Definition()
+	llmTool := tool.nativeTool().Definition()
 	if !strings.Contains(llmTool.Description, "- model-a") {
 		t.Errorf("expected model-a in description, got: %s", llmTool.Description)
 	}
@@ -332,17 +332,17 @@ func TestLLMOneShotToolDescription(t *testing.T) {
 }
 
 func TestLLMOneShotToolSchemaEnum(t *testing.T) {
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider: &oneShotMockProvider{},
 		ModelID:     "model-a",
-		WorkingDir:  NewMutableWorkingDir("/tmp"),
+		WorkingDir:  newMutableWorkingDir("/tmp"),
 		AvailableModels: []AvailableModel{
 			{ID: "model-a"},
 			{ID: "model-b"},
 		},
 	}
 
-	llmTool := tool.NativeTool().Definition()
+	llmTool := tool.nativeTool().Definition()
 	schema := string(llmTool.InputSchema)
 	if !strings.Contains(schema, `"enum"`) {
 		t.Errorf("expected enum in schema, got: %s", schema)
@@ -353,13 +353,13 @@ func TestLLMOneShotToolSchemaEnum(t *testing.T) {
 }
 
 func TestLLMOneShotToolSchemaNoEnum(t *testing.T) {
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider: &oneShotMockProvider{},
 		ModelID:     "model-a",
-		WorkingDir:  NewMutableWorkingDir("/tmp"),
+		WorkingDir:  newMutableWorkingDir("/tmp"),
 	}
 
-	llmTool := tool.NativeTool().Definition()
+	llmTool := tool.nativeTool().Definition()
 	schema := string(llmTool.InputSchema)
 	if strings.Contains(schema, `"enum"`) {
 		t.Errorf("expected no enum in schema when no available models, got: %s", schema)
@@ -385,10 +385,10 @@ func TestLLMOneShotSystemPrompt(t *testing.T) {
 		services: map[string]damodel.Chat{"test-model": svc},
 	}
 
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider:     provider,
 		ModelID:         "test-model",
-		WorkingDir:      NewMutableWorkingDir(dir),
+		WorkingDir:      newMutableWorkingDir(dir),
 		AvailableModels: []AvailableModel{{ID: "test-model"}},
 	}
 
@@ -430,12 +430,12 @@ func TestLLMOneShotStringPromptFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("What is 2+2?"), 0o644)
 
 	var captured *damodel.Request
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
 			"test-model": &oneShotMockService{response: "4", onDo: func(req damodel.Request) { captured = &req }},
 		}},
 		ModelID:    "test-model",
-		WorkingDir: NewMutableWorkingDir(dir),
+		WorkingDir: newMutableWorkingDir(dir),
 	}
 
 	// prompt_files as a bare string instead of an array.
@@ -455,12 +455,12 @@ func TestLLMOneShotConcatenatesTextFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("second part"), 0o644)
 
 	var captured *damodel.Request
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
 			"test-model": &oneShotMockService{response: "ok", onDo: func(req damodel.Request) { captured = &req }},
 		}},
 		ModelID:    "test-model",
-		WorkingDir: NewMutableWorkingDir(dir),
+		WorkingDir: newMutableWorkingDir(dir),
 	}
 
 	input, _ := json.Marshal(llmOneShotInput{PromptFiles: []string{"a.txt", "b.txt"}})
@@ -485,12 +485,12 @@ func TestLLMOneShotImagePromptFiles(t *testing.T) {
 	writeOneShotPNG(t, absolute, 4)
 
 	var captured *damodel.Request
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
 			"vision": &oneShotMockService{response: "done", onDo: func(req damodel.Request) { captured = &req }},
 		}},
 		ModelID:    "vision",
-		WorkingDir: NewMutableWorkingDir(dir),
+		WorkingDir: newMutableWorkingDir(dir),
 	}
 	input, _ := json.Marshal(llmOneShotInput{
 		PromptFiles: []string{"prompt.txt", "first.png", absolute},
@@ -547,12 +547,12 @@ func TestLLMOneShotImageOnlyPrompt(t *testing.T) {
 	writeOneShotPNG(t, filepath.Join(dir, "pic.png"), 5)
 
 	var captured *damodel.Request
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
 			"vision": &oneShotMockService{response: "a picture", onDo: func(req damodel.Request) { captured = &req }},
 		}},
 		ModelID:    "vision",
-		WorkingDir: NewMutableWorkingDir(dir),
+		WorkingDir: newMutableWorkingDir(dir),
 	}
 	input, _ := json.Marshal(llmOneShotInput{PromptFiles: []string{"pic.png"}})
 	result := runOneShot(tool, input)
@@ -567,12 +567,12 @@ func TestLLMOneShotImageOnlyPrompt(t *testing.T) {
 func TestLLMOneShotRejectsImageForNonVisionModel(t *testing.T) {
 	dir := t.TempDir()
 	writeOneShotPNG(t, filepath.Join(dir, "pic.png"), 2)
-	tool := &LLMOneShotTool{
+	tool := &llmOneShotTool{
 		LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
 			"text": &noImageOneShotService{},
 		}},
 		ModelID:    "text",
-		WorkingDir: NewMutableWorkingDir(dir),
+		WorkingDir: newMutableWorkingDir(dir),
 	}
 	input, _ := json.Marshal(llmOneShotInput{PromptFiles: []string{"pic.png"}})
 	result := runOneShot(tool, input)
@@ -599,12 +599,12 @@ func TestLLMOneShotPromptFileErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tool := &LLMOneShotTool{
+			tool := &llmOneShotTool{
 				LLMProvider: &oneShotMockProvider{services: map[string]damodel.Chat{
 					"vision": &oneShotMockService{response: "unused"},
 				}},
 				ModelID:    "vision",
-				WorkingDir: NewMutableWorkingDir(dir),
+				WorkingDir: newMutableWorkingDir(dir),
 			}
 			input, _ := json.Marshal(llmOneShotInput{PromptFiles: []string{tt.file}})
 			result := runOneShot(tool, input)

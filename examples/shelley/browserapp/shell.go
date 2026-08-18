@@ -35,7 +35,7 @@ type browserWorkspace struct {
 }
 
 func newBrowserWorkspace(files map[string]dabackend.FileData) (*browserWorkspace, error) {
-	memory, err := dabackend.NewMemory(files)
+	memory, err := dabackend.LoadMemory(files)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func (workspace *browserWorkspace) Snapshot() map[string]dabackend.FileData {
 }
 
 func (workspace *browserWorkspace) Replace(files map[string]dabackend.FileData) error {
-	memory, err := dabackend.NewMemory(files)
+	memory, err := dabackend.LoadMemory(files)
 	if err != nil {
 		return err
 	}

@@ -10,12 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/dago/dabackend"
 	"github.com/semistrict/dago/dacheckpoint"
 	checkpointsqlite "github.com/semistrict/dago/dacheckpoint/sqlite"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/darepository"
 	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/datool"
 )
@@ -24,6 +26,77 @@ func fixedOptions() Options {
 	return Options{
 		Clock: func() time.Time { return time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC) },
 		NewID: func() (string, error) { return "goal-1", nil },
+	}
+}
+
+func TestCriteriaDrafterPreservesCreateObjectiveAndFallsBack(t *testing.T) {
+	backend := dabackend.NewMemory(map[string]dabackend.FileData{})
+	response := damessage.Assistant("drafted")
+	response.Usage = &damessage.Usage{InputTokens: 12, OutputTokens: 4, Provider: "test", Model: "drafter"}
+	model := modeltest.New(damodel.Profile{StructuredOutput: true},
+		modeltest.Step{Error: errors.New("repository context unavailable")},
+		modeltest.Step{Response: damodel.Response{Message: response, Structured: json.RawMessage(`{"objective":"model rewrote it","criteria":"- The command exits successfully.\n- The requested output is present."}`)}},
+	)
+	drafter := NewCriteriaDrafter(model, backend, darepository.Options{}, CriteriaOptions{})
+	proposal, usage, err := drafter.DraftWithUsage(t.Context(), CriteriaRequest{Objective: "Keep this exact objective"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Objective != "Keep this exact objective" || !strings.Contains(proposal.Criteria, "requested output") {
+		t.Fatalf("proposal = %#v", proposal)
+	}
+	if len(usage) != 1 || usage[0].Purpose != "assistant" || usage[0].Usage.InputTokens != 12 {
+		t.Fatalf("draft usage = %#v", usage)
+	}
+}
+
+func TestGoalServicePersistsCriteriaAndGetRubricReportsStatus(t *testing.T) {
+	options := fixedOptions()
+	agent := dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{Middleware: []dagent.Middleware{Middleware(options)}, Saver: dacheckpoint.NewMemorySaver()})
+	service := NewService(agent, options)
+	config := dacheckpoint.Config{ThreadID: "goal-rubric"}
+	objective, criteria := "Ship it", "- It builds.\n- Its tests pass."
+	goal, err := service.Set(t.Context(), config, SetRequest{Objective: &objective, Criteria: &criteria})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goal.Criteria != criteria {
+		t.Fatalf("criteria = %q", goal.Criteria)
+	}
+
+	middleware := Middleware(options)
+	var tool datool.Tool
+	for _, candidate := range middleware.Tools {
+		if candidate.Definition().Name == "get_rubric" {
+			tool = candidate
+		}
+	}
+	if tool == nil {
+		t.Fatal("get_rubric tool missing")
+	}
+	result, err := tool.Execute(t.Context(), json.RawMessage(`{}`), datool.Runtime{State: dastate.Values{StateKey: goalToState(goal), "_rubric_status": "satisfied"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := result.Content[0].Text; !strings.Contains(text, `"active":true`) || !strings.Contains(text, `"grading_status":"satisfied"`) {
+		t.Fatalf("get_rubric = %s", text)
+	}
+	goal.Status = StatusPaused
+	result, err = tool.Execute(t.Context(), json.RawMessage(`{}`), datool.Runtime{State: dastate.Values{StateKey: goalToState(goal), "rubric": "- Invocation criterion one.\n- Invocation criterion two."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := result.Content[0].Text; !strings.Contains(text, "Invocation criterion") || strings.Contains(text, "It builds") {
+		t.Fatalf("invocation rubric precedence = %s", text)
+	}
+
+	replacement := "Ship something else"
+	goal, err = service.Set(t.Context(), config, SetRequest{Objective: &replacement})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goal.Criteria != "" {
+		t.Fatalf("stale criteria retained after objective change: %q", goal.Criteria)
 	}
 }
 
@@ -89,6 +162,54 @@ func TestGoalToolsPersistAccountAndComplete(t *testing.T) {
 	}
 	if !foundReport {
 		t.Fatal("completion tool result omitted final budget usage")
+	}
+}
+
+func TestRubricCompletionMiddlewareCommitsOnlySatisfiedGoal(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		verdict    string
+		wantStatus Status
+	}{
+		{name: "satisfied", verdict: "satisfied", wantStatus: StatusComplete},
+		{name: "maximum reached", verdict: "max_iterations_reached", wantStatus: StatusActive},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			options := fixedOptions()
+			model := modeltest.New(damodel.Profile{ToolCalling: true},
+				modeltest.Step{Response: damodel.Response{Message: damessage.Message{
+					Role:      damessage.RoleAssistant,
+					ToolCalls: []damessage.ToolCall{{ID: "complete", Name: "update_goal", Arguments: json.RawMessage(`{"status":"complete"}`)}},
+				}}},
+				modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("finished")}},
+			)
+			grader := dagent.Middleware{
+				Name: "test_rubric",
+				Fields: map[string]dagent.StateField{"_rubric_status": {
+					Kind: dagent.FieldLast, Contract: "test.rubric.status.v1", Clone: func(value any) any { return value },
+				}},
+				AfterAgent: func(context.Context, dastate.Values, dagent.Runtime) (dastate.Values, error) {
+					return dastate.Values{"_rubric_status": test.verdict}, nil
+				},
+			}
+			agent := dagent.New(model, dagent.Options{Middleware: []dagent.Middleware{
+				Middleware(options),
+				RubricCompletionMiddleware("_rubric_status", "satisfied"),
+				grader,
+			}})
+			goal := &Goal{ID: "goal-1", Objective: "ship it", Criteria: "- tests pass", Status: StatusActive}
+			result, err := agent.Invoke(t.Context(), dagent.Input{
+				Messages: []damessage.Message{damessage.Human("finish")},
+				State:    dastate.Values{StateKey: goalToState(goal), "rubric": "- tests pass"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, _ := FromState(result.State)
+			if updated == nil || updated.Status != test.wantStatus {
+				t.Fatalf("goal = %#v", updated)
+			}
+		})
 	}
 }
 
@@ -227,6 +348,26 @@ func TestGoalMiddlewareAccountsToolUsageAndWholeRunTime(t *testing.T) {
 	accounted, _ := FromState(values)
 	if accounted == nil || accounted.TokensUsed != 5 || accounted.TimeUsedSeconds != 2 {
 		t.Fatalf("accounted goal = %#v", accounted)
+	}
+}
+
+func TestGoalSystemPromptIgnoresChangingUsageAccounting(t *testing.T) {
+	budget := int64(1_000)
+	base := damessage.System("stable base prompt")
+	promptFor := func(goal *Goal) string {
+		t.Helper()
+		request := dagent.ModelRequest{SystemMessage: &base}
+		appendGoalSystem(&request, goal)
+		return request.SystemMessage.TextContent()
+	}
+
+	first := promptFor(&Goal{ID: "goal-1", Objective: "Keep the prompt cacheable", Status: StatusActive, TokenBudget: &budget, TokensUsed: 10})
+	second := promptFor(&Goal{ID: "goal-1", Objective: "Keep the prompt cacheable", Status: StatusActive, TokenBudget: &budget, TokensUsed: 900, TimeUsedSeconds: 45})
+	if first != second {
+		t.Fatalf("usage accounting changed the system prompt:\nfirst: %q\nsecond: %q", first, second)
+	}
+	if !strings.Contains(first, "Token budget: 1000") || strings.Contains(first, "Tokens used") || strings.Contains(first, "Remaining token budget") {
+		t.Fatalf("goal system prompt exposes volatile usage: %q", first)
 	}
 }
 

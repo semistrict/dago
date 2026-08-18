@@ -3,6 +3,8 @@ package notifications
 import (
 	"context"
 	"log/slog"
+	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -15,11 +17,17 @@ type Dispatcher struct {
 
 // NewDispatcher creates a new notification dispatcher.
 func NewDispatcher(logger *slog.Logger) *Dispatcher {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Dispatcher{logger: logger}
 }
 
 // Register adds a backend channel to the dispatcher.
 func (d *Dispatcher) Register(ch Channel) {
+	if nilChannel(ch) || strings.TrimSpace(ch.Name()) == "" {
+		panic("notification channel is required")
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.channels = append(d.channels, ch)
@@ -27,9 +35,27 @@ func (d *Dispatcher) Register(ch Channel) {
 
 // ReplaceChannels atomically replaces the entire channel set.
 func (d *Dispatcher) ReplaceChannels(channels []Channel) {
+	for _, channel := range channels {
+		if nilChannel(channel) || strings.TrimSpace(channel.Name()) == "" {
+			panic("notification channel is required")
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.channels = channels
+}
+
+func nilChannel(channel Channel) bool {
+	if channel == nil {
+		return true
+	}
+	value := reflect.ValueOf(channel)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // Channels returns a snapshot of current registered channels.

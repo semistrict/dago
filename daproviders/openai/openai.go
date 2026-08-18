@@ -12,13 +12,13 @@ import (
 	"io"
 	"iter"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/datool"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -88,17 +88,18 @@ type Options struct {
 // Client is a Responses API-backed chat model.
 type Client struct {
 	options      Options
-	model        string
 	credentials  CredentialSource
 	boundTools   []datool.Definition
 	subscription bool
 	websockets   *responsesWebSocketPool
 	provider     string
+	model        string
 }
 
-// NewAPIKey creates a model authenticated with an API key.
-func NewAPIKey(apiKey, model string, options ...Options) *Client {
-	return newAPIKey(apiKey, model, "openai", optionvalue.Resolve("openai", options))
+// NewAPIKey creates a model authenticated with an API key. Construction does
+// no I/O; missing required values and invalid static options panic.
+func NewAPIKey(apiKey, model string, options Options) *Client {
+	return newAPIKey(apiKey, "openai", model, options)
 }
 
 // NewCompatibleAPIKey creates a model for a service that implements the OpenAI
@@ -106,30 +107,30 @@ func NewAPIKey(apiKey, model string, options ...Options) *Client {
 // errors, and retry events. Provider-specific adapters should normally expose
 // their own options and constructor instead of asking applications to call this
 // function directly.
-func NewCompatibleAPIKey(apiKey, provider, model string, options ...Options) *Client {
+func NewCompatibleAPIKey(apiKey, provider, model string, options Options) *Client {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
 		panic("openai: compatible provider is required")
 	}
-	return newAPIKey(apiKey, model, provider, optionvalue.Resolve("openai", options))
+	return newAPIKey(apiKey, provider, model, options)
 }
 
-func newAPIKey(apiKey, model, provider string, options Options) *Client {
+func newAPIKey(apiKey, provider, model string, options Options) *Client {
 	if strings.TrimSpace(apiKey) == "" {
-		panic(fmt.Sprintf("%s: API key is required", provider))
+		panic(provider + ": API key is required")
 	}
 	return newClient(staticCredentials{Credentials{AccessToken: apiKey}}, model, options, provider)
 }
 
 // NewOAuth creates a model authenticated by a caller-owned OAuth session. Callers
 // choose the endpoint explicitly; NewSubscription configures the subscription API.
-func NewOAuth(source CredentialSource, model string, options ...Options) *Client {
-	return newClient(source, model, optionvalue.Resolve("openai", options), "openai")
+// A nil or typed-nil source panics.
+func NewOAuth(source CredentialSource, model string, options Options) *Client {
+	return newClient(source, model, options, "openai")
 }
 
 // NewSubscription creates a model for the subscription-backed Responses endpoint.
-func NewSubscription(source CredentialSource, model string, optionValues ...Options) *Client {
-	options := optionvalue.Resolve("openai", optionValues)
+func NewSubscription(source CredentialSource, model string, options Options) *Client {
 	if options.BaseURL == "" {
 		// Kept split so repository-facing text does not couple the package to a
 		// product-specific route name.
@@ -149,15 +150,20 @@ func NewSubscription(source CredentialSource, model string, optionValues ...Opti
 }
 
 func newClient(source CredentialSource, model string, options Options, provider string) *Client {
-	if source == nil {
-		panic(fmt.Sprintf("%s: credential source is required", provider))
+	if nilInterface(source) {
+		panic(provider + ": credential source is required")
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {
-		panic(fmt.Sprintf("%s: model is required", provider))
+		panic(provider + ": model is required")
 	}
-	if options.CompactionThreshold < 0 {
-		panic("openai: compaction threshold must not be negative")
+	if options.MaxOutputTokens < 0 || options.ContextWindow < 0 || options.CompactionThreshold < 0 {
+		panic("openai: token limits and compaction threshold must not be negative")
+	}
+	for _, delay := range options.RetryBackoff {
+		if delay < 0 {
+			panic("openai: retry backoff must not be negative")
+		}
 	}
 	standardEndpoint := options.BaseURL == "" || strings.TrimRight(options.BaseURL, "/") == defaultAPIBaseURL
 	if options.BaseURL == "" {
@@ -167,6 +173,7 @@ func newClient(source CredentialSource, model string, options Options, provider 
 	if options.HTTPClient == nil {
 		options.HTTPClient = http.DefaultClient
 	}
+	options.Headers = options.Headers.Clone()
 	if options.Store == nil {
 		store := false
 		options.Store = &store
@@ -180,7 +187,7 @@ func newClient(source CredentialSource, model string, options Options, provider 
 	} else {
 		options.RetryBackoff = append([]time.Duration(nil), options.RetryBackoff...)
 	}
-	client := &Client{options: options, model: model, credentials: source, provider: provider}
+	client := &Client{options: options, credentials: source, provider: provider, model: model}
 	websocketEnabled := standardEndpoint
 	if options.ResponsesWebSocket != nil {
 		websocketEnabled = *options.ResponsesWebSocket
@@ -209,6 +216,19 @@ func newClient(source CredentialSource, model string, options Options, provider 
 	}
 	client.options = options
 	return client
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 // BindTools returns an independent client with the supplied tool definitions.
@@ -472,9 +492,77 @@ func (client *Client) streamPayload(ctx context.Context, payload responsesReques
 			}
 			continue
 		}
-		return newResponseStream(ctx, response.Body, client.provider, responseFormatFromPayload(payload)), nil
+		return newRetryingResponseStream(ctx, client, body, response.Body, responseFormatFromPayload(payload), attempt), nil
 	}
 }
+
+type retryingResponseStream struct {
+	ctx          context.Context
+	client       *Client
+	body         []byte
+	format       *damodel.ResponseFormat
+	current      *responseStream
+	retryAttempt int
+	emitted      bool
+}
+
+func newRetryingResponseStream(ctx context.Context, client *Client, body []byte, responseBody io.ReadCloser, format *damodel.ResponseFormat, retryAttempt int) *retryingResponseStream {
+	return &retryingResponseStream{
+		ctx: ctx, client: client, body: append([]byte(nil), body...), format: format,
+		current: newResponseStream(ctx, responseBody, client.provider, format), retryAttempt: retryAttempt,
+	}
+}
+
+func (stream *retryingResponseStream) Chunks() iter.Seq2[damodel.Chunk, error] {
+	return damodel.Chunks(stream.ctx, stream)
+}
+
+func (stream *retryingResponseStream) Next(ctx context.Context) (damodel.Chunk, error) {
+	for {
+		chunk, err := stream.current.Next(ctx)
+		if err == nil {
+			stream.emitted = true
+			return chunk, nil
+		}
+		if errors.Is(err, io.EOF) || stream.emitted {
+			return damodel.Chunk{}, err
+		}
+		if retryErr := stream.retryBeforeEmission(ctx, err); retryErr != nil {
+			return damodel.Chunk{}, retryErr
+		}
+	}
+}
+
+func (stream *retryingResponseStream) retryBeforeEmission(ctx context.Context, retryErr error) error {
+	_ = stream.current.Close()
+	for {
+		attempt := stream.retryAttempt
+		if !stream.client.canRetry(ctx, attempt, retryErr) {
+			return retryErr
+		}
+		if err := stream.client.waitRetry(ctx, attempt, retryErr); err != nil {
+			return err
+		}
+		stream.retryAttempt++
+		response, err := stream.client.do(ctx, stream.body)
+		if err != nil {
+			retryErr = err
+			continue
+		}
+		if err := stream.client.decorateError(responseErrorForProvider(response, stream.client.provider)); err != nil {
+			retryErr = err
+			continue
+		}
+		stream.current = newResponseStream(ctx, response.Body, stream.client.provider, stream.format)
+		return nil
+	}
+}
+
+func (stream *retryingResponseStream) Close() error {
+	return stream.current.Close()
+}
+
+var _ damodel.Stream = (*retryingResponseStream)(nil)
 
 func (client *Client) canRetry(ctx context.Context, attempt int, err error) bool {
 	if ctx.Err() != nil || attempt >= len(client.options.RetryBackoff) {

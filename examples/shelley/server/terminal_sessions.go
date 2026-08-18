@@ -18,11 +18,11 @@ import (
 	"github.com/semistrict/dago/examples/shelley/dtach"
 )
 
-// TerminalSession is the on-disk + in-memory record of a persistent terminal.
+// terminalSession is the on-disk + in-memory record of a persistent terminal.
 // The owning process is a `shelley dtach new` child detached via setsid so
 // it survives the parent shelley exiting; it terminates when the user's
 // command exits or the session is killed.
-type TerminalSession struct {
+type terminalSession struct {
 	ID        string    `json:"id"`
 	Command   string    `json:"command"`
 	Cwd       string    `json:"cwd"`
@@ -32,29 +32,32 @@ type TerminalSession struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// SpawnerFunc starts a dtach server hosting `cmd` on the given socket. The
+// spawnerFunc starts a dtach server hosting `cmd` on the given socket. The
 // implementation must not return until the socket is ready to accept
 // connections. The default spawns an out-of-process `shelley dtach serve`
 // child so sessions outlive the parent shelley. Tests can replace it to run
 // in-process.
-type SpawnerFunc func(socket, logFile, cwd, command string, cols, rows uint16, extraEnv []string) (pid int, err error)
+type spawnerFunc func(socket, logFile, cwd, command string, cols, rows uint16, extraEnv []string) (pid int, err error)
 
-// TerminalSessions tracks persistent dtach sessions on disk.
-type TerminalSessions struct {
+// terminalSessions tracks persistent dtach sessions on disk.
+type terminalSessions struct {
 	dir      string // root directory holding per-session files
 	exe      string // path to the shelley executable (for re-exec)
 	logger   *slog.Logger
-	spawner  SpawnerFunc
+	spawner  spawnerFunc
 	mu       sync.Mutex
-	sessions map[string]*TerminalSession
+	sessions map[string]*terminalSession
 	// attachMu serializes attachOrSpawn for the duration of socket-stat /
 	// spawn so concurrent reconnects for the same id don't double-spawn.
 	attachMu sync.Mutex
 }
 
-// NewTerminalSessions opens (or creates) a sessions directory and reaps any
+// newTerminalSessions opens (or creates) a sessions directory and reaps any
 // stale records left over from previous runs.
-func NewTerminalSessions(dir string, logger *slog.Logger) (*TerminalSessions, error) {
+func newTerminalSessions(dir string, logger *slog.Logger) (*terminalSessions, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("terminals: mkdir %s: %w", dir, err)
 	}
@@ -62,25 +65,27 @@ func NewTerminalSessions(dir string, logger *slog.Logger) (*TerminalSessions, er
 	if err != nil {
 		return nil, fmt.Errorf("terminals: locate shelley executable: %w", err)
 	}
-	ts := &TerminalSessions{
+	ts := &terminalSessions{
 		dir:      dir,
 		exe:      exe,
 		logger:   logger,
-		sessions: make(map[string]*TerminalSession),
+		sessions: make(map[string]*terminalSession),
 	}
 	ts.spawner = ts.spawnSubprocess
-	ts.scan()
+	if err := ts.scan(); err != nil {
+		return nil, err
+	}
 	return ts, nil
 }
 
 // SetSpawner overrides the spawn strategy (intended for tests).
-func (t *TerminalSessions) SetSpawner(s SpawnerFunc) { t.spawner = s }
+func (t *terminalSessions) SetSpawner(s spawnerFunc) { t.spawner = s }
 
 // scan loads sessions from disk, dropping any whose dtach socket is dead.
-func (t *TerminalSessions) scan() {
+func (t *terminalSessions) scan() error {
 	entries, err := os.ReadDir(t.dir)
 	if err != nil {
-		return
+		return fmt.Errorf("terminals: scan %s: %w", t.dir, err)
 	}
 	for _, e := range entries {
 		name := e.Name()
@@ -90,9 +95,9 @@ func (t *TerminalSessions) scan() {
 		id := name[:len(name)-len(".json")]
 		data, err := os.ReadFile(filepath.Join(t.dir, name))
 		if err != nil {
-			continue
+			return fmt.Errorf("terminals: read session %s: %w", id, err)
 		}
-		var s TerminalSession
+		var s terminalSession
 		if err := json.Unmarshal(data, &s); err != nil {
 			continue
 		}
@@ -102,9 +107,10 @@ func (t *TerminalSessions) scan() {
 		}
 		t.sessions[id] = &s
 	}
+	return nil
 }
 
-func (t *TerminalSessions) socketAlive(path string) bool {
+func (t *terminalSessions) socketAlive(path string) bool {
 	if _, err := os.Stat(path); err != nil {
 		return false
 	}
@@ -116,16 +122,16 @@ func (t *TerminalSessions) socketAlive(path string) bool {
 	return true
 }
 
-func (t *TerminalSessions) removeFiles(id string) {
+func (t *terminalSessions) removeFiles(id string) {
 	os.Remove(filepath.Join(t.dir, id+".json"))
 	os.Remove(filepath.Join(t.dir, id+".sock"))
 	os.Remove(filepath.Join(t.dir, id+".log"))
 }
 
 // List returns a snapshot of known live sessions, oldest first.
-func (t *TerminalSessions) List() []*TerminalSession {
+func (t *terminalSessions) List() []*terminalSession {
 	t.mu.Lock()
-	out := make([]*TerminalSession, 0, len(t.sessions))
+	out := make([]*terminalSession, 0, len(t.sessions))
 	for _, s := range t.sessions {
 		out = append(out, s)
 	}
@@ -135,7 +141,7 @@ func (t *TerminalSessions) List() []*TerminalSession {
 }
 
 // Get returns a session by ID, or nil.
-func (t *TerminalSessions) Get(id string) *TerminalSession {
+func (t *terminalSessions) Get(id string) *terminalSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.sessions[id]
@@ -145,7 +151,7 @@ func (t *TerminalSessions) Get(id string) *TerminalSession {
 // returns the session record together with the attached client. Doing the
 // attach inline closes the race where a fast-exiting command tears down the
 // socket before any external attach can succeed.
-func (t *TerminalSessions) Spawn(command, cwd string, cols, rows uint16, extraEnv []string) (*TerminalSession, *dtach.Client, error) {
+func (t *terminalSessions) Spawn(command, cwd string, cols, rows uint16, extraEnv []string) (*terminalSession, *dtach.Client, error) {
 	if command == "" {
 		return nil, nil, errors.New("terminals: empty command")
 	}
@@ -180,7 +186,7 @@ func (t *TerminalSessions) Spawn(command, cwd string, cols, rows uint16, extraEn
 		return nil, nil, fmt.Errorf("terminals: attach freshly spawned session: %w", attachErr)
 	}
 
-	sess := &TerminalSession{
+	sess := &terminalSession{
 		ID:        id,
 		Command:   command,
 		Cwd:       cwd,
@@ -228,7 +234,7 @@ func attachWithRetry(socket string, max time.Duration) (*dtach.Client, error) {
 
 // Kill terminates the session (SIGTERM the dtach server group) and removes
 // its on-disk files.
-func (t *TerminalSessions) Kill(id string) error {
+func (t *terminalSessions) Kill(id string) error {
 	t.mu.Lock()
 	s := t.sessions[id]
 	if s != nil {
@@ -248,7 +254,7 @@ func (t *TerminalSessions) Kill(id string) error {
 
 // Forget drops a session from memory and disk without signalling it; intended
 // for cleanup after the underlying socket is observed dead.
-func (t *TerminalSessions) Forget(id string) {
+func (t *terminalSessions) Forget(id string) {
 	t.mu.Lock()
 	delete(t.sessions, id)
 	t.mu.Unlock()
@@ -270,7 +276,7 @@ func newTerminalID() (string, error) {
 
 // spawnSubprocess starts `shelley dtach new` as an out-of-process child so
 // it survives shelley restarts (Setsid keeps it detached in its own session).
-func (t *TerminalSessions) spawnSubprocess(socket, logFile, cwd, command string, cols, rows uint16, extraEnv []string) (int, error) {
+func (t *terminalSessions) spawnSubprocess(socket, logFile, cwd, command string, cols, rows uint16, extraEnv []string) (int, error) {
 	logF, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("terminals: open log: %w", err)
@@ -309,7 +315,7 @@ func (t *TerminalSessions) spawnSubprocess(socket, logFile, cwd, command string,
 
 // LockAttach returns a function that releases the attach mutex. Callers use
 // it to serialize the lookup-or-spawn path.
-func (t *TerminalSessions) LockAttach() func() {
+func (t *terminalSessions) LockAttach() func() {
 	t.attachMu.Lock()
 	return t.attachMu.Unlock
 }

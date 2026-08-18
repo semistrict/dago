@@ -14,7 +14,6 @@ import (
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/datool"
-	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -63,8 +62,10 @@ type Predictable struct {
 }
 
 // NewPredictable constructs a prompt-driven deterministic model.
-func NewPredictable(optionValues ...PredictableOptions) *Predictable {
-	options := optionvalue.Resolve("predictable model", optionValues)
+func NewPredictable(options PredictableOptions) *Predictable {
+	if options.HistoryLimit < 0 || options.ResponseDelay < 0 {
+		panic("predictable model history limit and response delay cannot be negative")
+	}
 	profile := damodel.Profile{
 		Provider:          "builtin",
 		Model:             "predictable-v1",

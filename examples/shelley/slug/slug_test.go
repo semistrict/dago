@@ -124,7 +124,7 @@ func (m *MockLLMProvider) GetModelInfo(modelID string) *models.ModelInfo {
 func TestGenerateSlug_DatabaseIntegration(t *testing.T) {
 	// Create temporary database
 	tempDB := t.TempDir() + "/slug_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestGenerateSlug_DatabaseIntegration(t *testing.T) {
 // are actually continuations (e.g. starting a new generation after compaction).
 func TestGenerateSlug_PreservesExisting(t *testing.T) {
 	tempDB := t.TempDir() + "/slug_preserve_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestGenerateSlug_MaxAttempts(t *testing.T) {
 func TestGenerateSlug_DatabaseError(t *testing.T) {
 	// Create temporary database
 	tempDB := t.TempDir() + "/slug_db_error_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestGenerateSlug_DatabaseError(t *testing.T) {
 	database.Close()
 
 	// Try to generate slug with closed database - pass a valid database object but it's closed
-	closedDB, err := db.New(db.Config{DSN: tempDB})
+	closedDB, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -596,7 +596,7 @@ func (m *mockFallbackProvider) GetModelInfo(modelID string) *models.ModelInfo {
 // with "generated slug is empty after sanitization".
 func TestGenerateSlug_ReasoningModel(t *testing.T) {
 	tempDB := t.TempDir() + "/slug_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
@@ -819,7 +819,7 @@ func TestPreferredModels(t *testing.T) {
 // design) is invisible to all three.
 func TestGenerateSlug_UsageOnAppendedMarker(t *testing.T) {
 	tempDB := t.TempDir() + "/slug_usage_test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
+	database, err := db.New(tempDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -840,11 +840,12 @@ func TestGenerateSlug_UsageOnAppendedMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        llm.Message{Role: llm.MessageRoleUser},
-	}); err != nil {
+	if _, err := database.CreateMessage(ctx,
+		conv.ConversationID,
+		db.MessageTypeUser, db.CreateMessageParams{
+
+			LLMData: llm.Message{Role: llm.MessageRoleUser},
+		}); err != nil {
 		t.Fatal(err)
 	}
 

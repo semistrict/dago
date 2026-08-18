@@ -15,6 +15,8 @@ import (
 
 	"github.com/semistrict/dago/examples/shelley/claudetool"
 	"github.com/semistrict/dago/examples/shelley/db"
+	"github.com/semistrict/dago/examples/shelley/models"
+	"github.com/semistrict/dago/examples/shelley/modelsources"
 	"github.com/semistrict/dago/examples/shelley/server"
 )
 
@@ -87,8 +89,7 @@ func TestMain(m *testing.M) {
 	}
 	defer os.RemoveAll(diffFixtureDir)
 
-	app = lazycue.New(lazycue.Options{
-		BaseURL:     ts.URL,
+	app = lazycue.New(ts.URL, lazycue.Options{
 		CacheDir:    cacheDir,
 		Verbose:     true,
 		ArtifactDir: os.Getenv("LAZYCUE_ARTIFACT_DIR"),
@@ -661,7 +662,7 @@ func startPredictableServer() (*httptest.Server, func()) {
 	if err != nil {
 		panic(err)
 	}
-	database, err := db.New(db.Config{DSN: filepath.Join(tempDB, "test.db")})
+	database, err := db.New(filepath.Join(tempDB, "test.db"))
 	if err != nil {
 		panic(err)
 	}
@@ -670,8 +671,15 @@ func startPredictableServer() (*httptest.Server, func()) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	llmManager := server.NewLLMServiceManager(newPredictableLLMConfig(logger))
-	svr := server.NewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, true, "predictable", "")
+	built, err := modelsources.Build(models.All(), []modelsources.Source{modelsources.Predictable()}, nil, logger)
+	if err != nil {
+		panic(err)
+	}
+	llmManager, err := server.NewLLMServiceManager(built, server.LLMConfig{Logger: logger})
+	if err != nil {
+		panic(err)
+	}
+	svr := server.MustNewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, true, "predictable", "")
 
 	// RegisterRoutes wires up the SPA-aware static handler for the embedded UI
 	// (so /new and its assets resolve) plus the API endpoints.

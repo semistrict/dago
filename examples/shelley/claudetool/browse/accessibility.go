@@ -22,7 +22,8 @@ Actions (pass as the browser tool's "action"):
 
   accessibility_tree - Get the full accessibility tree
     Parameters:
-      depth (int, optional): Maximum depth to retrieve. 0 or omitted = unlimited.
+      depth (int, optional): Maximum depth to retrieve. Omitted defaults to 12.
+      unlimited_depth (bool, optional): Explicitly request the full tree.
     Example: {"action": "accessibility_tree", "depth": 3}
 
   accessibility_query - Search for nodes by accessible name and/or role
@@ -48,7 +49,15 @@ Output format:
 	return browserText(helpText), nil
 }
 
-func (b *BrowseTools) accessibilityTree(depth int) (browserExecution, error) {
+const defaultAccessibilityDepth = 12
+
+func (b *BrowseTools) accessibilityTree(depth int, unlimited bool) (browserExecution, error) {
+	if depth < 0 {
+		return browserExecution{}, fmt.Errorf("accessibility depth must not be negative")
+	}
+	if depth == 0 && !unlimited {
+		depth = defaultAccessibilityDepth
+	}
 	browserCtx, err := b.GetBrowserContext()
 	if err != nil {
 		return browserExecution{}, fmt.Errorf("failed to get browser context: %w", err)
@@ -57,7 +66,7 @@ func (b *BrowseTools) accessibilityTree(depth int) (browserExecution, error) {
 	var nodes []*accessibility.Node
 	err = chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		params := accessibility.GetFullAXTree()
-		if depth > 0 {
+		if !unlimited {
 			params = params.WithDepth(int64(depth))
 		}
 		result, err := params.Do(ctx)

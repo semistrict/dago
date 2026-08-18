@@ -54,8 +54,17 @@ func RuntimeFromContext(ctx context.Context) (Runtime, bool) {
 	return runtime, ok
 }
 
-// New creates a Tool whose input schema and decoder are derived from T.
-func New[T, R any](name, description string, handler Handler[T, R], options ...Option) (Tool, error) {
+// New creates a Tool whose input schema and decoder are derived from T. It
+// panics when the static declaration cannot produce a valid tool.
+func New[T, R any](name, description string, handler Handler[T, R], options ...Option) Tool {
+	created, err := newTypedTool(name, description, handler, options...)
+	if err != nil {
+		panic(err)
+	}
+	return created
+}
+
+func newTypedTool[T, R any](name, description string, handler Handler[T, R], options ...Option) (Tool, error) {
 	definition := Definition{Name: name, Description: description}
 	schema, err := Schema[T]()
 	if err != nil {
@@ -92,14 +101,9 @@ func New[T, R any](name, description string, handler Handler[T, R], options ...O
 	return typed(definition, handler, compiled, true)
 }
 
-// MustNew is New for statically declared tools. It panics when the name,
-// description, input type, or struct tags cannot produce a valid tool.
+// MustNew is retained as an alias for New.
 func MustNew[T, R any](name, description string, handler Handler[T, R], options ...Option) Tool {
-	created, err := New(name, description, handler, options...)
-	if err != nil {
-		panic(err)
-	}
-	return created
+	return New(name, description, handler, options...)
 }
 
 func typed[T, R any](definition Definition, handler Handler[T, R], compiled *jsonschema.Schema, strict bool) (Tool, error) {

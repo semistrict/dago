@@ -156,6 +156,9 @@ type UsageCollector func(purpose string, usage llm.Usage)
 // WithUsageCollector returns a context that collects the usage of indirect
 // LLM calls (those tagged with WithPurpose) made under it.
 func WithUsageCollector(ctx context.Context, c UsageCollector) context.Context {
+	if c == nil {
+		panic("llmhttp: usage collector is required")
+	}
 	return context.WithValue(ctx, usageCollectorKey, c)
 }
 
@@ -396,8 +399,23 @@ func NewClient(base *http.Client) *http.Client {
 }
 
 // NewClientWithIdleTimeout is like NewClient but with an explicit idle/stall
-// timeout. A value <= 0 disables the idle timeout.
+// timeout. Zero uses DefaultIdleTimeout; negative values are invalid.
 func NewClientWithIdleTimeout(base *http.Client, idleTimeout time.Duration) *http.Client {
+	if idleTimeout < 0 {
+		panic("HTTP idle timeout must not be negative")
+	}
+	if idleTimeout == 0 {
+		idleTimeout = DefaultIdleTimeout
+	}
+	return newClientWithIdleTimeout(base, idleTimeout)
+}
+
+// NewClientWithoutIdleTimeout explicitly disables idle/stall detection.
+func NewClientWithoutIdleTimeout(base *http.Client) *http.Client {
+	return newClientWithIdleTimeout(base, 0)
+}
+
+func newClientWithIdleTimeout(base *http.Client, idleTimeout time.Duration) *http.Client {
 	if base == nil {
 		base = http.DefaultClient
 	}

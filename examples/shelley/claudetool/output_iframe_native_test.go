@@ -15,7 +15,7 @@ func TestOutputIframeNativeToolReturnsDisplayArtifact(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "view.html"), []byte("<h1>hello</h1>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	executable := (&OutputIframeTool{WorkingDir: NewMutableWorkingDir(root)}).NativeTool()
+	executable := (&outputIframeTool{WorkingDir: newMutableWorkingDir(root)}).nativeTool()
 	result, err := executable.Execute(context.Background(), json.RawMessage(`{"path":"view.html","title":"View"}`), datool.Runtime{})
 	if err != nil {
 		t.Fatal(err)

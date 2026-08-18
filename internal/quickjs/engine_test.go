@@ -13,7 +13,7 @@ import (
 
 func TestEvalMarshalsValuesAndUnwrapsPromises(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil)
+	engine, err := New(ctx, Options{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,12 +51,12 @@ func TestEvalMarshalsValuesAndUnwrapsPromises(t *testing.T) {
 func TestWorkflowModuleReadsRuntimeExportBeforeDrivingBody(t *testing.T) {
 	ctx := context.Background()
 	started := make(chan struct{}, 1)
-	engine, err := New(ctx, nil, Options{HostFunctions: map[string]HostFunction{
+	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
 		"markStarted": func(context.Context, []any) (any, error) {
 			started <- struct{}{}
 			return int64(40), nil
 		},
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ return { answer: answer + 2 }
 
 func TestNewEnablesMemoryTrackingByDefault(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil)
+	engine, err := New(ctx, Options{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,9 +124,35 @@ func TestNewEnablesMemoryTrackingByDefault(t *testing.T) {
 	}
 }
 
+func TestNewPanicsForInvalidStaticOptions(t *testing.T) {
+	t.Run("nil context", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("New did not panic")
+			}
+		}()
+		_, _ = New(nil, Options{}, nil)
+	})
+	for name, options := range map[string]Options{
+		"negative stdout":   {MaxStdout: -1},
+		"memory overflow":   {MemoryLimit: 1<<32 + 1},
+		"empty host name":   {HostFunctions: map[string]HostFunction{"": func(context.Context, []any) (any, error) { return nil, nil }}},
+		"nil host function": {HostFunctions: map[string]HostFunction{"host": nil}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("New did not panic")
+				}
+			}()
+			_, _ = New(t.Context(), options, nil)
+		})
+	}
+}
+
 func TestEvalPromiseErrorsAndSideEffects(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil)
+	engine, err := New(ctx, Options{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +174,7 @@ func TestEvalPromiseErrorsAndSideEffects(t *testing.T) {
 
 func TestEvalConsoleCaptureIsBoundedAndResets(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil, Options{MaxStdout: 10})
+	engine, err := New(ctx, Options{MaxStdout: 10}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,15 +194,13 @@ func TestEvalConsoleCaptureIsBoundedAndResets(t *testing.T) {
 
 func TestHostFunctionsMarshalNativeValuesAndOmitUndefinedProperties(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx,
-
-		nil, Options{HostFunctions: map[string]HostFunction{
-			"list": func(context.Context, []any) (any, error) { return []any{1, "two", nil}, nil },
-			"object": func(context.Context, []any) (any, error) {
-				return map[string]any{"id": 21, "tags": []any{"admin", "ops"}}, nil
-			},
-			"echo": func(_ context.Context, arguments []any) (any, error) { return arguments[0], nil },
-		}})
+	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
+		"list": func(context.Context, []any) (any, error) { return []any{1, "two", nil}, nil },
+		"object": func(context.Context, []any) (any, error) {
+			return map[string]any{"id": 21, "tags": []any{"admin", "ops"}}, nil
+		},
+		"echo": func(_ context.Context, arguments []any) (any, error) { return arguments[0], nil },
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,11 +221,9 @@ func TestHostFunctionsMarshalNativeValuesAndOmitUndefinedProperties(t *testing.T
 func TestHostFunctionFailureCanBeCaughtOrPropagated(t *testing.T) {
 	ctx := context.Background()
 	boom := errors.New("tool exploded")
-	engine, err := New(ctx,
-
-		nil, Options{HostFunctions: map[string]HostFunction{
-			"fail": func(context.Context, []any) (any, error) { return nil, boom },
-		}})
+	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
+		"fail": func(context.Context, []any) (any, error) { return nil, boom },
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +241,7 @@ func TestHostFunctionFailureCanBeCaughtOrPropagated(t *testing.T) {
 
 func TestEvalDetectsPromiseDeadlock(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil)
+	engine, err := New(ctx, Options{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +254,7 @@ func TestEvalDetectsPromiseDeadlock(t *testing.T) {
 
 func TestEvalPersistsThroughWholeMemorySnapshot(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil, Options{MemoryLimit: 64 << 20, Timeout: time.Second})
+	engine, err := New(ctx, Options{MemoryLimit: 64 << 20}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +273,7 @@ func TestEvalPersistsThroughWholeMemorySnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, err := New(ctx, snapshot, Options{Timeout: time.Second})
+	restored, err := New(ctx, Options{}, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +289,7 @@ func TestEvalPersistsThroughWholeMemorySnapshot(t *testing.T) {
 
 func TestEvalPersistsThroughDirtyPageSnapshot(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil, Options{MemoryLimit: 64 << 20})
+	engine, err := New(ctx, Options{MemoryLimit: 64 << 20}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +302,7 @@ func TestEvalPersistsThroughDirtyPageSnapshot(t *testing.T) {
 	}
 	engine.Close(ctx)
 
-	restored, err := New(ctx, base, Options{MemoryLimit: 64 << 20})
+	restored, err := New(ctx, Options{MemoryLimit: 64 << 20}, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +334,7 @@ func TestEvalPersistsThroughDirtyPageSnapshot(t *testing.T) {
 	if _, err := ApplyDirtySnapshot(invalidBase, delta, 64<<20); err == nil {
 		t.Fatal("invalid base snapshot was accepted")
 	}
-	final, err := New(ctx, updated, Options{MemoryLimit: 64 << 20})
+	final, err := New(ctx, Options{MemoryLimit: 64 << 20}, updated)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,17 +347,15 @@ func TestEvalPersistsThroughDirtyPageSnapshot(t *testing.T) {
 
 func TestEvalDrivesConcurrentHostPromises(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx,
-
-		nil, Options{HostFunctions: map[string]HostFunction{
-			"lookup": func(_ context.Context, args []any) (any, error) {
-				input, ok := args[0].(map[string]any)
-				if !ok {
-					return nil, fmt.Errorf("input = %T", args[0])
-				}
-				return "found:" + input["query"].(string), nil
-			},
-		}})
+	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
+		"lookup": func(_ context.Context, args []any) (any, error) {
+			input, ok := args[0].(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("input = %T", args[0])
+			}
+			return "found:" + input["query"].(string), nil
+		},
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,14 +372,12 @@ func TestEvalDrivesConcurrentHostPromises(t *testing.T) {
 
 func TestHostWaitDoesNotConsumeJavaScriptTimeout(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx,
-
-		nil, Options{HostFunctions: map[string]HostFunction{
-			"slow": func(context.Context, []any) (any, error) {
-				time.Sleep(650 * time.Millisecond)
-				return 42, nil
-			},
-		}})
+	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
+		"slow": func(context.Context, []any) (any, error) {
+			time.Sleep(650 * time.Millisecond)
+			return 42, nil
+		},
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +393,7 @@ func TestHostWaitDoesNotConsumeJavaScriptTimeout(t *testing.T) {
 
 func TestSnapshotAfterExceptionPreservesPriorMutations(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil)
+	engine, err := New(ctx, Options{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +405,7 @@ func TestSnapshotAfterExceptionPreservesPriorMutations(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine.Close(ctx)
-	restored, err := New(ctx, snapshot)
+	restored, err := New(ctx, Options{}, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +418,7 @@ func TestSnapshotAfterExceptionPreservesPriorMutations(t *testing.T) {
 
 func TestEvalInterruptsLoop(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil, Options{Timeout: 20 * time.Millisecond})
+	engine, err := New(ctx, Options{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +430,7 @@ func TestEvalInterruptsLoop(t *testing.T) {
 }
 
 func TestEvalCancellationInterruptsLoop(t *testing.T) {
-	engine, err := New(context.Background(), nil)
+	engine, err := New(context.Background(), Options{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +449,7 @@ func TestEvalCancellationInterruptsLoop(t *testing.T) {
 
 func TestValidateSnapshotRejectsCorruptionAndBounds(t *testing.T) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil)
+	engine, err := New(ctx, Options{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,11 +489,9 @@ func TestValidateSnapshotRejectsCorruptionAndBounds(t *testing.T) {
 
 func BenchmarkEvalPTCAndConsole(b *testing.B) {
 	ctx := context.Background()
-	engine, err := New(ctx,
-
-		nil, Options{HostFunctions: map[string]HostFunction{
-			"echo": func(_ context.Context, arguments []any) (any, error) { return arguments[0], nil },
-		}})
+	engine, err := New(ctx, Options{HostFunctions: map[string]HostFunction{
+		"echo": func(_ context.Context, arguments []any) (any, error) { return arguments[0], nil },
+	}}, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -491,7 +507,7 @@ func BenchmarkEvalPTCAndConsole(b *testing.B) {
 
 func BenchmarkSnapshotRestoreTurns(b *testing.B) {
 	ctx := context.Background()
-	engine, err := New(ctx, nil)
+	engine, err := New(ctx, Options{}, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -507,7 +523,7 @@ func BenchmarkSnapshotRestoreTurns(b *testing.B) {
 	b.ReportMetric(float64(len(snapshot)), "anchor-bytes")
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
-		engine, err = New(ctx, snapshot)
+		engine, err = New(ctx, Options{}, snapshot)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -531,7 +547,7 @@ func BenchmarkConcurrentEngineMemoryWorkload(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			engine, err := New(ctx, nil, Options{MaxStdout: 4_000})
+			engine, err := New(ctx, Options{MaxStdout: 4_000}, nil)
 			if err != nil {
 				b.Error(err)
 				return
