@@ -285,7 +285,7 @@ test("copies a draft with ctrl+c without clearing or closing the session", async
   await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
 });
 
-test("Ctrl+C does not shift a full transcript upward or leave its final row blank", async ({ page }) => {
+test("Ctrl+C keeps the physical bottom row anchored while its dialog appears and expires", async ({ page }) => {
   await openTerminal(page);
 
 	for (let index = 0; index < 20; index += 1) {
@@ -294,20 +294,38 @@ test("Ctrl+C does not shift a full transcript upward or leave its final row blan
 	}
 	const marker = "Unknown command: /ctrl-c-layout-19";
 	await expect.poll(() => terminalText(page)).toContain(marker);
+	// The fixture can emit a separate startup warning. Let it expire so this
+	// baseline and the later restoration measure only the Ctrl+C dialog.
+	await expect.poll(() => terminalText(page), { timeout: 7_000 }).not.toContain("Web search is not configured");
 	const before = await visibleTerminalLines(page);
 	const markerRow = before.findIndex((line) => line.includes(marker));
 	expect(markerRow).toBeGreaterThanOrEqual(0);
-	expect(before.at(-1)?.trim()).not.toBe("");
+	expect(before.at(-1)).toContain("Context:");
+	expect(before).toHaveLength(await page.evaluate(() => window.dacodeTerminal?.rows ?? 0));
 
-  await page.keyboard.press("Control+c");
-  await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
+	await page.keyboard.press("Control+c");
+	await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
+	await expect.poll(() => terminalText(page)).toContain("Press Ctrl+C again to quit.");
+	await expect.poll(async () => {
+		const lines = await visibleTerminalLines(page);
+		return {
+			rows: lines.length,
+			lastRow: lines.at(-1)?.trim() ?? ""
+		};
+	}).toEqual({ rows: before.length, lastRow: before.at(-1)?.trim() ?? "" });
+
+	// The transient dialog expires after four seconds. Its removal must restore
+	// the same exact physical frame instead of leaving the renderer one row
+	// short or accumulating a vertical offset.
+	await expect.poll(() => terminalText(page), { timeout: 7_000 }).not.toContain("Press Ctrl+C again to quit.");
 	await expect.poll(async () => {
 		const lines = await visibleTerminalLines(page);
 		return {
 			markerRow: lines.findIndex((line) => line.includes(marker)),
-			lastRowBlank: (lines.at(-1)?.trim() ?? "") === ""
+			rows: lines.length,
+			lastRow: lines.at(-1)?.trim() ?? ""
 		};
-	}).toEqual({ markerRow, lastRowBlank: false });
+	}).toEqual({ markerRow, rows: before.length, lastRow: before.at(-1)?.trim() ?? "" });
 });
 
 test("a wrapped two-line draft keeps its first line visible while editing the second", async ({ page }) => {

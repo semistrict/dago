@@ -4113,15 +4113,8 @@ func (model *tuiModel) relayout() {
 	model.toastHeight = 0
 	if toast != "" {
 		model.toastHeight = lipgloss.Height(toast)
-		model.toastHeight++
 	}
 	viewportHeight := max(model.height-fixedHeight-model.toastHeight, 3)
-	// The web PTY renderer reserves the final physical row while painting a
-	// full-screen frame. Retain one extra viewport row so the two-line status
-	// chrome remains anchored to the bottom without changing native terminals.
-	if model.browserLinks {
-		viewportHeight++
-	}
 	viewportWidth := model.width
 	if model.scrollbarVisible() {
 		viewportWidth--
@@ -4429,7 +4422,7 @@ func (model *tuiModel) View() string {
 	if tip != "" {
 		tip += "\n"
 	}
-	toast := renderToastsWithin(model.toasts, model.width, max(model.toastHeight-1, 0), model.glyphs, time.Now())
+	toast := renderToastsWithin(model.toasts, model.width, model.toastHeight, model.glyphs, time.Now())
 	if toast != "" {
 		toast += "\n"
 	}

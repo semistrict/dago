@@ -300,14 +300,22 @@ func TestTUIBrowserLayoutKeepsStatusOnPhysicalBottomRow(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
 	model.browserLinks = true
 	model.resize(80, 24)
-	if height := lipgloss.Height(model.View()); height != 25 {
-		t.Fatalf("browser frame height = %d, want physical 25-row frame", height)
+	if height := lipgloss.Height(model.View()); height != 24 {
+		t.Fatalf("browser frame height = %d, want exact 24-row frame", height)
 	}
 	model.composer.SetValue("clear")
 	model.toasts.add("actionable", toastWarning, maximumToastDuration, "", time.Now())
 	model.relayout()
+	if height := lipgloss.Height(model.View()); height != 24 {
+		t.Fatalf("browser frame with toast height = %d, want exact 24-row frame (viewport=%d composer=%d toast=%d)\n%s", height, model.viewport.Height, model.composer.Height(), model.toastHeight, model.View())
+	}
 	if strings.Contains(model.View(), "[ X ] clear") || strings.Contains(model.View(), "[ COPY ] copy") {
 		t.Fatal("browser layout restored removed draft actions")
+	}
+	model.toasts.expire(time.Now().Add(maximumToastDuration + time.Second))
+	model.relayout()
+	if height := lipgloss.Height(model.View()); height != 24 {
+		t.Fatalf("browser frame after toast height = %d, want exact 24-row frame", height)
 	}
 }
 
