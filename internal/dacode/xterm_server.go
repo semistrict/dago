@@ -29,10 +29,14 @@ type xtermJSServerOptions struct {
 }
 
 type xtermClientMessage struct {
-	Type string `json:"type"`
-	Data string `json:"data,omitempty"`
-	Cols uint16 `json:"cols,omitempty"`
-	Rows uint16 `json:"rows,omitempty"`
+	Type      string `json:"type"`
+	Data      string `json:"data,omitempty"`
+	Cols      uint16 `json:"cols,omitempty"`
+	Rows      uint16 `json:"rows,omitempty"`
+	Direction int8   `json:"direction,omitempty"`
+	Column    uint16 `json:"column,omitempty"`
+	Row       uint16 `json:"row,omitempty"`
+	Steps     uint8  `json:"steps,omitempty"`
 }
 
 func serveXtermJS(ctx context.Context, options xtermJSServerOptions) error {
@@ -194,6 +198,14 @@ func pumpXtermInput(ctx context.Context, connection *websocket.Conn, master *os.
 			if _, err := io.WriteString(master, message.Data); err != nil {
 				return err
 			}
+		case "wheel":
+			sequence, ok := xtermWheelSequence(message)
+			if !ok {
+				continue
+			}
+			if _, err := io.WriteString(master, sequence); err != nil {
+				return err
+			}
 		case "resize":
 			cols, rows := terminalSize(message.Cols, message.Rows)
 			if err := pty.Setsize(master, &pty.Winsize{Cols: cols, Rows: rows}); err != nil {
@@ -213,6 +225,19 @@ func pumpXtermInput(ctx context.Context, connection *websocket.Conn, master *os.
 			}
 		}
 	}
+}
+
+func xtermWheelSequence(message xtermClientMessage) (string, bool) {
+	if message.Direction != -1 && message.Direction != 1 || message.Column < 1 || message.Column > 500 || message.Row < 1 || message.Row > 200 {
+		return "", false
+	}
+	steps := min(max(int(message.Steps), 1), 8)
+	button := 65
+	if message.Direction < 0 {
+		button = 64
+	}
+	sequence := fmt.Sprintf("\x1b[<%d;%d;%dM", button, message.Column, message.Row)
+	return strings.Repeat(sequence, steps), true
 }
 
 func writeXtermError(ctx context.Context, connection *websocket.Conn, err error) {

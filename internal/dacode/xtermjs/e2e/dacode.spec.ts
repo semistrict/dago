@@ -458,9 +458,11 @@ test("refits the TUI when the browser becomes narrow", async ({ page }) => {
 test("mouse wheel scrolls an overflowing transcript without changing recalled input history", async ({ page }) => {
   await openTerminal(page);
 
-  await page.keyboard.type("first input-history entry");
-  await page.keyboard.press("Enter");
-  await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("> What would you like to build?");
+  for (let index = 0; index < 6; index += 1) {
+    await page.keyboard.type(`/wheel-history-${index}`);
+    await page.keyboard.press("Enter");
+  }
+  await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("Unknown command: /wheel-history-5");
 
   const longPrompt = "finish this response, then leave the transcript scrollable";
   await page.keyboard.type(longPrompt);
@@ -476,8 +478,25 @@ test("mouse wheel scrolls an overflowing transcript without changing recalled in
   const recalledDraft = `${longPrompt} -- edited draft`;
   await expect.poll(() => terminalText(page)).toContain(`> ${recalledDraft}`);
 
+  // Remove xterm's application mouse mode to reproduce the real failure mode:
+  // without the dedicated wheel transport xterm translates wheel gestures to
+  // cursor keys, which navigate the input-history entry currently being edited.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    window.dacodeTerminal?.write("\u001b[?1002l\u001b[?1006l", resolve);
+  }));
+  expect(await page.evaluate(() => (window.dacodeTerminal as any)?.modes?.mouseTrackingMode)).toBe("none");
+
   const screen = page.locator(".xterm-screen");
-  await screen.hover();
+  const bounds = await screen.boundingBox();
+  const rows = await page.evaluate(() => window.dacodeTerminal?.rows ?? 24);
+  expect(bounds).not.toBeNull();
+
+  // Wheel directly over the composer. It must still move the transcript and
+  // must never be reinterpreted as ArrowUp/ArrowDown by the input widget.
+  await page.mouse.move(
+    (bounds?.x ?? 0) + (bounds?.width ?? 0) / 2,
+    (bounds?.y ?? 0) + (bounds?.height ?? 0) * (rows - 3) / rows,
+  );
   await page.mouse.wheel(0, -1_200);
 
   await expect.poll(() => terminalText(page)).not.toContain("response line 49");
@@ -485,10 +504,25 @@ test("mouse wheel scrolls an overflowing transcript without changing recalled in
   await expect.poll(() => terminalText(page)).toContain(`> ${recalledDraft}`);
   expect(await page.evaluate(() => window.dacodeTerminal?.buffer.active.baseY ?? -1)).toBe(0);
 
+  // Exercise both directions repeatedly over transcript and composer areas.
+  // The draft must remain byte-for-byte stable throughout.
+  await page.mouse.move((bounds?.x ?? 0) + 20, (bounds?.y ?? 0) + (bounds?.height ?? 0) / 3);
+  await page.mouse.wheel(0, -600);
+  await expect.poll(() => terminalText(page)).toContain(`> ${recalledDraft}`);
+  await page.mouse.wheel(0, 600);
+  await expect.poll(() => terminalText(page)).toContain(`> ${recalledDraft}`);
+  await page.mouse.move(
+    (bounds?.x ?? 0) + (bounds?.width ?? 0) / 2,
+    (bounds?.y ?? 0) + (bounds?.height ?? 0) * (rows - 3) / rows,
+  );
+  await page.mouse.wheel(0, 1_200);
+  await expect.poll(() => terminalText(page)).toContain("response line 49");
+  await expect.poll(() => terminalText(page)).toContain(`> ${recalledDraft}`);
+
   // Cursor blink messages refresh the TUI roughly twice a second. Manual
-  // scrolling must survive those otherwise-unrelated redraws.
+  // scrolling and the active draft must survive those unrelated redraws.
   await page.waitForTimeout(1_200);
-  await expect.poll(() => terminalText(page)).not.toContain("response line 49");
+  await expect.poll(() => terminalText(page)).toContain("response line 49");
   await expect.poll(() => terminalText(page)).toContain(`> ${recalledDraft}`);
   await expect(page.locator("html")).toHaveAttribute("data-terminal-state", "connected");
 });

@@ -955,6 +955,26 @@ func TestXtermSessionEnvironmentAdvertisesTrueColor(t *testing.T) {
 	}
 }
 
+func TestXtermWheelUsesMouseReportsInsteadOfKeyboardInput(t *testing.T) {
+	up, ok := xtermWheelSequence(xtermClientMessage{Direction: -1, Column: 17, Row: 9, Steps: 2})
+	if !ok || up != "\x1b[<64;17;9M\x1b[<64;17;9M" {
+		t.Fatalf("up wheel sequence = %q, %v", up, ok)
+	}
+	down, ok := xtermWheelSequence(xtermClientMessage{Direction: 1, Column: 3, Row: 4})
+	if !ok || down != "\x1b[<65;3;4M" {
+		t.Fatalf("down wheel sequence = %q, %v", down, ok)
+	}
+	for _, message := range []xtermClientMessage{
+		{Direction: 0, Column: 1, Row: 1},
+		{Direction: -1, Column: 0, Row: 1},
+		{Direction: 1, Column: 1, Row: 201},
+	} {
+		if sequence, valid := xtermWheelSequence(message); valid || sequence != "" {
+			t.Fatalf("invalid wheel message produced %q", sequence)
+		}
+	}
+}
+
 func TestTUITerminalToolProgressCompletesItemBeforeBatchUpdate(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "test-model", "thread", false, true, "")
 	model.resize(100, 30)

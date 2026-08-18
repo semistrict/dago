@@ -31,6 +31,7 @@ async function copyText(text: string): Promise<"clipboard" | "exec-command" | "f
 type ClientMessage =
   | { type: "init"; cols: number; rows: number }
   | { type: "input"; data: string }
+  | { type: "wheel"; direction: -1 | 1; column: number; row: number; steps: number }
   | { type: "resize"; cols: number; rows: number }
   | { type: "redraw"; cols: number; rows: number };
 
@@ -207,13 +208,20 @@ terminal.onData((data) => {
   }
   send({ type: "input", data });
 });
-container.addEventListener("wheel", (event) => {
+document.addEventListener("wheel", (event) => {
   event.preventDefault();
   event.stopImmediatePropagation();
   terminal.focus();
   const direction = Math.sign(event.deltaY);
   if (direction === 0) return;
-  send({ type: "input", data: direction < 0 ? "\u001f" : "\u001e" });
+
+  const screen = terminal.element?.querySelector<HTMLElement>(".xterm-screen");
+  const bounds = screen?.getBoundingClientRect() ?? container.getBoundingClientRect();
+  const column = Math.min(terminal.cols, Math.max(1, Math.floor((event.clientX - bounds.left) * terminal.cols / Math.max(bounds.width, 1)) + 1));
+  const row = Math.min(terminal.rows, Math.max(1, Math.floor((event.clientY - bounds.top) * terminal.rows / Math.max(bounds.height, 1)) + 1));
+  const pixels = Math.abs(event.deltaY) * (event.deltaMode === WheelEvent.DOM_DELTA_LINE ? terminal.options.fontSize ?? 14 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? bounds.height : 1);
+  const steps = Math.min(8, Math.max(1, Math.ceil(pixels / 100)));
+  send({ type: "wheel", direction: direction < 0 ? -1 : 1, column, row, steps });
 }, { capture: true, passive: false });
 let lastBackslashAt = Number.NEGATIVE_INFINITY;
 terminal.attachCustomKeyEventHandler((event) => {
