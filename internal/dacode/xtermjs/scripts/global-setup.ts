@@ -132,6 +132,31 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
       const hasToolResults = body.includes("function_call_output");
       return (
       setTimeout(() => {
+		if (body.includes("render provider hosted web search")) {
+		  response.writeHead(200, { "content-type": "text/event-stream" });
+		  const search = {
+			type: "web_search_call",
+			id: "search-playwright-1",
+			status: "completed",
+			action: { type: "search", queries: ["Brooklyn weather today"] }
+		  };
+		  response.write(`data: ${JSON.stringify({ type: "response.output_item.done", item: search })}\n\n`);
+		  response.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Brooklyn weather fixture answer." })}\n\n`);
+		  const completed = {
+			type: "response.completed",
+			response: {
+			  id: "response-hosted-web-search",
+			  status: "completed",
+			  output: [
+				search,
+				{ type: "message", id: "message-hosted-web-search", role: "assistant", content: [{ type: "output_text", text: "Brooklyn weather fixture answer." }] }
+			  ],
+			  usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 }
+			}
+		  };
+		  response.end(`data: ${JSON.stringify(completed)}\n\n`);
+		  return;
+		}
 		if (body.includes("retry a transient model transport failure")) {
 		  transientRetryAttempts += 1;
 		  response.writeHead(200, { "content-type": "text/event-stream" });

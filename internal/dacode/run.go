@@ -805,7 +805,8 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 	suppressedWarnings, warningDiagnostics := loadSuppressedWarnings(policyPath)
 	tavilyResolution, tavilyErr := authManager.store.Resolve(ctx, "tavily", os.LookupEnv)
 	_, ripgrepErr := exec.LookPath("rg")
-	model.configureStartupNotifications(suppressedWarnings, ripgrepErr == nil, tavilyErr == nil && tavilyResolution.Configured, options.yolo)
+	webSearchConfigured := runner.Profile().SupportsWebSearch || tavilyErr == nil && tavilyResolution.Configured
+	model.configureStartupNotifications(suppressedWarnings, ripgrepErr == nil, webSearchConfigured, options.yolo)
 	for _, diagnostic := range warningDiagnostics {
 		model.appendItem(transcriptItem{kind: itemError, text: "Notifications: " + diagnostic})
 	}

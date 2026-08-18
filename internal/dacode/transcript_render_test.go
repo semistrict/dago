@@ -1,13 +1,17 @@
 package dacode
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/dastate"
 )
 
 func TestUserTranscriptCollapseIsRuneSafeAndToggleable(t *testing.T) {
@@ -136,6 +140,27 @@ func TestToolLifecycleRowsGroupingAndExpansion(t *testing.T) {
 	failed := ansi.Strip(renderItem(transcriptItem{kind: itemTool, name: "execute", lifecycle: toolError, done: true, failed: true}, 80))
 	if !strings.Contains(failed, "✗ execute") || !strings.Contains(failed, "failed") {
 		t.Fatalf("failed lifecycle row:\n%s", failed)
+	}
+}
+
+func TestProviderServerToolBlocksRenderAsCompletedToolCalls(t *testing.T) {
+	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
+	block := damessage.ContentBlock{
+		Type: damessage.BlockServerTool, ID: "search-1", Name: "web_search",
+		Extra: map[string]json.RawMessage{"arguments": json.RawMessage(`{"query":"Brooklyn weather today"}`)},
+	}
+	model.applyEvent(dagent.Event{Mode: dagent.EventToken, Chunk: &damodel.Chunk{MessageDelta: damessage.Message{
+		Role: damessage.RoleAssistant, Content: []damessage.ContentBlock{block},
+	}}})
+	model.applyEvent(dagent.Event{Mode: dagent.EventUpdate, Update: dastate.Values{dagent.MessagesKey: []damessage.Message{{
+		Role: damessage.RoleAssistant, Content: []damessage.ContentBlock{block, {Type: damessage.BlockText, Text: "Partly sunny."}},
+	}}}})
+	if len(model.items) != 2 || len(model.toolItems) != 1 {
+		t.Fatalf("items = %#v, tool items = %#v", model.items, model.toolItems)
+	}
+	plain := ansi.Strip(renderItem(model.items[0], 100))
+	if !strings.Contains(plain, "✓ web_search completed") || !strings.Contains(plain, `Brooklyn weather today`) {
+		t.Fatalf("hosted search row:\n%s", plain)
 	}
 }
 

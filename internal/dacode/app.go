@@ -3036,11 +3036,15 @@ func (model *tuiModel) applyEvent(event dagent.Event) {
 		if text != "" {
 			model.appendAssistant(text)
 			model.status = "Responding"
-		} else {
-			for _, block := range event.Chunk.MessageDelta.Content {
-				if block.Type == damessage.BlockReasoning && block.Reasoning != "" {
+		}
+		for _, block := range event.Chunk.MessageDelta.Content {
+			switch block.Type {
+			case damessage.BlockReasoning:
+				if block.Reasoning != "" {
 					model.status = "Reasoning"
 				}
+			case damessage.BlockServerTool:
+				model.addServerToolCall(block, false)
 			}
 		}
 		for _, call := range event.Chunk.MessageDelta.ToolCalls {
@@ -3060,6 +3064,11 @@ func (model *tuiModel) applyEvent(event dagent.Event) {
 				text := message.TextContent()
 				if text != "" && (model.currentAssistant < 0 || model.items[model.currentAssistant].text == "") {
 					model.appendAssistant(text)
+				}
+				for _, block := range message.Content {
+					if block.Type == damessage.BlockServerTool {
+						model.addServerToolCall(block, false)
+					}
 				}
 				for _, call := range message.ToolCalls {
 					model.addToolCall(call)
@@ -3367,6 +3376,29 @@ func (model *tuiModel) addToolCall(call damessage.ToolCall) {
 	model.toolItems[call.ID] = len(model.items) - 1
 	model.currentAssistant = -1
 	model.status = "Using " + call.Name
+}
+
+func (model *tuiModel) addServerToolCall(block damessage.ContentBlock, restored bool) {
+	if block.Type != damessage.BlockServerTool || block.ID == "" || block.Name == "" {
+		return
+	}
+	arguments := compactJSON(block.Extra["arguments"])
+	if index, exists := model.toolItems[block.ID]; exists {
+		item := &model.items[index]
+		item.name = block.Name
+		item.args = arguments
+		item.done = true
+		item.failed = false
+		item.lifecycle = toolSuccess
+		return
+	}
+	model.finishCurrentAssistant()
+	model.appendItem(transcriptItem{
+		kind: itemTool, callID: block.ID, name: block.Name, args: arguments,
+		restored: restored, done: true, lifecycle: toolSuccess, lineNums: model.showLineNumbers,
+	})
+	model.toolItems[block.ID] = len(model.items) - 1
+	model.currentAssistant = -1
 }
 
 func (model *tuiModel) completeTool(message damessage.Message) {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/semistrict/dago/dacredential"
 	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/datool"
 	"github.com/semistrict/dago/daweb"
 )
@@ -24,6 +25,29 @@ func defaultWebTools(ctx context.Context) ([]datool.Tool, error) {
 		os.LookupEnv,
 		daweb.NewClient(daweb.Options{}),
 	)
+}
+
+func preferProviderWebSearch(tools []datool.Tool, profile damodel.Profile) []datool.Tool {
+	if !profile.SupportsWebSearch {
+		return tools
+	}
+	filtered := make([]datool.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Definition().Name != "web_search" {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
+
+func providerWebSearchMiddleware() dagent.Middleware {
+	return dagent.Middleware{
+		Name: "provider_web_search",
+		WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
+			request.Tools = preferProviderWebSearch(request.Tools, request.Model.Profile())
+			return next(ctx, request)
+		},
+	}
 }
 
 func buildWebTools(

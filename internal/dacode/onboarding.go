@@ -164,7 +164,15 @@ func (state *onboardingState) handleModelKey(key string, pageHeight int) {
 		state.result.Model = result.Spec
 		state.choice = 0
 		state.step = onboardingWebSearch
+		if modelSpecUsesProviderWebSearch(result.Spec) {
+			state.step = onboardingGoalCriteria
+		}
 	}
+}
+
+func modelSpecUsesProviderWebSearch(spec string) bool {
+	provider, _, explicit := strings.Cut(strings.TrimSpace(spec), ":")
+	return explicit && (provider == "anthropic" || provider == "openai" || provider == "openai_oauth")
 }
 
 func (state *onboardingState) handleChoiceKey(key string, finish func(int)) {

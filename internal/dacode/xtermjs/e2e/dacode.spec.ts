@@ -1134,9 +1134,8 @@ test("completes first-run onboarding, applies the model, and persists completion
   await page.keyboard.press("Enter");
   await expect.poll(() => terminalText(page)).toContain("Select Model");
   await page.keyboard.press("Enter");
-  await expect.poll(() => terminalText(page)).toContain("Enable web search?");
-  await page.keyboard.press("Enter");
   await expect.poll(() => terminalText(page)).toContain("How should Auto mode handle goal criteria?");
+  expect(await terminalText(page)).not.toContain("Enable web search?");
   await page.keyboard.press("Enter");
   await expect.poll(() => terminalText(page)).toContain("Welcome, Ada.");
   await expect.poll(() => terminalText(page)).toContain("Model set to");
@@ -1586,6 +1585,20 @@ test("renders grouped tool lifecycles, inline diffs, streamed markdown, and line
 	const gamma = text.split("\n").find((line) => line.includes("+ gamma"));
 	expect(gamma).toBeDefined();
 	expect(gamma).not.toMatch(/\d+\s+\+ gamma/);
+});
+
+test("renders a provider-hosted web search as a completed tool call", async ({ page }) => {
+  await openTerminal(page);
+
+  await page.keyboard.type("render provider hosted web search");
+  await page.keyboard.press("Enter");
+
+  await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("✓ web_search completed");
+  await expect.poll(() => terminalText(page)).toContain("Brooklyn weather fixture answer.");
+  const text = await terminalText(page);
+  expect(text).toContain("Brooklyn weather today");
+  expect(text.match(/✓ web_search completed/g)).toHaveLength(1);
+  expect(text).not.toContain("○ web_search");
 });
 
 test("collapses a long user message and toggles the full unit with ctrl+o", async ({ page }) => {

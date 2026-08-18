@@ -430,6 +430,11 @@ func (model *tuiModel) restoreTranscript(messages []damessage.Message) {
 			if text := message.TextContent(); text != "" {
 				model.appendItem(transcriptItem{kind: itemAssistant, text: text, restored: true, done: true})
 			}
+			for _, block := range message.Content {
+				if block.Type == damessage.BlockServerTool {
+					model.addServerToolCall(block, true)
+				}
+			}
 			for _, call := range message.ToolCalls {
 				model.appendItem(transcriptItem{
 					kind: itemTool, callID: call.ID, name: call.Name, args: compactJSON(call.Arguments), restored: true,

@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/semistrict/dago/dacredential"
+	"github.com/semistrict/dago/dagent"
+	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/datool"
 	"github.com/semistrict/dago/daweb"
 )
@@ -114,6 +117,44 @@ func TestWebSearchApprovalRuleIsExactAndCreditExplicit(t *testing.T) {
 	}
 	if !matched {
 		t.Fatal("default runner policy omitted web_search approval")
+	}
+}
+
+func TestPreferProviderWebSearchRemovesLocalFallback(t *testing.T) {
+	client := daweb.NewClient(daweb.Options{})
+	tools := []datool.Tool{daweb.NewFetchURLTool(client), daweb.NewWebSearchTool(client, "fixture-key")}
+	if got := webToolNames(preferProviderWebSearch(tools, damodel.Profile{SupportsWebSearch: true})); got != "fetch_url" {
+		t.Fatalf("provider-hosted tools = %q", got)
+	}
+	if got := webToolNames(preferProviderWebSearch(tools, damodel.Profile{})); got != "fetch_url,web_search" {
+		t.Fatalf("fallback tools = %q", got)
+	}
+}
+
+func TestProviderWebSearchMiddlewareUsesActiveModelCapability(t *testing.T) {
+	client := daweb.NewClient(daweb.Options{})
+	tools := []datool.Tool{daweb.NewFetchURLTool(client), daweb.NewWebSearchTool(client, "fixture-key")}
+	middleware := providerWebSearchMiddleware()
+	for _, test := range []struct {
+		name    string
+		profile damodel.Profile
+		want    string
+	}{
+		{name: "hosted", profile: damodel.Profile{Provider: "anthropic", SupportsWebSearch: true}, want: "fetch_url"},
+		{name: "fallback", profile: damodel.Profile{Provider: "other"}, want: "fetch_url,web_search"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := modeltest.New(test.profile)
+			_, err := middleware.WrapModelCall(t.Context(), dagent.ModelRequest{Model: model, Tools: tools}, func(_ context.Context, request dagent.ModelRequest) (dagent.ModelResponse, error) {
+				if got := webToolNames(request.Tools); got != test.want {
+					t.Fatalf("tools = %q, want %q", got, test.want)
+				}
+				return dagent.ModelResponse{}, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

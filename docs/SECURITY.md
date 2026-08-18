@@ -694,10 +694,14 @@ bodies; Tavily requests refuse redirects entirely so their API key remains bound
 the fixed Tavily origin. Request data, response headers and bodies, rendered page
 text, redirect count, and elapsed time are finite. This prevents access to local
 services; it does not make public web content trustworthy, so fetched text remains
-untrusted model input. Dacode binds `fetch_url` at startup and adds `web_search` only
-when its stored-over-environment Tavily credential resolves. The search key stays in
-the tool closure, is never added to graph state or prompts, and each search requires
-the ordinary tool-approval decision unless the active approval mode bypasses it.
+untrusted model input. Dacode binds `fetch_url` at startup and prefers provider-hosted
+web search when the resolved model advertises it, including OpenAI and Anthropic
+integrations. OpenAI's hosted `web_search` is enabled by default. When the resolved
+model lacks hosted search, dacode adds a local `web_search` only when its
+stored-over-environment Tavily credential resolves. If hosted search is available, the
+local fallback is removed. The Tavily key stays in the tool closure, is never added to
+graph state or prompts, and each fallback search requires the ordinary tool-approval
+decision unless the active approval mode bypasses it.
 
 `dago dev` is an unauthenticated local development server. It binds to loopback by
 default, allows the hosted Studio origin and loopback browser origins, and places its

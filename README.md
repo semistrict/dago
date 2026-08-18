@@ -602,10 +602,13 @@ The client accepts only HTTP and HTTPS URLs, rejects credentials and non-public
 address ranges, pins each connection to its validated DNS answers, revalidates every
 redirect, ignores environment proxies, and bounds request, response, rendered page,
 redirect, and timeout resources. Library applications opt in explicitly. The coding
-agent includes `fetch_url` by default and binds `web_search` only at process startup
-when `dacode auth set tavily` or `TAVILY_API_KEY` supplies a valid key; stored service
-credentials take precedence over environment values. Searches remain approval-gated
-because they consume Tavily API credits.
+agent includes `fetch_url` by default and prefers a model provider's hosted web-search
+tool, including OpenAI and Anthropic integrations. OpenAI search is enabled by default;
+`--model-params '{"web_search":false}'` disables it. When the resolved model does not
+provide web search, `dacode auth set tavily` or `TAVILY_API_KEY` supplies an
+approval-gated local fallback. Stored service credentials take precedence over
+environment values. If both are configured, provider-hosted search wins and the local
+`web_search` tool is not exposed.
 
 Typed adapters keep the state and checkpoint wire formats flexible without
 requiring application assertions. Use `dagent.Field` with a

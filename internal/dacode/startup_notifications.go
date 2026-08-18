@@ -2,7 +2,7 @@ package dacode
 
 import "time"
 
-func (model *tuiModel) configureStartupNotifications(suppressed map[string]bool, ripgrepAvailable, tavilyConfigured, unrestricted bool) {
+func (model *tuiModel) configureStartupNotifications(suppressed map[string]bool, ripgrepAvailable, webSearchConfigured, unrestricted bool) {
 	if model.notifications == nil || model.toasts == nil {
 		panic("dacode: initialized notification surfaces are required")
 	}
@@ -15,7 +15,7 @@ func (model *tuiModel) configureStartupNotifications(suppressed map[string]bool,
 			notificationAction{ID: notificationSuppress, Label: "Hide this warning"},
 		))
 	}
-	if !tavilyConfigured && !suppressed[warningTavily] {
+	if !webSearchConfigured && !suppressed[warningTavily] {
 		model.addStartupNotification(newPendingNotification(
 			"warning:tavily", "Web search is not configured",
 			"Add a Tavily API key to enable the web_search tool.",

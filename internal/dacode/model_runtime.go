@@ -92,7 +92,7 @@ func openAIModelFactory(_ context.Context, spec modelconfig.Spec, credential dac
 	if credential.Credential.APIKey == nil {
 		return nil, errors.New("openai factory requires an API key credential")
 	}
-	options, err := openAIConstructionOptions(construction)
+	options, err := openAIDefaultConstructionOptions(construction)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +187,17 @@ func openAIConstructionOptions(construction modelconfig.Construction) (openai.Op
 	return options, nil
 }
 
+func openAIDefaultConstructionOptions(construction modelconfig.Construction) (openai.Options, error) {
+	options, err := openAIConstructionOptions(construction)
+	if err != nil {
+		return openai.Options{}, err
+	}
+	if _, configured := construction.Parameters["web_search"]; !configured {
+		options.WebSearch = true
+	}
+	return options, nil
+}
+
 func applyLegacyModelOptions(chat damodel.Chat, options modelconfig.ResolveOptions) (damodel.Chat, error) {
 	return modelconfig.ApplyProfile(chat, options.ProfileOverrides)
 }
@@ -199,7 +210,7 @@ func legacyOpenAIOptions(baseURL string, options modelconfig.ResolveOptions) (op
 	if options.MaxRetries != nil {
 		construction.MaxRetries, construction.HasMaxRetries = *options.MaxRetries, true
 	}
-	return openAIConstructionOptions(construction)
+	return openAIDefaultConstructionOptions(construction)
 }
 
 func retryBackoff(retries int) []time.Duration {

@@ -82,7 +82,9 @@ credential and secret-shaped option values are redacted.
 existing caller-owned subscription flow. Selecting another catalog provider produces
 an explicit unavailable-factory error until an application compiles and registers that
 provider integration; it never downloads an SDK or guesses an OpenAI-compatible wire
-protocol.
+protocol. OpenAI models enable the Responses API hosted `web_search` tool by default;
+set `--model-params '{"web_search":false}'` to disable it. A configured local
+`web_search` tool is retained only when the resolved model lacks hosted search.
 
 `--default-model MODEL` stores a normalized explicit spec and exits without model
 authentication. `--default-model` shows it, and `--clear-default-model` removes it.

@@ -1145,7 +1145,7 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 	middleware := []dagent.Middleware{
 		daaskuser.Middleware(), dagoal.Middleware(goalOptions),
 		dagoal.RubricCompletionMiddleware(dago.RubricStatusKey, string(dago.RubricSatisfied)), rubric,
-		runtimeModel, agentIdentityMiddleware(agentState, options.StateDir), effort.Middleware(),
+		runtimeModel, providerWebSearchMiddleware(), agentIdentityMiddleware(agentState, options.StateDir), effort.Middleware(),
 		dago.SummarizationTool(model, backend, dago.SummarizationToolOptions{}),
 	}
 	hookStatus := options.HookStatus

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semistrict/dago/dacredential"
 	"github.com/semistrict/dago/daproviders/modelconfig"
 )
 
@@ -98,5 +99,28 @@ func TestConfiguredModelAuthenticationRejectsUnavailableProviderAtConstruction(t
 	_, err = authentication.resolveModel(t.Context(), "anthropic:claude-opus-5", "")
 	if !errors.Is(err, modelconfig.ErrProviderUnavailable) {
 		t.Fatalf("error = %v, want ErrProviderUnavailable", err)
+	}
+}
+
+func TestOpenAIModelsEnableHostedWebSearchByDefault(t *testing.T) {
+	credential := dacredential.Resolution{Credential: dacredential.Credential{
+		Type: dacredential.APIKeyType, APIKey: &dacredential.APIKeyCredential{Key: "fixture-key"},
+	}}
+	chat, err := openAIModelFactory(t.Context(), modelconfig.Spec{Provider: "openai", Model: "gpt-test"}, credential, modelconfig.Construction{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !chat.Profile().SupportsWebSearch {
+		t.Fatal("OpenAI hosted web search is disabled by default")
+	}
+
+	chat, err = openAIModelFactory(t.Context(), modelconfig.Spec{Provider: "openai", Model: "gpt-test"}, credential, modelconfig.Construction{
+		Parameters: map[string]any{"web_search": false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chat.Profile().SupportsWebSearch {
+		t.Fatal("explicit web_search=false was ignored")
 	}
 }

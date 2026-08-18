@@ -11,7 +11,7 @@ func TestOnboardingFlowCapturesChoices(t *testing.T) {
 	state := newOnboardingState([]onboardingDependency{
 		{Name: "Tavily", Category: "Services", Description: "web search", Installed: false},
 		{Name: "Fireworks", Category: "Models", Installed: true},
-	}, []modelSelectorEntry{{Spec: "openai:gpt-test", Label: "GPT Test", Recommended: true}}, "")
+	}, []modelSelectorEntry{{Spec: "openrouter:gpt-test", Label: "GPT Test", Recommended: true}}, "")
 	for _, key := range []string{"r", "a", "m", "o", "n", "enter"} {
 		state.handleKey(key, 8)
 	}
@@ -23,7 +23,7 @@ func TestOnboardingFlowCapturesChoices(t *testing.T) {
 		t.Fatalf("dependency step = %d", state.step)
 	}
 	state.handleKey("enter", 8)
-	if state.step != onboardingWebSearch || state.result.Model != "openai:gpt-test" {
+	if state.step != onboardingWebSearch || state.result.Model != "openrouter:gpt-test" {
 		t.Fatalf("model step = %d, result = %#v", state.step, state.result)
 	}
 	state.handleKey("down", 8)
@@ -51,7 +51,7 @@ func TestOnboardingEscapeSemanticsFailSafe(t *testing.T) {
 	if !done || !result.Skipped {
 		t.Fatalf("model escape = %#v, %v", result, done)
 	}
-	state = newOnboardingState(nil, []modelSelectorEntry{{Spec: "openai:gpt-test", Recommended: true}}, "")
+	state = newOnboardingState(nil, []modelSelectorEntry{{Spec: "openrouter:gpt-test", Recommended: true}}, "")
 	state.handleKey("enter", 5)
 	state.handleKey("enter", 5)
 	state.handleKey("enter", 5)
@@ -63,6 +63,17 @@ func TestOnboardingEscapeSemanticsFailSafe(t *testing.T) {
 	result, done = state.value()
 	if !done || result.AutoAcceptGoalCriteria {
 		t.Fatalf("criteria escape = %#v, %v", result, done)
+	}
+}
+
+func TestOnboardingSkipsSearchKeyForProviderHostedModels(t *testing.T) {
+	for _, spec := range []string{"anthropic:claude-test", "openai:gpt-test", "openai_oauth:gpt-test"} {
+		state := newOnboardingState(nil, []modelSelectorEntry{{Spec: spec, Recommended: true}}, "")
+		state.step = onboardingModel
+		state.handleKey("enter", 5)
+		if state.step != onboardingGoalCriteria || state.result.Model != spec || state.result.ConfigureWebSearch {
+			t.Fatalf("model %q step = %d, result = %#v", spec, state.step, state.result)
+		}
 	}
 }
 

@@ -262,6 +262,7 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 			},
 		}))
 	}
+	options = append(options, dago.WithMiddleware(providerWebSearchMiddleware()))
 	if len(request.Schema) > 0 {
 		options = append(options, dago.WithMiddleware(dagent.Middleware{
 			Name: "workflow_structured_output",
