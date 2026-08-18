@@ -72,10 +72,13 @@ func (model *tuiModel) renderModalWithToasts(content string) string {
 	input := lipgloss.NewStyle().Border(model.uiBorder()).BorderForeground(colorPrimary).
 		Padding(0, 1).Width(max(model.width-4, 1)).Render(model.composer.View())
 	chrome := input + "\n" + model.renderStatus()
-	chromeHeight := lipgloss.Height(chrome)
+	chromeHeight := len(nonBlankRenderedLines(chrome))
 	maximumToastHeight := max(min(model.height/3, model.height-chromeHeight-3), 0)
 	toast := renderToastsWithin(model.toasts, model.width, maximumToastHeight, model.glyphs, time.Now())
-	toastHeight := lipgloss.Height(toast)
+	toastHeight := 0
+	if toast != "" {
+		toastHeight = lipgloss.Height(toast)
+	}
 	remaining := max(model.height-toastHeight-chromeHeight, 1)
 	lines := nonBlankRenderedLines(content)
 	if len(lines) > remaining {
@@ -91,9 +94,13 @@ func (model *tuiModel) renderModalWithToasts(content string) string {
 		top := (remaining - len(lines)) / 2
 		bottom := remaining - len(lines) - top
 		padded := make([]string, 0, remaining)
-		padded = append(padded, make([]string, top)...)
+		for range top {
+			padded = append(padded, " ")
+		}
 		padded = append(padded, lines...)
-		padded = append(padded, make([]string, bottom)...)
+		for range bottom {
+			padded = append(padded, " ")
+		}
 		lines = padded
 	}
 	parts := make([]string, 0, 3)

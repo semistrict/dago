@@ -49,6 +49,20 @@ func TestThemeBackgroundSequenceSurvivesOtherSequenceFlushAndNarrowModal(t *test
 	}
 }
 
+func TestThemeModalFillsTerminalHeight(t *testing.T) {
+	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
+	model.resize(80, 24)
+	model.themePicker = newThemePicker(model.themeRegistry, model.themeName, "")
+	view := ansi.Strip(model.View())
+	if height := len(strings.Split(view, "\n")); height != model.height {
+		t.Fatalf("theme modal height = %d, want %d\n%s", height, model.height, view)
+	}
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[len(lines)-1], "Ready") {
+		t.Fatalf("status is not on final physical row: %q", lines[len(lines)-1])
+	}
+}
+
 func TestTranscriptReflowAnchorUsesBlockIdentityWithDuplicateWrappedLines(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
 	duplicate := strings.Repeat("duplicate wrapped transcript value ", 8)
