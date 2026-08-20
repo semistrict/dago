@@ -89,25 +89,23 @@ func EncodeChildEvent(event ChildEvent) (json.RawMessage, error) {
 const defaultStreamBuffer = 32
 
 // Stream starts an invocation. Consumers that stop before io.EOF must call Close.
-func (agent *Agent) Stream(ctx context.Context, input Input) *Stream {
-	if input.Config.ThreadID == "" {
-		input.Config.ThreadID = "default"
-	}
-	values := input.State.Clone()
+func (agent *Agent) Stream(ctx context.Context, options ...RunOption) *Stream {
+	input := resolveRunOptions(options)
+	values := input.state.Clone()
 	if values == nil {
 		values = dastate.Values{}
 	}
-	if len(input.Messages) > 0 {
-		values[MessagesKey] = damessage.EnsureIDs(input.Messages)
+	if len(input.messages) > 0 {
+		values[MessagesKey] = damessage.EnsureIDs(input.messages)
 	}
 	ensureMessageIDsInValues(values)
 	return &Stream{
 		graph: agent.graph.Stream(ctx, graph.Invocation{
-			Config: input.Config, State: values, Resume: portableResume(input.Resume), Deps: input.Deps,
-			Configurable:    cloneConfigurable(input.Configurable),
-			SkipValueEvents: input.SkipValueEvents,
+			Config: input.config, State: values, Resume: portableResume(input.resume), Deps: input.deps,
+			Configurable:    cloneConfigurable(input.configurable),
+			SkipValueEvents: input.skipValueEvents,
 		}, defaultStreamBuffer),
-		ctx: ctx, private: agent.private, discardResultState: input.DiscardResultState,
+		ctx: ctx, private: agent.private, discardResultState: input.discardResultState,
 	}
 }
 

@@ -114,7 +114,7 @@ func TestFilesystemPermissionsAllowOnlyShellInaccessibleRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistent := dabackend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
+	persistent := dabackend.NewStore(dabackend.FixedNamespace(memorystore.Namespace{"files"}), dabackend.StoreOptions{Store: memorystore.NewMemory()})
 	composite := dabackend.NewComposite(shell, map[string]dabackend.Backend{"/memories/": persistent})
 	rules := []FilesystemPermission{{Operations: []FilesystemOperation{FilesystemRead}, Paths: []string{"/memories/**"}, Mode: PermissionDeny}}
 	middleware := mustFilesystem(composite, Filesystem{Permissions: rules})

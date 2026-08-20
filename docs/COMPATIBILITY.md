@@ -143,7 +143,7 @@ Status values are `verified`, `implemented`, `deferred`, and `intentionally diff
   tokens retain their source spelling; a numeric-only reformat can therefore cause
   a safe extra approval prompt but cannot broaden an existing grant.
 - The deprecated Python `model=None` fallback is intentionally absent. A model
-  is a mandatory static dependency in Go, and `NewAgent(nil)` panics at the
+  is a mandatory static dependency in Go, and `New(nil)` panics at the
   construction boundary. Because that deprecated surface was never exported,
   no runtime deprecation adapter is needed; future Go removals use standard
   `Deprecated:` documentation recognized by the toolchain.

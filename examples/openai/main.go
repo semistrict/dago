@@ -10,7 +10,6 @@ import (
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dabackend"
 	"github.com/semistrict/dago/dagent"
-	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/daproviders/openai"
 )
 
@@ -28,10 +27,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	compiled := dago.NewAgent(chat, dago.WithBackend(workspace))
-	stream := compiled.Stream(context.Background(), dagent.Input{
-		Messages: []damessage.Message{damessage.Human("Summarize this workspace.")},
-	})
+	compiled := dago.New(chat, dago.WithBackend(workspace))
+	stream := compiled.Stream(context.Background(), dagent.Prompt("Summarize this workspace."))
 	defer stream.Close()
 	for {
 		event, err := stream.Next(context.Background())

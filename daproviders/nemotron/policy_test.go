@@ -213,7 +213,7 @@ func TestNemotronFollowupDisciplineReentersOnce(t *testing.T) {
 	)
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{nemotronFollowupDiscipline()}})
 
-	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("Send me a weekly report every Monday at 9am")}})
+	result, err := compiled.Invoke(context.Background(), dagent.Prompt("Send me a weekly report every Monday at 9am"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestNemotronFinalGuardPreservesMutationLiteral(t *testing.T) {
 	)
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{nemotronFinalAnswerGuard()}})
 
-	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: history})
+	result, err := compiled.Invoke(context.Background(), dagent.Messages(history))
 	if err != nil {
 		t.Fatal(err)
 	}

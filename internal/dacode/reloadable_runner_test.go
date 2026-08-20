@@ -65,7 +65,7 @@ func TestMCPDisableMutationSerializesWithReconnectAndRemainsPending(t *testing.T
 	_ = reload.Close()
 }
 
-func (runner *reloadTestRunner) Start(context.Context, dagent.Input) eventStream {
+func (runner *reloadTestRunner) Start(context.Context, runInput) eventStream {
 	return &reloadTestStream{}
 }
 func (runner *reloadTestRunner) Profile() damodel.Profile { return damodel.Profile{Model: runner.name} }
@@ -114,7 +114,7 @@ func TestReloadableRunnerSwapsOnlyWhileIdleAndKeepsOldOnFailure(t *testing.T) {
 		return reloadableRuntimeBuild{runner: &reloadTestRunner{name: "replacement"}, closer: replacementCloser, loadedIDs: []string{"new@local"}}, nil
 	}, hooks)
 
-	stream := reload.Start(t.Context(), dagent.Input{})
+	stream := reload.Start(t.Context(), runInput{})
 	if _, err := reload.ReloadPlugins(t.Context()); err == nil || reload.AgentName() != "initial" {
 		t.Fatalf("busy reload changed runtime: name=%q err=%v", reload.AgentName(), err)
 	}

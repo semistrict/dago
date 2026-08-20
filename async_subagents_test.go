@@ -68,12 +68,12 @@ func TestAsyncSubagentTaskStatePersistsAcrossAgentTurns(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("checked")}},
 	)
-	compiled := NewAgent(
-		script, WithSaver(dacheckpoint.NewMemorySaver()), WithoutSubagents(), WithoutSummary(), WithFilesystem(Filesystem{Tools: []string{}}), WithAsyncSubagents(AsyncSubagent{Name: "researcher", Description: "Researches topics", GraphID: "research", Runner: runner}), WithAsyncSubagentPrompt("background guidance"),
+	compiled := New(
+		script, WithFilesystem(Filesystem{Tools: []string{}}), WithAsyncSubagents([]AsyncSubagent{AsyncSubagent{Name: "researcher", Description: "Researches topics", GraphID: "research", Runner: runner}}, WithAsyncSystemPrompt("background guidance")), WithSaver(dacheckpoint.NewMemorySaver()),
 	)
 
 	config := dacheckpoint.Config{ThreadID: "async-tasks"}
-	first, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("start")}})
+	first, err := compiled.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("start"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestAsyncSubagentTaskStatePersistsAcrossAgentTurns(t *testing.T) {
 		t.Fatalf("tasks = %#v", first.State[AsyncTasksKey])
 	}
 	runner.run.Status, runner.run.Outcome = "success", AsyncSuccess{Value: "report"}
-	second, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("status")}})
+	second, err := compiled.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("status"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,10 +93,9 @@ func TestAsyncSubagentTaskStatePersistsAcrossAgentTurns(t *testing.T) {
 func TestAsyncSubagentManagementTools(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		runner := &asyncRunnerStub{}
-		middleware := AsyncSubagentsWithOptions(
-			AsyncSubagentsOptions{},
-			AsyncSubagent{Name: "worker", Description: "Works", GraphID: "worker-graph", Runner: runner},
-		)
+		middleware := AsyncSubagents([]AsyncSubagent{
+			{Name: "worker", Description: "Works", GraphID: "worker-graph", Runner: runner},
+		})
 		byName := map[string]datool.Tool{}
 		for _, value := range middleware.Tools {
 			byName[value.Definition().Name] = value
@@ -163,9 +162,9 @@ func TestAsyncSubagentManagementTools(t *testing.T) {
 
 func TestAsyncCheckPreservesAnIntentionallyEmptyFinalMessage(t *testing.T) {
 	runner := &asyncRunnerStub{run: AsyncRun{ThreadID: "task-1", RunID: "run-1", Status: "success", Outcome: AsyncSuccess{Value: ""}}}
-	middleware := AsyncSubagents(AsyncSubagent{
+	middleware := AsyncSubagents([]AsyncSubagent{{
 		Name: "worker", Description: "Works", GraphID: "worker-graph", Runner: runner,
-	})
+	}})
 	var check datool.Tool
 	for _, candidate := range middleware.Tools {
 		if candidate.Definition().Name == "check_async_task" {

@@ -101,6 +101,9 @@ func TestInjectMessagesMidTurn(t *testing.T) {
 	// Second request must carry: user, assistant(tool_use), user(tool_result),
 	// assistant(injected tool_use), user(injected tool_result).
 	msgs := service.reqs[1].Messages
+	if len(msgs) > 0 && msgs[0].Role == dmessage.RoleSystem {
+		msgs = msgs[1:]
+	}
 	if len(msgs) != 5 {
 		t.Fatalf("expected 5 messages in second request, got %d: %+v", len(msgs), msgs)
 	}

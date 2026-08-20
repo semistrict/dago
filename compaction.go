@@ -10,10 +10,7 @@ import (
 	"github.com/semistrict/dago/damodel"
 )
 
-// ConversationCompactionOptions configures one explicit conversation
-// compaction. Applications may customize prompts and history rendering while
-// dago owns cut-point selection and the model invocation.
-type ConversationCompactionOptions struct {
+type conversationCompactionConfig struct {
 	KeepMessages int
 	KeepTokens   int
 	// ValidCutoffs optionally constrains the first recent-message index to
@@ -24,6 +21,47 @@ type ConversationCompactionOptions struct {
 	Instructions  string
 	Reasoning     *damodel.Reasoning
 	FormatHistory func([]damessage.Message) (string, error)
+}
+
+// CompactOption configures one explicit conversation compaction.
+type CompactOption interface {
+	applyCompact(*conversationCompactionConfig)
+}
+
+type compactOptionFunc func(*conversationCompactionConfig)
+
+func (option compactOptionFunc) applyCompact(config *conversationCompactionConfig) { option(config) }
+
+func WithCompactKeepMessages(count int) CompactOption {
+	return compactOptionFunc(func(config *conversationCompactionConfig) { config.KeepMessages = count })
+}
+
+func WithCompactKeepTokens(count int) CompactOption {
+	return compactOptionFunc(func(config *conversationCompactionConfig) { config.KeepTokens = count })
+}
+
+func WithCompactCutoffs(cutoffs ...int) CompactOption {
+	return compactOptionFunc(func(config *conversationCompactionConfig) { config.ValidCutoffs = append([]int(nil), cutoffs...) })
+}
+
+func WithCompactSystemPrompt(prompt string) CompactOption {
+	return compactOptionFunc(func(config *conversationCompactionConfig) { config.SystemPrompt = prompt })
+}
+
+func WithCompactPrompt(prompt string) CompactOption {
+	return compactOptionFunc(func(config *conversationCompactionConfig) { config.Prompt = prompt })
+}
+
+func WithCompactInstructions(instructions string) CompactOption {
+	return compactOptionFunc(func(config *conversationCompactionConfig) { config.Instructions = instructions })
+}
+
+func WithCompactReasoning(reasoning damodel.Reasoning) CompactOption {
+	return compactOptionFunc(func(config *conversationCompactionConfig) { config.Reasoning = &reasoning })
+}
+
+func WithCompactHistoryFormatter(format func([]damessage.Message) (string, error)) CompactOption {
+	return compactOptionFunc(func(config *conversationCompactionConfig) { config.FormatHistory = format })
 }
 
 // ConversationCompaction is the reusable result of one explicit compaction.
@@ -40,19 +78,26 @@ type ConversationCompaction struct {
 // CompactConversation summarizes the portion of messages before a safe cut
 // point and returns the recent verbatim tail. It does not mutate checkpoints or
 // application projections.
-func CompactConversation(ctx context.Context, model damodel.Chat, messages []damessage.Message, options ConversationCompactionOptions) (ConversationCompaction, error) {
+func CompactConversation(ctx context.Context, model damodel.Chat, messages []damessage.Message, options ...CompactOption) (ConversationCompaction, error) {
 	if nilInterface(model) {
 		panic("conversation compaction model is nil")
 	}
-	if options.KeepMessages < 0 || options.KeepTokens < 0 {
+	config := conversationCompactionConfig{}
+	for index, option := range options {
+		if option == nil {
+			panic(fmt.Sprintf("conversation compaction option %d is nil", index))
+		}
+		option.applyCompact(&config)
+	}
+	if config.KeepMessages < 0 || config.KeepTokens < 0 {
 		panic("conversation compaction limits cannot be negative")
 	}
-	if options.KeepMessages == 0 && options.KeepTokens == 0 {
-		options.KeepMessages = 6
+	if config.KeepMessages == 0 && config.KeepTokens == 0 {
+		config.KeepMessages = 6
 	}
-	cutoff := summaryCutoff(messages, Summarization{KeepMessages: options.KeepMessages, KeepTokens: options.KeepTokens})
-	if len(options.ValidCutoffs) > 0 {
-		cutoff = constrainedCompactionCutoff(messages, cutoff, options.ValidCutoffs)
+	cutoff := summaryCutoff(messages, Summarization{KeepMessages: config.KeepMessages, KeepTokens: config.KeepTokens})
+	if len(config.ValidCutoffs) > 0 {
+		cutoff = constrainedCompactionCutoff(messages, cutoff, config.ValidCutoffs)
 	}
 	result := ConversationCompaction{
 		Cutoff: cutoff,
@@ -62,7 +107,7 @@ func CompactConversation(ctx context.Context, model damodel.Chat, messages []dam
 	if cutoff == 0 {
 		return result, nil
 	}
-	format := options.FormatHistory
+	format := config.FormatHistory
 	if format == nil {
 		format = func(items []damessage.Message) (string, error) { return renderHistory(items), nil }
 	}
@@ -71,17 +116,17 @@ func CompactConversation(ctx context.Context, model damodel.Chat, messages []dam
 		return ConversationCompaction{}, fmt.Errorf("format conversation history: %w", err)
 	}
 	userPrompt := history
-	if prompt := strings.TrimSpace(options.Prompt); prompt != "" {
+	if prompt := strings.TrimSpace(config.Prompt); prompt != "" {
 		userPrompt += "\n\n" + prompt
 	}
-	if instructions := strings.TrimSpace(options.Instructions); instructions != "" {
+	if instructions := strings.TrimSpace(config.Instructions); instructions != "" {
 		userPrompt += "\n\n" + instructions
 	}
-	systemPrompt := strings.TrimSpace(options.SystemPrompt)
+	systemPrompt := strings.TrimSpace(config.SystemPrompt)
 	if systemPrompt == "" {
 		systemPrompt = "Summarize the earlier conversation faithfully. Preserve decisions, constraints, unresolved tasks, file paths, errors, and important tool results."
 	}
-	reasoning := options.Reasoning
+	reasoning := config.Reasoning
 	if reasoning != nil {
 		copy := *reasoning
 		reasoning = &copy

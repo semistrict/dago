@@ -145,7 +145,7 @@ func (authentication modelAuthentication) resolveModel(ctx context.Context, mode
 	}
 	if authentication.subscription {
 		options.ContextWindow = 272_000
-		chat := openai.NewSubscription(authentication.credentials, model, options)
+		chat := openai.NewSubscription(authentication.credentials, model, options.clientOptions())
 		configured, err := applyLegacyModelOptions(chat, authentication.modelOptions)
 		if err != nil {
 			return nil, err
@@ -155,7 +155,7 @@ func (authentication modelAuthentication) resolveModel(ctx context.Context, mode
 	if strings.TrimSpace(authentication.apiKey) == "" {
 		return nil, errors.New("OpenAI API key is required")
 	}
-	chat := openai.NewAPIKey(authentication.apiKey, model, options)
+	chat := openai.NewAPIKey(authentication.apiKey, model, options.clientOptions())
 	configured, err := applyLegacyModelOptions(chat, authentication.modelOptions)
 	if err != nil {
 		return nil, err

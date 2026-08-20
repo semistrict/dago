@@ -41,7 +41,7 @@ func TestDeterministicAgentBehavior(t *testing.T) {
 	)
 	agent := dagent.New(model, dagent.Options{Tools: []datool.Tool{echo}})
 
-	evaluation := daeval.NewEvaluation(daeval.Invoke(agent, "echo hello"))
+	evaluation := daeval.NewEvaluation(daeval.Invoke(agent, dagent.Prompt("echo hello")))
 	evaluation.Name = "direct echo"
 	evaluation.Category = "tool_use"
 	evaluation.Correctness = []daeval.Check{
@@ -216,7 +216,7 @@ func TestHarnessRejectsNegativeFailureBound(t *testing.T) {
 
 func TestProgrammerErrorsPanicAtConstruction(t *testing.T) {
 	for name, construct := range map[string]func(){
-		"nil agent":       func() { daeval.Invoke(nil, "input") },
+		"nil agent":       func() { daeval.Invoke(nil, dagent.Prompt("input")) },
 		"nil run":         func() { daeval.NewEvaluation(nil) },
 		"empty tool":      func() { daeval.ToolCalled(" ") },
 		"empty file path": func() { daeval.FileAbsent(" ") },

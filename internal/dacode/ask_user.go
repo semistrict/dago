@@ -307,10 +307,9 @@ func (model *tuiModel) answerAskUser(answers []string) tea.Cmd {
 	for index, answer := range answers {
 		portableAnswers[index] = answer
 	}
-	return model.startStream(dagent.Input{
-		Config:          dacheckpoint.Config{ThreadID: model.threadID},
-		Resume:          map[string]any{"status": string(daaskuser.AnswerAnswered), "answers": portableAnswers},
-		SkipValueEvents: true,
+	return model.startStream(runInput{
+		Config: dacheckpoint.Config{ThreadID: model.threadID},
+		Resume: map[string]any{"status": string(daaskuser.AnswerAnswered), "answers": portableAnswers}, SkipValueEvents: true,
 	})
 }
 

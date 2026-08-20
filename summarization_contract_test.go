@@ -128,7 +128,7 @@ func TestMediaOffloadFailureUsesBoundedPlaceholder(t *testing.T) {
 	compiled := dagent.New(mainModel, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
 	old := damessage.Message{Role: damessage.RoleHuman, Content: []damessage.ContentBlock{{Type: damessage.BlockImage, MIMEType: "image/png", Data: []byte("secret-inline-data")}}}
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{old, damessage.Human("recent")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Messages([]damessage.Message{old, damessage.Human("recent")})); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -250,7 +250,7 @@ func TestSummarizationSupportsMessageTriggersAndTokenKeepWindows(t *testing.T) {
 
 	compiled := dagent.New(mainModel, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: messages[:3]}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Messages(messages[:3])); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -314,7 +314,7 @@ func TestSummarizationTriggerCountsSystemPrompt(t *testing.T) {
 	compiled := dagent.New(
 		mainModel, dagent.Options{SystemMessage: damessage.System(strings.Repeat("system context ", 40)), Middleware: []dagent.Middleware{middleware}})
 
-	_, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}})
+	_, err := compiled.Invoke(context.Background(), dagent.Messages([]damessage.Message{damessage.Human("old"), damessage.Assistant("recent")}))
 	if err != nil {
 		t.Fatal(err)
 	}

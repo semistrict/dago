@@ -12,18 +12,21 @@ subpackages. The graph runtime remains internal until it has a separately review
 public use case; public consumers use `dagent.Agent`.
 
 Public construction follows one rule: a constructor exists only when it establishes
-an invariant or compiles configuration into behavior. Passive configuration is an
-exported value. Agent-owned facilities such as `Filesystem`, `Skills`, `Memory`, and
-`Summarization` are configured through `dago.Option` values; `dago.NewAgent` binds
-them to the agent model and backend. Mandatory static dependencies are positional
-constructor parameters, omitted options select useful defaults, and static programmer
+an invariant or compiles configuration into behavior. Passive, reusable feature
+configuration remains an exported value, while `dago.New` uses functional
+options for graph construction. Agent-owned facilities such as `Filesystem`,
+`Skills`, `Memory`, and `Summarization` contribute named middleware; absence means
+disabled, so construction has no parallel boolean feature vocabulary. Mandatory
+static dependencies are positional constructor parameters, and static programmer
 mistakes panic.
-`dago.NewSubagent` accepts the exact same `dago.Option` values so option slices can
-be shared between top-level and delegated agents. `dago.NewRunnableSubagent` is a
+`dago.NewSubagent` accepts the same `dago.Option` values so option slices can be
+shared between top-level and delegated agents. `dago.NewRunnableSubagent` is a
 separate boundary for already compiled graphs: construction options cannot alter a
 graph after compilation, so that constructor accepts only delegation options.
 Errors are reserved for external configuration, model or tool input, I/O, remote
 operations, and runtime execution where the caller can make a meaningful decision.
+Agent execution uses typed `dagent.RunOption` values shared by `Invoke`, `Stream`, and
+`Cancel`; arbitrary values are never implicitly converted into prompts.
 
 Public additions require intended-behavior tests, cancellation semantics for any
 blocking operation, a stable JSON representation for persisted or streamed data,

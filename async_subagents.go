@@ -90,27 +90,39 @@ type AsyncTask struct {
 	LastUpdatedAt string `json:"last_updated_at"`
 }
 
-// AsyncSubagentsOptions configures background-agent middleware.
-type AsyncSubagentsOptions struct {
-	SystemPrompt string
+type asyncSubagentsConfig struct{ systemPrompt string }
+
+// AsyncSubagentsOption configures background-agent middleware.
+type AsyncSubagentsOption interface{ applyAsyncSubagents(*asyncSubagentsConfig) }
+
+type asyncSubagentsOptionFunc func(*asyncSubagentsConfig)
+
+func (option asyncSubagentsOptionFunc) applyAsyncSubagents(config *asyncSubagentsConfig) {
+	option(config)
+}
+
+// WithAsyncSystemPrompt adds model instructions for the available background agents.
+func WithAsyncSystemPrompt(prompt string) AsyncSubagentsOption {
+	return asyncSubagentsOptionFunc(func(config *asyncSubagentsConfig) { config.systemPrompt = prompt })
 }
 
 // AsyncSubagents adds tools for starting and managing durable background tasks.
-func AsyncSubagents(first AsyncSubagent, rest ...AsyncSubagent) dagent.Middleware {
-	return AsyncSubagentsWithOptions(AsyncSubagentsOptions{}, first, rest...)
-}
-
-// AsyncSubagentsWithOptions adds background-task tools with explicit options.
-func AsyncSubagentsWithOptions(options AsyncSubagentsOptions, first AsyncSubagent, rest ...AsyncSubagent) dagent.Middleware {
-	values := append([]AsyncSubagent{first}, rest...)
-	middleware, err := compileAsyncSubagents(options, values)
+func AsyncSubagents(subagents []AsyncSubagent, options ...AsyncSubagentsOption) dagent.Middleware {
+	config := asyncSubagentsConfig{}
+	for index, option := range options {
+		if option == nil {
+			panic(fmt.Sprintf("async subagents option %d is nil", index))
+		}
+		option.applyAsyncSubagents(&config)
+	}
+	middleware, err := newAsyncSubagents(config, subagents)
 	if err != nil {
 		panic(err)
 	}
 	return middleware
 }
 
-func compileAsyncSubagents(options AsyncSubagentsOptions, subagents []AsyncSubagent) (dagent.Middleware, error) {
+func newAsyncSubagents(options asyncSubagentsConfig, subagents []AsyncSubagent) (dagent.Middleware, error) {
 	if len(subagents) == 0 {
 		return dagent.Middleware{}, fmt.Errorf("at least one async subagent is required")
 	}
@@ -152,8 +164,8 @@ func compileAsyncSubagents(options AsyncSubagentsOptions, subagents []AsyncSubag
 		}},
 		Tools: tools,
 	}
-	if options.SystemPrompt != "" {
-		fragment := options.SystemPrompt + "\n\nAvailable async subagent types:\n\n" + available
+	if options.systemPrompt != "" {
+		fragment := options.systemPrompt + "\n\nAvailable async subagent types:\n\n" + available
 		middleware.WrapModelCall = func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
 			appendSystem(&request, fragment)
 			return next(ctx, request)

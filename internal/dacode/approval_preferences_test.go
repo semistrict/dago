@@ -173,20 +173,18 @@ func TestApprovalModeIsEnforcedInsideDelegatedSubagents(t *testing.T) {
 				modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent done")}},
 			)
 			rules := approvalRulesForThreadModes([]dagent.ApprovalRule{{Pattern: "danger"}}, store)
-			agent := dago.NewAgent(
+			agent := dago.New(
 				parent,
 				dago.WithTools(danger),
 				dago.WithSaver(dacheckpoint.NewMemorySaver()),
-				dago.WithoutSummary(),
+
 				dago.WithApprovalRules(rules...),
 				dago.WithSubagents(dago.NewSubagent(
 					"operator", "Runs delegated actions.", child,
 					dago.WithSystemMessage(damessage.System("Run the delegated action.")),
 				)),
 			)
-			result, err := agent.Invoke(t.Context(), dagent.Input{
-				Config: dacheckpoint.Config{ThreadID: "delegated-thread"}, Messages: []damessage.Message{damessage.Human("delegate")},
-			})
+			result, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(dacheckpoint.Config{ThreadID: "delegated-thread"}), dagent.Prompt("delegate"))
 			if err != nil {
 				t.Fatal(err)
 			}

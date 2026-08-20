@@ -18,6 +18,9 @@ type TransformSchema func(json.RawMessage) (json.RawMessage, error)
 
 type newOptions struct {
 	transforms []TransformSchema
+	strict     bool
+	direct     bool
+	extra      map[string]json.RawMessage
 }
 
 // Option customizes a generated typed tool.
@@ -41,6 +44,40 @@ func WithTransformSchema(transform TransformSchema) Option {
 			return fmt.Errorf("schema transform is required")
 		}
 		options.transforms = append(options.transforms, transform)
+		return nil
+	})
+}
+
+// WithStrict marks the generated tool definition as provider-strict.
+func WithStrict() Option {
+	return optionFunc(func(options *newOptions) error {
+		options.strict = true
+		return nil
+	})
+}
+
+// WithDirect makes the typed tool result terminate the agent invocation.
+func WithDirect() Option {
+	return optionFunc(func(options *newOptions) error {
+		options.direct = true
+		return nil
+	})
+}
+
+// WithExtra attaches one provider-specific definition value.
+func WithExtra(key string, value any) Option {
+	return optionFunc(func(options *newOptions) error {
+		if key == "" {
+			return fmt.Errorf("extra key is required")
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Errorf("encode extra %q: %w", key, err)
+		}
+		if options.extra == nil {
+			options.extra = map[string]json.RawMessage{}
+		}
+		options.extra[key] = encoded
 		return nil
 	})
 }
@@ -94,6 +131,9 @@ func newTypedTool[T, R any](name, description string, handler Handler[T, R], opt
 			return nil, fmt.Errorf("typed tool %q: transform schema %d returned invalid JSON", definition.Name, index)
 		}
 	}
+	definition.Strict = configured.strict
+	definition.Direct = configured.direct
+	definition.Extra = configured.extra
 	definition.InputSchema = schema
 	if _, err := compileInputSchema(definition); err != nil {
 		return nil, err

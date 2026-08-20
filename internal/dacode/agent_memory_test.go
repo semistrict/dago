@@ -134,7 +134,7 @@ func TestAgentMemorySwitchLoadsNewThreadAndKeepsResumedThreadPinned(t *testing.T
 		modeltest.Step{Check: checkMemory("reviewer durable memory", "default durable memory"), Response: damodel.Response{Message: damessage.Assistant("switched")}},
 	)
 	saver := dacheckpoint.NewMemorySaver()
-	agent := dago.NewAgent(
+	agent := dago.New(
 		model,
 		dago.WithBackend(backend),
 		dago.WithMemory(configureAgentMemory(dago.Memory{}, false)),
@@ -142,18 +142,16 @@ func TestAgentMemorySwitchLoadsNewThreadAndKeepsResumedThreadPinned(t *testing.T
 		dago.WithStateFields(sessionStateFields()),
 		dago.WithSaver(saver),
 		dago.WithRetainedThreadState(),
-		dago.WithoutSubagents(),
-		dago.WithoutSummary(),
 	)
 	defaultThread := dacheckpoint.Config{ThreadID: "default-thread"}
-	if _, err := agent.Invoke(t.Context(), dagent.Input{Config: defaultThread, Messages: []damessage.Message{damessage.Human("first")}}); err != nil {
+	if _, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(defaultThread), dagent.Prompt("first")); err != nil {
 		t.Fatal(err)
 	}
 	identity.set("reviewer")
-	if _, err := agent.Invoke(t.Context(), dagent.Input{Config: defaultThread, Messages: []damessage.Message{damessage.Human("resume")}}); err != nil {
+	if _, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(defaultThread), dagent.Prompt("resume")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.Invoke(t.Context(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "reviewer-thread"}, Messages: []damessage.Message{damessage.Human("new")}}); err != nil {
+	if _, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(dacheckpoint.Config{ThreadID: "reviewer-thread"}), dagent.Prompt("new")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -334,7 +332,7 @@ func TestAgentMemoryPromptAndManagedGuardReachSubagentWithoutDuplication(t *test
 		}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled := dago.NewAgent(
+	compiled := dago.New(
 		parentModel,
 		dago.WithBackend(backend),
 		dago.WithFilesystem(dago.Filesystem{}),
@@ -346,9 +344,8 @@ func TestAgentMemoryPromptAndManagedGuardReachSubagentWithoutDuplication(t *test
 			"writer", "Updates memory", childModel,
 			dago.WithSystemPrompt("More deeply scoped workspace files take precedence over broader workspace files."),
 		)),
-		dago.WithoutSummary(),
 	)
-	result, err := compiled.Invoke(t.Context(), dagent.Input{Messages: []damessage.Message{damessage.Human("delegate")}})
+	result, err := compiled.Invoke(t.Context(), dagent.Prompt("delegate"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +366,7 @@ func TestAgentMemoryPromptAndManagedGuardReachSubagentWithoutDuplication(t *test
 		modeltest.Step{Check: checkPrompt(false), Response: damodel.Response{Message: damessage.Assistant("general child done")}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("general done")}},
 	)
-	general := dago.NewAgent(
+	general := dago.New(
 		generalModel,
 		dago.WithBackend(backend),
 		dago.WithFilesystem(dago.Filesystem{}),
@@ -378,9 +375,8 @@ func TestAgentMemoryPromptAndManagedGuardReachSubagentWithoutDuplication(t *test
 		dago.WithMiddleware(agentIdentityMiddleware(identity, stateDir)),
 		dago.WithStateFields(sessionStateFields()),
 		dago.WithSubagents(dacodeGeneralSubagent(damessage.System("More deeply scoped workspace files take precedence over broader workspace files."))),
-		dago.WithoutSummary(),
 	)
-	generalResult, err := general.Invoke(t.Context(), dagent.Input{Messages: []damessage.Message{damessage.Human("delegate generally")}})
+	generalResult, err := general.Invoke(t.Context(), dagent.Prompt("delegate generally"))
 	if err != nil {
 		t.Fatal(err)
 	}

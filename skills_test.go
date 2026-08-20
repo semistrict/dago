@@ -62,7 +62,7 @@ func TestSkillsLaterSourceWinsAndWarningsAreUntrusted(t *testing.T) {
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 	if len(observedWarnings) == 0 {
@@ -140,7 +140,7 @@ func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +155,7 @@ func TestSkillsPromptSupportsLabelsEmptyLibrariesAndDisabling(t *testing.T) {
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled = dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -206,7 +206,7 @@ func TestSkillsCatalogUsesApplicationActivationAndFilesystemOverrides(t *testing
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -249,7 +249,7 @@ func TestSkillsCatalogBodySuppliesActivationAndFilesystemOverridesIt(t *testing.
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 }

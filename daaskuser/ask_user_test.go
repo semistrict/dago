@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/daaskuser"
 	"github.com/semistrict/dago/dacheckpoint"
 	checkpointsqlite "github.com/semistrict/dago/dacheckpoint/sqlite"
@@ -132,7 +133,7 @@ func TestCheckpointRestoredToolDecodesJSONShapedResume(t *testing.T) {
 	firstModel := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{call}}}})
 	config := dacheckpoint.Config{ThreadID: "ask-user-restore"}
 	first := dagent.New(firstModel, dagent.Options{Middleware: []dagent.Middleware{daaskuser.Middleware()}, Saver: saver})
-	paused, err := first.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("ask me")}})
+	paused, err := first.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("ask me"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,9 +149,9 @@ func TestCheckpointRestoredToolDecodesJSONShapedResume(t *testing.T) {
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	second := dagent.New(secondModel, dagent.Options{Middleware: []dagent.Middleware{daaskuser.Middleware()}, Saver: saver})
-	resumed, err := second.Invoke(context.Background(), dagent.Input{Config: config, Resume: map[string]any{
+	resumed, err := second.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Resume(map[string]any{
 		"status": "answered", "answers": []any{"blue"},
-	}})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +172,7 @@ func TestMiddlewareIsExplicitOptIn(t *testing.T) {
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
-	if _, err := dagent.New(without, dagent.Options{}).Invoke(context.Background(), "go"); err != nil {
+	if _, err := dago.New(without).Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -190,7 +191,7 @@ func TestMiddlewareIsExplicitOptIn(t *testing.T) {
 		}
 		return errors.New("ask_user tool missing")
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
-	if _, err := dagent.New(with, dagent.Options{Middleware: []dagent.Middleware{daaskuser.Middleware()}}).Invoke(context.Background(), "go"); err != nil {
+	if _, err := dago.New(with, dago.WithMiddleware(daaskuser.Middleware())).Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 }

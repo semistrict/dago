@@ -23,7 +23,7 @@ import (
 
 type mapGraph map[string]any
 
-func (mapGraph) Stream(context.Context, dagent.Input) *dagent.Stream { return nil }
+func (mapGraph) Stream(context.Context, ...dagent.RunOption) *dagent.Stream { return nil }
 func (mapGraph) State(context.Context, dacheckpoint.Config) (dagent.Snapshot, error) {
 	return dagent.Snapshot{}, nil
 }

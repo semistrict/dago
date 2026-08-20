@@ -6,7 +6,6 @@ import (
 
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dagoal"
-	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel/modeltest"
 )
 
@@ -15,9 +14,8 @@ func ExampleMiddleware() {
 		Middleware: []dagent.Middleware{dagoal.Middleware(dagoal.Options{})},
 	})
 
-	result, err := agent.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{
-		damessage.Human(`tool: create_goal {"objective":"Finish the release checklist"}`),
-	}})
+	result, err := agent.Invoke(context.Background(), dagent.Prompt(
+		`tool: create_goal {"objective":"Finish the release checklist"}`))
 	if err != nil {
 		panic(err)
 	}

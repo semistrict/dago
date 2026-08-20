@@ -37,7 +37,7 @@ func TestNemotronEntityGuardKeepsCurrentBranchBound(t *testing.T) {
 	)
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{nemotronEntityResolutionGuard()}})
 
-	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: history})
+	result, err := compiled.Invoke(context.Background(), dagent.Messages(history))
 	if err != nil {
 		t.Fatal(err)
 	}

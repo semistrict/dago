@@ -30,14 +30,14 @@ import (
 
 // Runnable is the small invocation contract accepted by compiled subagents.
 type Runnable interface {
-	Invoke(context.Context, any) (dagent.Result, error)
+	Invoke(context.Context, ...dagent.RunOption) (dagent.Result, error)
 }
 
 // StreamingRunnable lets a compiled subagent project its nested lifecycle onto
 // the parent stream. Runnable remains sufficient for invoke-only integrations.
 type StreamingRunnable interface {
 	Runnable
-	Stream(context.Context, dagent.Input) *dagent.Stream
+	Stream(context.Context, ...dagent.RunOption) *dagent.Stream
 }
 
 // RunnableSubagentOption configures delegation to an already compiled runnable.
@@ -276,21 +276,33 @@ func toolCallHistoryNeedsRepair(messages []damessage.Message) bool {
 	return len(pending) > 0
 }
 
-// SubagentsOptions configures private state inherited by child agents.
-type SubagentsOptions struct {
-	PrivateState []string
+type subagentsConfig struct{ privateState []string }
+
+// SubagentsOption configures one subagent middleware construction.
+type SubagentsOption interface{ applySubagents(*subagentsConfig) }
+
+type subagentsOptionFunc func(*subagentsConfig)
+
+func (option subagentsOptionFunc) applySubagents(config *subagentsConfig) { option(config) }
+
+// WithPrivateState prevents selected parent state fields from reaching child agents.
+func WithPrivateState(keys ...string) SubagentsOption {
+	return subagentsOptionFunc(func(config *subagentsConfig) {
+		config.privateState = append([]string(nil), keys...)
+	})
 }
 
 // Subagents adds the task tool. Each invocation receives only its task message
 // and a distinct thread identity, preventing parent and sibling state leaks.
-func Subagents(first Subagent, rest ...Subagent) dagent.Middleware {
-	return SubagentsWithOptions(SubagentsOptions{}, first, rest...)
-}
-
-// SubagentsWithOptions adds the task tool with explicit private-state rules.
-func SubagentsWithOptions(options SubagentsOptions, first Subagent, rest ...Subagent) dagent.Middleware {
-	values := append([]Subagent{first}, rest...)
-	middleware, err := subagentMiddleware(values, stringSet(options.PrivateState))
+func Subagents(subagents []Subagent, options ...SubagentsOption) dagent.Middleware {
+	config := subagentsConfig{}
+	for index, option := range options {
+		if option == nil {
+			panic(fmt.Sprintf("subagents option %d is nil", index))
+		}
+		option.applySubagents(&config)
+	}
+	middleware, err := subagentMiddleware(subagents, stringSet(config.privateState))
 	if err != nil {
 		panic(err)
 	}
@@ -400,18 +412,17 @@ func subagentMiddleware(subagents []Subagent, privateState map[string]bool) (dag
 			namespace += "/"
 		}
 		namespace += "subagent:" + runtime.TaskID + ":" + runtime.CallID
-		invocation := dagent.Input{
-			Config:       dacheckpoint.Config{ThreadID: runtime.ThreadID, Namespace: namespace},
-			Deps:         runtime.Deps,
-			Configurable: runtime.Configurable.Snapshot(),
+		invocation := []dagent.RunOption{
+			dagent.FromCheckpoint(dacheckpoint.Config{ThreadID: runtime.ThreadID, Namespace: namespace}),
+			dagent.WithDeps(runtime.Deps),
+			dagent.WithConfigurable(runtime.Configurable.Snapshot()),
 		}
 		if runtime.Resume != nil {
-			invocation.Resume = runtime.Resume
+			invocation = append(invocation, dagent.Resume(runtime.Resume))
 		} else {
-			invocation.State = inherited
-			invocation.Messages = []damessage.Message{damessage.Human(input.Description)}
+			invocation = append(invocation, dagent.WithState(inherited), dagent.Prompt(input.Description))
 		}
-		result, err := invokeSubagent(ctx, selected, invocation, runtime)
+		result, err := invokeSubagent(ctx, selected, invocation, runtime, namespace)
 		if err != nil {
 			return datool.Result{}, subagentExecutionError{err: err}
 		}
@@ -580,10 +591,10 @@ func (failure subagentExecutionError) Error() string { return failure.err.Error(
 func (failure subagentExecutionError) Unwrap() error { return failure.err }
 func (subagentExecutionError) PropagateToolError()   {}
 
-func invokeSubagent(ctx context.Context, selected Subagent, invocation dagent.Input, runtime datool.Runtime) (dagent.Result, error) {
+func invokeSubagent(ctx context.Context, selected Subagent, invocation []dagent.RunOption, runtime datool.Runtime, namespace string) (dagent.Result, error) {
 	streaming, supportsStreaming := selected.runnable.(StreamingRunnable)
 	if !supportsStreaming || runtime.Stream == nil {
-		return selected.runnable.Invoke(ctx, invocation)
+		return selected.runnable.Invoke(ctx, invocation...)
 	}
 	emit := func(event dagent.ChildEvent) error {
 		encoded, err := dagent.EncodeChildEvent(event)
@@ -594,14 +605,14 @@ func invokeSubagent(ctx context.Context, selected Subagent, invocation dagent.In
 	}
 	base := dagent.ChildEvent{
 		Name: selected.name, ToolCallID: runtime.CallID,
-		Namespace: invocation.Config.Namespace,
+		Namespace: namespace,
 	}
 	started := base
 	started.Phase = dagent.ChildStarted
 	if err := emit(started); err != nil {
 		return dagent.Result{}, err
 	}
-	stream := streaming.Stream(ctx, invocation)
+	stream := streaming.Stream(ctx, invocation...)
 	for event, err := range stream.Events() {
 		if err != nil {
 			failed := base

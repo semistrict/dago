@@ -15,15 +15,15 @@ import (
 )
 
 const (
-	// ConfigurableCWD is the dagent.Input.Configurable key containing the ACP
+	// ConfigurableCWD is the invocation setting containing the ACP
 	// session's absolute working directory.
 	ConfigurableCWD = "acp.cwd"
 )
 
 // Runner is the dago execution surface required by the ACP adapter.
 type Runner interface {
-	Stream(context.Context, dagent.Input) *dagent.Stream
-	Cancel(context.Context, dagent.Input) (dagent.Result, error)
+	Stream(context.Context, ...dagent.RunOption) *dagent.Stream
+	Cancel(context.Context, ...dagent.RunOption) (dagent.Result, error)
 }
 
 // AgentSessionContext describes one ACP session before its execution target is

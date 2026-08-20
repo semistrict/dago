@@ -55,22 +55,6 @@ type Agent struct {
 	tools   []datool.Tool
 }
 
-// Input starts or resumes one agent thread.
-type Input struct {
-	Config   dacheckpoint.Config
-	Messages []damessage.Message
-	State    dastate.Values
-	Resume   any
-	// Deps overrides construction-time dependencies for this invocation and is
-	// inherited by inline subagents. A nil value uses Options.Deps.
-	Deps any
-	// Configurable contains immutable, runtime-only application settings. It is
-	// available to middleware and tools but is never persisted.
-	Configurable       map[string]any
-	SkipValueEvents    bool
-	DiscardResultState bool
-}
-
 // Result is the complete visible agent state.
 type Result struct {
 	Config     dacheckpoint.Config
@@ -245,52 +229,26 @@ func (writer debugEventWriter) Write(ctx context.Context, event graph.Event) err
 	return nil
 }
 
-func normalizeInput(value any) (Input, error) {
-	switch input := value.(type) {
-	case Input:
-		return input, nil
-	case *Input:
-		if input == nil {
-			return Input{}, fmt.Errorf("agent input is nil")
-		}
-		return *input, nil
-	default:
-		message, err := damessage.MessageFrom(value)
-		if err != nil {
-			return Input{}, err
-		}
-		return Input{Messages: []damessage.Message{message}}, nil
-	}
-}
-
-// Invoke starts or resumes an agent. Input values expose the complete stateful
-// invocation API; strings become human messages, Message values pass through
-// unchanged, and other values are JSON-encoded as human messages.
-func (agent *Agent) Invoke(ctx context.Context, value any) (Result, error) {
-	input, err := normalizeInput(value)
-	if err != nil {
-		return Result{}, err
-	}
-	if input.Config.ThreadID == "" {
-		input.Config.ThreadID = "default"
-	}
-	values := input.State.Clone()
+// Invoke starts or resumes an agent with typed per-run options.
+func (agent *Agent) Invoke(ctx context.Context, options ...RunOption) (Result, error) {
+	input := resolveRunOptions(options)
+	values := input.state.Clone()
 	if values == nil {
 		values = dastate.Values{}
 	}
-	if len(input.Messages) > 0 {
-		values[MessagesKey] = damessage.EnsureIDs(input.Messages)
+	if len(input.messages) > 0 {
+		values[MessagesKey] = damessage.EnsureIDs(input.messages)
 	}
 	ensureMessageIDsInValues(values)
 	execution, err := agent.graph.Invoke(ctx, graph.Invocation{
-		Config: input.Config, State: values, Resume: portableResume(input.Resume), Deps: input.Deps,
-		Configurable:    cloneConfigurable(input.Configurable),
-		SkipValueEvents: input.SkipValueEvents,
+		Config: input.config, State: values, Resume: portableResume(input.resume), Deps: input.deps,
+		Configurable:    cloneConfigurable(input.configurable),
+		SkipValueEvents: input.skipValueEvents,
 	})
 	if err != nil {
 		return Result{}, err
 	}
-	return resultFromExecution(execution, agent.private, input.DiscardResultState)
+	return resultFromExecution(execution, agent.private, input.discardResultState)
 }
 
 func portableResume(value any) any {
@@ -328,25 +286,23 @@ func portableResume(value any) any {
 
 // Cancel durably appends final messages/state and clears pending graph tasks.
 // It must be called after the active invocation has observed cancellation.
-func (agent *Agent) Cancel(ctx context.Context, input Input) (Result, error) {
-	if input.Config.ThreadID == "" {
-		input.Config.ThreadID = "default"
-	}
-	values := input.State.Clone()
+func (agent *Agent) Cancel(ctx context.Context, options ...RunOption) (Result, error) {
+	input := resolveRunOptions(options)
+	values := input.state.Clone()
 	if values == nil {
 		values = dastate.Values{}
 	}
-	if len(input.Messages) > 0 {
-		values[MessagesKey] = damessage.EnsureIDs(input.Messages)
+	if len(input.messages) > 0 {
+		values[MessagesKey] = damessage.EnsureIDs(input.messages)
 	}
 	ensureMessageIDsInValues(values)
 	execution, err := agent.graph.Cancel(ctx, graph.Invocation{
-		Config: input.Config, State: values, Deps: input.Deps, Configurable: cloneConfigurable(input.Configurable),
+		Config: input.config, State: values, Deps: input.deps, Configurable: cloneConfigurable(input.configurable),
 	})
 	if err != nil {
 		return Result{}, err
 	}
-	return resultFromExecution(execution, agent.private, false)
+	return resultFromExecution(execution, agent.private, input.discardResultState)
 }
 
 func resultFromExecution(execution graph.Execution, private map[string]bool, discardState bool) (Result, error) {

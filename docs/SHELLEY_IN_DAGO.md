@@ -19,7 +19,7 @@ agent, backend, interrupt, stream, and checkpoint contracts directly.
 - The running application invokes a dago `damodel.Chat` directly and executes dago
   `datool.Tool` implementations directly. It must not convert a native dago model or
   tool into a shelley-in-dago request and then convert it back into dago.
-- Approvals and other pauses are dago interrupts resumed through `dagent.Input.Resume`.
+- Approvals and other pauses are dago interrupts resumed through `dagent.Resume`.
 - Cancellation is resolved through dago's durable cancellation operation.
 
 ## Target dependency direction

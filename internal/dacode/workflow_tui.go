@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/dacheckpoint"
-	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/daworkflow"
 )
@@ -174,7 +173,7 @@ func (model *tuiModel) startWorkflowContinuation() tea.Cmd {
 	model.pendingWorkflows = nil
 	model.currentAssistant = -1
 	model.status = "Reviewing workflow result"
-	return model.startStream(dagent.Input{
+	return model.startStream(runInput{
 		Config:   dacheckpoint.Config{ThreadID: model.threadID},
 		Messages: []damessage.Message{workflowCompletionMessage(statuses)}, SkipValueEvents: true,
 	})

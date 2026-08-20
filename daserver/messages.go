@@ -11,44 +11,51 @@ import (
 	"github.com/semistrict/dago/dastate"
 )
 
-func inputToAgent(request createRunRequest, threadID string) (dagent.Input, error) {
-	input := dagent.Input{Config: checkpointConfig(request, threadID)}
+func inputToAgent(request createRunRequest, threadID string) ([]dagent.RunOption, error) {
+	options := []dagent.RunOption{dagent.FromCheckpoint(checkpointConfig(request, threadID))}
+	var state dastate.Values
 	if request.Command != nil {
 		if resume, exists := request.Command["resume"]; exists {
-			input.Resume = resume
+			options = append(options, dagent.Resume(resume))
 		}
 		if update, exists := request.Command["update"]; exists {
 			values, err := inputValues(update)
 			if err != nil {
-				return dagent.Input{}, fmt.Errorf("command update: %w", err)
+				return nil, fmt.Errorf("command update: %w", err)
 			}
-			input.State = values
+			state = values
 		}
 	}
 	if request.Input == nil {
-		return input, nil
+		if len(state) > 0 {
+			options = append(options, dagent.WithState(state))
+		}
+		return options, nil
 	}
 	values, err := inputValues(request.Input)
 	if err != nil {
-		return dagent.Input{}, err
+		return nil, err
 	}
 	if rawMessages, exists := values[dagent.MessagesKey]; exists {
 		messages, err := protocolMessages(rawMessages)
 		if err != nil {
-			return dagent.Input{}, fmt.Errorf("input messages: %w", err)
+			return nil, fmt.Errorf("input messages: %w", err)
 		}
-		input.Messages = messages
+		options = append(options, dagent.Messages(messages))
 		delete(values, dagent.MessagesKey)
 	}
 	if len(values) > 0 {
-		if input.State == nil {
-			input.State = dastate.Values{}
+		if state == nil {
+			state = dastate.Values{}
 		}
 		for key, value := range values {
-			input.State[key] = value
+			state[key] = value
 		}
 	}
-	return input, nil
+	if len(state) > 0 {
+		options = append(options, dagent.WithState(state))
+	}
+	return options, nil
 }
 
 func checkpointConfig(request createRunRequest, threadID string) (config dacheckpoint.Config) {

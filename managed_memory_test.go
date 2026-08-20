@@ -380,8 +380,8 @@ func TestNewAgentAutomaticallyGuardsConfiguredMemorySources(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	agent := NewAgent(model, WithBackend(backend), WithMemory(Memory{Sources: []string{"/AGENTS.md"}}), WithoutSubagents(), WithoutSummary())
-	if _, err := agent.Invoke(t.Context(), dagent.Input{Messages: []damessage.Message{damessage.Human("change memory")}}); err != nil {
+	agent := New(model, WithBackend(backend), WithFilesystem(Filesystem{}), WithMemory(Memory{Sources: []string{"/AGENTS.md"}}))
+	if _, err := agent.Invoke(t.Context(), dagent.Prompt("change memory")); err != nil {
 		t.Fatal(err)
 	}
 	if got := downloadManagedMemory(t, t.Context(), backend, "/AGENTS.md"); got != before {
@@ -390,11 +390,11 @@ func TestNewAgentAutomaticallyGuardsConfiguredMemorySources(t *testing.T) {
 }
 
 func TestInheritedSubagentFilesystemKeepsParentMemoryGuard(t *testing.T) {
-	configured := agentConfig{Filesystem: Filesystem{managedMemoryPaths: []string{"/AGENTS.md"}}}
-	inherited := inheritedSubagentConfig(configured, nil)
+	configured := agentConfig{managedMemoryPaths: []string{"/AGENTS.md"}}
+	inherited := inheritedSubagentConfig(configured, nil, false)
 	WithFilesystem(Filesystem{ReadLimit: 12}).apply(&inherited)
-	if inherited.Filesystem.ReadLimit != 12 || len(inherited.Filesystem.managedMemoryPaths) != 1 || inherited.Filesystem.managedMemoryPaths[0] != "/AGENTS.md" {
-		t.Fatalf("inherited filesystem = %#v", inherited.Filesystem)
+	if len(inherited.managedMemoryPaths) != 1 || inherited.managedMemoryPaths[0] != "/AGENTS.md" {
+		t.Fatalf("inherited managed memory paths = %#v", inherited.managedMemoryPaths)
 	}
 }
 

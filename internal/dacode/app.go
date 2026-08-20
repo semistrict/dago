@@ -2073,7 +2073,7 @@ func (model *tuiModel) dispatchInput(mode inputMode, value, display string, atta
 			content = append(content, damessage.ContentBlock{Type: damessage.BlockText, Text: messageText})
 		}
 		content = append(content, attachments...)
-		return model.startStream(dagent.Input{
+		return model.startStream(runInput{
 			Config:   dacheckpoint.Config{ThreadID: model.threadID},
 			Messages: []damessage.Message{{Role: damessage.RoleHuman, Content: content}}, SkipValueEvents: true,
 		})
@@ -2932,7 +2932,7 @@ func (model *tuiModel) submitPrompt(prompt string) tea.Cmd {
 	model.appendItem(transcriptItem{kind: itemUser, text: prompt})
 	model.autoClassifierTurnID = approvalTurnID(model.threadID, len(model.items), prompt)
 	model.currentAssistant = -1
-	input := dagent.Input{
+	input := runInput{
 		Config:   dacheckpoint.Config{ThreadID: model.threadID},
 		Messages: []damessage.Message{damessage.Human(prompt)}, SkipValueEvents: true,
 	}
@@ -2952,7 +2952,7 @@ func (model *tuiModel) startGoalContinuation() tea.Cmd {
 	}
 	model.currentAssistant = -1
 	model.autoClassifierTurnID = approvalTurnID(model.threadID, len(model.items), model.goal.Objective)
-	command := model.startStream(dagent.Input{
+	command := model.startStream(runInput{
 		Config:   dacheckpoint.Config{ThreadID: model.threadID},
 		Messages: []damessage.Message{dagoal.ContinuationMessage(*model.goal)}, SkipValueEvents: true,
 	})
@@ -2960,7 +2960,7 @@ func (model *tuiModel) startGoalContinuation() tea.Cmd {
 	return command
 }
 
-func (model *tuiModel) startStream(input dagent.Input) tea.Cmd {
+func (model *tuiModel) startStream(input runInput) tea.Cmd {
 	if model.approvalModeBlocked {
 		model.appendItem(transcriptItem{kind: itemError, text: "New runs are blocked until Manual approval mode can be persisted."})
 		model.status = "Approval mode unavailable"
@@ -3807,7 +3807,7 @@ func (model *tuiModel) resolveApprovalWithReason(approve bool, reason string) te
 func (model *tuiModel) resumeApproval(decisions map[string]dagent.ApprovalChoice) tea.Cmd {
 	model.approval = nil
 	model.currentAssistant = -1
-	return model.startStream(dagent.Input{
+	return model.startStream(runInput{
 		Config: dacheckpoint.Config{ThreadID: model.threadID},
 		Resume: dagent.ApprovalResponse{Decisions: decisions}, SkipValueEvents: true,
 	})

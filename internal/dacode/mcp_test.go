@@ -356,16 +356,16 @@ func TestHeadlessMCPPolicyExecutesWriteOnlyAfterApproval(t *testing.T) {
 		Tools: tools, Middleware: []dagent.Middleware{dagent.HumanApproval(rules)}, Saver: dacheckpoint.NewMemorySaver(),
 	})
 	config := dacheckpoint.Config{ThreadID: "headless-mcp-approval"}
-	paused, err := agent.Invoke(t.Context(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("sync")}})
+	paused, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(config), dagent.Prompt("sync"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(paused.Interrupts) != 1 || executions.Load() != 0 {
 		t.Fatalf("interrupts = %#v, executions = %d", paused.Interrupts, executions.Load())
 	}
-	resumed, err := agent.Invoke(t.Context(), dagent.Input{Config: config, Resume: dagent.ApprovalResponse{Decisions: map[string]dagent.ApprovalChoice{
+	resumed, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(config), dagent.Resume(dagent.ApprovalResponse{Decisions: map[string]dagent.ApprovalChoice{
 		"call-1": {Decision: dagent.ApprovalApprove},
-	}}})
+	}}))
 	if err != nil {
 		t.Fatal(err)
 	}

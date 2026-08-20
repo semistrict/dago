@@ -27,7 +27,7 @@ boundaries.
 
 ## Construction and execution path
 
-1. An application calls `dago.NewAgent(model, options...)`. The model is a required positional dependency; static invalid configuration panics at construction.
+1. An application calls `dago.New(model, options...)`. The model is a required positional dependency; static invalid configuration panics at construction.
 2. `dago.newAgent` resolves profiles, supplies the useful in-memory backend default, builds filesystem/interpreter/todo/skills/subagent/summarization/memory/approval middleware, and applies caller middleware.
 3. `dagent.New` compiles that provider-neutral configuration into the internal graph. Public callers receive `dagent.Agent`, not the graph implementation.
 4. `Invoke` or `Stream` supplies messages, thread configuration, resumptions, dependencies, and configurable run context. The runtime schedules model/tool nodes, applies middleware, emits events, and observes recursion/concurrency limits.

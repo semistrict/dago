@@ -90,5 +90,5 @@ func (agent *Agent) Replay(ctx context.Context, config dacheckpoint.Config) (Res
 	if config.CheckpointID == "" {
 		return Result{}, fmt.Errorf("replay requires a checkpoint ID")
 	}
-	return agent.Invoke(ctx, Input{Config: config})
+	return agent.Invoke(ctx, FromCheckpoint(config))
 }

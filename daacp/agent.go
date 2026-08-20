@@ -197,13 +197,13 @@ func (agent *protocolAgent) Prompt(requestContext context.Context, request acp.P
 	}
 	configurable[ConfigurableCWD] = snapshot.context.CWD
 
-	input := dagent.Input{
-		Config:   dacheckpoint.Config{ThreadID: string(request.SessionId)},
-		Messages: []damessage.Message{message}, Configurable: configurable,
+	input := agentRun{
+		config:   dacheckpoint.Config{ThreadID: string(request.SessionId)},
+		messages: []damessage.Message{message}, configurable: configurable,
 	}
 	projector := newProjector(connection, request.SessionId)
 	for {
-		stream := snapshot.runner.Stream(turnContext, input)
+		stream := snapshot.runner.Stream(turnContext, input.options()...)
 		result, streamErr := projector.consume(turnContext, stream)
 		if streamErr != nil {
 			if errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) || turnContext.Err() != nil {
@@ -225,8 +225,8 @@ func (agent *protocolAgent) Prompt(requestContext context.Context, request acp.P
 			}
 			return acp.PromptResponse{}, permissionErr
 		}
-		input.Messages = nil
-		input.Resume = resume
+		input.messages = nil
+		input.resume = resume
 	}
 }
 
@@ -493,10 +493,28 @@ func (agent *protocolAgent) cancelAll() {
 	}
 }
 
-func (agent *protocolAgent) cleanupCancelled(runner Runner, input dagent.Input) {
+type agentRun struct {
+	config       dacheckpoint.Config
+	messages     []damessage.Message
+	resume       any
+	configurable map[string]any
+}
+
+func (input agentRun) options() []dagent.RunOption {
+	options := []dagent.RunOption{dagent.FromCheckpoint(input.config), dagent.WithConfigurable(input.configurable)}
+	if len(input.messages) > 0 {
+		options = append(options, dagent.Messages(input.messages))
+	}
+	if input.resume != nil {
+		options = append(options, dagent.Resume(input.resume))
+	}
+	return options
+}
+
+func (agent *protocolAgent) cleanupCancelled(runner Runner, input agentRun) {
 	ctx, cancel := context.WithTimeout(context.Background(), cancelCleanupTimeout)
 	defer cancel()
-	_, _ = runner.Cancel(ctx, dagent.Input{Config: input.Config, Configurable: input.Configurable})
+	_, _ = runner.Cancel(ctx, dagent.FromCheckpoint(input.config), dagent.WithConfigurable(input.configurable))
 }
 
 func (agent *protocolAgent) makeRunner(ctx context.Context, config SessionConfig) (Runner, io.Closer, error) {

@@ -47,9 +47,9 @@ func TestExplicitProfilesMergeToolOverrideAndExclusion(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	compiled := NewAgent(script, WithProfiles(profile), WithTools(kept, removed), WithoutSubagents(), WithoutSummary())
+	compiled := New(script, WithProfiles(profile), WithTools(kept, removed), WithFilesystem(Filesystem{}))
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -77,11 +77,11 @@ func TestProfileToolExclusionOnlyFiltersTheModelBoundary(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	compiled := NewAgent(
-		script, WithTools(hidden), WithProfiles(profile), WithoutSubagents(), WithoutSummary(),
+	compiled := New(
+		script, WithProfiles(profile), WithTools(hidden), WithFilesystem(Filesystem{}),
 	)
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 	if executions != 1 {
@@ -89,10 +89,8 @@ func TestProfileToolExclusionOnlyFiltersTheModelBoundary(t *testing.T) {
 	}
 }
 
-func TestProfileCannotExcludeRequiredFilesystem(t *testing.T) {
-	requirePanicContaining(t, "required middleware", func() {
-		NewAgent(modeltest.New(damodel.Profile{}), WithProfiles(Profile{Name: "bad", ExcludeMiddleware: []string{"filesystem"}}))
-	})
+func TestProfileCanExcludeOptionalFilesystem(t *testing.T) {
+	New(modeltest.New(damodel.Profile{}), WithProfiles(Profile{Name: "without-filesystem", ExcludeMiddleware: []string{"filesystem"}}), WithFilesystem(Filesystem{}))
 }
 
 func TestProfileUsesCanonicalSerializedMiddlewareNames(t *testing.T) {
@@ -101,14 +99,14 @@ func TestProfileUsesCanonicalSerializedMiddlewareNames(t *testing.T) {
 		called = true
 		return nil, nil
 	}}
-	compiled := NewAgent(
+	compiled := New(
 		modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}}), WithProfiles(Profile{
 			Name:              "canonical-middleware-name",
 			ExcludeMiddleware: []string{"SummarizationMiddleware"},
-		}), WithMiddleware(replacement), WithoutSubagents(),
+		}), WithFilesystem(Filesystem{}), WithSummarization(Summarization{}), WithMiddleware(replacement),
 	)
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 	if called {
@@ -117,11 +115,11 @@ func TestProfileUsesCanonicalSerializedMiddlewareNames(t *testing.T) {
 }
 
 func TestProfileRejectsRequiredMiddlewareNames(t *testing.T) {
-	for _, name := range []string{"filesystem", "subagents"} {
+	for _, name := range []string{"patch_tool_calls", "PatchToolCallsMiddleware"} {
 		requirePanicContaining(t, "required middleware", func() {
-			NewAgent(modeltest.New(damodel.Profile{}), WithProfiles(Profile{
+			New(modeltest.New(damodel.Profile{}), WithProfiles(Profile{
 				Name: "required-" + name, ExcludeMiddleware: []string{name},
-			}))
+			}), WithFilesystem(Filesystem{}), WithSummarization(Summarization{}), WithSubagents())
 		})
 	}
 }
@@ -132,19 +130,18 @@ func TestExplicitProfileRejectsMalformedNames(t *testing.T) {
 			continue
 		}
 		requirePanicContaining(t, "profile", func() {
-			NewAgent(modeltest.New(damodel.Profile{}), WithProfiles(Profile{Name: name}))
+			New(modeltest.New(damodel.Profile{}), WithProfiles(Profile{Name: name}), WithFilesystem(Filesystem{}), WithSummarization(Summarization{}), WithSubagents())
 		})
 	}
 }
 
-func TestProfileCannotExcludeRequiredSubagentsOrUnknownMiddleware(t *testing.T) {
-	for _, excluded := range []string{"subagents", "TypoMiddleware"} {
-		requirePanicContaining(t, "middleware", func() {
-			NewAgent(modeltest.New(damodel.Profile{}), WithProfiles(Profile{Name: "bad-" + excluded, ExcludeMiddleware: []string{excluded}}))
-		})
-	}
+func TestProfileCanExcludeOptionalSubagentsButRejectsUnknownMiddleware(t *testing.T) {
+	New(modeltest.New(damodel.Profile{}), WithProfiles(Profile{Name: "without-subagents", ExcludeMiddleware: []string{"subagents"}}), WithSubagents())
 	requirePanicContaining(t, "middleware", func() {
-		NewAgent(modeltest.New(damodel.Profile{}), WithProfiles(Profile{Name: "private-exclusion", ExcludeMiddleware: []string{"_private"}}))
+		New(modeltest.New(damodel.Profile{}), WithProfiles(Profile{Name: "bad-unknown", ExcludeMiddleware: []string{"TypoMiddleware"}}))
+	})
+	requirePanicContaining(t, "middleware", func() {
+		New(modeltest.New(damodel.Profile{}), WithProfiles(Profile{Name: "private-exclusion", ExcludeMiddleware: []string{"_private"}}), WithFilesystem(Filesystem{}), WithSummarization(Summarization{}), WithSubagents())
 	})
 }
 
@@ -174,9 +171,9 @@ func TestExplicitProfilesMergeProviderWithExactModel(t *testing.T) {
 		}
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
-	compiled := NewAgent(script, WithSystemMessage(damessage.System("user prompt")), WithProfiles(providerProfile, modelProfile), WithoutSummary())
+	compiled := New(script, WithProfiles(providerProfile, modelProfile), WithSystemMessage(damessage.System("user prompt")), WithFilesystem(Filesystem{}), WithSubagents())
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 }

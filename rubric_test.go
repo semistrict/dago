@@ -45,11 +45,9 @@ func TestRubricMiddlewareRevisesUntilSatisfied(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("revised answer")}},
 	)
-	compiled := NewAgent(primary, WithMiddleware(middleware), WithoutSubagents(), WithoutSummary())
+	compiled := New(primary, WithFilesystem(Filesystem{}), WithMiddleware(middleware))
 
-	result, err := compiled.Invoke(context.Background(), dagent.Input{
-		Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"},
-	})
+	result, err := compiled.Invoke(context.Background(), dagent.Prompt("question"), dagent.WithState(map[string]any{RubricKey: "Be correct"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,14 +71,11 @@ func TestRubricCheckpointsGraderUsagePrivately(t *testing.T) {
 		Message: graded, Structured: json.RawMessage(`{"result":"satisfied","explanation":"done","criteria":[]}`),
 	}})
 	saver := dacheckpoint.NewMemorySaver()
-	agent := NewAgent(
+	agent := New(
 		modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}),
-		WithMiddleware(Rubric(grader, RubricOptions{})), WithSaver(saver), WithoutSubagents(), WithoutSummary(),
+		WithMiddleware(Rubric(grader, RubricOptions{})), WithSaver(saver),
 	)
-	result, err := agent.Invoke(t.Context(), dagent.Input{
-		Config:   dacheckpoint.Config{ThreadID: "rubric-usage"},
-		Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"},
-	})
+	result, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(dacheckpoint.Config{ThreadID: "rubric-usage"}), dagent.Prompt("question"), dagent.WithState(map[string]any{RubricKey: "Be correct"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,8 +109,8 @@ func TestRubricWithRepositoryExposesOnlyBoundedReadTools(t *testing.T) {
 		}, Response: damodel.Response{Message: damessage.Assistant("graded"), Structured: json.RawMessage(`{"result":"satisfied","explanation":"verified","criteria":[]}`)}},
 	)
 	middleware := RubricWithRepository(grader, backend, darepository.Options{Root: "/repo"}, RubricOptions{})
-	compiled := NewAgent(modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}), WithMiddleware(middleware), WithoutSubagents(), WithoutSummary())
-	result, err := compiled.Invoke(t.Context(), dagent.Input{Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Verify the result"}})
+	compiled := New(modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}), WithMiddleware(middleware))
+	result, err := compiled.Invoke(t.Context(), dagent.Prompt("question"), dagent.WithState(map[string]any{RubricKey: "Verify the result"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +125,8 @@ func TestRubricRetriesOneTransientGraderTransportFailure(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("graded"), Structured: json.RawMessage(`{"result":"satisfied","explanation":"done","criteria":[]}`)}},
 	)
 	middleware := Rubric(grader, RubricOptions{})
-	compiled := NewAgent(modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}), WithMiddleware(middleware), WithoutSubagents(), WithoutSummary())
-	result, err := compiled.Invoke(t.Context(), dagent.Input{Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"}})
+	compiled := New(modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}), WithMiddleware(middleware))
+	result, err := compiled.Invoke(t.Context(), dagent.Prompt("question"), dagent.WithState(map[string]any{RubricKey: "Be correct"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,11 +151,8 @@ func TestRubricGraderReceivesInvocationConfigurableSettings(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("graded"), Structured: json.RawMessage(`{"result":"satisfied","explanation":"done","criteria":[]}`)}},
 	)
 	middleware := Rubric(grader, RubricOptions{Tools: []datool.Tool{inspect}})
-	compiled := NewAgent(modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}), WithMiddleware(middleware), WithoutSubagents(), WithoutSummary())
-	_, err := compiled.Invoke(t.Context(), dagent.Input{
-		Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"},
-		Configurable: map[string]any{"tenant": "request-tenant"},
-	})
+	compiled := New(modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}), WithFilesystem(Filesystem{}), WithMiddleware(middleware))
+	_, err := compiled.Invoke(t.Context(), dagent.Prompt("question"), dagent.WithState(map[string]any{RubricKey: "Be correct"}), dagent.WithConfigurable(map[string]any{"tenant": "request-tenant"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,9 +166,9 @@ func TestRubricMiddlewareStopsAtIterationLimit(t *testing.T) {
 	middleware := Rubric(grader, RubricOptions{MaxIterations: 1, OnEvaluation: func(value RubricEvaluation) { evaluation = value }})
 	primary := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}})
 	saver := dacheckpoint.NewMemorySaver()
-	compiled := NewAgent(primary, WithMiddleware(middleware), WithSaver(saver), WithoutSubagents(), WithoutSummary())
+	compiled := New(primary, WithFilesystem(Filesystem{}), WithMiddleware(middleware), WithSaver(saver))
 	config := dacheckpoint.Config{ThreadID: "rubric-limit"}
-	result, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"}})
+	result, err := compiled.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("question"), dagent.WithState(map[string]any{RubricKey: "Be correct"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,13 +194,11 @@ func TestRubricMiddlewareReadsDynamicIterationLimit(t *testing.T) {
 	)
 	middleware := Rubric(grader, RubricOptions{MaxIterationsFunc: func() int { return limit }})
 	limit = 1
-	agent := NewAgent(
+	agent := New(
 		modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}),
-		WithMiddleware(middleware), WithoutSubagents(), WithoutSummary(),
+		WithMiddleware(middleware),
 	)
-	result, err := agent.Invoke(t.Context(), dagent.Input{
-		Messages: []damessage.Message{damessage.Human("question")}, State: dastate.Values{RubricKey: "Be correct"},
-	})
+	result, err := agent.Invoke(t.Context(), dagent.Prompt("question"), dagent.WithState(dastate.Values{RubricKey: "Be correct"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,11 +225,9 @@ func TestRubricTerminalStatusesAreDurable(t *testing.T) {
 			})
 			middleware := Rubric(grader, RubricOptions{})
 			saver := dacheckpoint.NewMemorySaver()
-			compiled := NewAgent(modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}), WithMiddleware(middleware), WithSaver(saver), WithoutSubagents(), WithoutSummary())
+			compiled := New(modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}}), WithFilesystem(Filesystem{}), WithMiddleware(middleware), WithSaver(saver))
 			config := dacheckpoint.Config{ThreadID: "rubric-terminal-" + test.name}
-			result, err := compiled.Invoke(t.Context(), dagent.Input{
-				Config: config, Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"},
-			})
+			result, err := compiled.Invoke(t.Context(), dagent.FromCheckpoint(config), dagent.Prompt("question"), dagent.WithState(map[string]any{RubricKey: "Be correct"}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -262,9 +250,9 @@ func TestRubricGraderFailureIsRecordedWithoutReplacingAnswer(t *testing.T) {
 	var evaluation RubricEvaluation
 	middleware := Rubric(grader, RubricOptions{OnEvaluation: func(value RubricEvaluation) { evaluation = value }})
 	primary := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("answer")}})
-	compiled := NewAgent(primary, WithMiddleware(middleware), WithoutSubagents(), WithoutSummary())
+	compiled := New(primary, WithFilesystem(Filesystem{}), WithMiddleware(middleware))
 
-	result, err := compiled.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("question")}, State: map[string]any{RubricKey: "Be correct"}})
+	result, err := compiled.Invoke(context.Background(), dagent.Prompt("question"), dagent.WithState(map[string]any{RubricKey: "Be correct"}))
 	if err != nil {
 		t.Fatal(err)
 	}

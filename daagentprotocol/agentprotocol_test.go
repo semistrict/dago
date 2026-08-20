@@ -205,5 +205,5 @@ func TestAsyncSubagentRequiresRunner(t *testing.T) {
 			t.Fatalf("panic = %v", value)
 		}
 	}()
-	dago.AsyncSubagents(dago.AsyncSubagent{Name: "remote", Description: "Remote worker", GraphID: "worker"})
+	dago.AsyncSubagents([]dago.AsyncSubagent{{Name: "remote", Description: "Remote worker", GraphID: "worker"}})
 }

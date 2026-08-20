@@ -23,9 +23,9 @@ func TestStaticBackendConstructorsReturnReadyValues(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
 	state := dabackend.NewState("", nil)
 	base := dabackend.NewBaseSandbox(staticSandboxTransport{}, dabackend.BaseSandboxOptions{})
-	composite := dabackend.NewCompositeWithOptions(memory, dabackend.CompositeOptions{})
-	store := dabackend.NewStore(dastore.NewMemory(), dastore.Namespace{"files"})
-	dynamic := dabackend.NewStoreWithOptions(func(*dabackend.Runtime) (dastore.Namespace, error) {
+	composite := dabackend.NewComposite(memory, nil)
+	store := dabackend.NewStore(dabackend.FixedNamespace(dastore.Namespace{"files"}), dabackend.StoreOptions{Store: dastore.NewMemory()})
+	dynamic := dabackend.NewStore(func(*dabackend.Runtime) (dastore.Namespace, error) {
 		return dastore.Namespace{"files"}, nil
 	}, dabackend.StoreOptions{Store: dastore.NewMemory()})
 

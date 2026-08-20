@@ -109,7 +109,7 @@ const (
 )
 
 func newApprovalReviewer(model damodel.Chat, backend dabackend.Backend) *dagent.Agent {
-	return dago.NewAgent(
+	return dago.New(
 		model,
 		dago.WithName("approval-reviewer"),
 		dago.WithBackend(backend),
@@ -130,8 +130,6 @@ func newApprovalReviewer(model damodel.Chat, backend dabackend.Backend) *dagent.
 			Description: "Risk and authorization assessment for one planned action.",
 			Schema:      approvalAssessmentSchema, Strict: true, HandleErrors: true,
 		}),
-		dago.WithoutSubagents(),
-		dago.WithoutSummary(),
 	)
 }
 
@@ -217,9 +215,7 @@ func (runner *dagoRunner) Review(ctx context.Context, request approvalReviewRequ
 	ownedUsage := make([]damessage.PurposedUsage, 0, 8)
 	defer func() { runner.recordOwnedUsage(ctx, request.ThreadID, ownedUsage) }()
 	reviewCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	response, invokeErr := reviewer.Invoke(reviewCtx, dagent.Input{
-		Messages: []damessage.Message{damessage.Human(buildApprovalBatchPrompt(request))},
-	})
+	response, invokeErr := reviewer.Invoke(reviewCtx, dagent.Prompt(buildApprovalBatchPrompt(request)))
 	cancel()
 	if remaining := 256 - len(ownedUsage); remaining > 0 {
 		usage, _ := dacost.TransferUsage(response.Messages, dacost.PurposeAuto, remaining)
@@ -274,9 +270,7 @@ func reviewApprovals(ctx context.Context, reviewer *dagent.Agent, request approv
 		return approvalReviewResult{}, errors.New("automatic approval batch is empty or exceeds its bound")
 	}
 	reviewCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	response, err := reviewer.Invoke(reviewCtx, dagent.Input{
-		Messages: []damessage.Message{damessage.Human(buildApprovalBatchPrompt(request))},
-	})
+	response, err := reviewer.Invoke(reviewCtx, dagent.Prompt(buildApprovalBatchPrompt(request)))
 	cancel()
 	if err != nil {
 		return approvalReviewResult{}, fmt.Errorf("review action batch: %w", err)

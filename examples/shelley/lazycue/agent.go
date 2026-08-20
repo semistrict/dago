@@ -316,11 +316,9 @@ func runAgent(ctx context.Context, browser *Browser, baseURL, model, apiKey, des
 	defer cancel()
 
 	chat := openai.NewAPIKey(apiKey, model, openai.Options{
-		BaseURL: cfg.OpenAIBaseURL, HTTPClient: cfg.HTTPClient,
-		MaxOutputTokens: 8192,
-		// LazyCue owns the user-visible retry budget below. Disable the
-		// transport adapter's retry loop so three logical attempts cannot
-		// multiply into twelve HTTP requests.
+		BaseURL: cfg.OpenAIBaseURL, HTTPClient: cfg.HTTPClient, MaxOutputTokens: 8192,
+		// LazyCue owns the user-visible retry budget below. Disable the transport
+		// adapter's retry loop so three logical attempts cannot multiply into twelve HTTP requests.
 		RetryBackoff: []time.Duration{},
 	})
 	retrying := &retryingChat{inner: chat, attempts: modelMaxAttempts, backoff: modelRetryBackoff, verbose: cfg.Verbose}
@@ -334,13 +332,13 @@ func runAgent(ctx context.Context, browser *Browser, baseURL, model, apiKey, des
 	if cfg.Mode == agentModeFix {
 		userPrompt = buildFixUserPrompt(description, cfg.PreviousSteps, cfg.PreviousError, cfg.CacheFilePath)
 	}
-	result, err := compiled.Invoke(ctx, dagent.Input{Messages: []damessage.Message{damessage.Human(userPrompt)}})
+	result, err := compiled.Invoke(ctx, dagent.Prompt(userPrompt))
 	if err != nil {
 		return nil, fmt.Errorf("run native agent: %w", err)
 	}
 
 	if _, _, finalSteps, finalResults, _ := state.snapshot(); finalSteps == nil || !allPassed(finalResults) {
-		result, err = compiled.Invoke(ctx, dagent.Input{Messages: append(result.Messages, damessage.Human("You have not produced a complete passing test. Call run_steps with the full test and final=true. If the application is genuinely broken, state that explicitly."))})
+		result, err = compiled.Invoke(ctx, dagent.Messages(append(result.Messages, damessage.Human("You have not produced a complete passing test. Call run_steps with the full test and final=true. If the application is genuinely broken, state that explicitly."))))
 		if err != nil {
 			return nil, fmt.Errorf("finalize native agent: %w", err)
 		}

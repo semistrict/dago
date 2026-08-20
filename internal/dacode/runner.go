@@ -59,8 +59,45 @@ type eventStream interface {
 	Close() error
 }
 
+type runInput struct {
+	Config             dacheckpoint.Config
+	Messages           []damessage.Message
+	State              dastate.Values
+	Resume             any
+	Deps               any
+	Configurable       map[string]any
+	SkipValueEvents    bool
+	DiscardResultState bool
+}
+
+func (input runInput) options() []dagent.RunOption {
+	options := []dagent.RunOption{dagent.FromCheckpoint(input.Config)}
+	if len(input.Messages) > 0 {
+		options = append(options, dagent.Messages(input.Messages))
+	}
+	if len(input.State) > 0 {
+		options = append(options, dagent.WithState(input.State))
+	}
+	if input.Resume != nil {
+		options = append(options, dagent.Resume(input.Resume))
+	}
+	if input.Deps != nil {
+		options = append(options, dagent.WithDeps(input.Deps))
+	}
+	if input.Configurable != nil {
+		options = append(options, dagent.WithConfigurable(input.Configurable))
+	}
+	if input.SkipValueEvents {
+		options = append(options, dagent.WithoutValueEvents())
+	}
+	if input.DiscardResultState {
+		options = append(options, dagent.WithoutResultState())
+	}
+	return options
+}
+
 type agentRunner interface {
-	Start(context.Context, dagent.Input) eventStream
+	Start(context.Context, runInput) eventStream
 	Profile() damodel.Profile
 	ReasoningEffort() reasoningEffortContext
 	SetReasoningEffort(string) error
@@ -181,7 +218,7 @@ func (identity *agentIdentity) set(name string) {
 	identity.name = name
 }
 
-func (runner *dagoRunner) Start(ctx context.Context, input dagent.Input) eventStream {
+func (runner *dagoRunner) Start(ctx context.Context, input runInput) eventStream {
 	state := input.State.Clone()
 	if state == nil {
 		state = dastate.Values{}
@@ -197,7 +234,7 @@ func (runner *dagoRunner) Start(ctx context.Context, input dagent.Input) eventSt
 			input.Messages[last].OtherUsage = append(input.Messages[last].OtherUsage, pending...)
 		}
 	}
-	return runner.agent.Stream(ctx, input)
+	return runner.agent.Stream(ctx, input.options()...)
 }
 
 func (runner *dagoRunner) NextHookStatus(ctx context.Context) (hookStatusUpdate, error) {
@@ -318,7 +355,7 @@ func (runner *dagoRunner) SetDefaultAgent(ctx context.Context, name string) (str
 }
 
 func (runner *dagoRunner) Cancel(ctx context.Context, threadID string) error {
-	_, err := runner.agent.Cancel(ctx, dagent.Input{Config: dacheckpoint.Config{ThreadID: threadID}})
+	_, err := runner.agent.Cancel(ctx, dagent.FromCheckpoint(dacheckpoint.Config{ThreadID: threadID}))
 	return err
 }
 
@@ -1229,7 +1266,7 @@ Workspace AGENTS.md files are project instructions. Follow the instructions that
 		},
 	})
 	middleware = append(middleware, daworkflow.Middleware(workflowManager))
-	agent := dago.NewAgent(
+	agent := dago.New(
 		model,
 		dago.WithName("dacode"),
 		dago.WithSystemMessage(system),

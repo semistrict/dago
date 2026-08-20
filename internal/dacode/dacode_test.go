@@ -77,7 +77,7 @@ func (*fakeEventStream) Close() error { return nil }
 
 type fakeRunner struct {
 	streams          []eventStream
-	inputs           []dagent.Input
+	inputs           []runInput
 	reviewRequest    approvalReviewRequest
 	reviewResult     approvalReviewResult
 	reviewErr        error
@@ -111,7 +111,7 @@ type fakeRunner struct {
 	workflowDone     chan daworkflow.Status
 }
 
-func (runner *fakeRunner) Start(_ context.Context, input dagent.Input) eventStream {
+func (runner *fakeRunner) Start(_ context.Context, input runInput) eventStream {
 	runner.inputs = append(runner.inputs, input)
 	if len(runner.streams) == 0 {
 		return &fakeEventStream{}
@@ -2415,7 +2415,7 @@ func TestRunnerPersistsSessionWorkingDirectory(t *testing.T) {
 		Chunks: []damodel.Chunk{{MessageDelta: damessage.Assistant("done")}},
 	}), dagent.Options{Saver: saver, StateFields: sessionStateFields()})
 	runner := &dagoRunner{agent: agent, workingDir: "/workspace/project"}
-	stream := runner.Start(t.Context(), dagent.Input{
+	stream := runner.Start(t.Context(), runInput{
 		Config:   dacheckpoint.Config{ThreadID: "directory-session"},
 		Messages: []damessage.Message{damessage.Human("work")},
 	})

@@ -45,7 +45,7 @@ func newAuthMCPAutoFixtureRunner() *authMCPAutoFixtureRunner {
 	}
 }
 
-func (runner *authMCPAutoFixtureRunner) Start(_ context.Context, input dagent.Input) eventStream {
+func (runner *authMCPAutoFixtureRunner) Start(_ context.Context, input runInput) eventStream {
 	if len(input.Messages) > 0 {
 		runner.mu.Lock()
 		runner.lastPrompt = input.Messages[len(input.Messages)-1].TextContent()

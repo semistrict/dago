@@ -9,6 +9,7 @@ import (
 
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // ConversationSubagentRunner executes a turn in a persistent child conversation.
@@ -84,18 +85,21 @@ var defaultConversationSubagentReasoningLevels = []string{"off", "minimal", "low
 
 // ConversationSubagentTool creates a tool that delegates work to named,
 // persistent child conversations.
-func ConversationSubagentTool(store ConversationSubagentStore, runner ConversationSubagentRunner, workingDirectory func() string, parentConversationID, modelID string, options ConversationSubagentOptions) datool.Tool {
+func ConversationSubagentTool(store ConversationSubagentStore, runner ConversationSubagentRunner, workingDirectory func() string, parentConversationID, modelID string, optionValues ...ConversationSubagentOptions) datool.Tool {
 	if nilInterface(store) || nilInterface(runner) || workingDirectory == nil {
 		panic("conversation subagent store, runner, and working directory are required")
 	}
 	if strings.TrimSpace(parentConversationID) == "" || strings.TrimSpace(modelID) == "" {
 		panic("conversation subagent parent conversation ID and model ID are required")
 	}
-	if len(options.ReasoningLevels) == 0 {
-		options.ReasoningLevels = append([]string(nil), defaultConversationSubagentReasoningLevels...)
-	}
+	options := optionvalue.Resolve("conversation subagent tool", optionValues)
+	options.AvailableModels = append([]ConversationSubagentModel(nil), options.AvailableModels...)
+	options.ReasoningLevels = append([]string(nil), options.ReasoningLevels...)
 	if options.DefaultTimeout < 0 || options.MaxTimeout < 0 {
 		panic("conversation subagent timeouts cannot be negative")
+	}
+	if len(options.ReasoningLevels) == 0 {
+		options.ReasoningLevels = append([]string(nil), defaultConversationSubagentReasoningLevels...)
 	}
 	if options.DefaultTimeout == 0 {
 		options.DefaultTimeout = 15 * time.Minute

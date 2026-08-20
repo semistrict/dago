@@ -16,7 +16,7 @@ type typedNilRunnable struct{}
 
 type typedNilVideoExtractor struct{ davideo.Extractor }
 
-func (*typedNilRunnable) Invoke(context.Context, any) (dagent.Result, error) {
+func (*typedNilRunnable) Invoke(context.Context, ...dagent.RunOption) (dagent.Result, error) {
 	return dagent.Result{}, nil
 }
 
@@ -28,7 +28,7 @@ func TestStaticAPIsRejectTypedNilRequiredInterfaces(t *testing.T) {
 
 	var model *modeltest.Scripted
 	requirePanicContaining(t, "compaction model is nil", func() {
-		_, _ = CompactConversation(t.Context(), model, nil, ConversationCompactionOptions{})
+		_, _ = CompactConversation(t.Context(), model, nil)
 	})
 	requirePanicContaining(t, "rubric model is nil", func() {
 		Rubric(model, RubricOptions{})
@@ -48,10 +48,10 @@ func TestStaticAPIsRejectTypedNilRequiredInterfaces(t *testing.T) {
 	var store *recordingConversationSubagentStore
 	var runner *recordingConversationSubagentRunner
 	requirePanicContaining(t, "store, runner, and working directory are required", func() {
-		ConversationSubagentTool(store, &recordingConversationSubagentRunner{}, func() string { return "/workspace" }, "parent", "model", ConversationSubagentOptions{})
+		ConversationSubagentTool(store, &recordingConversationSubagentRunner{}, func() string { return "/workspace" }, "parent", "model")
 	})
 	requirePanicContaining(t, "store, runner, and working directory are required", func() {
-		ConversationSubagentTool(&recordingConversationSubagentStore{}, runner, func() string { return "/workspace" }, "parent", "model", ConversationSubagentOptions{})
+		ConversationSubagentTool(&recordingConversationSubagentStore{}, runner, func() string { return "/workspace" }, "parent", "model")
 	})
 	for name, ids := range map[string][2]string{
 		"parent": {"", "model"},
@@ -59,14 +59,14 @@ func TestStaticAPIsRejectTypedNilRequiredInterfaces(t *testing.T) {
 	} {
 		t.Run("conversation identity "+name, func(t *testing.T) {
 			requirePanicContaining(t, "parent conversation ID and model ID are required", func() {
-				ConversationSubagentTool(&recordingConversationSubagentStore{}, &recordingConversationSubagentRunner{}, func() string { return "/workspace" }, ids[0], ids[1], ConversationSubagentOptions{})
+				ConversationSubagentTool(&recordingConversationSubagentStore{}, &recordingConversationSubagentRunner{}, func() string { return "/workspace" }, ids[0], ids[1])
 			})
 		})
 	}
 
 	var asyncRunner *asyncRunnerStub
 	requirePanicContaining(t, "runner is required", func() {
-		AsyncSubagents(AsyncSubagent{Name: "worker", Description: "Worker", GraphID: "graph", Runner: asyncRunner})
+		AsyncSubagents([]AsyncSubagent{{Name: "worker", Description: "Worker", GraphID: "graph", Runner: asyncRunner}})
 	})
 }
 
@@ -82,7 +82,7 @@ func TestStaticAPIsRejectNegativeLimitsAndKeepZeroDefaults(t *testing.T) {
 	} {
 		t.Run("filesystem "+name, func(t *testing.T) {
 			requirePanicContaining(t, "filesystem limits cannot be negative", func() {
-				NewAgent(model(), WithFilesystem(filesystem), WithoutSummary())
+				New(model(), WithFilesystem(filesystem))
 			})
 		})
 	}
@@ -100,39 +100,39 @@ func TestStaticAPIsRejectNegativeLimitsAndKeepZeroDefaults(t *testing.T) {
 	} {
 		t.Run("summarization "+name, func(t *testing.T) {
 			requirePanicContaining(t, "cannot be negative", func() {
-				NewAgent(model(), WithSummarization(summarization))
+				New(model(), WithSummarization(summarization))
 			})
 		})
 	}
 
 	requirePanicContaining(t, "skills maximum file bytes cannot be negative", func() {
-		NewAgent(model(), WithSkills(Skills{Sources: []string{"/skills"}, MaxFileBytes: -1}), WithoutSummary())
+		New(model(), WithSkills(Skills{Sources: []string{"/skills"}, MaxFileBytes: -1}))
 	})
 	requirePanicContaining(t, "compaction limits cannot be negative", func() {
-		_, _ = CompactConversation(t.Context(), model(), nil, ConversationCompactionOptions{KeepMessages: -1})
+		_, _ = CompactConversation(t.Context(), model(), nil, WithCompactKeepMessages(-1))
 	})
 
-	for name, options := range map[string]ConversationSubagentOptions{
-		"default":      {DefaultTimeout: -time.Second},
-		"maximum":      {MaxTimeout: -time.Second},
-		"relationship": {DefaultTimeout: time.Hour, MaxTimeout: time.Minute},
+	for name, timeouts := range map[string][2]time.Duration{
+		"default":      {-time.Second, 0},
+		"maximum":      {0, -time.Second},
+		"relationship": {time.Hour, time.Minute},
 	} {
 		t.Run("conversation "+name, func(t *testing.T) {
 			requirePanicContaining(t, "timeout", func() {
-				ConversationSubagentTool(&recordingConversationSubagentStore{}, &recordingConversationSubagentRunner{}, func() string { return "/workspace" }, "parent", "model", options)
+				ConversationSubagentTool(&recordingConversationSubagentStore{}, &recordingConversationSubagentRunner{}, func() string { return "/workspace" }, "parent", "model", ConversationSubagentOptions{DefaultTimeout: timeouts[0], MaxTimeout: timeouts[1]})
 			})
 		})
 	}
 
 	// The zero values remain valid and select bounded defaults.
-	NewAgent(model(), WithFilesystem(Filesystem{}), WithSkills(Skills{Sources: []string{"/skills"}}), WithoutSummary())
-	ConversationSubagentTool(&recordingConversationSubagentStore{}, &recordingConversationSubagentRunner{}, func() string { return "/workspace" }, "parent", "model", ConversationSubagentOptions{})
+	New(model(), WithFilesystem(Filesystem{}), WithSkills(Skills{Sources: []string{"/skills"}}))
+	ConversationSubagentTool(&recordingConversationSubagentStore{}, &recordingConversationSubagentRunner{}, func() string { return "/workspace" }, "parent", "model")
 }
 
 func TestAgentOptionsTreatTypedNilOptionalInterfacesAsOmitted(t *testing.T) {
 	var summaryModel *modeltest.Scripted
-	NewAgent(modeltest.New(damodel.Profile{ContextWindow: 100_000}), WithSummarization(Summarization{Model: summaryModel}))
+	New(modeltest.New(damodel.Profile{ContextWindow: 100_000}), WithSummarization(Summarization{Model: summaryModel}))
 
 	var extractor *typedNilVideoExtractor
-	NewAgent(modeltest.New(damodel.Profile{}), WithFilesystem(Filesystem{VideoExtractor: extractor}), WithoutSummary())
+	New(modeltest.New(damodel.Profile{}), WithFilesystem(Filesystem{VideoExtractor: extractor}))
 }

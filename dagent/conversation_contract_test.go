@@ -56,10 +56,10 @@ func TestBasicConvo(t *testing.T) {
 	)
 	compiled := compileAgent(t, script, nil, dacheckpoint.NewMemorySaver())
 	config := dacheckpoint.Config{ThreadID: "basic"}
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("Hi, my name is Cornelius")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("Hi, my name is Cornelius")); err != nil {
 		t.Fatal(err)
 	}
-	result, err := compiled.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("What is my name?")}})
+	result, err := compiled.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("What is my name?"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestCancelToolUse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := compiled.Invoke(ctx, dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("start")}})
+		_, err := compiled.Invoke(ctx, dagent.FromCheckpoint(config), dagent.Prompt("start"))
 		done <- err
 	}()
 	<-started
@@ -94,7 +94,7 @@ func TestCancelToolUse(t *testing.T) {
 	cancelled := damessage.Tool("cancel-me", "Tool execution cancelled by user")
 	cancelled.Name = "blocking"
 	cancelled.ToolStatus = damessage.ToolStatusError
-	result, err := compiled.Cancel(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{cancelled}})
+	result, err := compiled.Cancel(context.Background(), dagent.FromCheckpoint(config), dagent.Messages([]damessage.Message{cancelled}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestInsertMissingToolResults(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	result, err := compileAgent(t, script, tools, nil).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("run all")}})
+	result, err := compileAgent(t, script, tools, nil).Invoke(context.Background(), dagent.Prompt("run all"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,11 +145,11 @@ func TestSubConvo(t *testing.T) {
 		modeltest.Step{Check: onlyHuman("child"), Response: damodel.Response{Message: damessage.Assistant("child reply")}},
 	)
 	compiled := compileAgent(t, script, nil, dacheckpoint.NewMemorySaver())
-	parent, err := compiled.Invoke(context.Background(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "parent"}, Messages: []damessage.Message{damessage.Human("parent")}})
+	parent, err := compiled.Invoke(context.Background(), dagent.OnThread("parent"), dagent.Prompt("parent"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := compiled.Invoke(context.Background(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "child"}, Messages: []damessage.Message{damessage.Human("child")}})
+	child, err := compiled.Invoke(context.Background(), dagent.OnThread("child"), dagent.Prompt("child"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestFindTool(t *testing.T) {
 		dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{Tools: []datool.Tool{duplicate, duplicate}})
 	}()
 	unknown := modeltest.New(damodel.Profile{ToolCalling: true}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{toolCall("x", "missing")}}}})
-	_, err := compileAgent(t, unknown, nil, nil).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("go")}})
+	_, err := compileAgent(t, unknown, nil, nil).Invoke(context.Background(), dagent.Prompt("go"))
 	if !errors.Is(err, dagent.ErrUnknownTool) {
 		t.Fatalf("unknown tool error = %v", err)
 	}
@@ -203,7 +203,7 @@ func TestToolCallInfoFromContext(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled := dagent.New(script, dagent.Options{Tools: []datool.Tool{inspect}, Deps: "trusted", Saver: dacheckpoint.NewMemorySaver()})
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "runtime"}, Messages: []damessage.Message{damessage.Human("inspect")}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.OnThread("runtime"), dagent.Prompt("inspect")); err != nil {
 		t.Fatal(err)
 	}
 	if got.CallID != "call-17" || got.ThreadID != "runtime" || got.Deps != "trusted" {
@@ -214,7 +214,7 @@ func TestToolCallInfoFromContext(t *testing.T) {
 func TestUsageMethods(t *testing.T) {
 	usage := &damessage.Usage{InputTokens: 8, OutputTokens: 3, TotalTokens: 11, CostUSD: 0.25}
 	script := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, Content: damessage.Assistant("ok").Content, Usage: usage}}})
-	result, err := compileAgent(t, script, nil, nil).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("hi")}})
+	result, err := compileAgent(t, script, nil, nil).Invoke(context.Background(), dagent.Prompt("hi"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestListenerMethods(t *testing.T) {
 		},
 	}
 	script := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}})
-	if _, err := compileAgent(t, script, nil, nil, listener).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("hi")}}); err != nil {
+	if _, err := compileAgent(t, script, nil, nil, listener).Invoke(context.Background(), dagent.Prompt("hi")); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(events, []string{"request", "response"}) {
@@ -256,7 +256,7 @@ func TestNewToolUseContext(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
 	compiled := dagent.New(script, dagent.Options{Tools: []datool.Tool{inspect}, Deps: map[string]string{"scope": "conversation"}})
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "ctx-thread"}, Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"extra": "value"}}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.OnThread("ctx-thread"), dagent.Prompt("go"), dagent.WithState(dastate.Values{"extra": "value"})); err != nil {
 		t.Fatal(err)
 	}
 	extra, _ := got.State.Get("extra")
@@ -280,7 +280,7 @@ func TestToolResultContents(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	if _, err := compileAgent(t, script, []datool.Tool{produce}, nil).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("produce")}}); err != nil {
+	if _, err := compileAgent(t, script, []datool.Tool{produce}, nil).Invoke(context.Background(), dagent.Prompt("produce")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -309,7 +309,7 @@ func TestListenerInterface(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{toolCall("ping-1", "ping")}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	if _, err := compileAgent(t, script, []datool.Tool{ping}, nil, listener).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("ping")}}); err != nil {
+	if _, err := compileAgent(t, script, []datool.Tool{ping}, nil, listener).Invoke(context.Background(), dagent.Prompt("ping")); err != nil {
 		t.Fatal(err)
 	}
 	if requests != 2 || responses != 2 || calls != 1 || results != 1 {
@@ -332,7 +332,7 @@ func TestToolResultContentsWithToolUse(t *testing.T) {
 			return nil
 		}, Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	if _, err := compileAgent(t, script, []datool.Tool{ping}, nil).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("ping")}}); err != nil {
+	if _, err := compileAgent(t, script, []datool.Tool{ping}, nil).Invoke(context.Background(), dagent.Prompt("ping")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -365,7 +365,7 @@ func TestConvoListenerIntegration(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{toolCall("ping-1", "ping")}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}},
 	)
-	if _, err := compileAgent(t, script, []datool.Tool{ping}, nil, listener).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("ping")}}); err != nil {
+	if _, err := compileAgent(t, script, []datool.Tool{ping}, nil, listener).Invoke(context.Background(), dagent.Prompt("ping")); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"model.before", "model.after", "tool.before", "tool.after", "model.before", "model.after"}
@@ -376,7 +376,7 @@ func TestConvoListenerIntegration(t *testing.T) {
 
 func TestSubConvoWithHistoryAdditional(t *testing.T) {
 	parentScript := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent answer")}})
-	parent, err := compileAgent(t, parentScript, nil, nil).Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("parent question")}})
+	parent, err := compileAgent(t, parentScript, nil, nil).Invoke(context.Background(), dagent.Prompt("parent question"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestSubConvoWithHistoryAdditional(t *testing.T) {
 		return nil
 	}, Response: damodel.Response{Message: damessage.Assistant("child answer")}})
 	childMessages := append(append([]damessage.Message(nil), parent.Messages...), damessage.Human("follow up"))
-	child, err := compileAgent(t, childScript, nil, nil).Invoke(context.Background(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "child-history"}, Messages: childMessages})
+	child, err := compileAgent(t, childScript, nil, nil).Invoke(context.Background(), dagent.OnThread("child-history"), dagent.Messages(childMessages))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,15 +411,15 @@ func TestDepthAdditional(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "inner", Name: "task", Arguments: json.RawMessage(`{"description":"deep work","subagent_type":"deep"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("child done")}},
 	)
-	child := dago.NewAgent(childModel, dago.WithSubagents(dago.NewRunnableSubagent("deep", "Deep worker", grandchild)), dago.WithoutSummary())
+	child := dago.New(childModel, dago.WithFilesystem(dago.Filesystem{}), dago.WithSubagents(dago.NewRunnableSubagent("deep", "Deep worker", grandchild)))
 
 	parentModel := modeltest.New(damodel.Profile{ToolCalling: true},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{{ID: "outer", Name: "task", Arguments: json.RawMessage(`{"description":"child work","subagent_type":"child"}`)}}}}},
 		modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("parent done")}},
 	)
-	parent := dago.NewAgent(parentModel, dago.WithSubagents(dago.NewRunnableSubagent("child", "Child worker", child)), dago.WithoutSummary())
+	parent := dago.New(parentModel, dago.WithFilesystem(dago.Filesystem{}), dago.WithSubagents(dago.NewRunnableSubagent("child", "Child worker", child)))
 
-	result, err := parent.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("delegate twice")}})
+	result, err := parent.Invoke(context.Background(), dagent.Prompt("delegate twice"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +430,7 @@ func TestDepthAdditional(t *testing.T) {
 
 func TestGetIDAdditional(t *testing.T) {
 	script := modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}})
-	result, err := compileAgent(t, script, nil, dacheckpoint.NewMemorySaver()).Invoke(context.Background(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "conversation-id"}, Messages: []damessage.Message{damessage.Human("hi")}})
+	result, err := compileAgent(t, script, nil, dacheckpoint.NewMemorySaver()).Invoke(context.Background(), dagent.OnThread("conversation-id"), dagent.Prompt("hi"))
 	if err != nil {
 		t.Fatal(err)
 	}

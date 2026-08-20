@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/semistrict/dago/dastore"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 // Store persists virtual files in a namespaced runtime Store.
@@ -100,9 +101,21 @@ func storePathWithin(candidate, root string) bool {
 // runtime is nil when the backend is used directly outside an agent run.
 type NamespaceFactory func(*Runtime) (dastore.Namespace, error)
 
+// StoreOptions configures a persistent store backend.
 type StoreOptions struct {
 	// Store may be omitted when the agent runtime supplies one.
 	Store dastore.Store
+}
+
+// FixedNamespace returns a namespace factory for a fixed namespace.
+func FixedNamespace(namespace dastore.Namespace) NamespaceFactory {
+	if err := namespace.Validate(); err != nil {
+		panic(err)
+	}
+	fixed := append(dastore.Namespace(nil), namespace...)
+	return func(*Runtime) (dastore.Namespace, error) {
+		return append(dastore.Namespace(nil), fixed...), nil
+	}
 }
 
 type storeSessionKey struct{ owner *Store }
@@ -111,25 +124,13 @@ type storeSession struct {
 	namespace dastore.Namespace
 }
 
-func NewStore(values dastore.Store, namespace dastore.Namespace) *Store {
-	if nilInterface(values) {
-		panic("backend store is required")
-	}
-	if err := namespace.Validate(); err != nil {
-		panic(err)
-	}
-	fixed := append(dastore.Namespace(nil), namespace...)
-	return NewStoreWithOptions(func(*Runtime) (dastore.Namespace, error) {
-		return append(dastore.Namespace(nil), fixed...), nil
-	}, StoreOptions{Store: values})
-}
-
-// NewStoreWithOptions constructs a persistent backend whose namespace and,
-// optionally, store are resolved from each agent invocation.
-func NewStoreWithOptions(namespace NamespaceFactory, options StoreOptions) *Store {
+// NewStore constructs a persistent backend whose namespace and, optionally,
+// store are resolved from each agent invocation.
+func NewStore(namespace NamespaceFactory, optionValues ...StoreOptions) *Store {
 	if namespace == nil {
 		panic("backend store namespace factory is required")
 	}
+	options := optionvalue.Resolve("backend store", optionValues)
 	if nilInterface(options.Store) {
 		options.Store = nil
 	}

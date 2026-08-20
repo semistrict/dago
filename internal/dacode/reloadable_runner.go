@@ -171,7 +171,7 @@ func (runner *reloadableRunner) ReloadPlugins(ctx context.Context) (pluginReload
 	return result, nil
 }
 
-func (runner *reloadableRunner) Start(ctx context.Context, input dagent.Input) eventStream {
+func (runner *reloadableRunner) Start(ctx context.Context, input runInput) eventStream {
 	runner.mu.Lock()
 	if runner.closed || runner.runner == nil {
 		runner.mu.Unlock()

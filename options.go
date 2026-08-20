@@ -3,6 +3,7 @@ package dago
 import (
 	"encoding/json"
 	"log/slog"
+	"sort"
 
 	"github.com/semistrict/dago/dabackend"
 	"github.com/semistrict/dago/dacache"
@@ -13,33 +14,41 @@ import (
 	"github.com/semistrict/dago/datool"
 )
 
-// Option configures an agent constructed by NewAgent.
+// Option configures an agent constructed by New.
 type Option interface {
 	apply(*agentConfig)
 }
 
 type optionFunc func(*agentConfig)
 
-func (configure optionFunc) apply(options *agentConfig) { configure(options) }
+func (configure optionFunc) apply(config *agentConfig) { configure(config) }
+
+type middlewareBuilder struct {
+	build              func(buildContext) (dagent.Middleware, error)
+	custom             bool
+	optional           bool
+	inheritDeclarative bool
+	inheritGeneral     bool
+}
 
 // WithName sets the name stamped on model responses.
 func WithName(name string) Option {
-	return optionFunc(func(options *agentConfig) { options.Name = name })
+	return optionFunc(func(config *agentConfig) { config.Name = name })
 }
 
 // WithProfiles sets the ordered harness profiles applied to the agent.
 func WithProfiles(profiles ...Profile) Option {
-	return optionFunc(func(options *agentConfig) { options.Profiles = append([]Profile(nil), profiles...) })
+	return optionFunc(func(config *agentConfig) { config.Profiles = append([]Profile(nil), profiles...) })
 }
 
 // WithTools sets the caller-provided model tools.
 func WithTools(tools ...datool.Tool) Option {
-	return optionFunc(func(options *agentConfig) { options.Tools = append([]datool.Tool{}, tools...) })
+	return optionFunc(func(config *agentConfig) { config.Tools = append([]datool.Tool{}, tools...) })
 }
 
 // WithSystemMessage sets the agent's system message.
 func WithSystemMessage(message damessage.Message) Option {
-	return optionFunc(func(options *agentConfig) { options.SystemMessage = message })
+	return optionFunc(func(config *agentConfig) { config.SystemMessage = message })
 }
 
 // WithSystemPrompt sets a plain-text system message.
@@ -47,165 +56,244 @@ func WithSystemPrompt(prompt string) Option {
 	return WithSystemMessage(damessage.System(prompt))
 }
 
-// WithMiddleware sets the caller-provided middleware.
+// WithMiddleware appends caller-provided middleware. A later middleware with
+// the same name replaces the earlier contribution.
 func WithMiddleware(middleware ...dagent.Middleware) Option {
-	return optionFunc(func(options *agentConfig) { options.Middleware = append([]dagent.Middleware(nil), middleware...) })
+	values := append([]dagent.Middleware(nil), middleware...)
+	return optionFunc(func(config *agentConfig) {
+		for _, current := range values {
+			item := current
+			config.middleware = append(config.middleware, middlewareBuilder{
+				custom: true, inheritGeneral: true,
+				build: func(buildContext) (dagent.Middleware, error) { return item, nil },
+			})
+		}
+	})
 }
 
-// WithBackend sets the filesystem and memory backend.
+// WithoutMiddleware removes inherited or profile-provided middleware by public
+// or serialized name. It is primarily useful for declarative child agents.
+func WithoutMiddleware(names ...string) Option {
+	values := append([]string(nil), names...)
+	return optionFunc(func(config *agentConfig) {
+		if config.removeMiddleware == nil {
+			config.removeMiddleware = map[string]bool{}
+		}
+		for _, name := range values {
+			config.removeMiddleware[name] = true
+		}
+	})
+}
+
+// WithBackend sets the backend used by backend-backed middleware.
 func WithBackend(backend dabackend.Backend) Option {
-	return optionFunc(func(options *agentConfig) { options.Backend = backend })
+	return optionFunc(func(config *agentConfig) { config.Backend = backend })
 }
 
-// WithFilesystem sets filesystem tool and permission configuration.
+// WithFilesystem adds filesystem middleware with the given configuration.
 func WithFilesystem(filesystem Filesystem) Option {
-	return optionFunc(func(options *agentConfig) {
-		managedMemoryPaths := options.Filesystem.managedMemoryPaths
-		options.Filesystem = filesystem
-		options.Filesystem.managedMemoryPaths = appendUniqueStrings(options.Filesystem.managedMemoryPaths, managedMemoryPaths...)
+	return optionFunc(func(config *agentConfig) {
+		config.middleware = append(config.middleware, middlewareBuilder{
+			inheritDeclarative: true, inheritGeneral: true,
+			build: func(context buildContext) (dagent.Middleware, error) {
+				configured := filesystem
+				configured.managedMemoryPaths = appendUniqueStrings(configured.managedMemoryPaths, context.Config.managedMemoryPaths...)
+				return newFilesystem(context.Backend, configured, context.Config.approvalRules)
+			},
+		})
+		config.needsSaver = config.needsSaver || permissionsNeedSaver(filesystem.Permissions)
 	})
 }
 
-// WithFilesystemPermissions sets filesystem permissions while preserving the
-// rest of the filesystem configuration inherited by a subagent.
-func WithFilesystemPermissions(permissions ...FilesystemPermission) Option {
-	return optionFunc(func(options *agentConfig) {
-		options.Filesystem.Permissions = append([]FilesystemPermission{}, permissions...)
-	})
-}
-
-// WithInterpreter enables the persistent JavaScript interpreter with the given configuration.
+// WithInterpreter adds persistent JavaScript interpreter middleware.
 func WithInterpreter(interpreter Interpreter) Option {
-	return optionFunc(func(options *agentConfig) {
-		copy := interpreter
-		options.Interpreter = &copy
+	return optionFunc(func(config *agentConfig) {
+		config.middleware = append(config.middleware, middlewareBuilder{
+			inheritDeclarative: true, inheritGeneral: true,
+			build: func(buildContext) (dagent.Middleware, error) { return compileInterpreter(interpreter) },
+		})
 	})
 }
 
-// WithSubagents sets the inline subagents available through the task tool.
+// WithSubagents adds task delegation middleware. Calling it without explicit
+// subagents enables only the default general-purpose worker.
 func WithSubagents(subagents ...Subagent) Option {
-	return optionFunc(func(options *agentConfig) {
-		options.Subagents = append([]Subagent(nil), subagents...)
-		options.DisableSubagents = false
+	values := append([]Subagent(nil), subagents...)
+	return optionFunc(func(config *agentConfig) {
+		config.middleware = append(config.middleware, middlewareBuilder{
+			optional: true,
+			build: func(context buildContext) (dagent.Middleware, error) {
+				return buildSubagentsMiddleware(context, values)
+			},
+		})
 	})
 }
 
-// WithAsyncSubagents sets the hosted asynchronous subagents.
-func WithAsyncSubagents(subagents ...AsyncSubagent) Option {
-	return optionFunc(func(options *agentConfig) { options.AsyncSubagents = append([]AsyncSubagent(nil), subagents...) })
+// WithAsyncSubagents adds hosted asynchronous-subagent middleware.
+func WithAsyncSubagents(subagents []AsyncSubagent, options ...AsyncSubagentsOption) Option {
+	values := append([]AsyncSubagent(nil), subagents...)
+	configured := append([]AsyncSubagentsOption(nil), options...)
+	return optionFunc(func(config *agentConfig) {
+		config.middleware = append(config.middleware, middlewareBuilder{
+			build: func(buildContext) (dagent.Middleware, error) {
+				return AsyncSubagents(values, configured...), nil
+			},
+		})
+	})
 }
 
-// WithAsyncSubagentPrompt sets the additional async-subagent system prompt.
-func WithAsyncSubagentPrompt(prompt string) Option {
-	return optionFunc(func(options *agentConfig) { options.AsyncSubagentPrompt = prompt })
-}
-
-// WithoutSubagents disables the task tool and default general-purpose subagent.
-func WithoutSubagents() Option {
-	return optionFunc(func(options *agentConfig) { options.DisableSubagents = true })
-}
-
-// WithSkills sets skill discovery and prompt configuration.
+// WithSkills adds skill-discovery middleware.
 func WithSkills(skills Skills) Option {
-	return optionFunc(func(options *agentConfig) { options.Skills = skills })
-}
-
-// WithMemory sets persistent memory prompt configuration.
-func WithMemory(memory Memory) Option {
-	return optionFunc(func(options *agentConfig) { options.Memory = memory })
-}
-
-// WithTodo enables the todo-list middleware.
-func WithTodo() Option {
-	return optionFunc(func(options *agentConfig) { options.EnableTodo = true })
-}
-
-// WithoutSummary disables automatic conversation summarization.
-func WithoutSummary() Option {
-	return optionFunc(func(options *agentConfig) { options.DisableSummary = true })
-}
-
-// WithSummarization sets automatic conversation summarization configuration.
-func WithSummarization(summarization Summarization) Option {
-	return optionFunc(func(options *agentConfig) {
-		options.Summarization = summarization
-		options.DisableSummary = false
+	return optionFunc(func(config *agentConfig) {
+		config.middleware = append(config.middleware, middlewareBuilder{
+			inheritGeneral: true,
+			build: func(context buildContext) (dagent.Middleware, error) {
+				return newSkills(context.Backend, skills)
+			},
+		})
 	})
 }
 
-// WithApprovalRules sets tool calls that require human approval.
-func WithApprovalRules(rules ...dagent.ApprovalRule) Option {
-	return optionFunc(func(options *agentConfig) { options.InterruptOn = append([]dagent.ApprovalRule(nil), rules...) })
+// WithMemory adds persistent-memory prompt middleware.
+func WithMemory(memory Memory) Option {
+	configured := memory
+	configured.Sources = append([]string(nil), memory.Sources...)
+	if configured.Sources == nil {
+		for source := range configured.Contents {
+			configured.Sources = append(configured.Sources, source)
+		}
+		sort.Strings(configured.Sources)
+	}
+	return optionFunc(func(config *agentConfig) {
+		config.managedMemoryPaths = appendUniqueStrings(config.managedMemoryPaths, configured.Sources...)
+		config.middleware = append(config.middleware, middlewareBuilder{
+			inheritDeclarative: true, inheritGeneral: true,
+			build: func(context buildContext) (dagent.Middleware, error) {
+				return newMemory(context.Backend, configured, true)
+			},
+		})
+	})
 }
 
-// WithPromptCacheRetention sets the provider prompt-cache retention policy.
+// WithTodo adds todo-list middleware.
+func WithTodo(options ...dagent.TodoOption) Option {
+	configured := append([]dagent.TodoOption(nil), options...)
+	return optionFunc(func(config *agentConfig) {
+		config.middleware = append(config.middleware, middlewareBuilder{
+			build: func(buildContext) (dagent.Middleware, error) {
+				return dagent.TodoList(configured...), nil
+			},
+		})
+	})
+}
+
+// WithSummarization adds automatic conversation-summarization middleware.
+func WithSummarization(summarization Summarization) Option {
+	return optionFunc(func(config *agentConfig) {
+		config.middleware = append(config.middleware, middlewareBuilder{
+			inheritDeclarative: true, inheritGeneral: true,
+			build: func(context buildContext) (dagent.Middleware, error) {
+				return newSummarization(summarization.modelFor(context.Model), context.Backend, summarization)
+			},
+		})
+	})
+}
+
+// WithApprovalRules adds human-approval middleware.
+func WithApprovalRules(rules ...dagent.ApprovalRule) Option {
+	configured := append([]dagent.ApprovalRule(nil), rules...)
+	return optionFunc(func(config *agentConfig) {
+		config.approvalRules = configured
+		config.needsSaver = config.needsSaver || len(configured) > 0
+		config.middleware = append(config.middleware, middlewareBuilder{
+			inheritDeclarative: true, inheritGeneral: true,
+			build: func(buildContext) (dagent.Middleware, error) {
+				return dagent.HumanApproval(configured), nil
+			},
+		})
+	})
+}
+
+// WithPromptCacheRetention adds provider prompt-caching middleware.
 func WithPromptCacheRetention(retention string) Option {
-	return optionFunc(func(options *agentConfig) { options.PromptCacheRetention = retention })
+	return optionFunc(func(config *agentConfig) {
+		config.middleware = append(config.middleware, middlewareBuilder{
+			inheritDeclarative: true, inheritGeneral: true,
+			build: func(buildContext) (dagent.Middleware, error) {
+				return dagent.PromptCaching(retention, func(request dagent.ModelRequest) string {
+					if request.Runtime.Config.ThreadID != "" {
+						return request.Runtime.Config.ThreadID
+					}
+					return request.Runtime.TaskID
+				}), nil
+			},
+		})
+	})
 }
 
 // WithStructuredOutput sets the agent's structured response contract.
 func WithStructuredOutput(output *dagent.StructuredOutput) Option {
-	return optionFunc(func(options *agentConfig) { options.StructuredOutput = output })
+	return optionFunc(func(config *agentConfig) { config.StructuredOutput = output })
 }
 
 // WithStateFields sets application-owned state fields and reducers.
 func WithStateFields(fields map[string]dagent.StateField) Option {
-	return optionFunc(func(options *agentConfig) { options.StateFields = fields })
+	return optionFunc(func(config *agentConfig) { config.StateFields = fields })
 }
 
 // WithSaver sets the thread checkpoint saver.
 func WithSaver(saver dacheckpoint.Saver) Option {
-	return optionFunc(func(options *agentConfig) { options.Saver = saver })
+	return optionFunc(func(config *agentConfig) { config.Saver = saver })
 }
 
 // WithRetainedThreadState keeps active thread state in memory between invocations.
 func WithRetainedThreadState() Option {
-	return optionFunc(func(options *agentConfig) { options.RetainThreadState = true })
+	return optionFunc(func(config *agentConfig) { config.RetainThreadState = true })
 }
 
 // WithStore sets the durable cross-thread store.
 func WithStore(store dastore.Store) Option {
-	return optionFunc(func(options *agentConfig) { options.Store = store })
+	return optionFunc(func(config *agentConfig) { config.Store = store })
 }
 
 // WithCache sets the runtime cache.
 func WithCache(cache dacache.Cache) Option {
-	return optionFunc(func(options *agentConfig) { options.Cache = cache })
+	return optionFunc(func(config *agentConfig) { config.Cache = cache })
 }
 
 // WithDependencies sets construction-time runtime dependencies.
 func WithDependencies(dependencies any) Option {
-	return optionFunc(func(options *agentConfig) { options.Deps = dependencies })
+	return optionFunc(func(config *agentConfig) { config.Deps = dependencies })
 }
 
 // WithRecursionLimit sets the maximum graph steps for one invocation.
 func WithRecursionLimit(limit int) Option {
-	return optionFunc(func(options *agentConfig) { options.RecursionLimit = limit })
+	return optionFunc(func(config *agentConfig) { config.RecursionLimit = limit })
 }
 
 // WithMaxConcurrency sets the maximum concurrent graph tasks.
 func WithMaxConcurrency(limit int) Option {
-	return optionFunc(func(options *agentConfig) { options.MaxConcurrency = limit })
+	return optionFunc(func(config *agentConfig) { config.MaxConcurrency = limit })
 }
 
 // WithFatalToolErrors makes operational tool failures terminate the invocation.
 func WithFatalToolErrors() Option {
-	return optionFunc(func(options *agentConfig) { options.FailOnToolError = true })
+	return optionFunc(func(config *agentConfig) { config.FailOnToolError = true })
 }
 
 // WithMetadata sets invocation metadata used by tracing and evaluation adapters.
 func WithMetadata(metadata map[string]json.RawMessage) Option {
-	return optionFunc(func(options *agentConfig) { options.Metadata = metadata })
+	return optionFunc(func(config *agentConfig) { config.Metadata = metadata })
 }
 
 // WithTags sets invocation tags used by tracing and evaluation adapters.
 func WithTags(tags ...string) Option {
-	return optionFunc(func(options *agentConfig) { options.Tags = append([]string(nil), tags...) })
+	return optionFunc(func(config *agentConfig) { config.Tags = append([]string(nil), tags...) })
 }
 
 // WithDebug enables graph debug logging.
 func WithDebug() Option {
-	return optionFunc(func(options *agentConfig) { options.Debug = true })
+	return optionFunc(func(config *agentConfig) { config.Debug = true })
 }
 
 // WithLogger routes enabled graph debug events to logger. An omitted logger
@@ -214,5 +302,5 @@ func WithLogger(logger *slog.Logger) Option {
 	if logger == nil {
 		panic("create deep agent: logger is nil")
 	}
-	return optionFunc(func(options *agentConfig) { options.Logger = logger })
+	return optionFunc(func(config *agentConfig) { config.Logger = logger })
 }

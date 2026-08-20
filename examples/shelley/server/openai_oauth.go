@@ -114,10 +114,8 @@ func (controller *OpenAIOAuth) BuiltModels() ([]models.Built, error) {
 		return nil, nil
 	}
 	chat := dopenai.NewSubscription(session, OpenAISubscriptionModelID, dopenai.Options{
-		ContextWindow:    272000,
-		MaxOutputTokens:  32768,
-		DefaultReasoning: &damodel.Reasoning{Effort: "medium", Summary: "auto"},
-		WebSearch:        true,
+		ContextWindow: 272000, MaxOutputTokens: 32768,
+		DefaultReasoning: &damodel.Reasoning{Effort: "medium", Summary: "auto"}, WebSearch: true,
 	})
 	profiledChat := damodel.WithProfile(chat, func(profile *damodel.Profile) {
 		profile.SupportsImages = true

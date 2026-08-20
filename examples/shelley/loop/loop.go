@@ -429,19 +429,17 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			dagoTools = append(dagoTools, aliases...)
 		}
 		agentOptions := []dago.Option{
-			dago.WithName("Shelley"),
-			dago.WithTools(dagoTools...),
+			dago.WithName("Shelley"), dago.WithTools(dagoTools...),
+			dago.WithSystemMessage(dmessage.System("")),
 			dago.WithMiddleware(l.runtimeMiddleware(harnessBackend)),
-			dago.WithBackend(harnessBackend),
-			dago.WithSaver(l.saver),
-			dago.WithRetainedThreadState(),
-			dago.WithMaxConcurrency(1),
+			dago.WithBackend(harnessBackend), dago.WithSaver(l.saver),
+			dago.WithRetainedThreadState(), dago.WithMaxConcurrency(1),
 			dago.WithStateFields(map[string]dagent.StateField{
 				"shelley.run": {Kind: dagent.FieldEphemeral, Contract: "shelley.run.v1", Clone: func(value any) any { return value }},
 			}),
 		}
 		if prompt := runtimeSystemPrompt(system); prompt != "" {
-			agentOptions = append(agentOptions, dago.WithSystemPrompt(prompt))
+			agentOptions = append(agentOptions, dago.WithSystemMessage(dmessage.System(prompt)))
 		}
 		filesystem := dago.Filesystem{}
 		if l.filesystemTools == nil {
@@ -449,7 +447,6 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			// provide their complete tool surface. It still runs through dago, but
 			// does not opt into dago's default harness tools or prompts.
 			filesystem.Tools = []string{}
-			agentOptions = append(agentOptions, dago.WithoutSubagents(), dago.WithoutSummary())
 		} else {
 			filesystem.Tools = cloneFilesystemTools(l.filesystemTools)
 			skills := dago.Skills{Catalog: cloneSkillCatalog(l.skillCatalog), Activate: l.skillActivation}
@@ -457,21 +454,17 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			if l.memoryPrompt != nil {
 				memory.SystemPrompt = dago.PromptTemplate{Mode: dago.PromptCustom, Text: *l.memoryPrompt}
 			}
-			agentOptions = append(agentOptions, dago.WithSkills(skills), dago.WithMemory(memory))
+			agentOptions = append(agentOptions, dago.WithSkills(skills), dago.WithMemory(memory), dago.WithSummarization(dago.Summarization{}))
 			// Shelley uses dago's conversation-subagent tool so child runs retain
 			// their application-level UI and persistence contracts.
-			agentOptions = append(agentOptions, dago.WithoutSubagents())
 		}
 		agentOptions = append(agentOptions, dago.WithFilesystem(filesystem))
-		l.runtime = dago.NewAgent(model, agentOptions...)
+		l.runtime = dago.New(model, agentOptions...)
 	}
 	runtime := l.runtime
 
 	requestCtx, trace := llmhttp.WithRequestTrace(ctx)
-	stream := runtime.Stream(requestCtx, dagent.Input{
-		Config: l.checkpointConfig(), Messages: dagoMessages,
-		State: dastate.Values{"shelley.run": true}, SkipValueEvents: true, DiscardResultState: true,
-	})
+	stream := runtime.Stream(requestCtx, dagent.FromCheckpoint(l.checkpointConfig()), dagent.Messages(dagoMessages), dagent.WithState(dastate.Values{"shelley.run": true}), dagent.WithoutValueEvents(), dagent.WithoutResultState())
 	for event, nextErr := range stream.Events() {
 		if nextErr != nil {
 			l.flushStream()
@@ -585,12 +578,8 @@ func predictableFilesystemAliases(model damodel.Chat, files dbackend.Backend, se
 		return nil, nil
 	}
 	middlewareTools := append([]string{"read_file"}, wanted...)
-	compiled := dago.NewAgent(
-		model,
-		dago.WithBackend(files),
-		dago.WithFilesystem(dago.Filesystem{Tools: middlewareTools}),
-		dago.WithoutSubagents(),
-		dago.WithoutSummary(),
+	compiled := dago.New(
+		model, dago.WithBackend(files), dago.WithFilesystem(dago.Filesystem{Tools: middlewareTools}),
 	)
 	tools := compiled.Tools()
 	byName := make(map[string]datool.Tool, len(tools))
@@ -722,9 +711,7 @@ func (l *Loop) ResolveCancellation(ctx context.Context, messages ...llm.Message)
 	if err != nil {
 		return err
 	}
-	if _, err := l.runtime.Cancel(ctx, dagent.Input{
-		Config: l.checkpointConfig(), Messages: converted,
-	}); err != nil {
+	if _, err := l.runtime.Cancel(ctx, dagent.FromCheckpoint(l.checkpointConfig()), dagent.Messages(converted)); err != nil {
 		return fmt.Errorf("resolve dago Shelley cancellation: %w", err)
 	}
 	l.mu.Lock()

@@ -19,6 +19,7 @@ import (
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 const (
@@ -98,7 +99,8 @@ type Client struct {
 
 // NewAPIKey creates a model authenticated with an API key. Construction does
 // no I/O; missing required values and invalid static options panic.
-func NewAPIKey(apiKey, model string, options Options) *Client {
+func NewAPIKey(apiKey, model string, optionValues ...Options) *Client {
+	options := optionvalue.Resolve("openai API key client", optionValues)
 	return newAPIKey(apiKey, "openai", model, options)
 }
 
@@ -107,11 +109,12 @@ func NewAPIKey(apiKey, model string, options Options) *Client {
 // errors, and retry events. Provider-specific adapters should normally expose
 // their own options and constructor instead of asking applications to call this
 // function directly.
-func NewCompatibleAPIKey(apiKey, provider, model string, options Options) *Client {
+func NewCompatibleAPIKey(apiKey, provider, model string, optionValues ...Options) *Client {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
 		panic("openai: compatible provider is required")
 	}
+	options := optionvalue.Resolve("openai compatible client", optionValues)
 	return newAPIKey(apiKey, provider, model, options)
 }
 
@@ -125,12 +128,14 @@ func newAPIKey(apiKey, provider, model string, options Options) *Client {
 // NewOAuth creates a model authenticated by a caller-owned OAuth session. Callers
 // choose the endpoint explicitly; NewSubscription configures the subscription API.
 // A nil or typed-nil source panics.
-func NewOAuth(source CredentialSource, model string, options Options) *Client {
+func NewOAuth(source CredentialSource, model string, optionValues ...Options) *Client {
+	options := optionvalue.Resolve("openai OAuth client", optionValues)
 	return newClient(source, model, options, "openai")
 }
 
 // NewSubscription creates a model for the subscription-backed Responses endpoint.
-func NewSubscription(source CredentialSource, model string, options Options) *Client {
+func NewSubscription(source CredentialSource, model string, optionValues ...Options) *Client {
+	options := optionvalue.Resolve("openai subscription client", optionValues)
 	if options.BaseURL == "" {
 		// Kept split so repository-facing text does not couple the package to a
 		// product-specific route name.

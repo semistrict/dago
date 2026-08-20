@@ -88,8 +88,8 @@ func TestHarnessProfileConfigRejectsInvalidAndRuntimeOnlyValues(t *testing.T) {
 		{"excluded_tools": []any{1}},
 		{"excluded_middleware": []any{"_private"}},
 		{"excluded_middleware": []any{"package:Type"}},
-		{"excluded_middleware": []any{"filesystem"}},
-		{"excluded_middleware": []any{"subagents"}},
+		{"excluded_middleware": []any{"patch_tool_calls"}},
+		{"excluded_middleware": []any{"PatchToolCallsMiddleware"}},
 		{"general_purpose_subagent": map[string]any{"mode": "sometimes"}},
 	}
 	for _, value := range invalid {

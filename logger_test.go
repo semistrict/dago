@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
@@ -14,12 +15,12 @@ import (
 func TestWithLoggerRoutesEnabledGraphDebugEvents(t *testing.T) {
 	var output bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	agent := NewAgent(
+	agent := New(
 		modeltest.New(damodel.Profile{}, modeltest.Step{Response: damodel.Response{Message: damessage.Assistant("done")}}),
 		WithDebug(),
 		WithLogger(logger),
 	)
-	if _, err := agent.Invoke(t.Context(), "hello"); err != nil {
+	if _, err := agent.Invoke(t.Context(), dagent.Prompt("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "agent graph event") {

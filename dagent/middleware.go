@@ -73,9 +73,26 @@ type Todo struct {
 	Status  string `json:"status" jsonschema:"enum=pending|in_progress|completed"`
 }
 
-type TodoListOptions struct {
-	SystemPrompt    string
-	ToolDescription string
+type todoConfig struct {
+	systemPrompt    string
+	toolDescription string
+}
+
+// TodoOption configures the todo-list middleware.
+type TodoOption interface{ applyTodo(*todoConfig) }
+
+type todoOptionFunc func(*todoConfig)
+
+func (option todoOptionFunc) applyTodo(config *todoConfig) { option(config) }
+
+// WithTodoPrompt replaces the todo-list model instructions.
+func WithTodoPrompt(prompt string) TodoOption {
+	return todoOptionFunc(func(config *todoConfig) { config.systemPrompt = prompt })
+}
+
+// WithTodoDescription replaces the write_todos tool description.
+func WithTodoDescription(description string) TodoOption {
+	return todoOptionFunc(func(config *todoConfig) { config.toolDescription = description })
 }
 
 const todoSystemPrompt = `## write_todos
@@ -93,19 +110,19 @@ const todoToolDescription = `Create or replace the structured task list for the 
 const parallelTodoError = "Error: The `write_todos` tool should never be called multiple times in parallel. Please call it only once per model invocation to update the todo list."
 
 // TodoList adds the write_todos tool and a checkpointed todos state field.
-func TodoList() Middleware {
-	return TodoListWithOptions(TodoListOptions{SystemPrompt: todoSystemPrompt, ToolDescription: todoToolDescription})
-}
-
-func TodoListWithOptions(options TodoListOptions) Middleware {
-	if options.ToolDescription == "" {
-		options.ToolDescription = todoToolDescription
+func TodoList(options ...TodoOption) Middleware {
+	config := todoConfig{systemPrompt: todoSystemPrompt, toolDescription: todoToolDescription}
+	for index, option := range options {
+		if option == nil {
+			panic(fmt.Sprintf("todo option %d is nil", index))
+		}
+		option.applyTodo(&config)
 	}
 	type input struct {
 		Todos []Todo `json:"todos"`
 	}
 	write := datool.MustNew(
-		"write_todos", options.ToolDescription,
+		"write_todos", config.toolDescription,
 		func(_ context.Context, arguments input) (datool.Result, error) {
 			for index, todo := range arguments.Todos {
 				if todo.Content == "" || (todo.Status != "pending" && todo.Status != "in_progress" && todo.Status != "completed") {
@@ -124,8 +141,8 @@ func TodoListWithOptions(options TodoListOptions) Middleware {
 			Kind: FieldLast, Contract: "dago.todos.v1", Clone: cloneTodoRecords,
 		})},
 		WrapModelCall: func(ctx context.Context, request ModelRequest, next ModelHandler) (ModelResponse, error) {
-			if options.SystemPrompt != "" {
-				appendModelSystem(&request, options.SystemPrompt)
+			if config.systemPrompt != "" {
+				appendModelSystem(&request, config.systemPrompt)
 			}
 			return next(ctx, request)
 		},

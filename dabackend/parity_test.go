@@ -99,7 +99,7 @@ func TestStoreMutationsOnlyPersistTargetedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorded := &recordingStore{Store: values}
-	backend := NewStore(recorded, namespace)
+	backend := NewStore(FixedNamespace(namespace), StoreOptions{Store: recorded})
 	if _, err := backend.Write(ctx, "/new.txt", "new"); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestStoreMutationLocksAreKeyScopedPrefixAwareAndCancelable(t *testing.T) {
 		started: make(chan struct{}),
 		unblock: make(chan struct{}),
 	}
-	backend := NewStore(values, dastore.Namespace{"files"})
+	backend := NewStore(FixedNamespace(dastore.Namespace{"files"}), StoreOptions{Store: values})
 	var unblockOnce sync.Once
 	unblock := func() { unblockOnce.Do(func() { close(values.unblock) }) }
 	defer unblock()
@@ -318,7 +318,7 @@ func TestBinaryPathsEncodeValidUTF8Bytes(t *testing.T) {
 	if err := values.Put(ctx, namespace, "/image.png", fileDataMap(FileData{Content: "ascii-image", Encoding: EncodingUTF8})); err != nil {
 		t.Fatal(err)
 	}
-	store := NewStore(values, namespace)
+	store := NewStore(FixedNamespace(namespace), StoreOptions{Store: values})
 	read, err = store.Read(ctx, "/image.png", 0, 1)
 	if err != nil || read.Data == nil || read.Data.Encoding != EncodingBase64 || read.Data.Content != want {
 		t.Fatalf("Store.Read = %#v, %v", read, err)

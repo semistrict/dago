@@ -229,10 +229,10 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	// Add subagent tool if configured and depth limit not reached.
 	canSpawnSubagents := !nilInterface(cfg.SubagentRunner) && !nilInterface(cfg.SubagentDB) && cfg.ParentConversationID != "" && cfg.ModelID != ""
 	if canSpawnSubagents && (cfg.UnlimitedSubagentDepth || cfg.SubagentDepth < cfg.MaxSubagentDepth) {
-		nativeTools = append(nativeTools, dago.ConversationSubagentTool(cfg.SubagentDB, cfg.SubagentRunner, wd.Get, cfg.ParentConversationID, cfg.ModelID, dago.ConversationSubagentOptions{
-			AvailableModels: availableModels,
-			ParentReasoning: cfg.ReasoningLevel,
-		}))
+		nativeTools = append(nativeTools, dago.ConversationSubagentTool(
+			cfg.SubagentDB, cfg.SubagentRunner, wd.Get, cfg.ParentConversationID, cfg.ModelID,
+			dago.ConversationSubagentOptions{AvailableModels: availableModels, ParentReasoning: cfg.ReasoningLevel},
+		))
 	}
 
 	// Add LLM one-shot tool if LLM provider is configured
@@ -374,12 +374,10 @@ func dagoFilesystemDefinitions(root string, names []string) []datool.Definition 
 	if err != nil {
 		return nil
 	}
-	compiled := dago.NewAgent(
+	compiled := dago.New(
 		filesystemSchemaModel{},
 		dago.WithBackend(files),
 		dago.WithFilesystem(dago.Filesystem{Tools: names}),
-		dago.WithoutSubagents(),
-		dago.WithoutSummary(),
 	)
 	tools := compiled.Tools()
 	byName := make(map[string]datool.Definition, len(tools))

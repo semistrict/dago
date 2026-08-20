@@ -348,7 +348,7 @@ func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistent := dabackend.NewStore(memorystore.NewMemory(), memorystore.Namespace{"files"})
+	persistent := dabackend.NewStore(dabackend.FixedNamespace(memorystore.Namespace{"files"}), dabackend.StoreOptions{Store: memorystore.NewMemory()})
 	composite := dabackend.NewComposite(shell, map[string]dabackend.Backend{"/common/": mounted, "/memories/": persistent})
 	middleware := mustFilesystem(composite, Filesystem{})
 
@@ -374,7 +374,7 @@ func TestCompositeExecuteDescribesVirtualShellPaths(t *testing.T) {
 
 func TestCompositeArtifactsRootControlsToolOffload(t *testing.T) {
 	memory := dabackend.NewMemory(nil)
-	composite := dabackend.NewCompositeWithOptions(memory, dabackend.CompositeOptions{ArtifactsRoot: "/workspace"})
+	composite := dabackend.NewComposite(memory, nil, dabackend.CompositeOptions{ArtifactsRoot: "/workspace"})
 	middleware := mustFilesystem(composite, Filesystem{ToolResultLimit: ContentLimit{Unit: ContentBytes, Amount: 10}})
 
 	response, err := middleware.WrapToolCall(context.Background(), dagent.ToolCallRequest{
@@ -432,9 +432,9 @@ func TestExecuteSkipsCaptureWhenCompositeRoutesArtifactPath(t *testing.T) {
 	defaultMemory := dabackend.NewMemory(nil)
 	defaultSandbox := &recordingCaptureSandbox{Memory: defaultMemory}
 	routed := dabackend.NewMemory(nil)
-	composite := dabackend.NewCompositeWithOptions(defaultSandbox, dabackend.CompositeOptions{
-		Routes: map[string]dabackend.Backend{"/artifacts": routed}, ArtifactsRoot: "/artifacts",
-	})
+	composite := dabackend.NewComposite(defaultSandbox,
+		map[string]dabackend.Backend{"/artifacts": routed}, dabackend.CompositeOptions{ArtifactsRoot: "/artifacts"},
+	)
 	if _, ok := dabackend.CaptureOffloaderOf(composite, "/artifacts/large_tool_results/call"); ok {
 		t.Fatal("capture crossed a composite route")
 	}

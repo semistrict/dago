@@ -15,14 +15,15 @@ const defaultFailureBytes = 30_000
 // Run produces one trajectory. Runs should honor context cancellation.
 type Run func(context.Context) (Trajectory, error)
 
-// Invoke constructs a Run for a compiled agent. Both required inputs are
-// positional; invocation failures remain runtime errors.
-func Invoke(agent *dagent.Agent, input any) Run {
+// Invoke constructs a Run for a compiled agent. Invocation failures remain
+// runtime errors.
+func Invoke(agent *dagent.Agent, options ...dagent.RunOption) Run {
 	if agent == nil {
 		panic("evaluation agent is required")
 	}
+	configured := append([]dagent.RunOption(nil), options...)
 	return func(ctx context.Context) (Trajectory, error) {
-		result, err := agent.Invoke(ctx, input)
+		result, err := agent.Invoke(ctx, configured...)
 		if err != nil {
 			return Trajectory{}, err
 		}

@@ -418,6 +418,7 @@ import (
 	"os"
 
 	"github.com/semistrict/dago"
+	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/daproviders/openai"
 	"github.com/semistrict/dago/datool"
 )
@@ -428,25 +429,18 @@ type addInput struct {
 }
 
 func main() {
-	chat, err := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), openai.Options{
-		Model:         "gpt-5",
+	chat := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), "gpt-5", openai.Options{
 		ContextWindow: 128_000,
 	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	add, err := datool.New("add", "Add two integers.", func(_ context.Context, input addInput) (int, error) {
+	add := datool.New("add", "Add two integers.", func(_ context.Context, input addInput) (int, error) {
 		return input.A + input.B, nil
 	})
-	if err != nil {
-		log.Fatal(err)
-	}
 
-	agent := dago.NewAgent(chat,
+	agent := dago.New(chat,
 		dago.WithSystemPrompt("Use tools when they help answer accurately."),
 		dago.WithTools(add),
 	)
-	result, err := agent.Invoke(context.Background(), "What is 17 plus 25?")
+	result, err := agent.Invoke(context.Background(), dagent.Prompt("What is 17 plus 25?"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -454,16 +448,17 @@ func main() {
 }
 ```
 
-By default, files live in the agent’s `files` delta channel. They are isolated by
-thread and become durable when a checkpoint saver is configured. Pass an explicit
-filesystem, store, composite, local-shell, or remote sandbox backend when the agent
-should operate elsewhere.
+Filesystem tools are opt-in through `dago.WithFilesystem`. With the default state
+backend, files live in the agent’s `files` delta channel, are isolated by thread,
+and become durable when a checkpoint saver is configured. Pass an explicit store,
+composite, local-shell, or remote sandbox backend when the agent should operate
+elsewhere.
 
 Agent-owned facilities use that same backend automatically. Configure them as values
 instead of constructing middleware with a duplicate backend argument:
 
 ```go
-compiled := dago.NewAgent(chat,
+compiled := dago.New(chat,
 	dago.WithBackend(workspace),
 	dago.WithSkills(dago.Skills{Sources: []string{"/skills"}}),
 	dago.WithMemory(dago.Memory{Sources: []string{"/AGENTS.md"}}),
@@ -484,7 +479,7 @@ model-requested completion is committed only after a satisfied verdict:
 
 ```go
 goalOptions := dagoal.Options{}
-compiled := dago.NewAgent(chat,
+compiled := dago.New(chat,
 	dago.WithMiddleware(
 		dagoal.Middleware(goalOptions),
 		dagoal.RubricCompletionMiddleware(dago.RubricStatusKey, string(dago.RubricSatisfied)),
@@ -512,11 +507,12 @@ researcher := dago.NewSubagent(
 	dago.WithSystemPrompt("Research the delegated topic."),
 	dago.WithTodo(),
 )
-compiled := dago.NewAgent(chat, dago.WithSubagents(researcher))
+compiled := dago.New(chat, dago.WithSubagents(researcher))
 ```
 
-They receive the standard filesystem, compaction, repair, profile, and prompt-cache
-stack. Precompiled graphs can be registered with `NewRunnableSubagent`; only
+They always receive tool-call repair and inherit parent facilities that were
+explicitly enabled for declarative children, including filesystem, interpreter,
+memory, summarization, approval, and prompt caching. Precompiled graphs can be registered with `NewRunnableSubagent`; only
 delegation options such as `WithInheritedState` apply because their construction is
 already complete. Human approval, including approval inside a subagent, requires a
 checkpoint saver so the exact pending tool call can resume without replaying completed
@@ -544,7 +540,7 @@ manager := daworkflow.NewManager(runner, daworkflow.Options{
 })
 defer manager.Close()
 
-compiled := dago.NewAgent(chat,
+compiled := dago.New(chat,
 	dago.WithMiddleware(daworkflow.Middleware(manager)),
 )
 ```
@@ -595,7 +591,7 @@ out of the returned set:
 ```go
 webClient := daweb.NewClient(daweb.Options{})
 tools := daweb.Tools(webClient, os.Getenv("TAVILY_API_KEY"))
-compiled := dago.NewAgent(chat, dago.WithTools(tools...))
+compiled := dago.New(chat, dago.WithTools(tools...))
 ```
 
 The client accepts only HTTP and HTTPS URLs, rejects credentials and non-public
@@ -706,7 +702,7 @@ enabling `Interpreter` in a TinyGo build fails during agent construction, and th
 Shelley TinyGo application omits `js_eval` from its tool catalog.
 
 ```go
-compiled := dago.NewAgent(chat,
+compiled := dago.New(chat,
 	dago.WithSaver(saver),
 	dago.WithInterpreter(dago.Interpreter{
 		PTC: []string{"read_file", "glob", "grep", "search"},
@@ -728,7 +724,7 @@ parallel tool calls, JSON Schema structured output, token streaming, usage, prom
 caching metadata, API keys, and an explicit subscription OAuth session. Standard
 OpenAI endpoints use persistent Responses WebSocket connections by default and send
 incremental input on compatible successive turns. Set `ResponsesWebSocket` to
-`new(false)` to force HTTP; compatible custom `BaseURL` endpoints can opt in with
+`new(false)` to force HTTP; compatible custom endpoints can opt in with
 `new(true)`. Standard endpoints also enable remote server-side compaction by default:
 at 90% of `ContextWindow` (or 200,000 tokens when it is unknown), the adapter sends a
 compaction-trigger Responses request, preserves its encrypted state, and resumes the
@@ -736,8 +732,7 @@ turn. Set `ServerCompaction` to `new(false)` to disable it or set
 `CompactionThreshold` to override the trigger point.
 
 ```go
-chat, err := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), openai.Options{
-	Model: "gpt-5",
+chat := openai.NewAPIKey(os.Getenv("OPENAI_API_KEY"), "gpt-5", openai.Options{
 	ContextWindow: 128_000,
 })
 ```
@@ -753,8 +748,7 @@ and streaming contracts as the OpenAI adapter. It also supports optional app
 attribution and provider routing:
 
 ```go
-chat, err := openrouter.New(os.Getenv("OPENROUTER_API_KEY"), openrouter.Options{
-	Model:    "anthropic/claude-sonnet-4.6",
+chat := openrouter.New(os.Getenv("OPENROUTER_API_KEY"), "anthropic/claude-sonnet-4.6", openrouter.Options{
 	AppURL:   "https://example.com/my-agent",
 	AppTitle: "My Agent",
 	Routing: &openrouter.ProviderRouting{
@@ -777,11 +771,11 @@ if err != nil {
 }
 defer saver.Close()
 
-compiled := dago.NewAgent(chat, dago.WithSaver(saver))
-result, err := compiled.Invoke(ctx, dagent.Input{
-	Config: dacheckpoint.Config{ThreadID: "conversation-1"},
-	Messages: []damessage.Message{damessage.Human("Inspect the project.")},
-})
+compiled := dago.New(chat, dago.WithSaver(saver))
+result, err := compiled.Invoke(ctx,
+	dagent.FromCheckpoint(dacheckpoint.Config{ThreadID: "conversation-1"}),
+	dagent.Prompt("Inspect the project."),
+)
 ```
 
 Agents expose checkpoint history, replay, thread fork, and thread deletion. SQLite
@@ -818,7 +812,7 @@ if err != nil {
 	return err
 }
 rules := policy.ApprovalRules(applicationRules...)
-agent := dago.NewAgent(chat, dago.WithApprovalRules(rules...))
+agent := dago.New(chat, dago.WithApprovalRules(rules...))
 
 // In the runtime's bounded invoke/resume loop:
 resume, err := approval.ResolveInterrupt(ctx, request, result.Interrupts[0])
@@ -1054,7 +1048,7 @@ same durable data as agent runs:
 
 ```go
 func NewAgent(_ context.Context, runtime daserver.Runtime) (*dagent.Agent, error) {
-	return dago.NewAgent(chat,
+	return dago.New(chat,
 		dago.WithSaver(runtime.Saver),
 		dago.WithStore(runtime.Store),
 		dago.WithDependencies(runtime.Deps),
@@ -1159,7 +1153,7 @@ if err != nil {
 }
 defer sandbox.Close()
 
-compiled := dago.NewAgent(chat, dago.WithBackend(sandbox))
+compiled := dago.New(chat, dago.WithBackend(sandbox))
 ```
 
 By default the container has no network, a read-only root filesystem, no Linux

@@ -84,7 +84,7 @@ const (
 	AnswerError     AnswerStatus = "error"
 )
 
-// AnswerResponse is supplied as dagent.Input.Resume. Status defaults to
+// AnswerResponse is supplied through dagent.Resume. Status defaults to
 // AnswerAnswered when omitted. Answers remain positional, including an empty
 // string for a skipped optional question.
 type AnswerResponse struct {

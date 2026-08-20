@@ -46,16 +46,16 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstAgent := NewAgent(
-		firstModel, WithSaver(firstSaver), WithFilesystem(Filesystem{HumanMessageTokenLimit: limit}), WithoutSubagents(), WithoutSummary(),
+	firstAgent := New(
+		firstModel, WithFilesystem(Filesystem{HumanMessageTokenLimit: limit}), WithSaver(firstSaver),
 	)
 	config := dacheckpoint.Config{ThreadID: "human-eviction"}
-	first, err := firstAgent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{{
+	first, err := firstAgent.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Messages([]damessage.Message{damessage.Message{
 		Role: damessage.RoleHuman,
 		Content: []damessage.ContentBlock{
 			{Type: damessage.BlockText, Text: firstText}, image, {Type: damessage.BlockText, Text: secondText},
 		},
-	}}})
+	}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,10 +96,10 @@ func TestHumanMessageEvictionSurvivesSQLiteReplayWithoutDuplicates(t *testing.T)
 		t.Fatal(err)
 	}
 	defer secondSaver.Close()
-	secondAgent := NewAgent(
-		secondModel, WithSaver(secondSaver), WithFilesystem(Filesystem{HumanMessageTokenLimit: limit}), WithoutSubagents(), WithoutSummary(),
+	secondAgent := New(
+		secondModel, WithFilesystem(Filesystem{HumanMessageTokenLimit: limit}), WithSaver(secondSaver),
 	)
-	second, err := secondAgent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("continue")}})
+	second, err := secondAgent.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("continue"))
 	if err != nil {
 		t.Fatal(err)
 	}

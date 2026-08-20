@@ -123,6 +123,24 @@ func TestNewGeneratesValidatesAndDecodesTypedInput(t *testing.T) {
 	}
 }
 
+func TestNewAppliesDefinitionOptions(t *testing.T) {
+	created := New("configured", "Configured typed tool.", func(context.Context, generatedToolInput) (string, error) {
+		return "ok", nil
+	}, WithStrict(), WithDirect(), WithExtra("cache_control", map[string]any{"type": "ephemeral"}))
+	definition := created.Definition()
+	if !definition.Strict || !definition.Direct || string(definition.Extra["cache_control"]) != `{"type":"ephemeral"}` {
+		t.Fatalf("definition = %#v", definition)
+	}
+	message := panicMessage(t, func() {
+		New("invalid", "Invalid extra.", func(context.Context, generatedToolInput) (string, error) {
+			return "", nil
+		}, WithExtra("bad", func() {}))
+	})
+	if !strings.Contains(message, "encode extra") {
+		t.Fatalf("invalid extra panic = %q", message)
+	}
+}
+
 func TestNewRejectsInvalidInputTypesAndTags(t *testing.T) {
 	if _, err := Schema[int](); err == nil {
 		t.Fatal("Schema[int]() succeeded")

@@ -69,10 +69,8 @@ func TestGLM52HarnessProfileIsAppliedDuringAgentConstruction(t *testing.T) {
 		},
 		Response: damodel.Response{Message: damessage.Assistant("done")},
 	})
-	agent := NewAgent(script, WithoutSubagents(), WithoutSummary())
-	if _, err := agent.Invoke(context.Background(), dagent.Input{
-		Messages: []damessage.Message{damessage.Human("work")},
-	}); err != nil {
+	agent := New(script)
+	if _, err := agent.Invoke(context.Background(), dagent.Prompt("work")); err != nil {
 		t.Fatal(err)
 	}
 }

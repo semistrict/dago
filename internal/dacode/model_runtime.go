@@ -96,7 +96,7 @@ func openAIModelFactory(_ context.Context, spec modelconfig.Spec, credential dac
 	if err != nil {
 		return nil, err
 	}
-	return openai.NewAPIKey(credential.Credential.APIKey.Key, spec.Model, options), nil
+	return openai.NewAPIKey(credential.Credential.APIKey.Key, spec.Model, options.clientOptions()), nil
 }
 
 func openRouterModelFactory(_ context.Context, spec modelconfig.Spec, credential dacredential.Resolution, construction modelconfig.Construction) (damodel.Chat, error) {
@@ -138,20 +138,36 @@ func openRouterModelFactory(_ context.Context, spec modelconfig.Spec, credential
 	}), nil
 }
 
-func openAIConstructionOptions(construction modelconfig.Construction) (openai.Options, error) {
+type openAIOptions struct {
+	BaseURL         string
+	MaxOutputTokens int
+	ContextWindow   int
+	WebSearch       bool
+	RetryBackoff    []time.Duration
+}
+
+func (options openAIOptions) clientOptions() openai.Options {
+	return openai.Options{
+		BaseURL: options.BaseURL, MaxOutputTokens: options.MaxOutputTokens,
+		ContextWindow: options.ContextWindow, RetryBackoff: options.RetryBackoff,
+		WebSearch: options.WebSearch,
+	}
+}
+
+func openAIConstructionOptions(construction modelconfig.Construction) (openAIOptions, error) {
 	parameters := cloneModelParameters(construction.Parameters)
-	options := openai.Options{BaseURL: construction.BaseURL, ContextWindow: 128_000}
+	options := openAIOptions{BaseURL: construction.BaseURL, ContextWindow: 128_000}
 	if value, exists := parameters["use_responses_api"]; exists {
 		enabled, ok := value.(bool)
 		if !ok || !enabled {
-			return openai.Options{}, errors.New("use_responses_api must be true")
+			return openAIOptions{}, errors.New("use_responses_api must be true")
 		}
 		delete(parameters, "use_responses_api")
 	}
 	if value, exists := parameters["context_window"]; exists {
 		parsed, ok := modelInteger(value)
 		if !ok || parsed < 1 {
-			return openai.Options{}, errors.New("context_window must be a positive integer")
+			return openAIOptions{}, errors.New("context_window must be a positive integer")
 		}
 		options.ContextWindow = parsed
 		delete(parameters, "context_window")
@@ -159,7 +175,7 @@ func openAIConstructionOptions(construction modelconfig.Construction) (openai.Op
 	if value, exists := parameters["max_output_tokens"]; exists {
 		parsed, ok := modelInteger(value)
 		if !ok || parsed < 1 {
-			return openai.Options{}, errors.New("max_output_tokens must be a positive integer")
+			return openAIOptions{}, errors.New("max_output_tokens must be a positive integer")
 		}
 		options.MaxOutputTokens = parsed
 		delete(parameters, "max_output_tokens")
@@ -167,7 +183,7 @@ func openAIConstructionOptions(construction modelconfig.Construction) (openai.Op
 	if value, exists := parameters["web_search"]; exists {
 		enabled, ok := value.(bool)
 		if !ok {
-			return openai.Options{}, errors.New("web_search must be a boolean")
+			return openAIOptions{}, errors.New("web_search must be a boolean")
 		}
 		options.WebSearch = enabled
 		delete(parameters, "web_search")
@@ -179,7 +195,7 @@ func openAIConstructionOptions(construction modelconfig.Construction) (openai.Op
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		return openai.Options{}, fmt.Errorf("OpenAI adapter does not support model parameters: %s", strings.Join(names, ", "))
+		return openAIOptions{}, fmt.Errorf("OpenAI adapter does not support model parameters: %s", strings.Join(names, ", "))
 	}
 	if construction.HasMaxRetries {
 		options.RetryBackoff = retryBackoff(construction.MaxRetries)
@@ -187,10 +203,10 @@ func openAIConstructionOptions(construction modelconfig.Construction) (openai.Op
 	return options, nil
 }
 
-func openAIDefaultConstructionOptions(construction modelconfig.Construction) (openai.Options, error) {
+func openAIDefaultConstructionOptions(construction modelconfig.Construction) (openAIOptions, error) {
 	options, err := openAIConstructionOptions(construction)
 	if err != nil {
-		return openai.Options{}, err
+		return openAIOptions{}, err
 	}
 	if _, configured := construction.Parameters["web_search"]; !configured {
 		options.WebSearch = true
@@ -202,7 +218,7 @@ func applyLegacyModelOptions(chat damodel.Chat, options modelconfig.ResolveOptio
 	return modelconfig.ApplyProfile(chat, options.ProfileOverrides)
 }
 
-func legacyOpenAIOptions(baseURL string, options modelconfig.ResolveOptions) (openai.Options, error) {
+func legacyOpenAIOptions(baseURL string, options modelconfig.ResolveOptions) (openAIOptions, error) {
 	construction := modelconfig.Construction{BaseURL: baseURL, Parameters: options.Parameters}
 	if options.BaseURL != nil {
 		construction.BaseURL = *options.BaseURL

@@ -65,7 +65,7 @@ func newInteractionFixtureRunner() *interactionFixtureRunner {
 	return runner
 }
 
-func (runner *interactionFixtureRunner) Start(ctx context.Context, input dagent.Input) eventStream {
+func (runner *interactionFixtureRunner) Start(ctx context.Context, input runInput) eventStream {
 	prompt := ""
 	if len(input.Messages) != 0 {
 		prompt = input.Messages[len(input.Messages)-1].TextContent()

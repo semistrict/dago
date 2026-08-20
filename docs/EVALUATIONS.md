@@ -19,11 +19,11 @@ The package follows the behavioral harness in Deep Agents revision
 ## Writing an evaluation
 
 Required runtime dependencies are positional. Construct a case with
-`daeval.NewEvaluation(run)` and use `daeval.Invoke(agent, input)` for a compiled
+`daeval.NewEvaluation(run)` and use `daeval.Invoke(agent, options...)` for a compiled
 agent:
 
 ```go
-evaluation := daeval.NewEvaluation(daeval.Invoke(agent, "Create the note"))
+evaluation := daeval.NewEvaluation(daeval.Invoke(agent, dagent.Prompt("Create the note")))
 evaluation.Name = "creates requested note"
 evaluation.Category = "files"
 evaluation.Correctness = []daeval.Check{

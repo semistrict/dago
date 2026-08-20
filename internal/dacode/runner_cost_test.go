@@ -26,14 +26,11 @@ func TestRunnerCostReportRebuildsDurableParentAndSubagentUsage(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: usageMessage("done", 40, 8, "parent")}},
 	)
 	saver := dacheckpoint.NewMemorySaver()
-	agent := dago.NewAgent(parent,
-		dago.WithSaver(saver), dago.WithoutSummary(),
+	agent := dago.New(parent,
+		dago.WithSaver(saver),
 		dago.WithSubagents(dago.NewSubagent("worker", "Worker", child, dago.WithSystemMessage(damessage.System("Work.")))),
 	)
-	if _, err := agent.Invoke(t.Context(), dagent.Input{
-		Config:   dacheckpoint.Config{ThreadID: "thread-cost"},
-		Messages: []damessage.Message{damessage.Human("go")},
-	}); err != nil {
+	if _, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(dacheckpoint.Config{ThreadID: "thread-cost"}), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 	runner := &dagoRunner{
@@ -55,7 +52,7 @@ func TestRunnerCostReportRebuildsDurableParentAndSubagentUsage(t *testing.T) {
 }
 
 func TestRunnerCostReportMissingThreadHasUsefulEmptyDefault(t *testing.T) {
-	agent := dago.NewAgent(modeltest.New(damodel.Profile{}, modeltest.Step{}), dago.WithSaver(dacheckpoint.NewMemorySaver()), dago.WithoutSubagents(), dago.WithoutSummary())
+	agent := dago.New(modeltest.New(damodel.Profile{}, modeltest.Step{}), dago.WithSaver(dacheckpoint.NewMemorySaver()))
 	report, err := (&dagoRunner{agent: agent}).CostReport(t.Context(), "missing")
 	if err != nil {
 		t.Fatal(err)
@@ -66,11 +63,11 @@ func TestRunnerCostReportMissingThreadHasUsefulEmptyDefault(t *testing.T) {
 }
 
 func TestRunnerOwnedUsagePersistsInParentCheckpoint(t *testing.T) {
-	agent := dago.NewAgent(
+	agent := dago.New(
 		modeltest.New(damodel.Profile{Provider: "test", Model: "main"}, modeltest.Step{Response: damodel.Response{Message: usageMessage("done", 10, 2, "main")}}),
-		dago.WithSaver(dacheckpoint.NewMemorySaver()), dago.WithoutSubagents(), dago.WithoutSummary(),
+		dago.WithSaver(dacheckpoint.NewMemorySaver()),
 	)
-	if _, err := agent.Invoke(t.Context(), dagent.Input{Config: dacheckpoint.Config{ThreadID: "owned"}, Messages: []damessage.Message{damessage.Human("go")}}); err != nil {
+	if _, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(dacheckpoint.Config{ThreadID: "owned"}), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 	runner := &dagoRunner{agent: agent}

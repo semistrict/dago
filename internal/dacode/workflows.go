@@ -231,7 +231,6 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 		dago.WithFilesystem(runner.filesystem),
 		dago.WithSkills(runner.skills),
 		dago.WithMemory(runner.memory),
-		dago.WithoutSubagents(),
 	}
 	var tokenTracker *workflowTokenTracker
 	if request.ReportTokens != nil {
@@ -280,9 +279,9 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 			Strategy: dagent.StructuredTool, Strict: true, HandleErrors: true, MaxRetries: 3,
 		}))
 	}
-	agent := dago.NewAgent(model, options...)
+	agent := dago.New(model, options...)
 	config := dacheckpoint.Config{ThreadID: fmt.Sprintf("workflow-agent-%d", runner.nextThread.Add(1))}
-	result, err := streamWorkflowAgent(ctx, agent, dagent.Input{
+	result, err := streamWorkflowAgent(ctx, agent, runInput{
 		Config: config, Messages: []damessage.Message{damessage.Human(request.Prompt)}, SkipValueEvents: true,
 	}, tokenTracker)
 	if err != nil {
@@ -320,7 +319,7 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 				Decision: decision, Reason: verdict.Rationale, Message: verdict.Rationale,
 			}
 		}
-		result, err = streamWorkflowAgent(ctx, agent, dagent.Input{
+		result, err = streamWorkflowAgent(ctx, agent, runInput{
 			Config: config, Resume: dagent.ApprovalResponse{Decisions: decisions}, SkipValueEvents: true,
 		}, tokenTracker)
 		if err != nil {
@@ -363,8 +362,8 @@ func workflowSerializableMessage(message damessage.Message) damessage.Message {
 	return copy
 }
 
-func streamWorkflowAgent(ctx context.Context, agent *dagent.Agent, input dagent.Input, tracker *workflowTokenTracker) (dagent.Result, error) {
-	stream := agent.Stream(ctx, input)
+func streamWorkflowAgent(ctx context.Context, agent *dagent.Agent, input runInput, tracker *workflowTokenTracker) (dagent.Result, error) {
+	stream := agent.Stream(ctx, input.options()...)
 	defer stream.Close()
 	for {
 		event, err := stream.Next(ctx)

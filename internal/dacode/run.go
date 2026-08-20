@@ -154,25 +154,19 @@ type acpDagoRunner struct {
 	model  string
 }
 
-func (runner *acpDagoRunner) Stream(ctx context.Context, input dagent.Input) *dagent.Stream {
-	state := input.State.Clone()
-	if state == nil {
-		state = dastate.Values{}
-	}
-	state[sessionWorkingDirectoryKey] = runner.runner.workingDir
-	state[sessionModelKey] = runner.model
-	input.State = state
-	configurable := make(map[string]any, len(input.Configurable)+1)
-	for key, value := range input.Configurable {
-		configurable[key] = value
-	}
-	configurable[dagent.RuntimeModelConfigKey] = runner.model
-	input.Configurable = configurable
-	return runner.runner.agent.Stream(ctx, input)
+func (runner *acpDagoRunner) Stream(ctx context.Context, options ...dagent.RunOption) *dagent.Stream {
+	options = append(options,
+		dagent.WithState(dastate.Values{
+			sessionWorkingDirectoryKey: runner.runner.workingDir,
+			sessionModelKey:            runner.model,
+		}),
+		dagent.WithConfigurable(map[string]any{dagent.RuntimeModelConfigKey: runner.model}),
+	)
+	return runner.runner.agent.Stream(ctx, options...)
 }
 
-func (runner *acpDagoRunner) Cancel(ctx context.Context, input dagent.Input) (dagent.Result, error) {
-	return runner.runner.agent.Cancel(ctx, input)
+func (runner *acpDagoRunner) Cancel(ctx context.Context, options ...dagent.RunOption) (dagent.Result, error) {
+	return runner.runner.agent.Cancel(ctx, options...)
 }
 
 func (runner *acpDagoRunner) LoadACPSession(ctx context.Context, id string) (daacp.SessionState, error) {
@@ -1266,7 +1260,7 @@ func (err *headlessTurnLimitError) Error() string {
 func runNonInteractive(ctx context.Context, runner agentRunner, workingDir, threadID, prompt string, options nonInteractiveOptions, stdout, stderr io.Writer) error {
 	var streamed strings.Builder
 	transcript := "[user, trusted]\n" + prompt
-	input := dagent.Input{
+	input := runInput{
 		Config:   dacheckpoint.Config{ThreadID: threadID},
 		Messages: []damessage.Message{damessage.Human(prompt)}, SkipValueEvents: true,
 	}
@@ -1322,7 +1316,7 @@ func runNonInteractive(ctx context.Context, runner agentRunner, workingDir, thre
 		if len(result.Interrupts) == 0 {
 			goal, present := dagoal.FromState(result.State)
 			if present && goal != nil && goal.Actionable() {
-				input = dagent.Input{
+				input = runInput{
 					Config:   dacheckpoint.Config{ThreadID: threadID},
 					Messages: []damessage.Message{dagoal.ContinuationMessage(*goal)}, SkipValueEvents: true,
 				}
@@ -1361,7 +1355,7 @@ func runNonInteractive(ctx context.Context, runner agentRunner, workingDir, thre
 					"denied", request.Call.Name, assessment.RiskLevel, assessment.UserAuthorization, assessment.Rationale)
 			}
 		}
-		input = dagent.Input{
+		input = runInput{
 			Config: dacheckpoint.Config{ThreadID: threadID},
 			Resume: dagent.ApprovalResponse{Decisions: decisions}, SkipValueEvents: true,
 		}

@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/semistrict/dago/internal/optionvalue"
 )
 
 type route struct {
@@ -26,8 +28,8 @@ func (composite *Composite) resolveSandbox() (Sandbox, bool) {
 
 func (composite *Composite) backendArtifactsRoot() string { return composite.artifactsRoot }
 
+// CompositeOptions configures composite backend routing behavior.
 type CompositeOptions struct {
-	Routes        map[string]Backend
 	ArtifactsRoot string
 }
 
@@ -104,13 +106,10 @@ func mergeStatePatches(left, right any) any {
 	return result
 }
 
-func NewComposite(defaultBackend Backend, routes map[string]Backend) *Composite {
-	return NewCompositeWithOptions(defaultBackend, CompositeOptions{Routes: routes})
-}
-
-// NewCompositeWithOptions constructs a routed backend. The default backend is
-// a required positional dependency; invalid static routes panic.
-func NewCompositeWithOptions(defaultBackend Backend, options CompositeOptions) *Composite {
+// NewComposite constructs a routed backend. The default backend and routes are
+// positional data; invalid static routes or options panic.
+func NewComposite(defaultBackend Backend, routes map[string]Backend, optionValues ...CompositeOptions) *Composite {
+	options := optionvalue.Resolve("composite backend", optionValues)
 	if nilInterface(defaultBackend) {
 		panic("composite default backend is required")
 	}
@@ -129,7 +128,7 @@ func NewCompositeWithOptions(defaultBackend Backend, options CompositeOptions) *
 	if result.artifactsRoot == "" {
 		result.artifactsRoot = "/"
 	}
-	for prefix, value := range options.Routes {
+	for prefix, value := range routes {
 		if nilInterface(value) || !strings.HasPrefix(prefix, "/") {
 			panic(fmt.Sprintf("composite route %q is invalid", prefix))
 		}

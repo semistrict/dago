@@ -55,12 +55,12 @@ func TestAgentInterpreterPersistsCheckpointedStateAcrossInvocations(t *testing.T
 			Response: damodel.Response{Message: damessage.Assistant("second done")},
 		},
 	)
-	agent := NewAgent(script, WithInterpreter(Interpreter{PTC: []string{}}), WithSaver(dacheckpoint.NewMemorySaver()), WithoutSubagents(), WithoutSummary())
+	agent := New(script, WithFilesystem(Filesystem{}), WithInterpreter(Interpreter{PTC: []string{}}), WithSaver(dacheckpoint.NewMemorySaver()))
 	config := dacheckpoint.Config{ThreadID: "interpreter-checkpoint"}
-	if _, err := agent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("first")}}); err != nil {
+	if _, err := agent.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("first")); err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("second")}})
+	result, err := agent.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("second"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +94,8 @@ func TestAgentInterpreterCallsSubagentThroughPTC(t *testing.T) {
 			Response: damodel.Response{Message: damessage.Assistant("parent done")},
 		},
 	)
-	agent := NewAgent(parentModel, WithInterpreter(Interpreter{PTC: []string{"task"}}), WithSubagents(NewRunnableSubagent("special", "Specialized", child)), WithoutSummary())
-	result, err := agent.Invoke(context.Background(), dagent.Input{Messages: []damessage.Message{damessage.Human("delegate")}})
+	agent := New(parentModel, WithFilesystem(Filesystem{}), WithInterpreter(Interpreter{PTC: []string{"task"}}), WithSubagents(NewRunnableSubagent("special", "Specialized", child)))
+	result, err := agent.Invoke(context.Background(), dagent.Prompt("delegate"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,12 +147,12 @@ func assertInterpreterSaverRoundTrip(t *testing.T, saver dacheckpoint.Saver, thr
 			Response: damodel.Response{Message: damessage.Assistant("restored")},
 		},
 	)
-	agent := NewAgent(script, WithInterpreter(Interpreter{PTC: []string{}}), WithSaver(saver), WithoutSubagents(), WithoutSummary())
+	agent := New(script, WithFilesystem(Filesystem{}), WithInterpreter(Interpreter{PTC: []string{}}), WithSaver(saver))
 	config := dacheckpoint.Config{ThreadID: thread}
-	if _, err := agent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("save")}}); err != nil {
+	if _, err := agent.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("save")); err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("restore")}})
+	result, err := agent.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("restore"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -460,14 +460,11 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	}
 	var olderMsgs []llm.Message
 	distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	compacted, err := dago.CompactConversation(distillCtx, chat, nativeMessages, dago.ConversationCompactionOptions{
-		KeepTokens:   keepRecentTokens,
-		ValidCutoffs: validCutoffs,
-		SystemPrompt: piSummarizationSystemPrompt,
-		Prompt:       piSummarizationPrompt,
-		Instructions: steering,
-		Reasoning:    &damodel.Reasoning{Effort: "off"},
-		FormatHistory: func(older []dmessage.Message) (string, error) {
+	compacted, err := dago.CompactConversation(distillCtx, chat, nativeMessages,
+		dago.WithCompactKeepTokens(keepRecentTokens), dago.WithCompactCutoffs(validCutoffs...),
+		dago.WithCompactSystemPrompt(piSummarizationSystemPrompt), dago.WithCompactPrompt(piSummarizationPrompt),
+		dago.WithCompactInstructions(steering), dago.WithCompactReasoning(damodel.Reasoning{Effort: "off"}),
+		dago.WithCompactHistoryFormatter(func(older []dmessage.Message) (string, error) {
 			cut, ok := sourceCutoff[len(older)]
 			if !ok {
 				return "", fmt.Errorf("compaction selected non-record cutoff %d", len(older))
@@ -477,8 +474,8 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 				olderMsgs[i] = resolvePiSummarizationText(logger, ctxMsgs[i])
 			}
 			return fmt.Sprintf("<conversation>\n%s\n</conversation>", serializePiConversation(olderMsgs)), nil
-		},
-	})
+		}),
+	)
 	cancel()
 	if err != nil {
 		logger.Error("pi summarization failed", "error", err)

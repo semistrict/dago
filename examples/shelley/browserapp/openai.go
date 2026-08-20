@@ -43,15 +43,14 @@ func validateModelEnum(field, value string, allowed ...string) error {
 }
 
 func openAIChat(model CustomModel) (damodel.Chat, error) {
-	var reasoning *damodel.Reasoning
-	if model.ReasoningEffort != "" {
-		reasoning = &damodel.Reasoning{Effort: model.ReasoningEffort}
-	}
-	return openai.NewAPIKey(model.APIKey, model.ModelName, openai.Options{
+	options := openai.Options{
 		BaseURL: model.Endpoint, ContextWindow: int(model.MaxTokens),
-		HTTPClient:       &http.Client{Transport: http.DefaultTransport},
-		DefaultReasoning: reasoning, WebSearch: true,
-	}), nil
+		HTTPClient: &http.Client{Transport: http.DefaultTransport}, WebSearch: true,
+	}
+	if model.ReasoningEffort != "" {
+		options.DefaultReasoning = &damodel.Reasoning{Effort: model.ReasoningEffort}
+	}
+	return openai.NewAPIKey(model.APIKey, model.ModelName, options), nil
 }
 
 func openRouterChat(model CustomModel) (damodel.Chat, error) {

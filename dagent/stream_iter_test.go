@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 )
 
@@ -24,7 +23,7 @@ func (blockingStreamTestModel) Profile() damodel.Profile { return damodel.Profil
 
 func TestEventsClosesOnEarlyBreak(t *testing.T) {
 	agent := New(blockingStreamTestModel{}, Options{})
-	stream := agent.Stream(t.Context(), Input{Messages: []damessage.Message{damessage.Human("go")}})
+	stream := agent.Stream(t.Context(), Prompt("go"))
 	count := 0
 	for _, err := range stream.Events() {
 		if err != nil {

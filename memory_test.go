@@ -78,10 +78,7 @@ func TestMemoryLoadsOnceInOneBatchAndFormatsSourcesInOrder(t *testing.T) {
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{
-		Messages: []damessage.Message{damessage.Human("go")},
-		State:    dastate.Values{"memory_contents": contents},
-	}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go"), dagent.WithState(dastate.Values{"memory_contents": contents})); err != nil {
 		t.Fatal(err)
 	}
 	if recording.calls != 1 {
@@ -125,9 +122,7 @@ func TestMemoryPreloadedContentsArePortableAndSurviveCheckpointDecode(t *testing
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
-	if _, err := compiled.Invoke(context.Background(), dagent.Input{
-		Messages: []damessage.Message{damessage.Human("go")}, State: dastate.Values{"memory_contents": restored},
-	}); err != nil {
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go"), dagent.WithState(dastate.Values{"memory_contents": restored})); err != nil {
 		t.Fatal(err)
 	}
 }

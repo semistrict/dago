@@ -30,7 +30,7 @@ func (*polishFixtureRunner) Rubric(context.Context, string) (dago.RubricSnapshot
 	return dago.RubricSnapshot{Criteria: "Polish acceptance"}, nil
 }
 
-func (runner *polishFixtureRunner) Start(ctx context.Context, _ dagent.Input) eventStream {
+func (runner *polishFixtureRunner) Start(ctx context.Context, _ runInput) eventStream {
 	stream := &notificationUpdateTraceFixtureStream{ctx: ctx}
 	return &polishDelayedStream{notificationUpdateTraceFixtureStream: stream, delay: 1800 * time.Millisecond}
 }

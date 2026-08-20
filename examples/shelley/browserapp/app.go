@@ -1168,9 +1168,7 @@ func (app *App) runTurn(ctx context.Context, id string, history []damessage.Mess
 			}
 		}
 		if err == nil {
-			stream := agent.Stream(ctx, dagent.Input{
-				Config: dacheckpoint.Config{ThreadID: id}, Messages: input,
-			})
+			stream := agent.Stream(ctx, dagent.OnThread(id), dagent.Messages(input))
 			defer stream.Close()
 			projected := make(map[string]bool)
 			for {
@@ -1995,18 +1993,13 @@ func newAgent(backend dabackend.Backend, model damodel.Chat, name string, saver 
 		tools = append(tools, "execute")
 	}
 	options := []dago.Option{
-		dago.WithName("shelley-browser-" + name),
-		dago.WithBackend(backend),
-		dago.WithSaver(saver),
-		dago.WithFilesystem(dago.Filesystem{Tools: tools}),
-		dago.WithTodo(),
-		dago.WithoutSubagents(),
-		dago.WithoutSummary(),
+		dago.WithName("shelley-browser-" + name), dago.WithBackend(backend), dago.WithSaver(saver),
+		dago.WithFilesystem(dago.Filesystem{Tools: tools}), dago.WithTodo(),
 	}
 	if browserInterpreterEnabled {
 		options = append(options, dago.WithInterpreter(dago.Interpreter{}))
 	}
-	return dago.NewAgent(model, options...), nil
+	return dago.New(model, options...), nil
 }
 
 // uniqueIDModel prevents a fresh WASM instance from reusing deterministic

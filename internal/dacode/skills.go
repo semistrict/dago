@@ -18,7 +18,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dacheckpoint/sqlite"
-	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/daskill"
 )
@@ -145,7 +144,7 @@ func (model *tuiModel) finishSkillLoad(message skillLoadedMsg) tea.Cmd {
 	if strings.TrimSpace(message.request) != "" {
 		prompt += "\n\nUser request: " + message.request
 	}
-	return model.startStream(dagent.Input{
+	return model.startStream(runInput{
 		Config:   dacheckpoint.Config{ThreadID: model.threadID},
 		Messages: []damessage.Message{damessage.Human(prompt)}, SkipValueEvents: true,
 	})

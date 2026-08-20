@@ -17,7 +17,7 @@ import (
 // Graph is the execution and durable-state surface required by Agent Server.
 // *dagent.Agent satisfies this interface.
 type Graph interface {
-	Stream(context.Context, dagent.Input) *dagent.Stream
+	Stream(context.Context, ...dagent.RunOption) *dagent.Stream
 	State(context.Context, dacheckpoint.Config) (dagent.Snapshot, error)
 	UpdateState(context.Context, dacheckpoint.Config, dastate.Values) (dagent.Snapshot, error)
 	History(context.Context, dacheckpoint.Config, dacheckpoint.ListOptions) ([]dacheckpoint.Tuple, error)

@@ -33,7 +33,7 @@ func newNotificationUpdateTraceFixtureRunner() *notificationUpdateTraceFixtureRu
 	}}
 }
 
-func (*notificationUpdateTraceFixtureRunner) Start(ctx context.Context, _ dagent.Input) eventStream {
+func (*notificationUpdateTraceFixtureRunner) Start(ctx context.Context, _ runInput) eventStream {
 	return &notificationUpdateTraceFixtureStream{ctx: ctx}
 }
 

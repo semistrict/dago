@@ -226,11 +226,7 @@ func newRubricWithInspector(model damodel.Chat, options RubricOptions, inspector
 					graderCtx = inspector.Operation(ctx)
 				}
 				invoke := func() (dagent.Result, error) {
-					return grader.Invoke(graderCtx, dagent.Input{
-						Messages:     []damessage.Message{damessage.Human(payload)},
-						Deps:         runtime.Deps,
-						Configurable: runtime.Configurable.Snapshot(),
-					})
+					return grader.Invoke(graderCtx, dagent.Prompt(payload), dagent.WithDeps(runtime.Deps), dagent.WithConfigurable(runtime.Configurable.Snapshot()))
 				}
 				result, invokeErr := invoke()
 				if transientGraderTransportError(invokeErr) {

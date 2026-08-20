@@ -70,7 +70,7 @@ func validateProfileMiddlewareExclusion(name string) error {
 
 func isRequiredMiddlewareExclusion(name string) bool {
 	switch name {
-	case "filesystem", "subagents":
+	case "patch_tool_calls", "PatchToolCallsMiddleware":
 		return true
 	default:
 		return false

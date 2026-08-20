@@ -62,10 +62,7 @@ const validResponsesResponse = `{"id":"resp_1","status":"completed","output":[{"
 
 func newTestChat(t *testing.T, baseURL string) *retryingChat {
 	t.Helper()
-	client := openai.NewAPIKey("test-key", "gpt-5.6-luna", openai.Options{
-		BaseURL:      baseURL,
-		RetryBackoff: []time.Duration{},
-	})
+	client := openai.NewAPIKey("test-key", "gpt-5.6-luna", openai.Options{BaseURL: baseURL, RetryBackoff: []time.Duration{}})
 	return &retryingChat{inner: client, attempts: modelMaxAttempts, backoff: 0}
 }
 

@@ -154,11 +154,12 @@ func NewOpenAIResponses(apiKey, modelID, baseURL string, httpClient *http.Client
 	if options.SupportsReasoning && effort != "" && effort != "off" {
 		defaultReasoning = &damodel.Reasoning{Effort: effort, Summary: "auto"}
 	}
-	chat := dopenai.NewAPIKey(apiKey, modelID, dopenai.Options{
+	clientOptions := dopenai.Options{
 		BaseURL: openAIResponsesBaseURL(baseURL), HTTPClient: httpClient,
 		ContextWindow: options.ContextWindow, MaxOutputTokens: options.MaxOutputTokens,
 		DefaultReasoning: defaultReasoning, WebSearch: options.SupportsWebSearch,
-	})
+	}
+	chat := dopenai.NewAPIKey(apiKey, modelID, clientOptions)
 	return damodel.WithProfile(chat, func(profile *damodel.Profile) {
 		profile.SupportsImages = options.SupportsImages
 		profile.SupportsReasoning = options.SupportsReasoning

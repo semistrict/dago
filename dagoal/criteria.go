@@ -96,7 +96,7 @@ func (drafter *CriteriaDrafter) DraftWithUsage(ctx context.Context, request Crit
 		return CriteriaProposal{}, nil, err
 	}
 	invoke := func(ctx context.Context, agent *dagent.Agent) (CriteriaProposal, []damessage.PurposedUsage, error) {
-		result, err := agent.Invoke(ctx, dagent.Input{Messages: []damessage.Message{damessage.Human(payload)}})
+		result, err := agent.Invoke(ctx, dagent.Prompt(payload))
 		usage, _ := dacost.TransferUsage(result.Messages, dacost.PurposeAssistant, 256)
 		if err != nil {
 			return CriteriaProposal{}, usage, err

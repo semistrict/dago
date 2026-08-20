@@ -130,7 +130,7 @@ func TestGoalToolsPersistAccountAndComplete(t *testing.T) {
 	saver := dacheckpoint.NewMemorySaver()
 	agent := dagent.New(first, dagent.Options{Middleware: []dagent.Middleware{Middleware(options)}, Saver: saver})
 	config := dacheckpoint.Config{ThreadID: "goal-tools"}
-	result, err := agent.Invoke(t.Context(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("Create a goal")}})
+	result, err := agent.Invoke(t.Context(), dagent.FromCheckpoint(config), dagent.Prompt("Create a goal"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestGoalToolsPersistAccountAndComplete(t *testing.T) {
 		modeltest.Step{Response: damodel.Response{Message: damessage.Message{Role: damessage.RoleAssistant, Content: damessage.Assistant("done").Content, Usage: &damessage.Usage{TotalTokens: 1}}}},
 	)
 	agent = dagent.New(second, dagent.Options{Middleware: []dagent.Middleware{Middleware(options)}, Saver: saver})
-	result, err = agent.Invoke(t.Context(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("Continue")}})
+	result, err = agent.Invoke(t.Context(), dagent.FromCheckpoint(config), dagent.Prompt("Continue"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,10 +198,7 @@ func TestRubricCompletionMiddlewareCommitsOnlySatisfiedGoal(t *testing.T) {
 				grader,
 			}})
 			goal := &Goal{ID: "goal-1", Objective: "ship it", Criteria: "- tests pass", Status: StatusActive}
-			result, err := agent.Invoke(t.Context(), dagent.Input{
-				Messages: []damessage.Message{damessage.Human("finish")},
-				State:    dastate.Values{StateKey: goalToState(goal), "rubric": "- tests pass"},
-			})
+			result, err := agent.Invoke(t.Context(), dagent.Prompt("finish"), dagent.WithState(dastate.Values{StateKey: goalToState(goal), "rubric": "- tests pass"}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -265,9 +262,7 @@ func TestGoalStateRestartsFromSQLite(t *testing.T) {
 	if _, err := NewService(firstAgent, options).Set(t.Context(), config, SetRequest{Objective: &objective, Budget: SetBudget(500)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := firstAgent.Invoke(t.Context(), dagent.Input{
-		Config: config, Messages: []damessage.Message{damessage.Human("Continue")},
-	}); err != nil {
+	if _, err := firstAgent.Invoke(t.Context(), dagent.FromCheckpoint(config), dagent.Prompt("Continue")); err != nil {
 		t.Fatal(err)
 	}
 	if err := firstSaver.Close(); err != nil {
@@ -303,7 +298,7 @@ func TestGoalAccountingStopsAtBudget(t *testing.T) {
 	if _, err := service.Set(t.Context(), config, SetRequest{Objective: &objective, Budget: SetBudget(5)}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Invoke(context.Background(), dagent.Input{Config: config, Messages: []damessage.Message{damessage.Human("go")}})
+	result, err := agent.Invoke(context.Background(), dagent.FromCheckpoint(config), dagent.Prompt("go"))
 	if err != nil {
 		t.Fatal(err)
 	}

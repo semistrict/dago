@@ -13,11 +13,7 @@ import (
 
 // NewAgent constructs one agent using the server-owned durable state.
 func NewAgent(_ context.Context, runtime daserver.Runtime) (*dagent.Agent, error) {
-	return dago.NewAgent(
-		modeltest.NewPredictable(modeltest.PredictableOptions{}),
-		dago.WithName("studio-example"),
-		dago.WithSaver(runtime.Saver),
-		dago.WithStore(runtime.Store),
-		dago.WithDependencies(runtime.Deps),
+	return dago.New(
+		modeltest.NewPredictable(modeltest.PredictableOptions{}), dago.WithName("studio-example"), dago.WithFilesystem(dago.Filesystem{}), dago.WithSummarization(dago.Summarization{}), dago.WithSubagents(), dago.WithSaver(runtime.Saver), dago.WithStore(runtime.Store), dago.WithDependencies(runtime.Deps),
 	), nil
 }
