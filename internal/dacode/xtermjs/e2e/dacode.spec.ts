@@ -2336,6 +2336,21 @@ test("updates running workflow token estimates from streamed worker output", asy
   await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("SUCCESS");
 });
 
+test("runs a workflow worker in an isolated Git worktree", async ({ page }) => {
+  test.setTimeout(60_000);
+  const url = process.env.PLAYWRIGHT_WORKFLOW_WORKTREE_URL;
+  expect(url).toBeTruthy();
+  await openTerminal(page, url);
+
+  await page.keyboard.type("/workflow worktree-isolation");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page), { timeout: 20_000 }).toContain("browser-worktree-isolation");
+  await expect.poll(() => terminalText(page), { timeout: 40_000 }).toContain("SUCCESS");
+  const text = await terminalText(page);
+  expect(text).toContain("WORKTREE_E2E_OK");
+  expect(text).toContain("2 done • 0 active • 0 failed");
+});
+
 test("maps refactoring opportunities with a realistic deterministic workflow", async ({ page, request }) => {
   test.setTimeout(2 * 60_000);
   const url = process.env.PLAYWRIGHT_WORKFLOW_FAKE_URL;

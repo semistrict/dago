@@ -142,7 +142,26 @@ type dacodeWorkflowAgentRunner struct {
 	approvalRules  []dagent.ApprovalRule
 	reviewer       *dagent.Agent
 	workingDir     string
+	worktree       func(context.Context) (workflowAgentWorkspace, error)
 	nextThread     atomic.Uint64
+}
+
+type workflowAgentWorkspace struct {
+	backend    dabackend.Backend
+	filesystem dago.Filesystem
+	skills     dago.Skills
+	memory     dago.Memory
+	system     string
+	workingDir string
+	branch     string
+	closer     io.Closer
+}
+
+func (workspace workflowAgentWorkspace) Close() error {
+	if workspace.closer == nil {
+		return nil
+	}
+	return workspace.closer.Close()
 }
 
 type workflowTokenTracker struct {
@@ -205,13 +224,33 @@ func (tracker *workflowTokenTracker) finishModel(response dagent.ModelResponse) 
 	tracker.report(total)
 }
 
-func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, request daworkflow.AgentRequest) (daworkflow.AgentResponse, error) {
+func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, request daworkflow.AgentRequest) (response daworkflow.AgentResponse, resultErr error) {
 	if request.AgentType != "" && request.AgentType != "general" {
 		return daworkflow.AgentResponse{}, fmt.Errorf("workflow agent type %q is not configured", request.AgentType)
 	}
-	if request.Isolation == "worktree" {
-		return daworkflow.AgentResponse{}, fmt.Errorf("workflow worktree isolation is not available in dacode")
+	workspace := workflowAgentWorkspace{
+		backend: runner.backend, filesystem: runner.filesystem, skills: runner.skills,
+		memory: runner.memory, system: runner.system, workingDir: runner.workingDir,
 	}
+	if request.Isolation == "worktree" {
+		if runner.worktree == nil {
+			return daworkflow.AgentResponse{}, fmt.Errorf("workflow worktree isolation requires a local Git workspace")
+		}
+		var err error
+		workspace, err = runner.worktree(ctx)
+		if err != nil {
+			return daworkflow.AgentResponse{}, err
+		}
+		defer func() {
+			if closeErr := workspace.Close(); closeErr != nil {
+				resultErr = errors.Join(resultErr, closeErr)
+			}
+		}()
+	}
+	return runner.runWorkflowAgent(ctx, request, workspace)
+}
+
+func (runner *dacodeWorkflowAgentRunner) runWorkflowAgent(ctx context.Context, request daworkflow.AgentRequest, workspace workflowAgentWorkspace) (daworkflow.AgentResponse, error) {
 	modelName := request.Model
 	if modelName == "" {
 		modelName = runner.model
@@ -220,17 +259,20 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 	if err != nil {
 		return daworkflow.AgentResponse{}, fmt.Errorf("resolve workflow model: %w", err)
 	}
-	system := runner.system + "\n\nYou are a workflow worker. Complete only the assigned prompt and return the requested value without addressing the user or coordinating additional agents. A denied tool call is evidence that only that action was refused: continue with a safe alternative when possible. If the task cannot produce a useful result, call fail_workflow_agent with a concise reason to end this worker as a failed branch."
+	system := workspace.system + "\n\nYou are a workflow worker. Complete only the assigned prompt and return the requested value without addressing the user or coordinating additional agents. A denied tool call is evidence that only that action was refused: continue with a safe alternative when possible. If the task cannot produce a useful result, call fail_workflow_agent with a concise reason to end this worker as a failed branch."
+	if workspace.branch != "" {
+		system += fmt.Sprintf("\n\nThis worker has an isolated Git worktree at %q on branch %q. Keep all repository work in that worktree. If you make changes, commit them before returning; clean worktrees are removed after the call and committed branches are retained.", workspace.workingDir, workspace.branch)
+	}
 	workerTools := append([]datool.Tool(nil), runner.tools...)
 	workerTools = append(workerTools, workflowAgentFailureTool())
 	options := []dago.Option{
 		dago.WithName("workflow-agent"),
 		dago.WithSystemPrompt(system),
-		dago.WithBackend(runner.backend),
+		dago.WithBackend(workspace.backend),
 		dago.WithTools(workerTools...),
-		dago.WithFilesystem(runner.filesystem),
-		dago.WithSkills(runner.skills),
-		dago.WithMemory(runner.memory),
+		dago.WithFilesystem(workspace.filesystem),
+		dago.WithSkills(workspace.skills),
+		dago.WithMemory(workspace.memory),
 	}
 	var tokenTracker *workflowTokenTracker
 	if request.ReportTokens != nil {
@@ -300,7 +342,7 @@ func (runner *dacodeWorkflowAgentRunner) RunWorkflowAgent(ctx context.Context, r
 		}
 		transcript := "[user, trusted]\n" + request.Prompt + "\n"
 		assessment, err := reviewApprovals(ctx, runner.reviewer, approvalReviewRequest{
-			WorkingDir: runner.workingDir, Transcript: transcript, Requests: requests,
+			WorkingDir: workspace.workingDir, Transcript: transcript, Requests: requests,
 		})
 		if err != nil {
 			return daworkflow.AgentResponse{}, fmt.Errorf("review workflow tool approval: %w", err)

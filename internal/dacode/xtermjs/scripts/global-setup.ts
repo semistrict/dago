@@ -754,7 +754,7 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
     mode: 0o600
   });
 
-  for (const name of ["default", "manual", "resume", "direct-resume", "resume-flow", "offload", "offload-error", "onboarding", "restart-success", "restart-error", "restart-unavailable", "hostile", "transcript", "editor", "effort", "startup", "input", "ask-user", "ask-user-cancel", "approval-persist", "approval-invalid", "skills", "goal-rubric", "goal-startup", "approval-widget", "plugins", "workflow-fake"]) {
+  for (const name of ["default", "manual", "resume", "direct-resume", "resume-flow", "offload", "offload-error", "onboarding", "restart-success", "restart-error", "restart-unavailable", "hostile", "transcript", "editor", "effort", "startup", "input", "ask-user", "ask-user-cancel", "approval-persist", "approval-invalid", "skills", "goal-rubric", "goal-startup", "approval-widget", "plugins", "workflow-fake", "workflow-worktree"]) {
     const stateDirectory = path.join(temporary, `state-${name}`);
     await mkdir(stateDirectory, { recursive: true });
     await writeFile(
@@ -835,12 +835,31 @@ secondary = "#FF77CC"
 
   await mkdir(path.join(temporary, "home"), { recursive: true });
 
+  const workflowWorktreeWorkspace = path.join(temporary, "workspace-worktree");
+  await mkdir(path.join(workflowWorktreeWorkspace, ".agents", "workflows"), { recursive: true });
+  await copyFile(
+    path.join(root, "internal", "dacode", "xtermjs", "testdata", "workflows", "worktree-isolation.js"),
+    path.join(workflowWorktreeWorkspace, ".agents", "workflows", "worktree-isolation.js")
+  );
+  await writeFile(path.join(workflowWorktreeWorkspace, "README.md"), "workflow worktree fixture\n", { mode: 0o600 });
+  for (const args of [
+    ["init"],
+    ["add", "."],
+    ["-c", "user.name=Playwright", "-c", "user.email=playwright@example.test", "commit", "-m", "initial fixture"]
+  ]) {
+    const git = spawnSync("git", args, { cwd: workflowWorktreeWorkspace, encoding: "utf8" });
+    if (git.status !== 0) {
+      await rm(temporary, { force: true, recursive: true });
+      throw new Error(`failed to initialize workflow worktree fixture: ${git.stderr}`);
+    }
+  }
+
   for (const name of [
     "default", "manual", "yolo", "resume", "direct-resume", "resume-flow", "offload", "offload-error",
     "restart-success", "restart-error", "restart-unavailable", "approval-persist", "approval-invalid", "hostile",
     "transcript", "transcript-history", "editor", "effort", "auto-notice", "unsupported-effort", "startup", "input",
     "ask-user", "ask-user-cancel", "skills", "goal-rubric", "goal-startup", "approval-widget", "theme", "plugins",
-    "diagnostics", "fanout", "auth-mcp-auto", "auth-error", "auth-cancel", "workflow-fake"
+    "diagnostics", "fanout", "auth-mcp-auto", "auth-error", "auth-cancel", "workflow-fake", "workflow-worktree"
   ]) {
     const stateDirectory = path.join(temporary, `state-${name}`);
     await mkdir(stateDirectory, { recursive: true });
@@ -1025,11 +1044,12 @@ secondary = "#FF77CC"
     startServer(polishBinary, temporary, "polish-anchor", slowAPIURL, [], { DAGO_POLISH_MODE: "anchor" }),
     startServer(polishBinary, temporary, "polish-hook", slowAPIURL, [], { DAGO_POLISH_MODE: "hook" }),
     startServer(polishBinary, temporary, "polish-ascii", slowAPIURL, [], { DAGO_POLISH_MODE: "ascii" }),
-    startServer(binary, temporary, "workflow-fake", workflowFixture.url, ["--approve-for-me"])
+    startServer(binary, temporary, "workflow-fake", workflowFixture.url, ["--approve-for-me"]),
+    startServer(binary, temporary, "workflow-worktree", workflowFixture.url, ["--approve-for-me"], {}, false, workflowWorktreeWorkspace)
   ];
 
   try {
-    const [baseURL, manualURL, yoloURL, resumeURL, directResumeURL, resumeFlowURL, offloadURL, offloadErrorURL, onboardingURL, restartSuccessURL, restartErrorURL, restartUnavailableURL, approvalPersistURL, approvalInvalidURL, hostileURL, transcriptURL, transcriptHistoryURL, editorURL, effortURL, autoNoticeURL, unsupportedEffortURL, startupURL, inputURL, askUserURL, askUserCancelURL, skillsURL, goalRubricURL, goalStartupURL, approvalWidgetURL, themeURL, pluginsURL, diagnosticsURL, fanoutURL, authMCPAutoURL, authErrorURL, authCancelURL, notifyURL, notifySettingsURL, notifyActionsURL, notifyLayoutURL, notifyFailURL, traceURL, traceFailURL, traceUnconfiguredURL, traceTimeoutURL, traceUnsafeURL, updateWindowsURL, updateCurrentURL, updateAvailableURL, updateAvailableUIURL, updateStartupChoiceURL, updateSlowURL, updateRetryURL, updateFailURL, updateSharedURL, autoDisabledURL, autoMalformedURL, autoSymlinkURL, autoUnwritableURL, interactionsURL, interactionsDirectURL, interactionsStartupFailedURL, polishURL, polishFailureURL, polishResumedURL, polishFallbackURL, polishPromptURL, polishGoalURL, polishQueuedURL, polishAnchorURL, polishHookURL, polishASCIIURL, workflowFakeURL] = await Promise.all(
+    const [baseURL, manualURL, yoloURL, resumeURL, directResumeURL, resumeFlowURL, offloadURL, offloadErrorURL, onboardingURL, restartSuccessURL, restartErrorURL, restartUnavailableURL, approvalPersistURL, approvalInvalidURL, hostileURL, transcriptURL, transcriptHistoryURL, editorURL, effortURL, autoNoticeURL, unsupportedEffortURL, startupURL, inputURL, askUserURL, askUserCancelURL, skillsURL, goalRubricURL, goalStartupURL, approvalWidgetURL, themeURL, pluginsURL, diagnosticsURL, fanoutURL, authMCPAutoURL, authErrorURL, authCancelURL, notifyURL, notifySettingsURL, notifyActionsURL, notifyLayoutURL, notifyFailURL, traceURL, traceFailURL, traceUnconfiguredURL, traceTimeoutURL, traceUnsafeURL, updateWindowsURL, updateCurrentURL, updateAvailableURL, updateAvailableUIURL, updateStartupChoiceURL, updateSlowURL, updateRetryURL, updateFailURL, updateSharedURL, autoDisabledURL, autoMalformedURL, autoSymlinkURL, autoUnwritableURL, interactionsURL, interactionsDirectURL, interactionsStartupFailedURL, polishURL, polishFailureURL, polishResumedURL, polishFallbackURL, polishPromptURL, polishGoalURL, polishQueuedURL, polishAnchorURL, polishHookURL, polishASCIIURL, workflowFakeURL, workflowWorktreeURL] = await Promise.all(
       servers.map(serverURL)
     );
     process.env.PLAYWRIGHT_TEST_BASE_URL = baseURL;
@@ -1106,6 +1126,7 @@ secondary = "#FF77CC"
     process.env.PLAYWRIGHT_POLISH_ASCII_URL = polishASCIIURL;
     process.env.PLAYWRIGHT_WORKFLOW_FAKE_URL = workflowFakeURL;
     process.env.PLAYWRIGHT_WORKFLOW_FAKE_API_URL = workflowFixture.url;
+    process.env.PLAYWRIGHT_WORKFLOW_WORKTREE_URL = workflowWorktreeURL;
     if (liveServer) process.env.PLAYWRIGHT_OPENAI_LIVE_URL = await serverURL(liveServer);
     process.env.PLAYWRIGHT_PLUGIN_EXTRA_CATALOG = extraPluginCatalog;
   } catch (error) {
@@ -1162,6 +1183,12 @@ async function startWorkflowFixture() {
     for await (const chunk of request) raw += chunk.toString();
     const body = JSON.parse(raw) as Record<string, any>;
     const input = JSON.stringify(body.input ?? []);
+    const inputText = (function collect(value: unknown): string {
+      if (typeof value === "string") return value;
+      if (Array.isArray(value)) return value.map(collect).join("\n");
+      if (value && typeof value === "object") return Object.values(value).map(collect).join("\n");
+      return "";
+    })(body.input ?? []);
     const instructions = String(body.instructions ?? "");
     const requestText = `${instructions}\n${input}`;
     const formatName = String(body.text?.format?.name ?? "");
@@ -1235,6 +1262,59 @@ async function startWorkflowFixture() {
     }
 
     if (instructions.includes("You are a workflow worker.")) {
+      if (requestText.includes("WORKTREE_ISOLATION_CREATE")) {
+        if (!input.includes("function_call_output")) {
+          sendTool(`worktree-create-${sequence}`, "execute", {
+            command: [
+              "set -eu",
+              "printf 'isolated workflow change\\n' > worktree-e2e.txt",
+              "git add worktree-e2e.txt",
+              "git -c user.name=Playwright -c user.email=playwright@example.test commit -m 'isolated workflow fixture'",
+              "printf 'WORKTREE_ROOT=%s\\nWORKTREE_BRANCH=%s\\nWORKTREE_COMMIT=%s\\n' \"$PWD\" \"$(git branch --show-current)\" \"$(git rev-parse HEAD)\""
+            ].join("\n")
+          });
+          return;
+        }
+        const checkout = inputText.match(/WORKTREE_ROOT=([^\r\n]+)\s+WORKTREE_BRANCH=(workflow\/agent-[0-9a-f]+)\s+WORKTREE_COMMIT=([0-9a-f]+)/);
+        if (!checkout) {
+          sendStructured({ path: "", branch: "", commit: "" });
+          return;
+        }
+        sendStructured({ path: checkout[1], branch: checkout[2], commit: checkout[3] });
+        return;
+      }
+      if (requestText.includes("WORKTREE_ISOLATION_VERIFY")) {
+        if (!input.includes("function_call_output")) {
+          const marker = inputText.lastIndexOf("WORKTREE_ISOLATION_VERIFY:");
+          const start = inputText.indexOf("{", marker);
+          const end = inputText.indexOf("}\n", start);
+          let checkout: { path?: string; branch?: string; commit?: string } = {};
+          try {
+            checkout = JSON.parse(inputText.slice(start, end >= 0 ? end + 1 : undefined));
+          } catch {
+            sendText("WORKTREE_METADATA_INVALID");
+            return;
+          }
+          if (!checkout.path || !checkout.branch?.match(/^workflow\/agent-[0-9a-f]+$/) || !checkout.commit?.match(/^[0-9a-f]+$/)) {
+            sendText("WORKTREE_METADATA_INVALID");
+            return;
+          }
+          const quote = (value: string) => `'${value.replaceAll("'", `'\"'\"'`)}'`;
+          sendTool(`worktree-verify-${sequence}`, "execute", {
+            command: [
+              "set -eu",
+              `git show-ref --verify --quiet ${quote(`refs/heads/${checkout.branch}`)}`,
+              `test ! -e ${quote(checkout.path)}`,
+              `test \"$(git rev-parse ${quote(checkout.branch)})\" = ${quote(checkout.commit)}`,
+              `test \"$(git show ${quote(`${checkout.branch}:worktree-e2e.txt`)})\" = 'isolated workflow change'`,
+              "printf WORKTREE_RETAINED_OK"
+            ].join("\n")
+          });
+          return;
+        }
+        sendText(inputText.includes("WORKTREE_RETAINED_OK") ? "WORKTREE_E2E_OK" : "WORKTREE_VERIFICATION_FAILED");
+        return;
+      }
       if (requestText.includes("FAIL_WORKER")) {
         state.failedWorkerRequests += 1;
         response.writeHead(400, { "content-type": "application/json" });
@@ -1480,7 +1560,8 @@ function startServer(
   baseURL: string,
   extraArguments: string[] = [],
   extraEnvironment: Record<string, string> = {},
-  live = false
+  live = false,
+  workingDirectory = root
 ) {
   const command = extraArguments[0] === "resume" ? ["resume"] : [];
   const options = command.length > 0 ? extraArguments.slice(1) : extraArguments;
@@ -1496,11 +1577,11 @@ function startServer(
       "--model",
       "openai:gpt-5.6-terra",
       "--cwd",
-      root,
+      workingDirectory,
       ...options
     ],
     {
-      cwd: root,
+      cwd: workingDirectory,
       env: live
         ? { ...process.env, OPENAI_BASE_URL: "", TERM: "xterm-256color", ...extraEnvironment }
         : {

@@ -556,6 +556,14 @@ memory, execution time, and tokens are bounded through `daworkflow.Options`. Whe
 replay journal, and final JSON result under that directory. `Options.Completed` can
 bridge terminal runs into the host application's native task-notification channel.
 
+The terminal host implements `isolation: "worktree"` for local Git workspaces. Each
+isolated agent call starts from the configured workspace's committed `HEAD` on a new
+`workflow/agent-*` branch. A clean checkout is removed after the call; an unchanged
+branch is removed, a committed branch is retained, and a checkout with uncommitted
+changes is retained and reported as an agent failure with its recovery path. Worktree
+isolation is a coordination boundary rather than a security sandbox, and it is not
+available when the terminal host is using a remote or custom backend.
+
 ### Type-safe tools
 
 `datool.New` derives an object schema from the handler's input struct, validates
