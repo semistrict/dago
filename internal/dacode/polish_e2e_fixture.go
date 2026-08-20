@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dacost"
 	"github.com/semistrict/dago/dagent"
@@ -148,7 +148,7 @@ func RunPolishFixture(ctx context.Context, arguments []string, stdin io.Reader, 
 		model.showScrollbar = true
 	}
 
-	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout))
+	program := tea.NewProgram(newProgramModel(model), tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout))
 	defer fmt.Fprint(stdout, terminalBackgroundResetSequence())
 	_, err = program.Run()
 	_ = model.flushDisplaySettings()

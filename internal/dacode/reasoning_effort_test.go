@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damodel"
@@ -124,11 +124,11 @@ func TestEffortPickerUsesCurrentThenDefaultAndAppliesSelection(t *testing.T) {
 			t.Fatalf("picker missing %q:\n%s", expected, plain)
 		}
 	}
-	command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	command, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyTab})
 	if !handled || command != nil || model.effortPicker.selected != 2 {
 		t.Fatalf("Tab handled = %t, command = %v, selected = %d", handled, command, model.effortPicker.selected)
 	}
-	command, handled = model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, handled = model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !handled || command == nil || model.effortPicker != nil {
 		t.Fatalf("Enter handled = %t, command nil = %t, picker = %#v", handled, command == nil, model.effortPicker)
 	}
@@ -187,7 +187,7 @@ func TestEffortCommandExplainsUnsupportedModelAndPickerCancellation(t *testing.T
 	}}
 	model := newTUIModel(t.Context(), runner, "/work", "reasoner", "thread", false, false, "")
 	model.slashCommand("/effort")
-	if command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); !handled || command != nil || model.effortPicker != nil || runner.effort != "" {
+	if command, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc}); !handled || command != nil || model.effortPicker != nil || runner.effort != "" {
 		t.Fatalf("cancel handled = %t, command = %v, picker = %#v, effort = %q", handled, command, model.effortPicker, runner.effort)
 	}
 }

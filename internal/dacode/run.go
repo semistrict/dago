@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	charmterm "github.com/charmbracelet/x/term"
 	acp "github.com/coder/acp-go-sdk"
 	dagoapi "github.com/semistrict/dago"
@@ -839,10 +839,7 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 	restoreCursorGuide := suspendITermCursorGuide(stderr, cursorGuide)
 	defer restoreCursorGuide()
 	program := tea.NewProgram(
-		model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-		tea.WithReportFocus(),
+		newProgramModel(model),
 		tea.WithContext(ctx),
 		tea.WithInput(stdin),
 		tea.WithOutput(stdout),
@@ -854,7 +851,8 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 
 func finishTUIRun(finalModel tea.Model, programErr error, stdout io.Writer) error {
 	var flushErr error
-	if completed, ok := finalModel.(*tuiModel); ok {
+	if wrapped, ok := finalModel.(programModel); ok {
+		completed := wrapped.model
 		if err := completed.flushDisplaySettings(); err != nil {
 			flushErr = errDisplaySettingsFlush
 		}

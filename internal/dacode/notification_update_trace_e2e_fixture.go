@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dacredential"
 	"github.com/semistrict/dago/dagent"
@@ -255,7 +255,7 @@ func RunNotificationUpdateTraceFixture(ctx context.Context, arguments []string, 
 	}
 	model.configureUpdates(profile, newAutoUpdatePreferenceStore(preferencePath), stateStore, preference, persistent)
 
-	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout))
+	program := tea.NewProgram(newProgramModel(model), tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout))
 	_, err = program.Run()
 	if errors.Is(err, context.Canceled) {
 		return nil

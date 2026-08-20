@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/semistrict/dago/dacredential"
 	"github.com/semistrict/dago/daproviders/openai"
 )
@@ -77,14 +76,14 @@ func TestManagementModalControlKeysClearSensitiveStateAndQuitDeliberately(t *tes
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
 	model.authManager = newAuthTUIController(manager, filepath.Join(t.TempDir(), "oauth.json"), fixturelessSubscriptionLogin, func(string) error { return nil })
 	model.authManager.open = true
-	if command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC}); !handled || command != nil {
+	if command, handled := model.handleKey(testCtrlKey('c')); !handled || command != nil {
 		t.Fatalf("Ctrl+C = handled %t command %v", handled, command)
 	}
 	if model.authManager.open || len(manager.state.secret.value) != 0 {
 		t.Fatal("Ctrl+C did not close auth and clear secret")
 	}
 	model.mcpLogin = &mcpLoginState{input: []byte("private")}
-	command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlD})
+	command, handled := model.handleKey(testCtrlKey('d'))
 	if !handled || command == nil || model.mcpLogin != nil {
 		t.Fatalf("Ctrl+D = handled %t command %v login %#v", handled, command, model.mcpLogin)
 	}

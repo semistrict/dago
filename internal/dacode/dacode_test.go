@@ -17,7 +17,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	acp "github.com/coder/acp-go-sdk"
@@ -505,7 +505,7 @@ func TestTUIGoalCommandPersistsAndStartsContinuation(t *testing.T) {
 	if _, next := model.Update(proposal); next != nil || model.goalReview == nil {
 		t.Fatalf("proposal did not open review: next=%v review=%#v", next, model.goalReview)
 	}
-	apply, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	apply, handled := model.handleKey(testTextKey(string([]rune{'y'})))
 	if !handled || apply == nil {
 		t.Fatalf("accept did not apply: handled=%t command=%v", handled, apply)
 	}
@@ -1199,7 +1199,7 @@ func TestAutomaticReviewFailureDeniesAndResumesWithoutManualReview(t *testing.T)
 	_, reviewCommand := model.finishStream(streamDoneMsg{})
 	reviewMessage := reviewCommand().(reviewDoneMsg)
 	updated, command := model.Update(reviewMessage)
-	result := updated.(*tuiModel)
+	result := updated
 	if command == nil || result.approval != nil || !result.running {
 		t.Fatalf("model did not deny and resume: approval=%#v running=%v command=%v", result.approval, result.running, command)
 	}
@@ -1231,7 +1231,7 @@ func TestAutomaticReviewNeverRendersOrAcceptsManualApproval(t *testing.T) {
 	if strings.Contains(view, "Review requested") || strings.Contains(view, "y approve") || strings.Contains(view, "n reject") {
 		t.Fatalf("automatic review exposed manual controls:\n%s", view)
 	}
-	_, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	_, command := model.Update(testTextKey(string([]rune{'y'})))
 	if command != nil || model.approval == nil {
 		t.Fatalf("automatic review accepted a manual approval key: command=%v approval=%#v mode=%v fallback=%v", command, model.approval, model.effectiveApprovalMode(), model.approval != nil && model.approval.autoFallback)
 	}
@@ -1247,7 +1247,7 @@ func TestAutomaticReviewApprovalIsSilent(t *testing.T) {
 	updated, command := model.finishReview(reviewDoneMsg{result: approvalReviewResult{Assessments: map[string]approvalAssessment{
 		"call-1": {RiskLevel: "low", UserAuthorization: "high", Outcome: "allow", Rationale: "Routine test command."},
 	}}})
-	result := updated.(*tuiModel)
+	result := updated
 	if command == nil {
 		t.Fatal("approved action was not resumed")
 	}
@@ -1513,7 +1513,7 @@ func TestManualApprovalKeyResumesWithRejection(t *testing.T) {
 	runner := &fakeRunner{streams: []eventStream{&fakeEventStream{}}}
 	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, false, "")
 	model.approval = &approvalState{ready: true, requests: []dagent.ApprovalRequest{{Call: damessage.ToolCall{ID: "call-1", Name: "execute", Arguments: []byte(`{}`)}}}}
-	_, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	_, command := model.Update(testTextKey(string([]rune{'n'})))
 	if command == nil || len(runner.inputs) != 1 {
 		t.Fatalf("command = %v, inputs = %d", command, len(runner.inputs))
 	}
@@ -1829,7 +1829,7 @@ func TestContextCommandShowsUsageScreenAndEscapeClosesIt(t *testing.T) {
 			t.Fatalf("context screen missing %q:\n%s", expected, plain)
 		}
 	}
-	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if model.contextScreen || !strings.Contains(ansi.Strip(model.View()), "Ready to code") {
 		t.Fatalf("escape did not restore the main screen:\n%s", ansi.Strip(model.View()))
 	}
@@ -1878,15 +1878,15 @@ func TestUsageCommandsHaveUsefulEmptyDefaults(t *testing.T) {
 func TestApprovalModeKeysCycleManualAutoYOLO(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "main-model", "thread-1", false, false, "")
 	tests := []struct {
-		key  tea.KeyType
+		key  tea.KeyPressMsg
 		want approvalMode
 	}{
-		{key: tea.KeyShiftTab, want: approvalAuto},
-		{key: tea.KeyCtrlT, want: approvalYOLO},
-		{key: tea.KeyShiftTab, want: approvalManual},
+		{key: testShiftKey(tea.KeyTab), want: approvalAuto},
+		{key: testCtrlKey('t'), want: approvalYOLO},
+		{key: testShiftKey(tea.KeyTab), want: approvalManual},
 	}
 	for _, test := range tests {
-		_, command := model.Update(tea.KeyMsg{Type: test.key})
+		_, command := model.Update(test.key)
 		if command != nil || model.approvalMode != test.want {
 			t.Fatalf("key %v: command = %v, mode = %v, want %v", test.key, command, model.approvalMode, test.want)
 		}
@@ -1992,7 +1992,7 @@ func TestTUIWorkflowPanelRendersProgressAndCancelsSelection(t *testing.T) {
 			t.Errorf("narrow workflow line %d width = %d:\n%s", index+1, width, line)
 		}
 	}
-	_, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	_, command = model.Update(testTextKey(string([]rune{'c'})))
 	if command == nil {
 		t.Fatal("cancel key did not return a command")
 	}
@@ -2000,7 +2000,7 @@ func TestTUIWorkflowPanelRendersProgressAndCancelsSelection(t *testing.T) {
 	if len(runner.workflowCancels) != 1 || runner.workflowCancels[0] != "wf_1" || !strings.Contains(model.View(), "CANCELLED") {
 		t.Fatalf("workflow cancels = %#v\n%s", runner.workflowCancels, model.View())
 	}
-	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if model.workflowPanel != nil || !strings.Contains(model.View(), "Ready to code") {
 		t.Fatal("escape did not return from workflow panel")
 	}
@@ -2147,11 +2147,11 @@ func TestTUIControlJInsertsComposerNewline(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "main-model", "thread-1", false, true, "")
 	model.resize(80, 24)
 	for _, r := range "first line" {
-		model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model.Update(testTextKey(string([]rune{r})))
 	}
-	model.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	model.Update(testCtrlKey('j'))
 	for _, r := range "second line" {
-		model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model.Update(testTextKey(string([]rune{r})))
 	}
 	if value := model.composer.Value(); value != "first line\nsecond line" {
 		t.Fatalf("composer value = %q", value)
@@ -2184,8 +2184,8 @@ func TestTUIListsAndSelectsPreviousSessions(t *testing.T) {
 			t.Fatalf("session picker missing %q:\n%s", expected, view)
 		}
 	}
-	model.Update(tea.KeyMsg{Type: tea.KeyDown})
-	_, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	_, command = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if command == nil {
 		t.Fatal("selecting a session did not start loading it")
 	}
@@ -2211,16 +2211,16 @@ func TestTUISessionPickerCanBeCancelled(t *testing.T) {
 	if !strings.Contains(model.View(), "No matching threads") {
 		t.Fatalf("empty session picker not rendered:\n%s", model.View())
 	}
-	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if model.sessionPicker != nil {
 		t.Fatal("escape did not close the session picker")
 	}
 }
 
 func TestTUIStartupSessionPickerCancellationQuits(t *testing.T) {
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyEsc},
-		{Type: tea.KeyRunes, Runes: []rune{'q'}},
+	for _, key := range []tea.KeyPressMsg{
+		{Code: tea.KeyEsc},
+		testTextKey(string([]rune{'q'})),
 	} {
 		model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "main-model", "new-session", false, true, "")
 		model.sessionPicker = &sessionPickerState{startup: true}
@@ -2449,33 +2449,32 @@ func TestTUIMouseWheelScrollsTranscript(t *testing.T) {
 		model.appendItem(transcriptItem{kind: itemNotice, text: fmt.Sprintf("history line %d", index)})
 	}
 	model.refreshTranscript()
-	model.Update(tea.KeyMsg{Type: tea.KeyUp})
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" -- edited draft")})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	model.Update(testTextKey(string([]rune(" -- edited draft"))))
 	draft := model.composer.Value()
 	if draft != "latest input -- edited draft" {
 		t.Fatalf("recalled draft = %q", draft)
 	}
-	bottom := model.viewport.YOffset
+	bottom := model.viewport.YOffset()
 	if bottom == 0 {
 		t.Fatal("transcript did not overflow the viewport")
 	}
-	model.Update(tea.MouseMsg{
-		Button: tea.MouseButtonWheelUp,
-		Action: tea.MouseActionPress,
+	model.Update(tea.MouseWheelMsg{
+		Button: tea.MouseWheelUp,
 	})
-	if model.viewport.YOffset >= bottom {
-		t.Fatalf("viewport offset = %d, want less than %d", model.viewport.YOffset, bottom)
+	if model.viewport.YOffset() >= bottom {
+		t.Fatalf("viewport offset = %d, want less than %d", model.viewport.YOffset(), bottom)
 	}
 	if model.composer.Value() != draft {
 		t.Fatalf("wheel changed recalled draft: got %q want %q", model.composer.Value(), draft)
 	}
-	scrolled := model.viewport.YOffset
+	scrolled := model.viewport.YOffset()
 	model.refreshTranscript()
-	if model.viewport.YOffset != scrolled {
-		t.Fatalf("viewport offset after refresh = %d, want %d", model.viewport.YOffset, scrolled)
+	if model.viewport.YOffset() != scrolled {
+		t.Fatalf("viewport offset after refresh = %d, want %d", model.viewport.YOffset(), scrolled)
 	}
 	model.viewport.GotoBottom()
-	model.Update(tea.KeyMsg{Type: tea.KeyCtrlUnderscore})
+	model.Update(testCtrlKey('_'))
 	if model.viewport.AtBottom() {
 		t.Fatal("browser wheel-up control did not move the viewport")
 	}

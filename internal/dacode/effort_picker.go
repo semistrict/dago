@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/internal/unicodesecurity"
 )
@@ -90,7 +90,7 @@ func (model *tuiModel) finishReasoningEffortChange(message reasoningEffortChange
 	model.refreshTranscript()
 }
 
-func (model *tuiModel) handleEffortKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleEffortKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	picker := model.effortPicker
 	if picker == nil {
 		return nil, false

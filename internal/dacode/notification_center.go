@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/internal/unicodesecurity"
 )
@@ -31,7 +31,7 @@ func newNotificationCenter(entries []pendingNotification) *notificationCenterSta
 	return &notificationCenterState{entries: cloned}
 }
 
-func (center *notificationCenterState) handleKey(message tea.KeyMsg) (*notificationActionRequest, bool) {
+func (center *notificationCenterState) handleKey(message tea.KeyPressMsg) (*notificationActionRequest, bool) {
 	center.requireInitialized()
 	if len(center.entries) == 0 {
 		return nil, true
@@ -177,7 +177,7 @@ func newNotificationSettings(suppressed map[string]bool) *notificationSettingsSt
 	return &notificationSettingsState{suppressed: cloned}
 }
 
-func (settings *notificationSettingsState) handleKey(message tea.KeyMsg) (key string, enabled bool, changed bool, close bool) {
+func (settings *notificationSettingsState) handleKey(message tea.KeyPressMsg) (key string, enabled bool, changed bool, close bool) {
 	settings.requireInitialized()
 	switch message.String() {
 	case "esc":

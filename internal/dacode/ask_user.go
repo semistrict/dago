@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/daaskuser"
 	"github.com/semistrict/dago/dacheckpoint"
@@ -57,12 +57,7 @@ func newAskUserState(request daaskuser.AskRequest) *askUserState {
 		input.CharLimit = 0
 		input.SetHeight(1)
 		input.MaxHeight = 6
-		input.FocusedStyle.Base = lipgloss.NewStyle().Foreground(colorBody)
-		input.FocusedStyle.CursorLine = lipgloss.NewStyle()
-		input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(colorBody)
-		input.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true)
-		input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(colorMuted)
-		input.BlurredStyle = input.FocusedStyle
+		styleComposer(&input)
 		input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j", "shift+enter"))
 		state.questions[index] = askUserQuestionState{question: question, input: input}
 	}
@@ -169,7 +164,7 @@ func (model *tuiModel) presentAskUser(interrupt dagent.Interrupt) error {
 	return nil
 }
 
-func (model *tuiModel) handleAskUserKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleAskUserKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	state := model.askUser
 	if state == nil {
 		return nil, false

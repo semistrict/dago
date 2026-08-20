@@ -4,12 +4,12 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
-func (model *tuiModel) handleNotificationShortcut(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleNotificationShortcut(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	if message.String() != "ctrl+n" {
 		return nil, false
 	}

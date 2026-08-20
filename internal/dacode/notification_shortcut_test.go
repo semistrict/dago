@@ -4,13 +4,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestNotificationShortcutUsesEmptyToastAndDefersToModelSelector(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/tmp", "test", "thread", false, false, "")
-	command, handled := model.handleNotificationShortcut(tea.KeyMsg{Type: tea.KeyCtrlN})
+	command, handled := model.handleNotificationShortcut(testCtrlKey('n'))
 	if !handled || command == nil || model.notificationCenter != nil {
 		t.Fatalf("empty shortcut = handled %v command %v center %#v", handled, command != nil, model.notificationCenter)
 	}
@@ -19,7 +17,7 @@ func TestNotificationShortcutUsesEmptyToastAndDefersToModelSelector(t *testing.T
 		t.Fatalf("empty toast = %q", view)
 	}
 	model.modelSelector = &modelSelectorState{}
-	if command, handled := model.handleNotificationShortcut(tea.KeyMsg{Type: tea.KeyCtrlN}); handled || command != nil {
+	if command, handled := model.handleNotificationShortcut(testCtrlKey('n')); handled || command != nil {
 		t.Fatalf("selector shortcut was intercepted: handled %v command %v", handled, command != nil)
 	}
 }
@@ -31,7 +29,7 @@ func TestNotificationShortcutDismissesOnlyActionableToasts(t *testing.T) {
 	model.toasts.add("generic", toastInfo, 0, "", testClock())
 	id := model.toasts.add("actionable", toastWarning, 0, notification.Key, testClock())
 	model.notifications.bindToast(notification.Key, notificationToastIdentity(id))
-	if _, handled := model.handleNotificationShortcut(tea.KeyMsg{Type: tea.KeyCtrlN}); !handled || model.notificationCenter == nil {
+	if _, handled := model.handleNotificationShortcut(testCtrlKey('n')); !handled || model.notificationCenter == nil {
 		t.Fatal("notification center did not open")
 	}
 	items := model.toasts.items
@@ -43,7 +41,7 @@ func TestNotificationShortcutDismissesOnlyActionableToasts(t *testing.T) {
 func TestNotificationShortcutPromptsToCloseOtherModal(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/tmp", "test", "thread", false, false, "")
 	model.notificationSettings = newNotificationSettings(nil)
-	command, handled := model.handleNotificationShortcut(tea.KeyMsg{Type: tea.KeyCtrlN})
+	command, handled := model.handleNotificationShortcut(testCtrlKey('n'))
 	if !handled || command == nil || model.notificationCenter != nil {
 		t.Fatalf("blocked shortcut = handled %v command %v center %#v", handled, command != nil, model.notificationCenter)
 	}

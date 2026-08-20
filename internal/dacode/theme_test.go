@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestBuiltinThemeRegistryContainsPinnedCatalog(t *testing.T) {
@@ -260,17 +260,17 @@ func TestThemePickerPreviewsCancelsAndPersistsSelection(t *testing.T) {
 		t.Fatal("/theme did not open the picker")
 	}
 	original := model.themeName
-	command, handled := model.handleThemeKey(tea.KeyMsg{Type: tea.KeyDown})
+	command, handled := model.handleThemeKey(tea.KeyPressMsg{Code: tea.KeyDown})
 	if !handled || command != nil || model.themeName == original {
 		t.Fatalf("down did not preview: handled=%v command=%v theme=%q", handled, command != nil, model.themeName)
 	}
-	if _, handled := model.handleThemeKey(tea.KeyMsg{Type: tea.KeyEsc}); !handled || model.themeName != original || model.themePicker != nil {
+	if _, handled := model.handleThemeKey(tea.KeyPressMsg{Code: tea.KeyEsc}); !handled || model.themeName != original || model.themePicker != nil {
 		t.Fatalf("Esc did not restore %q", original)
 	}
 
 	model.themePicker = newThemePicker(model.themeRegistry, model.themeName, model.terminalTheme)
 	model.themePicker.selected = indexTheme(model.themePicker.names, "nord")
-	command, handled = model.handleThemeKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, handled = model.handleThemeKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !handled || command == nil || model.themeName != "nord" || model.themePicker != nil {
 		t.Fatalf("Enter did not commit Nord: handled=%v command=%v theme=%q", handled, command != nil, model.themeName)
 	}
@@ -293,20 +293,20 @@ func TestThemePickerTerminalDefaultAndLabels(t *testing.T) {
 	model.resize(100, 30)
 	model.themePicker = newThemePicker(model.themeRegistry, model.themeName, model.terminalTheme)
 	model.themePicker.selected = indexTheme(model.themePicker.names, "ansi-dark")
-	if _, handled := model.handleThemeKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}); !handled || !model.themePicker.showKeys {
+	if _, handled := model.handleThemeKey(testTextKey(string([]rune{'n'}))); !handled || !model.themePicker.showKeys {
 		t.Fatal("n did not toggle canonical keys")
 	}
-	command, handled := model.handleThemeKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	command, handled := model.handleThemeKey(testTextKey(string([]rune{'t'})))
 	if !handled || command == nil || model.themeName != "ansi-dark" {
 		t.Fatalf("t did not select terminal theme: handled=%v command=%v theme=%q", handled, command != nil, model.themeName)
 	}
 	message := command().(themePreferenceSavedMsg)
 	updated, _ := model.Update(message)
-	model = updated.(*tuiModel)
+	model = updated
 	if model.terminalTheme != "ansi-dark" || !strings.Contains(model.renderThemePicker(), "ansi-dark (current, default)") {
 		t.Fatalf("terminal default not reflected: %q\n%s", model.terminalTheme, model.renderThemePicker())
 	}
-	if _, handled := model.handleThemeKey(tea.KeyMsg{Type: tea.KeyEsc}); !handled || model.themeName != "ansi-dark" {
+	if _, handled := model.handleThemeKey(tea.KeyPressMsg{Code: tea.KeyEsc}); !handled || model.themeName != "ansi-dark" {
 		t.Fatal("Esc reverted a terminal default chosen in this picker")
 	}
 }

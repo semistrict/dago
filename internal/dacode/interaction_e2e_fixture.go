@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dagoal"
@@ -415,7 +415,7 @@ func RunInteractionFixture(ctx context.Context, arguments []string, stdin io.Rea
 	} else if options.resume != "" {
 		model.sessionPicker = &sessionPickerState{sessions: []sessionInfo{{ThreadID: options.resume}}, resuming: true, startup: true}
 	}
-	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout))
+	program := tea.NewProgram(newProgramModel(model), tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout))
 	_, err = program.Run()
 	if errors.Is(err, context.Canceled) {
 		return nil

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestResolveEditorCommandUsesVisualThenEditorAndFallback(t *testing.T) {
@@ -190,7 +190,7 @@ func TestExternalEditorRoutesSlashAndControlXToCurrentComposer(t *testing.T) {
 		return func() tea.Msg { return editorFinishedMsg{text: "edited\ntext"} }, nil
 	}
 	model.composer.SetValue("current draft")
-	command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlX})
+	command, handled := model.handleKey(testCtrlKey('x'))
 	if !handled || command == nil || !slices.Equal(drafts, []string{"current draft"}) {
 		t.Fatalf("Ctrl+X handled = %v, command nil = %v, drafts = %#v", handled, command == nil, drafts)
 	}

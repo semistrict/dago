@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dagoal"
 	"github.com/semistrict/dago/damessage"
@@ -350,13 +350,13 @@ func TestEscapeClearHasExactBoundedUndo(t *testing.T) {
 	model.pasteBindings["[paste-1]"] = "exact pasted value"
 	model.inputMedia["[media-1]"] = damessage.ContentBlock{Data: []byte{1, 2, 3}, MIMEType: "image/png"}
 	model.imageSequence = 4
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); !handled || model.composer.Value() != draft {
+	if _, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc}); !handled || model.composer.Value() != draft {
 		t.Fatal("first escape did not arm clear")
 	}
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); !handled || model.composer.Value() != "" {
+	if _, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc}); !handled || model.composer.Value() != "" {
 		t.Fatalf("second escape did not clear draft: %q", model.composer.Value())
 	}
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlZ}); !handled || model.composer.Value() != draft ||
+	if _, handled := model.handleKey(testCtrlKey('z')); !handled || model.composer.Value() != draft ||
 		model.pasteBindings["[paste-1]"] != "exact pasted value" || !slices.Equal(model.inputMedia["[media-1]"].Data, []byte{1, 2, 3}) || model.imageSequence != 4 {
 		t.Fatalf("Ctrl+Z did not restore exact Unicode draft and attachments: draft=%q bindings=%#v media=%#v sequence=%d", model.composer.Value(), model.pasteBindings, model.inputMedia, model.imageSequence)
 	}
@@ -409,12 +409,12 @@ func TestEscapeClearBoundsAndClonesHiddenAttachmentPayloads(t *testing.T) {
 func TestControlCCopiesDraftAndControlDDeletesUnicodeRune(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
 	model.composer.SetValue("copy this")
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC}); !handled || model.composer.Value() != "copy this" || model.clipboardSequence == "" {
+	if _, handled := model.handleKey(testCtrlKey('c')); !handled || model.composer.Value() != "copy this" || model.clipboardSequence == "" {
 		t.Fatalf("Ctrl+C did not copy without clearing: draft=%q sequence=%q", model.composer.Value(), model.clipboardSequence)
 	}
 	model.composer.SetValue("a🙂b")
-	model.composer.SetCursor(1)
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlD}); !handled || model.composer.Value() != "ab" {
+	model.composer.SetCursorColumn(1)
+	if _, handled := model.handleKey(testCtrlKey('d')); !handled || model.composer.Value() != "ab" {
 		t.Fatalf("Ctrl+D did not delete one Unicode rune: %q", model.composer.Value())
 	}
 }
@@ -422,14 +422,14 @@ func TestControlCCopiesDraftAndControlDDeletesUnicodeRune(t *testing.T) {
 func TestControlDMultilineDeletionPreservesLogicalCursor(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
 	model.composer.SetValue("ab\né界c")
-	model.composer.SetCursor(1)
+	model.composer.SetCursorColumn(1)
 	if !model.forwardDeleteComposer() || model.composer.Value() != "ab\néc" || model.composer.Line() != 1 ||
 		model.composer.LineInfo().StartColumn+model.composer.LineInfo().ColumnOffset != 1 {
 		t.Fatalf("wide-rune deletion moved cursor: value=%q line=%d info=%#v", model.composer.Value(), model.composer.Line(), model.composer.LineInfo())
 	}
 	model.composer.SetValue("ab\né界c")
 	model.composer.CursorUp()
-	model.composer.SetCursor(2)
+	model.composer.SetCursorColumn(2)
 	if !model.forwardDeleteComposer() || model.composer.Value() != "abé界c" || model.composer.Line() != 0 ||
 		model.composer.LineInfo().StartColumn+model.composer.LineInfo().ColumnOffset != 2 {
 		t.Fatalf("newline deletion moved cursor: value=%q line=%d info=%#v", model.composer.Value(), model.composer.Line(), model.composer.LineInfo())
@@ -439,7 +439,7 @@ func TestControlDMultilineDeletionPreservesLogicalCursor(t *testing.T) {
 func TestControlDDeletesMultilinePlaceholderAfterWideRunes(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
 	model.composer.SetValue("🙂x\né界[paste-1]z")
-	model.composer.SetCursor(2)
+	model.composer.SetCursorColumn(2)
 	model.pasteBindings["[paste-1]"] = "private paste"
 	if !model.forwardDeleteComposer() || model.composer.Value() != "🙂x\né界z" || model.composer.Line() != 1 ||
 		model.composer.LineInfo().StartColumn+model.composer.LineInfo().ColumnOffset != 2 || len(model.pasteBindings) != 0 {

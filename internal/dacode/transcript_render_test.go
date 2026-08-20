@@ -32,6 +32,18 @@ func TestUserTranscriptCollapseIsRuneSafeAndToggleable(t *testing.T) {
 	}
 }
 
+func TestQueuedTranscriptUsesMutedStyle(t *testing.T) {
+	if got := queuedTranscriptContainerStyle(80).GetBorderLeftForeground(); got != colorMuted {
+		t.Fatalf("queued border color = %v, want %v", got, colorMuted)
+	}
+	if got := queuedTranscriptTextStyle().GetForeground(); got != colorMuted {
+		t.Fatalf("queued text color = %v, want %v", got, colorMuted)
+	}
+	if plain := ansi.Strip(renderQueuedTranscriptWithGlyphs("wait for this", 80, unicodeUIGlyphs)); !strings.Contains(plain, "> wait for this") {
+		t.Fatalf("queued transcript = %q", plain)
+	}
+}
+
 func TestAssistantMarkdownStreamsIncrementallyAndSanitizesTerminalControls(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
 	model.appendAssistant("# Build\nUse **safe** ")

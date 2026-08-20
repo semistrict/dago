@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestMCPWorkspaceSelectionAcceptsOptionalEmptyValue(t *testing.T) {
@@ -12,7 +12,7 @@ func TestMCPWorkspaceSelectionAcceptsOptionalEmptyValue(t *testing.T) {
 	flow := &mcpLoginFlow{responses: responses}
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
 	model.mcpLogin = &mcpLoginState{phase: mcpLoginWorkspace, flow: flow}
-	model.handleMCPLoginKey(tea.KeyMsg{Type: tea.KeyEnter})
+	model.handleMCPLoginKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	select {
 	case value := <-responses:
 		if value != "" {
@@ -30,9 +30,9 @@ func TestMCPAuthorizeEntryPreservesCopyShortcutRune(t *testing.T) {
 	model.mcpLogin = &mcpLoginState{phase: mcpLoginAuthorize, flow: flow}
 	callback := "https://127.0.0.1/callback?code=ok"
 	for _, character := range callback {
-		model.handleMCPLoginKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{character}})
+		model.handleMCPLoginKey(testTextKey(string([]rune{character})))
 	}
-	model.handleMCPLoginKey(tea.KeyMsg{Type: tea.KeyEnter})
+	model.handleMCPLoginKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	select {
 	case value := <-responses:
 		if value != callback {

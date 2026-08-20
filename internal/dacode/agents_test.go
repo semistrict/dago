@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dastate"
 )
@@ -270,11 +270,11 @@ func TestTUIAgentSelectorNavigationDefaultAndSwitch(t *testing.T) {
 		t.Fatalf("agent selector =\n%s", view)
 	}
 
-	model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if view := model.View(); !strings.Contains(view, "› research") {
 		t.Fatalf("tab did not select research:\n%s", view)
 	}
-	_, command = model.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	_, command = model.Update(testCtrlKey('s'))
 	if command == nil {
 		t.Fatal("ctrl+s did not save a default")
 	}
@@ -282,7 +282,7 @@ func TestTUIAgentSelectorNavigationDefaultAndSwitch(t *testing.T) {
 	if view := model.View(); !strings.Contains(view, "research (default)") || !strings.Contains(view, "Default set to research") {
 		t.Fatalf("default marker =\n%s", view)
 	}
-	_, command = model.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	_, command = model.Update(testCtrlKey('s'))
 	if command == nil {
 		t.Fatal("repeated ctrl+s did not toggle the default")
 	}
@@ -291,7 +291,7 @@ func TestTUIAgentSelectorNavigationDefaultAndSwitch(t *testing.T) {
 		t.Fatalf("cleared default marker =\n%s", view)
 	}
 
-	_, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, command = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if command == nil || model.agentPicker != nil {
 		t.Fatalf("switch command = %v, picker = %#v", command, model.agentPicker)
 	}
@@ -308,14 +308,14 @@ func TestTUIAgentSelectorCancelAndSwitchFailure(t *testing.T) {
 	runner := &fakeRunner{agents: []agentInfo{{Name: defaultAgentName, Current: true}, {Name: "research"}}}
 	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, true, "")
 	model.agentPicker = &agentPickerState{agents: runner.agents}
-	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if model.agentPicker != nil {
 		t.Fatal("escape did not cancel the selector")
 	}
 
 	runner.agentErr = errors.New("switch unavailable")
 	model.agentPicker = &agentPickerState{agents: runner.agents, selected: 1}
-	_, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if command == nil {
 		t.Fatal("failed switch did not start")
 	}

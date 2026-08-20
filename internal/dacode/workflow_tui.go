@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dagent"
@@ -268,7 +268,7 @@ func (model *tuiModel) selectedWorkflow() *daworkflow.Status {
 	return &model.workflowPanel.runs[index]
 }
 
-func (model *tuiModel) handleWorkflowKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleWorkflowKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	panel := model.workflowPanel
 	if panel == nil {
 		return nil, false

@@ -2124,6 +2124,27 @@ test("runs shared and incognito shell commands and drains queued messages", asyn
   await page.keyboard.type("second queued request 9182");
   await page.keyboard.press("Enter");
   await expect.poll(() => terminalText(page)).toContain("Queued input #1.");
+  await expect.poll(async () => (await visibleTerminalLines(page)).join("\n")).toContain("> second queued request 9182");
+  const queueColors = await page.evaluate(() => {
+    const terminal = window.dacodeTerminal;
+    if (!terminal) return undefined;
+    const buffer = terminal.buffer.active;
+    const foreground = (needle: string, offset = 0): number | undefined => {
+      for (let row = 0; row < buffer.length; row += 1) {
+        const line = buffer.getLine(row);
+        const column = line?.translateToString(true).indexOf(needle) ?? -1;
+        if (line && column >= 0) return line.getCell(column + offset)?.getFgColor();
+      }
+      return undefined;
+    };
+    return {
+      sent: foreground("first slow request 9182"),
+      queued: foreground("second queued request 9182"),
+      queuedBorder: foreground("┃ > second queued request 9182"),
+    };
+  });
+  expect(queueColors?.queued).toBe(queueColors?.queuedBorder);
+  expect(queueColors?.queued).not.toBe(queueColors?.sent);
   await expect.poll(() => terminalText(page), { timeout: 7_000 }).toContain("second queued request 9182");
 });
 
