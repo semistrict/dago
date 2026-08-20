@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago"
 )
 
@@ -12,34 +12,34 @@ func TestGoalReviewNavigationEditRejectAndCancel(t *testing.T) {
 	review := newGoalReview("ship it", "- tests pass\n- behavior works", false)
 	review.resize(80)
 
-	decision, _ := review.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	decision, _ := review.handleKey(testTextKey(string([]rune{'e'})))
 	if decision != nil || review.mode != goalReviewEdit || review.input.Value() != review.proposal.Criteria {
 		t.Fatalf("edit state = %#v, decision = %#v", review, decision)
 	}
 	review.setEditedValue("   ")
-	decision, _ = review.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	decision, _ = review.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if decision != nil || !strings.Contains(review.warning, "criteria") {
 		t.Fatalf("blank edit decision = %#v, warning = %q", decision, review.warning)
 	}
 	review.setEditedValue("- focused test passes")
-	decision, _ = review.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	decision, _ = review.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if decision == nil || decision.kind != goalReviewEdited || decision.criteria != "- focused test passes" {
 		t.Fatalf("edited decision = %#v", decision)
 	}
 
 	review = newGoalReview("ship it", "- tests pass\n- behavior works", true)
-	decision, _ = review.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	decision, _ = review.handleKey(testTextKey(string([]rune{'r'})))
 	if decision != nil || review.mode != goalReviewReject {
 		t.Fatalf("reject mode = %d, decision = %#v", review.mode, decision)
 	}
 	review.setEditedValue("Keep the existing API")
-	decision, _ = review.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	decision, _ = review.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if decision == nil || decision.kind != goalReviewRejected || decision.feedback != "Keep the existing API" {
 		t.Fatalf("rejected decision = %#v", decision)
 	}
 
 	review = newGoalReview("ship it", "- tests pass\n- behavior works", false)
-	decision, _ = review.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	decision, _ = review.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if decision == nil || decision.kind != goalReviewCancelled {
 		t.Fatalf("cancel decision = %#v", decision)
 	}

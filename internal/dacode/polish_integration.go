@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/dagit"
 )
@@ -230,7 +230,7 @@ func (model *tuiModel) refreshTranscriptWithAnchor(insertedAbove bool) {
 		return
 	}
 	oldLines := model.viewport.TotalLineCount()
-	model.chatScroll.updateLayout(oldLines, model.viewport.Height)
+	model.chatScroll.updateLayout(oldLines, model.viewport.Height())
 	var anchor transcriptScrollAnchor
 	anchored := false
 	if !model.chatScroll.FollowBottom {
@@ -243,7 +243,7 @@ func (model *tuiModel) refreshTranscriptWithAnchor(insertedAbove bool) {
 	if insertedAbove {
 		inserted = max(newLines-oldLines, 0)
 	}
-	model.chatScroll.updateLayoutPreservingAnchor(newLines, model.viewport.Height, inserted)
+	model.chatScroll.updateLayoutPreservingAnchor(newLines, model.viewport.Height(), inserted)
 	if anchored && !insertedAbove {
 		if offset, ok := transcriptOffsetForAnchor(model.transcriptLayout, anchor); ok {
 			model.chatScroll.userScrolled(offset)
@@ -287,18 +287,18 @@ func (model *tuiModel) hydrateChatHistory() bool {
 	return true
 }
 
-func (model *tuiModel) handleChatWheel(message tea.MouseMsg) bool {
+func (model *tuiModel) handleChatWheel(message tea.Mouse) bool {
 	direction := 0
 	switch message.Button {
-	case tea.MouseButtonWheelUp:
+	case tea.MouseWheelUp:
 		direction = -1
-	case tea.MouseButtonWheelDown:
+	case tea.MouseWheelDown:
 		direction = 1
 	default:
 		return false
 	}
-	model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height)
-	model.chatScroll.userScrolled(model.viewport.YOffset)
+	model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height())
+	model.chatScroll.userScrolled(model.viewport.YOffset())
 	model.viewport.SetYOffset(model.chatScroll.wheel(direction))
 	if model.chatScroll.shouldHydrateOlder(chatHydrationThreshold) {
 		model.hydrateChatHistory()
@@ -307,8 +307,8 @@ func (model *tuiModel) handleChatWheel(message tea.MouseMsg) bool {
 }
 
 func (model *tuiModel) pageChat(direction int) {
-	model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height)
-	model.chatScroll.userScrolled(model.viewport.YOffset)
+	model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height())
+	model.chatScroll.userScrolled(model.viewport.YOffset())
 	if direction < 0 {
 		offset, hydrate := model.chatScroll.pageUp(chatHydrationThreshold)
 		model.viewport.SetYOffset(offset)
@@ -317,11 +317,11 @@ func (model *tuiModel) pageChat(direction int) {
 		}
 		return
 	}
-	model.viewport.SetYOffset(model.chatScroll.scrollLines(max(model.viewport.Height-1, 1)))
+	model.viewport.SetYOffset(model.chatScroll.scrollLines(max(model.viewport.Height()-1, 1)))
 }
 
-func (model *tuiModel) handleWelcomeMouse(message tea.MouseMsg) (tea.Cmd, bool) {
-	if message.Button != tea.MouseButtonLeft || message.Action != tea.MouseActionPress || model.welcomeInteractionBlocked() {
+func (model *tuiModel) handleWelcomeMouse(message tea.Mouse) (tea.Cmd, bool) {
+	if message.Button != tea.MouseLeft || model.welcomeInteractionBlocked() {
 		return nil, false
 	}
 	for _, target := range model.welcomeScreenHitTargets {
@@ -352,8 +352,8 @@ func (model *tuiModel) cacheWelcomeScreenTargets(view string) {
 	model.welcomeScreenHitTargets = model.welcomeScreenHitTargets[:0]
 	clip := max(lipgloss.Height(view)-model.height, 0)
 	for _, target := range model.welcomeHitTargets {
-		target.Y = target.Y - model.viewport.YOffset - clip
-		if target.Y >= 0 && target.Y < min(model.viewport.Height, model.height) && target.Width > 0 {
+		target.Y = target.Y - model.viewport.YOffset() - clip
+		if target.Y >= 0 && target.Y < min(model.viewport.Height(), model.height) && target.Width > 0 {
 			model.welcomeScreenHitTargets = append(model.welcomeScreenHitTargets, target)
 		}
 	}

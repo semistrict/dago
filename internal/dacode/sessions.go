@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/damessage"
 )
@@ -278,7 +278,7 @@ func (model *tuiModel) finishSessionResumePreparation(message sessionResumePrepa
 	return nil
 }
 
-func (model *tuiModel) handleSessionResumeKey(message tea.KeyMsg) tea.Cmd {
+func (model *tuiModel) handleSessionResumeKey(message tea.KeyPressMsg) tea.Cmd {
 	controller := model.resumeController
 	if controller == nil {
 		return nil
@@ -325,7 +325,7 @@ func (model *tuiModel) handleSessionResumeKey(message tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-func (model *tuiModel) handleSessionKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleSessionKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	picker := model.sessionPicker
 	if picker == nil {
 		return nil, false

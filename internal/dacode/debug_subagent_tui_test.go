@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/semistrict/dago/dagent"
 )
@@ -37,22 +37,22 @@ func TestTUIDebugConsoleToggleHiddenCommandsCopyClearAndLiveSnapshot(t *testing.
 	// Filter -> copy toggle -> log. Enter on the selected log returns an OSC52
 	// payload to the host without performing clipboard I/O in the reducer.
 	for range 2 {
-		if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyTab}); !handled {
+		if _, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyTab}); !handled {
 			t.Fatal("debug console did not own Tab")
 		}
 	}
-	copyCommand, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	copyCommand, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !handled || copyCommand == nil || !strings.HasPrefix(model.clipboardSequence, "\x1b]52;c;") {
 		t.Fatalf("debug selected copy: handled=%t command=%v sequence=%q", handled, copyCommand, model.clipboardSequence)
 	}
 
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlL}); !handled || model.debugConsoleClearedUpto == 0 {
+	if _, handled := model.handleKey(testCtrlKey('l')); !handled || model.debugConsoleClearedUpto == 0 {
 		t.Fatalf("debug clear: handled=%t cursor=%d", handled, model.debugConsoleClearedUpto)
 	}
 	if got := len(model.debugConsole.snapshotView().Records); got != 0 {
 		t.Fatalf("clear retained %d visible records", got)
 	}
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlBackslash}); !handled || model.debugConsole != nil {
+	if _, handled := model.handleKey(testCtrlKey('\\')); !handled || model.debugConsole != nil {
 		t.Fatalf("debug close: handled=%t overlay=%v", handled, model.debugConsole)
 	}
 	model.slashCommand("/debug")
@@ -64,7 +64,7 @@ func TestTUIDebugConsoleToggleHiddenCommandsCopyClearAndLiveSnapshot(t *testing.
 func TestTUISubagentPanelConsumesLifecycleReservesLayoutAndTogglesWithCtrlG(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "main-model", "thread-1", false, false, "")
 	model.resize(100, 30)
-	initialViewportHeight := model.viewport.Height
+	initialViewportHeight := model.viewport.Height()
 	started := dagent.Event{
 		Mode: dagent.EventChild, TaskID: "fanout-phase", Child: &dagent.ChildEvent{
 			Phase: dagent.ChildStarted, Name: "general-purpose", ToolCallID: "fanout-one",
@@ -72,23 +72,23 @@ func TestTUISubagentPanelConsumesLifecycleReservesLayoutAndTogglesWithCtrlG(t *t
 	}
 	model.applyEvent(started)
 	view := ansi.Strip(model.View())
-	expandedViewportHeight := model.viewport.Height
-	if !strings.Contains(view, "dynamic subagents") || !strings.Contains(view, "general-purpose") || model.viewport.Height >= initialViewportHeight {
-		t.Fatalf("live panel/layout missing: initial=%d current=%d\n%s", initialViewportHeight, model.viewport.Height, view)
+	expandedViewportHeight := model.viewport.Height()
+	if !strings.Contains(view, "dynamic subagents") || !strings.Contains(view, "general-purpose") || model.viewport.Height() >= initialViewportHeight {
+		t.Fatalf("live panel/layout missing: initial=%d current=%d\n%s", initialViewportHeight, model.viewport.Height(), view)
 	}
 
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlG}); !handled {
+	if _, handled := model.handleKey(testCtrlKey('g')); !handled {
 		t.Fatal("Ctrl+G was not consumed for visible panel")
 	}
 	collapsed := ansi.Strip(model.View())
 	if !strings.Contains(collapsed, "dynamic subagents") || strings.Contains(collapsed, "general-purpose") {
 		t.Fatalf("collapsed panel retained body:\n%s", collapsed)
 	}
-	if model.viewport.Height <= expandedViewportHeight || model.viewport.Height >= initialViewportHeight {
-		t.Fatalf("collapsed panel height: initial=%d expanded=%d collapsed=%d", initialViewportHeight, expandedViewportHeight, model.viewport.Height)
+	if model.viewport.Height() <= expandedViewportHeight || model.viewport.Height() >= initialViewportHeight {
+		t.Fatalf("collapsed panel height: initial=%d expanded=%d collapsed=%d", initialViewportHeight, expandedViewportHeight, model.viewport.Height())
 	}
 
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlG}); !handled {
+	if _, handled := model.handleKey(testCtrlKey('g')); !handled {
 		t.Fatal("second Ctrl+G was not consumed")
 	}
 	model.applyEvent(dagent.Event{

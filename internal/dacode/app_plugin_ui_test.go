@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/semistrict/dago/dahook"
 )
@@ -37,7 +37,7 @@ func TestTUIPluginManagerMutationAndReloadPromptFlow(t *testing.T) {
 	if view := ansi.Strip(model.View()); !strings.Contains(view, "Plugins") || !strings.Contains(view, "New @ local") {
 		t.Fatalf("plugin manager view = %q", view)
 	}
-	command, handled = model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, handled = model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !handled || command == nil {
 		t.Fatalf("install key = handled:%v command:%v", handled, command != nil)
 	}
@@ -49,14 +49,14 @@ func TestTUIPluginManagerMutationAndReloadPromptFlow(t *testing.T) {
 	if !model.pluginManager.dirty || !strings.Contains(model.pluginManager.status, "Reload pending") {
 		t.Fatalf("post-install state = %#v", model.pluginManager)
 	}
-	model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	model.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if model.pluginManager != nil || !model.pluginReloadPrompt {
 		t.Fatalf("close manager = manager:%#v prompt:%v", model.pluginManager, model.pluginReloadPrompt)
 	}
 	if view := ansi.Strip(model.View()); !strings.Contains(view, "Reload plugins?") {
 		t.Fatalf("reload prompt = %q", view)
 	}
-	model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	model.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if model.pluginReloadPrompt {
 		t.Fatal("reload-later choice did not close prompt")
 	}
@@ -105,11 +105,11 @@ func TestTUIPluginsBypassesRunningQueueAndHookStatusHasPriority(t *testing.T) {
 	}
 	model.Update(command())
 	model.pluginManager.dirty = true
-	model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	model.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if !model.pluginReloadPrompt {
 		t.Fatal("dirty busy plugin manager did not offer reload")
 	}
-	model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if model.pluginReloadPrompt || len(model.inputQueue) != 1 || model.inputQueue[0].value != "reload" {
 		t.Fatalf("busy reload prompt = prompt:%v queue:%#v", model.pluginReloadPrompt, model.inputQueue)
 	}

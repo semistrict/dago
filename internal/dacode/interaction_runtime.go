@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	dagoapi "github.com/semistrict/dago"
 	"github.com/semistrict/dago/damessage"
 )
@@ -164,7 +164,7 @@ func (model *tuiModel) setComposerRuneOffset(offset int) {
 	for model.composer.Line() < targetLine {
 		model.composer.CursorDown()
 	}
-	model.composer.SetCursor(targetColumn)
+	model.composer.SetCursorColumn(targetColumn)
 }
 
 func (model *tuiModel) clearComposerWithUndo() bool {
@@ -259,7 +259,6 @@ func (model *tuiModel) undoComposerClear() bool {
 		return false
 	}
 	model.composer.SetValue(value)
-	model.composer.SetCursor(len([]rune(value)))
 	if model.draftAttachmentUndo.ready {
 		model.pasteBindings = model.draftAttachmentUndo.pasteBindings
 		model.inputMedia = model.draftAttachmentUndo.inputMedia
@@ -302,8 +301,8 @@ func (model *tuiModel) applyDeferredCompletion(completion deferredActionComplete
 		return model.notify("A queued change could not be applied.", toastError, "")
 	}
 	updated, command := model.Update(completion.Message)
-	if updatedModel, ok := updated.(*tuiModel); ok && updatedModel != model {
-		*model = *updatedModel
+	if updated != model {
+		*model = *updated
 	}
 	return command
 }
@@ -337,8 +336,8 @@ func (model *tuiModel) advanceDeferredDrain() tea.Cmd {
 		model.applyingDeferred = true
 		updated, command := model.Update(completion.Message)
 		model.applyingDeferred = false
-		if updatedModel, ok := updated.(*tuiModel); ok && updatedModel != model {
-			*model = *updatedModel
+		if updated != model {
+			*model = *updated
 		}
 		if command == nil {
 			progress.active = deferredActionCompletedMsg{}
@@ -358,8 +357,8 @@ func (model *tuiModel) advanceDeferredDrain() tea.Cmd {
 		notices = append(notices, model.notify("The queued prompt could not be started.", toastError, ""))
 	} else if progress.prompt != nil {
 		updated, command := model.Update(progress.prompt)
-		if updatedModel, ok := updated.(*tuiModel); ok && updatedModel != model {
-			*model = *updatedModel
+		if updated != model {
+			*model = *updated
 		}
 		if command != nil {
 			notices = append(notices, command)

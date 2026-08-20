@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago/daaskuser"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
@@ -52,7 +52,7 @@ func TestAskUserCollectsTextChoicesOptionalAnswersAndResumes(t *testing.T) {
 	if command := model.confirmAskUserAnswer(); command != nil || model.askUser.current != 1 {
 		t.Fatalf("first confirmation command = %v, current = %d", command, model.askUser.current)
 	}
-	model.handleAskUserKey(tea.KeyMsg{Type: tea.KeyDown})
+	model.handleAskUserKey(tea.KeyPressMsg{Code: tea.KeyDown})
 	if command := model.confirmAskUserAnswer(); command != nil || model.askUser.current != 2 {
 		t.Fatalf("choice confirmation command = %v, current = %d", command, model.askUser.current)
 	}
@@ -87,15 +87,15 @@ func TestAskUserRequiredOtherAndQuestionNavigation(t *testing.T) {
 	if command := model.confirmAskUserAnswer(); command != nil || model.askUser.warning != askUserMissingAnswer {
 		t.Fatalf("blank required answer command = %v, warning = %q", command, model.askUser.warning)
 	}
-	model.handleAskUserKey(tea.KeyMsg{Type: tea.KeyTab})
-	model.handleAskUserKey(tea.KeyMsg{Type: tea.KeyDown})
-	model.handleAskUserKey(tea.KeyMsg{Type: tea.KeyDown})
+	model.handleAskUserKey(tea.KeyPressMsg{Code: tea.KeyTab})
+	model.handleAskUserKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	model.handleAskUserKey(tea.KeyPressMsg{Code: tea.KeyDown})
 	if input := model.askUser.activeInput(); input == nil {
 		t.Fatal("Other did not open its free-form input")
 	} else {
 		input.SetValue("green")
 	}
-	model.handleAskUserKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+	model.handleAskUserKey(testShiftKey(tea.KeyTab))
 	if model.askUser.current != 0 {
 		t.Fatalf("shift-tab current = %d, want 0", model.askUser.current)
 	}
@@ -115,7 +115,7 @@ func TestAskUserCancelRejectsRowAndCancelsPendingRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	model.askUser.ready = true
-	command, handled := model.handleAskUserKey(tea.KeyMsg{Type: tea.KeyEsc})
+	command, handled := model.handleAskUserKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if !handled || command == nil || model.askUser != nil {
 		t.Fatalf("handled = %v, command = %v, state = %#v", handled, command, model.askUser)
 	}
@@ -191,7 +191,7 @@ func TestAskUserEditorTargetsActiveAnswerOnly(t *testing.T) {
 		return func() tea.Msg { return editorFinishedMsg{text: "edited answer"} }, nil
 	}
 	model.askUser.questions[0].input.SetValue("draft")
-	command, handled := model.handleAskUserKey(tea.KeyMsg{Type: tea.KeyCtrlX})
+	command, handled := model.handleAskUserKey(testCtrlKey('x'))
 	if !handled || command == nil {
 		t.Fatalf("handled = %v, command = %v", handled, command)
 	}

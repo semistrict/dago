@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dacheckpoint/sqlite"
@@ -165,7 +165,7 @@ func (model *tuiModel) finishSkillTrust(message skillTrustedMsg) tea.Cmd {
 	return loadSkillCommand(model.ctx, model.runner, message.name, message.request, message.display)
 }
 
-func (model *tuiModel) handleSkillTrustKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleSkillTrustKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	state := model.skillTrust
 	if state == nil {
 		return nil, false

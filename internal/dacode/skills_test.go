@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago/dabackend"
 	"github.com/semistrict/dago/dacheckpoint"
 	checkpointsqlite "github.com/semistrict/dago/dacheckpoint/sqlite"
@@ -190,7 +190,7 @@ func TestTUISkillsListAliasesAndTrustRetry(t *testing.T) {
 		t.Fatal("/remember was not handled")
 	}
 	updated, _ := model.Update(command())
-	model = updated.(*tuiModel)
+	model = updated
 	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0].Messages[0].TextContent(), "remember body") || !strings.Contains(runner.inputs[0].Messages[0].TextContent(), "keep this") {
 		t.Fatalf("skill input = %#v", runner.inputs)
 	}
@@ -206,21 +206,21 @@ func TestTUISkillsListAliasesAndTrustRetry(t *testing.T) {
 		t.Fatal("dynamic skill was not handled")
 	}
 	updated, _ = model.Update(command())
-	model = updated.(*tuiModel)
+	model = updated
 	if model.skillTrust == nil || !strings.Contains(model.renderSkillTrust(), "Trust external skill?") {
 		t.Fatalf("trust state = %#v", model.skillTrust)
 	}
-	trustCommand, handled := model.handleSkillTrustKey(tea.KeyMsg{Type: tea.KeyEnter})
+	trustCommand, handled := model.handleSkillTrustKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !handled || trustCommand == nil {
 		t.Fatal("trust confirmation was not handled")
 	}
 	updated, retry := model.Update(trustCommand())
-	model = updated.(*tuiModel)
+	model = updated
 	if retry == nil || runner.trusted != target {
 		t.Fatalf("trust retry = %v target=%q", retry, runner.trusted)
 	}
 	updated, _ = model.Update(retry())
-	model = updated.(*tuiModel)
+	model = updated
 	if runner.loadCalls < 2 || len(runner.inputs) != 2 || !strings.Contains(runner.inputs[1].Messages[0].TextContent(), "linked body") {
 		t.Fatalf("retried inputs = %#v calls=%d", runner.inputs, runner.loadCalls)
 	}

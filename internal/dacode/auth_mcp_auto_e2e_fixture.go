@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dacredential"
 	"github.com/semistrict/dago/dagent"
@@ -274,7 +274,7 @@ func RunAuthMCPAutoFixture(ctx context.Context, arguments []string, stdin io.Rea
 	model.authManager = newAuthTUIController(manager, filepath.Join(options.stateDir, "fixture-oauth.json"), fixtureSubscriptionLogin(mode), func(string) error { return nil })
 	model.configureMCP(runner)
 	model.configureAutoClassifier(options.model, options.approvalModel, &fixtureClassifierPreferences{})
-	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout))
+	program := tea.NewProgram(newProgramModel(model), tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout))
 	_, err = program.Run()
 	if errors.Is(err, context.Canceled) {
 		return nil

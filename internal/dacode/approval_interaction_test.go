@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
@@ -35,27 +35,27 @@ func TestApprovalReasonCanBeEditedCancelledAndSubmitted(t *testing.T) {
 	model.approval = newApprovalState([]dagent.ApprovalRequest{approvalTestRequest()})
 	model.approval.ready = true
 
-	model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if !model.approval.reasonMode {
 		t.Fatal("Tab did not open the rejection reason input")
 	}
 	for _, character := range "avoid this call" {
-		model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{character}})
+		model.Update(testTextKey(string([]rune{character})))
 	}
-	model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if got := model.approval.reason.Value(); got != "avoid this call" {
 		t.Fatalf("second Tab changed reason = %q", got)
 	}
-	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if model.approval == nil || model.approval.reasonMode || len(runner.inputs) != 0 {
 		t.Fatalf("Esc decided the approval: state=%#v inputs=%d", model.approval, len(runner.inputs))
 	}
 
-	model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	for _, character := range "use safer read check" {
-		model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{character}})
+		model.Update(testTextKey(string([]rune{character})))
 	}
-	model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(runner.inputs) != 1 {
 		t.Fatalf("resume inputs = %d", len(runner.inputs))
 	}
@@ -73,10 +73,10 @@ func TestApprovalReasonCanBeEditedCancelledAndSubmitted(t *testing.T) {
 }
 
 func TestApprovalReasonRejectKeysFirstCancelEditing(t *testing.T) {
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune{'n'}},
-		{Type: tea.KeyRunes, Runes: []rune{'N'}},
-		{Type: tea.KeyEsc},
+	for _, key := range []tea.KeyPressMsg{
+		testTextKey(string([]rune{'n'})),
+		testTextKey(string([]rune{'N'})),
+		{Code: tea.KeyEsc},
 	} {
 		t.Run(key.String(), func(t *testing.T) {
 			runner := &fakeRunner{}
@@ -98,7 +98,7 @@ func TestApprovalReasonQuickApproveKeysAreText(t *testing.T) {
 	model.approval = newApprovalState([]dagent.ApprovalRequest{approvalTestRequest()})
 	model.approval.ready = true
 	model.startApprovalReason()
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model.Update(testTextKey(string([]rune{'y'})))
 	if got := model.approval.reason.Value(); got != "y" || len(runner.inputs) != 0 {
 		t.Fatalf("reason = %q, inputs = %d", got, len(runner.inputs))
 	}
@@ -111,7 +111,7 @@ func TestApprovalBlankReasonUsesBareRejection(t *testing.T) {
 	model.approval.ready = true
 	model.startApprovalReason()
 	model.approval.reason.SetValue(" \t ")
-	model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	choice := runner.inputs[0].Resume.(dagent.ApprovalResponse).Decisions["call-1"]
 	if choice.Reason != "Rejected by user." || choice.Message != "" {
 		t.Fatalf("blank reason choice = %#v", choice)
@@ -126,7 +126,7 @@ func TestApprovalReasonIsBoundedAndTerminalSafeBeforeResume(t *testing.T) {
 	model.startApprovalReason()
 	model.approval.reason.SetValue("stop\x1b[2J\u202enow")
 	model.sanitizeApprovalReasonInput()
-	model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	choice := runner.inputs[0].Resume.(dagent.ApprovalResponse).Decisions["call-1"]
 	if strings.ContainsRune(choice.Reason, '\x1b') || strings.ContainsRune(choice.Reason, '\u202e') {
 		t.Fatalf("unsafe reason resumed = %q", choice.Reason)
@@ -174,7 +174,7 @@ func TestApprovalDefersWhileComposerWasRecentlyEdited(t *testing.T) {
 	}
 
 	oldGeneration := state.deferGeneration
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model.Update(testTextKey(string([]rune{'y'})))
 	if got := model.composer.Value(); got != "y" {
 		t.Fatalf("deferred y did not reach composer = %q", got)
 	}
@@ -201,7 +201,7 @@ func TestSubmittingDeferredDraftQueuesBehindApproval(t *testing.T) {
 	model.approval.typingProtected = true
 	model.composer.SetValue("follow up after the decision")
 
-	model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if model.approval == nil || len(runner.inputs) != 0 || len(model.inputQueue) != 1 {
 		t.Fatalf("approval=%#v, runner inputs=%d, queue=%#v", model.approval, len(runner.inputs), model.inputQueue)
 	}
@@ -218,7 +218,7 @@ func TestAutomaticReviewKeepsTypingOutOfDecisionShortcuts(t *testing.T) {
 	model.running = true
 	model.lastTypedAt = time.Now().Add(-approvalTypingIdleDuration - time.Second)
 
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model.Update(testTextKey(string([]rune{'y'})))
 	if got := model.composer.Value(); got != "y" {
 		t.Fatalf("reviewing y did not reach composer = %q", got)
 	}
@@ -226,7 +226,7 @@ func TestAutomaticReviewKeepsTypingOutOfDecisionShortcuts(t *testing.T) {
 		t.Fatalf("reviewing y decided approval: inputs=%d approval=%#v", len(runner.inputs), model.approval)
 	}
 	updated, command := model.finishReview(reviewDoneMsg{err: errTestApprovalReview})
-	result := updated.(*tuiModel)
+	result := updated
 	if result.approval == nil || result.approval.reviewing || !result.approval.deferred || command == nil {
 		t.Fatalf("review fallback = %#v, command=%v", result.approval, command)
 	}
@@ -246,7 +246,7 @@ func TestCancellingAutomaticReviewCannotResumeApproval(t *testing.T) {
 	}}
 
 	updated, command := model.finishReview(reviewDoneMsg{result: result})
-	state := updated.(*tuiModel)
+	state := updated
 	if !cancelledReview || state.approval != nil || len(runner.inputs) != 0 || command == nil {
 		t.Fatalf("cancelled=%t approval=%#v inputs=%d command=%v", cancelledReview, state.approval, len(runner.inputs), command)
 	}
@@ -271,7 +271,7 @@ func TestSwitchingAutomaticReviewToManualIgnoresReviewerApproval(t *testing.T) {
 		"call-1": {RiskLevel: "low", UserAuthorization: "high", Outcome: "allow", Rationale: "routine"},
 	}}
 	updated, command := model.finishReview(reviewDoneMsg{result: result})
-	state := updated.(*tuiModel)
+	state := updated
 	if !reviewCancelled || len(runner.inputs) != 0 || state.approval == nil || !state.approval.ready || !state.approval.deferred || command == nil {
 		t.Fatalf("cancelled=%t inputs=%d approval=%#v command=%v", reviewCancelled, len(runner.inputs), state.approval, command)
 	}
@@ -286,7 +286,7 @@ func TestManualCommandBypassesQueueDuringAutomaticReview(t *testing.T) {
 	model.turnCancel = func() { reviewCancelled = true }
 	model.composer.SetValue("/manual")
 
-	model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if model.approvalMode != approvalManual || !reviewCancelled || len(model.inputQueue) != 0 || model.approval == nil {
 		t.Fatalf("mode=%v cancelled=%t queue=%#v approval=%#v", model.approvalMode, reviewCancelled, model.inputQueue, model.approval)
 	}
@@ -381,7 +381,7 @@ func TestSwitchingPreparingAutoApprovalToManualKeepsAgentStream(t *testing.T) {
 		t.Fatalf("agent stream cancelled=%t approval=%#v", agentStreamCancelled, state)
 	}
 	updated, command := model.finishStream(streamDoneMsg{})
-	result := updated.(*tuiModel)
+	result := updated
 	if result.approval == nil || !result.approval.ready || !result.approval.deferred || command == nil {
 		t.Fatalf("manual reconciliation=%#v command=%v", result.approval, command)
 	}
@@ -397,7 +397,7 @@ func TestCancellingDeferredApprovalStreamClearsPendingState(t *testing.T) {
 	model.cancelling = true
 
 	updated, command := model.finishStream(streamDoneMsg{err: context.Canceled})
-	state := updated.(*tuiModel)
+	state := updated
 	if state.approval != nil || command == nil {
 		t.Fatalf("approval=%#v command=%v", state.approval, command)
 	}
@@ -432,7 +432,7 @@ func TestApprovalDeferralHasBoundedDeadline(t *testing.T) {
 	if state.deferred || !state.typingProtected {
 		t.Fatalf("deadline state = %#v", state)
 	}
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model.Update(testTextKey(string([]rune{'y'})))
 	if got := model.composer.Value(); got != "y" {
 		t.Fatalf("deadline y did not remain composer text = %q", got)
 	}
@@ -452,7 +452,7 @@ func TestResultOnlyApprovalDeferralSchedulesItsIdleCheck(t *testing.T) {
 	model.running = true
 	model.lastTypedAt = time.Now()
 	updated, command := model.finishStream(streamDoneMsg{result: streamResult})
-	result := updated.(*tuiModel)
+	result := updated
 	if result.approval == nil || !result.approval.deferred || !result.approval.ready || command == nil {
 		t.Fatalf("result-only deferral = %#v, command=%v", result.approval, command)
 	}
@@ -472,7 +472,7 @@ func TestAutomaticReviewFallbackAlsoDefersWhileTyping(t *testing.T) {
 	model.approval = newApprovalState([]dagent.ApprovalRequest{approvalTestRequest()})
 	model.lastTypedAt = time.Now()
 	updated, command := model.finishReview(reviewDoneMsg{err: errTestApprovalReview})
-	result := updated.(*tuiModel)
+	result := updated
 	if result.approval == nil || !result.approval.ready || !result.approval.deferred || command == nil {
 		t.Fatalf("review fallback = %#v, command=%v", result.approval, command)
 	}

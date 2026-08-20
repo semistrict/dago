@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dacheckpoint"
@@ -374,7 +374,7 @@ func TestAutoModeStartsInteractiveWithoutNotice(t *testing.T) {
 			t.Fatalf("removed notice text %q is still visible:\n%s", removed, plain)
 		}
 	}
-	if _, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("build now")}); !handled {
+	if _, handled := model.handleKey(testTextKey(string([]rune("build now")))); !handled {
 		t.Fatal("startup typing was not handled")
 	}
 	if got := model.composer.Value(); got != "build now" {
@@ -434,7 +434,7 @@ func TestYoloNoticeGatesModeUntilPersisted(t *testing.T) {
 			t.Fatalf("notice missing %q:\n%s", expected, plain)
 		}
 	}
-	command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	command, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if !handled || command == nil || model.yoloModeNotice || model.approvalMode != approvalManual {
 		t.Fatalf("Esc: handled=%t command=%v notice=%t mode=%v", handled, command, model.yoloModeNotice, model.approvalMode)
 	}
@@ -444,13 +444,13 @@ func TestYoloNoticeGatesModeUntilPersisted(t *testing.T) {
 	}
 
 	model.setApprovalMode(approvalYOLO)
-	command, handled = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	command, handled = model.handleKey(testTextKey(string([]rune{'m'})))
 	if !handled || command == nil || model.yoloModeNotice || model.approvalMode != approvalManual {
 		t.Fatalf("m: handled=%t command=%v notice=%t mode=%v", handled, command, model.yoloModeNotice, model.approvalMode)
 	}
 	runAutoNoticeCommand(model, command)
 	model.setApprovalMode(approvalYOLO)
-	command, handled = model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, handled = model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !handled || command == nil || !model.yoloModeNoticeSaving || model.approvalMode != approvalManual {
 		t.Fatalf("Enter before save: handled=%t command=%v saving=%t mode=%v", handled, command, model.yoloModeNoticeSaving, model.approvalMode)
 	}
@@ -479,7 +479,7 @@ func TestYoloNoticeSaveFailureStaysManual(t *testing.T) {
 		t.Fatal("invalid approval path was accepted")
 	}
 	model.setApprovalMode(approvalYOLO)
-	command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !handled || command == nil {
 		t.Fatalf("handled=%t command=%v", handled, command)
 	}
@@ -503,7 +503,7 @@ func TestStartupYoloDefersInitialPromptAndEscUsesManual(t *testing.T) {
 	if !model.yoloModeNotice || model.approvalMode != approvalManual || len(runner.inputs) != 0 || !model.approvalNoticeDeferred {
 		t.Fatalf("notice=%t mode=%v inputs=%d deferred=%t", model.yoloModeNotice, model.approvalMode, len(runner.inputs), model.approvalNoticeDeferred)
 	}
-	command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	command, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if !handled || command == nil {
 		t.Fatalf("handled=%t command=%v", handled, command)
 	}

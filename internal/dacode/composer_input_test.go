@@ -7,20 +7,21 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 )
 
 func TestInputModePrefixesAndCompletion(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, t.TempDir(), "model", "thread", false, false, "")
-	if _, handled := model.handleComposerKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")}); !handled || model.inputMode != inputShell || model.composer.Prompt != "$ " {
+	if _, handled := model.handleComposerKey(testTextKey(string([]rune("!")))); !handled || model.inputMode != inputShell || model.composer.Prompt != "$ " {
 		t.Fatalf("shell prefix: handled=%v mode=%v prompt=%q", handled, model.inputMode, model.composer.Prompt)
 	}
-	if _, handled := model.handleComposerKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")}); !handled || model.inputMode != inputIncognitoShell {
+	if _, handled := model.handleComposerKey(testTextKey(string([]rune("!")))); !handled || model.inputMode != inputIncognitoShell {
 		t.Fatalf("incognito prefix: handled=%v mode=%v", handled, model.inputMode)
 	}
-	if _, handled := model.handleComposerKey(tea.KeyMsg{Type: tea.KeyBackspace}); !handled || model.inputMode != inputNormal {
+	if _, handled := model.handleComposerKey(tea.KeyPressMsg{Code: tea.KeyBackspace}); !handled || model.inputMode != inputNormal {
 		t.Fatalf("prefix backspace: handled=%v mode=%v", handled, model.inputMode)
 	}
 	model.setInputMode(inputCommand)
@@ -73,7 +74,7 @@ func TestLargeAndLegacyPasteCollapseAndExpansion(t *testing.T) {
 
 	legacy := newTUIModel(t.Context(), &fakeRunner{}, t.TempDir(), "model", "thread", false, false, "")
 	value := "one\ntwo\nthree\nfour"
-	if _, handled := legacy.handleComposerKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}); !handled {
+	if _, handled := legacy.handleComposerKey(testTextKey(string([]rune(value)))); !handled {
 		t.Fatal("legacy run was not treated as an atomic paste")
 	}
 	if !strings.Contains(legacy.composer.Value(), "[Pasted text #1 +3 lines]") || legacy.expandedComposerValue() != value {
@@ -100,11 +101,11 @@ func TestNativeTerminalSuppressesFirstClickAfterRefocus(t *testing.T) {
 	model.composer.SetValue("keep cursor here")
 	_, _ = model.Update(tea.BlurMsg{})
 	_, _ = model.Update(tea.FocusMsg{})
-	updated, _ := model.Update(tea.MouseMsg{X: 3, Y: model.viewport.Height + model.composer.Height() + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-	if updated.(*tuiModel).composer.Value() != "keep cursor here" {
+	updated, _ := model.Update(tea.MouseClickMsg{X: 3, Y: model.viewport.Height() + model.composer.Height() + 1, Button: tea.MouseLeft})
+	if updated.composer.Value() != "keep cursor here" {
 		t.Fatal("first click after refocus changed the draft")
 	}
-	if !updated.(*tuiModel).refocusedAt.IsZero() {
+	if !updated.refocusedAt.IsZero() {
 		t.Fatal("refocus suppression was not single-use")
 	}
 }
@@ -148,15 +149,24 @@ func TestPersistentInputHistoryFiltersAndRestores(t *testing.T) {
 func TestBusyInputQueuesAndDrainsInOrder(t *testing.T) {
 	runner := &fakeRunner{streams: []eventStream{&fakeEventStream{}, &fakeEventStream{}}}
 	model := newTUIModel(t.Context(), runner, t.TempDir(), "model", "thread", false, false, "")
+	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model.running = true
 	model.composer.SetValue("queued request")
 	if command := model.submitComposer(); command != nil || len(model.inputQueue) != 1 {
 		t.Fatalf("command=%v queue=%#v", command, model.inputQueue)
 	}
+	queuedTranscript := ansi.Strip(model.renderTranscript())
+	if !strings.Contains(queuedTranscript, "> queued request") || !strings.Contains(queuedTranscript, "Queued input #1.") {
+		t.Fatalf("queued transcript = %q", queuedTranscript)
+	}
 	model.running = false
 	command := model.drainInputQueue()
 	if command == nil || len(runner.inputs) != 1 || runner.inputs[0].Messages[0].TextContent() != "queued request" {
 		t.Fatalf("command=%v inputs=%#v", command, runner.inputs)
+	}
+	dispatchedTranscript := ansi.Strip(model.renderTranscript())
+	if strings.Count(dispatchedTranscript, "> queued request") != 1 {
+		t.Fatalf("queued prompt was rendered again when dispatched: %q", dispatchedTranscript)
 	}
 }
 

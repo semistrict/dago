@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 )
@@ -93,7 +93,7 @@ func TestTUIOnboardingPersistsCompletionAndAppliesSelectedModel(t *testing.T) {
 	model.onboarding.step = onboardingGoalCriteria
 	model.onboarding.result = onboardingResult{Name: "Ada", Model: "openai:selected"}
 
-	command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !handled || command == nil || model.onboarding != nil || model.modelName != "openai:selected" {
 		t.Fatalf("onboarding completion = handled %t, command %v, state %#v, model %q", handled, command, model.onboarding, model.modelName)
 	}
@@ -123,7 +123,7 @@ func TestTUIRestartConfiguredUnavailableAndErrorPaths(t *testing.T) {
 	if _, ok := model.slashCommand("/restart"); !ok || model.restartPrompt == nil {
 		t.Fatal("configured restart did not open its prompt")
 	}
-	command, handled := model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, handled := model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !handled || command == nil || !model.restarting {
 		t.Fatalf("restart confirmation = %t, %v, %t", handled, command, model.restarting)
 	}
@@ -141,7 +141,7 @@ func TestTUIRestartConfiguredUnavailableAndErrorPaths(t *testing.T) {
 	failing := newTUIModel(t.Context(), &fakeRunner{}, t.TempDir(), "model", "thread", false, false, "")
 	failing.restartController = &lifecycleRestartController{err: errors.New("fixture restart failed")}
 	failing.slashCommand("/restart")
-	command, _ = failing.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, _ = failing.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	failing.Update(command())
 	if len(failing.items) == 0 || !strings.Contains(failing.items[len(failing.items)-1].text, "fixture restart failed") {
 		t.Fatalf("failure transcript = %q", failing.renderTranscript())
@@ -168,15 +168,15 @@ func TestTUIResumePromptsApplyDecisionsLoadExactCheckpointAndForceCompaction(t *
 	if command != nil || model.resumeController == nil || !strings.Contains(model.View(), "Switch agents to resume?") {
 		t.Fatalf("agent prompt = command %v, controller %#v, view %q", command, model.resumeController, model.View())
 	}
-	command, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, _ = model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if command != nil || !strings.Contains(model.View(), "original directory") {
 		t.Fatalf("cwd prompt = command %v, view %q", command, model.View())
 	}
-	command, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, _ = model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if command != nil || !strings.Contains(model.View(), "Compact this thread?") {
 		t.Fatalf("compact prompt = command %v, view %q", command, model.View())
 	}
-	command, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	command, _ = model.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if command == nil {
 		t.Fatal("final resume decision did not start exact load")
 	}

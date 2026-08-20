@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/internal/unicodesecurity"
 )
@@ -238,19 +238,19 @@ func (state *pluginManagerState) selectedMarketplace() (pluginManagerMarketplace
 // handleKey owns all plugin-manager navigation and mutations. It returns close
 // separately so the host can decide whether a dirty manager needs the reload
 // confirmation before dismissing it.
-func (state *pluginManagerState) handleKey(ctx context.Context, controller pluginRuntimeController, message tea.KeyMsg) (tea.Cmd, bool) {
+func (state *pluginManagerState) handleKey(ctx context.Context, controller pluginRuntimeController, message tea.KeyPressMsg) (tea.Cmd, bool) {
 	if state == nil || controller == nil {
 		panic("dacode: plugin manager state and controller are required")
 	}
 	if state.addingMarketplace {
-		switch message.Type {
-		case tea.KeyEsc:
+		switch message.String() {
+		case "esc":
 			state.addingMarketplace = false
 			state.marketplaceInput.Blur()
 			state.marketplaceInput.SetValue("")
 			state.error = ""
 			return nil, false
-		case tea.KeyEnter:
+		case "enter":
 			source := strings.TrimSpace(state.marketplaceInput.Value())
 			if source == "" {
 				state.error = "Marketplace source is required."
@@ -265,11 +265,11 @@ func (state *pluginManagerState) handleKey(ctx context.Context, controller plugi
 		}
 	}
 	if state.confirmRemoval {
-		switch message.Type {
-		case tea.KeyEsc:
+		switch message.String() {
+		case "esc":
 			state.confirmRemoval = false
 			return nil, false
-		case tea.KeyEnter:
+		case "enter":
 			marketplace, exists := state.selectedMarketplace()
 			if !exists {
 				state.confirmRemoval = false
@@ -283,20 +283,20 @@ func (state *pluginManagerState) handleKey(ctx context.Context, controller plugi
 		}
 	}
 	if state.loading || state.mutating {
-		return nil, message.Type == tea.KeyEsc
+		return nil, message.String() == "esc"
 	}
-	switch message.Type {
-	case tea.KeyEsc:
+	switch message.String() {
+	case "esc":
 		return nil, true
-	case tea.KeyLeft, tea.KeyShiftTab:
+	case "left", "shift+tab":
 		state.switchTab(-1)
-	case tea.KeyRight, tea.KeyTab:
+	case "right", "tab":
 		state.switchTab(1)
-	case tea.KeyUp:
+	case "up":
 		state.move(-1)
-	case tea.KeyDown:
+	case "down":
 		state.move(1)
-	case tea.KeyEnter:
+	case "enter":
 		plugin, exists := state.selectedPlugin()
 		if !exists {
 			return nil, false
@@ -310,11 +310,12 @@ func (state *pluginManagerState) handleKey(ctx context.Context, controller plugi
 			action = pluginMutationDisable
 		}
 		return mutatePluginManager(ctx, controller, action, plugin.ID), false
-	case tea.KeyRunes:
-		if len(message.Runes) != 1 {
+	default:
+		runes := []rune(message.Text)
+		if len(runes) != 1 {
 			return nil, false
 		}
-		switch message.Runes[0] {
+		switch runes[0] {
 		case 'u', 'U':
 			plugin, exists := state.selectedPlugin()
 			if state.tab != pluginTabInstalled || !exists {

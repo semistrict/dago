@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago/dacredential"
 )
 
@@ -118,7 +118,7 @@ func (model *tuiModel) handleAuthRefresh(message authRefreshMsg) tea.Cmd {
 	return nil
 }
 
-func (model *tuiModel) handleAuthManagerKey(message tea.KeyMsg) tea.Cmd {
+func (model *tuiModel) handleAuthManagerKey(message tea.KeyPressMsg) tea.Cmd {
 	controller := model.authManager
 	if controller == nil || !controller.open {
 		return nil
@@ -168,8 +168,8 @@ func (model *tuiModel) handleAuthManagerKey(message tea.KeyMsg) tea.Cmd {
 		case "esc":
 			state.cancel()
 		default:
-			if message.Type == tea.KeyRunes && len(message.Runes) > 0 {
-				_ = state.appendAPIKey(string(message.Runes))
+			if message.Text != "" {
+				_ = state.appendAPIKey(message.Text)
 			}
 		}
 		return nil

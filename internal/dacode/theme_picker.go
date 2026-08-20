@@ -5,9 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	lipgloss2 "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -61,21 +62,21 @@ func (model *tuiModel) configureTheme(path, terminal string) []string {
 }
 
 func (model *tuiModel) applyCursorPreference(active bool) {
+	styles := model.composer.Styles()
 	if !active {
-		model.composer.Cursor.Style = lipgloss.NewStyle().Foreground(colorMuted)
-		model.composer.Cursor.SetMode(cursor.CursorStatic)
+		styles.Cursor.Color = lipgloss2.Color(string(colorMuted))
+		styles.Cursor.Blink = false
+		model.composer.SetStyles(styles)
 		return
 	}
 	if model.cursor.Style == cursorUnderline {
-		model.composer.Cursor.Style = lipgloss.NewStyle().Foreground(colorPrimary).Underline(true)
+		styles.Cursor.Shape = tea.CursorUnderline
 	} else {
-		model.composer.Cursor.Style = lipgloss.NewStyle().Background(colorPrimary).Foreground(colorBackground)
+		styles.Cursor.Shape = tea.CursorBlock
 	}
-	mode := cursor.CursorStatic
-	if model.cursor.Blink {
-		mode = cursor.CursorBlink
-	}
-	model.composer.Cursor.SetMode(mode)
+	styles.Cursor.Color = lipgloss2.Color(string(colorPrimary))
+	styles.Cursor.Blink = model.cursor.Blink
+	model.composer.SetStyles(styles)
 }
 
 func (model *tuiModel) setTheme(name string) bool {
@@ -90,19 +91,25 @@ func (model *tuiModel) setTheme(name string) bool {
 		model.themeSequence = terminalBackgroundSequence(entry.Palette.Background)
 	}
 	model.themeName = name
-	model.composer.FocusedStyle.Base = lipgloss.NewStyle().Foreground(colorBody)
-	model.composer.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	model.composer.FocusedStyle.Text = lipgloss.NewStyle().Foreground(colorBody)
-	model.composer.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true)
-	model.composer.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(colorMuted)
-	model.composer.BlurredStyle = model.composer.FocusedStyle
-	model.spinner.Style = lipgloss.NewStyle().Foreground(colorPrimary)
+	styleComposer(&model.composer)
+	model.spinner.Style = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorPrimary)))
 	model.relayout()
 	model.refreshTranscript()
 	return true
 }
 
-func (model *tuiModel) handleThemeKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func styleComposer(composer *textarea.Model) {
+	styles := composer.Styles()
+	styles.Focused.Base = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorBody)))
+	styles.Focused.CursorLine = lipgloss2.NewStyle()
+	styles.Focused.Text = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorBody)))
+	styles.Focused.Prompt = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorPrimary))).Bold(true)
+	styles.Focused.Placeholder = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorMuted)))
+	styles.Blurred = styles.Focused
+	composer.SetStyles(styles)
+}
+
+func (model *tuiModel) handleThemeKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	picker := model.themePicker
 	if picker == nil {
 		return nil, false

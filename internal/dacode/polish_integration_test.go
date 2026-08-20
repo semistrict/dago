@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -31,11 +31,11 @@ func TestThemeBackgroundSequenceSurvivesOtherSequenceFlushAndNarrowModal(t *test
 	}
 	model.setTheme("langchain")
 	model.themePicker = newThemePicker(model.themeRegistry, model.themeName, "")
-	model.handleThemeKey(tea.KeyMsg{Type: tea.KeyDown})
+	model.handleThemeKey(tea.KeyPressMsg{Code: tea.KeyDown})
 	if model.themeSequence != terminalBackgroundSequence("#F5F5F7") {
 		t.Fatalf("preview sequence = %q", model.themeSequence)
 	}
-	model.handleThemeKey(tea.KeyMsg{Type: tea.KeyEsc})
+	model.handleThemeKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if model.themeSequence != terminalBackgroundSequence("#11121D") {
 		t.Fatalf("cancel sequence = %q", model.themeSequence)
 	}
@@ -102,13 +102,13 @@ func TestApprovalViewportFallbackReconcilesChatScroll(t *testing.T) {
 	model.resize(60, 16)
 	model.chatScroll.userScrolled(model.chatScroll.MaxOffset)
 	model.viewport.SetYOffset(model.chatScroll.Offset)
-	before := model.viewport.YOffset
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
-	if model.viewport.YOffset >= before {
-		t.Fatalf("viewport did not scroll: before=%d after=%d", before, model.viewport.YOffset)
+	before := model.viewport.YOffset()
+	model.Update(testTextKey(string([]rune{'u'})))
+	if model.viewport.YOffset() >= before {
+		t.Fatalf("viewport did not scroll: before=%d after=%d", before, model.viewport.YOffset())
 	}
-	if model.chatScroll.Offset != model.viewport.YOffset || model.chatScroll.FollowBottom {
-		t.Fatalf("chat scroll not reconciled: %#v viewport=%d", model.chatScroll, model.viewport.YOffset)
+	if model.chatScroll.Offset != model.viewport.YOffset() || model.chatScroll.FollowBottom {
+		t.Fatalf("chat scroll not reconciled: %#v viewport=%d", model.chatScroll, model.viewport.YOffset())
 	}
 }
 
@@ -160,14 +160,14 @@ func TestWelcomeTargetsAreInactiveUnderLifecycleAndOffscreen(t *testing.T) {
 	if len(model.welcomeScreenHitTargets) != 0 {
 		t.Fatalf("model selector retained welcome targets: %#v", model.welcomeScreenHitTargets)
 	}
-	if _, handled := model.handleWelcomeMouse(tea.MouseMsg{X: target.X, Y: target.Y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}); handled {
+	if _, handled := model.handleWelcomeMouse(tea.Mouse{X: target.X, Y: target.Y, Button: tea.MouseLeft}); handled {
 		t.Fatal("model selector accepted stale welcome click")
 	}
 	model.modelSelector = nil
 	model.View()
 	target = model.welcomeScreenHitTargets[0]
 	model.restarting = true
-	if _, handled := model.handleWelcomeMouse(tea.MouseMsg{X: target.X, Y: target.Y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}); handled {
+	if _, handled := model.handleWelcomeMouse(tea.Mouse{X: target.X, Y: target.Y, Button: tea.MouseLeft}); handled {
 		t.Fatal("restart screen accepted stale welcome click")
 	}
 	model.restarting = false
@@ -201,7 +201,7 @@ func TestFinishTUIRunReportsSanitizedDisplayFlushFailureAndPreservesPrimaryError
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
 	model.displaySettings = filepath.Join(blocker, "display.json")
 	primary := errors.New("primary run failure")
-	err := finishTUIRun(model, primary, io.Discard)
+	err := finishTUIRun(newProgramModel(model), primary, io.Discard)
 	if !errors.Is(err, primary) || !errors.Is(err, errDisplaySettingsFlush) {
 		t.Fatalf("finish error = %v", err)
 	}
@@ -217,7 +217,7 @@ func TestFinishTUIRunPrintsExactDurableSessionResumeCommand(t *testing.T) {
 	}
 	model := newTUIModel(t.Context(), runner, "/work", "model", "thread-123", false, false, "")
 	var output strings.Builder
-	if err := finishTUIRun(model, nil, &output); err != nil {
+	if err := finishTUIRun(newProgramModel(model), nil, &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "Resume this session:\ndacode resume thread-123\n" {
@@ -226,7 +226,7 @@ func TestFinishTUIRunPrintsExactDurableSessionResumeCommand(t *testing.T) {
 
 	runner.session = sessionInfo{}
 	output.Reset()
-	if err := finishTUIRun(model, nil, &output); err != nil {
+	if err := finishTUIRun(newProgramModel(model), nil, &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != 0 {
@@ -281,7 +281,7 @@ func TestWelcomeScreenTargetsFollowFinalBrowserLayoutAfterToast(t *testing.T) {
 		if target.Kind != welcomeHitThread {
 			continue
 		}
-		if _, handled := model.handleWelcomeMouse(tea.MouseMsg{X: target.X, Y: target.Y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}); !handled {
+		if _, handled := model.handleWelcomeMouse(tea.Mouse{X: target.X, Y: target.Y, Button: tea.MouseLeft}); !handled {
 			t.Fatalf("thread target not handled after toast: %#v", target)
 		}
 		return

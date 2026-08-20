@@ -12,7 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/internal/unicodesecurity"
 )
@@ -154,7 +154,7 @@ func (model *tuiModel) finishDefaultAgentSave(message defaultAgentSavedMsg) {
 	}
 }
 
-func (model *tuiModel) handleAgentKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleAgentKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	picker := model.agentPicker
 	if picker == nil {
 		return nil, false

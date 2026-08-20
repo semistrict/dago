@@ -18,11 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	lipgloss2 "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/lipgloss"
 	dagoapi "github.com/semistrict/dago"
 	"github.com/semistrict/dago/dacheckpoint"
@@ -102,6 +103,7 @@ const (
 	transcriptBlockVirtualized
 	transcriptBlockToolGroup
 	transcriptBlockItem
+	transcriptBlockQueued
 	transcriptBlockRunning
 	transcriptBlockApproval
 )
@@ -516,18 +518,13 @@ func newTUIModel(ctx context.Context, runner agentRunner, workingDir, modelName,
 	composer.CharLimit = 0
 	composer.SetHeight(1)
 	composer.MaxHeight = 8
-	composer.FocusedStyle.Base = lipgloss.NewStyle().Foreground(colorBody)
-	composer.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	composer.FocusedStyle.Text = lipgloss.NewStyle().Foreground(colorBody)
-	composer.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true)
-	composer.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(colorMuted)
-	composer.BlurredStyle = composer.FocusedStyle
+	styleComposer(&composer)
 	composer.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	composer.Focus()
 
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
-	spin.Style = lipgloss.NewStyle().Foreground(colorPrimary)
+	spin.Style = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorPrimary)))
 
 	profile := runner.Profile()
 	debugBuffer := newDebugConsoleBuffer(0)
@@ -606,7 +603,7 @@ func (model *tuiModel) showStartupTranscript() {
 	model.startupTranscript = ""
 }
 
-func (model *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+func (model *tuiModel) Update(message tea.Msg) (*tuiModel, tea.Cmd) {
 	var typingCommand tea.Cmd
 	switch typed := message.(type) {
 	case tea.WindowSizeMsg:
@@ -1228,24 +1225,34 @@ func (model *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.applyCursorPreference(!model.running && !model.shellRunning)
 		return model, nil
 	case tea.MouseMsg:
-		if !model.refocusedAt.IsZero() && time.Since(model.refocusedAt) <= 300*time.Millisecond && typed.Button == tea.MouseButtonLeft && typed.Action == tea.MouseActionPress {
+		mouse := typed.Mouse()
+		_, clicked := typed.(tea.MouseClickMsg)
+		if !model.refocusedAt.IsZero() && time.Since(model.refocusedAt) <= 300*time.Millisecond && clicked && mouse.Button == tea.MouseLeft {
 			model.refocusedAt = time.Time{}
 			return model, nil
 		}
-		if model.debugConsole != nil {
-			return model, model.handleDebugConsoleMouse(typed)
+		if model.debugConsole != nil && clicked {
+			return model, model.handleDebugConsoleMouse(mouse)
 		}
-		if command, handled := model.handleWelcomeMouse(typed); handled {
-			return model, command
+		if clicked {
+			if command, handled := model.handleWelcomeMouse(mouse); handled {
+				return model, command
+			}
 		}
-		if model.handleChatWheel(typed) {
+		if model.handleChatWheel(mouse) {
 			return model, nil
 		}
 		var command tea.Cmd
 		model.viewport, command = model.viewport.Update(typed)
-		model.chatScroll.userScrolled(model.viewport.YOffset)
+		model.chatScroll.userScrolled(model.viewport.YOffset())
 		return model, command
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		if model.askUser == nil && (model.approval == nil || !model.approval.reasonMode) {
+			model.insertPaste(typed.Content)
+			model.lastTypedAt = time.Now()
+			return model, nil
+		}
+	case tea.KeyPressMsg:
 		if model.approval != nil && !model.manualApprovalVisible() && model.approval.ready && !model.approval.preparingReview && !model.approval.reviewing {
 			command, _ := model.handleKey(typed)
 			return model, command
@@ -1285,16 +1292,16 @@ func (model *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var command tea.Cmd
 	model.viewport, command = model.viewport.Update(message)
-	model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height)
-	model.chatScroll.userScrolled(model.viewport.YOffset)
+	model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height())
+	model.chatScroll.userScrolled(model.viewport.YOffset())
 	return model, command
 }
 
-func (model *tuiModel) handleKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	if model.debugConsole != nil {
 		return model.handleDebugConsoleKey(message), true
 	}
-	if message.String() == "ctrl+\\" || message.Type == tea.KeyCtrlBackslash {
+	if message.String() == "ctrl+\\" {
 		return model.toggleDebugConsole(), true
 	}
 	if model.workflowPanel != nil {
@@ -1637,28 +1644,28 @@ func (model *tuiModel) handleKey(message tea.KeyMsg) (tea.Cmd, bool) {
 		model.pageChat(1)
 		return nil, true
 	case "ctrl+_":
-		model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height)
-		model.chatScroll.userScrolled(model.viewport.YOffset)
+		model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height())
+		model.chatScroll.userScrolled(model.viewport.YOffset())
 		model.viewport.SetYOffset(model.chatScroll.wheel(-1))
 		if model.chatScroll.shouldHydrateOlder(chatHydrationThreshold) {
 			model.hydrateChatHistory()
 		}
 		return nil, true
 	case "ctrl+^":
-		model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height)
-		model.chatScroll.userScrolled(model.viewport.YOffset)
+		model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height())
+		model.chatScroll.userScrolled(model.viewport.YOffset())
 		model.viewport.SetYOffset(model.chatScroll.wheel(1))
 		return nil, true
 	case "end":
 		if strings.TrimSpace(model.composer.Value()) != "" {
 			return nil, false
 		}
-		model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height)
+		model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height())
 		model.chatScroll.userScrolled(model.chatScroll.MaxOffset)
 		model.viewport.SetYOffset(model.chatScroll.Offset)
 		return nil, true
 	case "ctrl+end":
-		model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height)
+		model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height())
 		model.chatScroll.userScrolled(model.chatScroll.MaxOffset)
 		model.viewport.SetYOffset(model.chatScroll.Offset)
 		return nil, true
@@ -1724,14 +1731,10 @@ func (model *tuiModel) updateInputModeFromValue() {
 	model.setInputMode(inputNormal)
 }
 
-func (model *tuiModel) handleComposerKey(message tea.KeyMsg) (tea.Cmd, bool) {
-	if message.Paste {
-		model.insertPaste(string(message.Runes))
-		return nil, true
-	}
+func (model *tuiModel) handleComposerKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	// Legacy terminals can deliver a paste as one unmarked run of runes.
-	if message.Type == tea.KeyRunes && len(message.Runes) >= legacyPasteMinimumRunes {
-		model.insertPaste(string(message.Runes))
+	if len([]rune(message.Text)) >= legacyPasteMinimumRunes {
+		model.insertPaste(message.Text)
 		return nil, true
 	}
 	if message.String() == "backspace" || message.String() == "delete" {
@@ -2080,7 +2083,7 @@ func (model *tuiModel) dispatchInput(mode inputMode, value, display string, atta
 	}
 }
 
-func (model *tuiModel) finishShell(message shellDoneMsg) (tea.Model, tea.Cmd) {
+func (model *tuiModel) finishShell(message shellDoneMsg) (*tuiModel, tea.Cmd) {
 	model.shellRunning = false
 	model.shellCancel = nil
 	model.applyCursorPreference(!model.terminalBlurred)
@@ -2678,7 +2681,7 @@ func runGoalActionGeneration(ctx context.Context, runner agentRunner, threadID, 
 	}
 }
 
-func (model *tuiModel) finishGoalAction(message goalActionMsg) (tea.Model, tea.Cmd) {
+func (model *tuiModel) finishGoalAction(message goalActionMsg) (*tuiModel, tea.Cmd) {
 	model.running = false
 	if message.err != nil {
 		model.status = "Goal error"
@@ -2886,7 +2889,7 @@ func runRubricActionGeneration(ctx context.Context, runner agentRunner, threadID
 	}
 }
 
-func (model *tuiModel) finishRubricAction(message rubricActionMsg) (tea.Model, tea.Cmd) {
+func (model *tuiModel) finishRubricAction(message rubricActionMsg) (*tuiModel, tea.Cmd) {
 	model.running = false
 	model.status = "Ready"
 	if message.err != nil {
@@ -3245,7 +3248,7 @@ func (model *tuiModel) toggleDebugConsole() tea.Cmd {
 	return scheduleDebugConsoleTick(model.debugConsoleGeneration)
 }
 
-func (model *tuiModel) handleDebugConsoleKey(message tea.KeyMsg) tea.Cmd {
+func (model *tuiModel) handleDebugConsoleKey(message tea.KeyPressMsg) tea.Cmd {
 	if model.debugConsole == nil {
 		return nil
 	}
@@ -3271,8 +3274,8 @@ func (model *tuiModel) handleDebugConsoleKey(message tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-func (model *tuiModel) handleDebugConsoleMouse(message tea.MouseMsg) tea.Cmd {
-	if model.debugConsole == nil || message.Button != tea.MouseButtonLeft || message.Action != tea.MouseActionPress {
+func (model *tuiModel) handleDebugConsoleMouse(message tea.Mouse) tea.Cmd {
+	if model.debugConsole == nil || message.Button != tea.MouseLeft {
 		return nil
 	}
 	snapshot := model.debugConsole.snapshotView()
@@ -3463,7 +3466,7 @@ func (model *tuiModel) updateToolProgress(progress datool.Progress) {
 	model.currentAssistant = -1
 }
 
-func (model *tuiModel) finishStream(message streamDoneMsg) (tea.Model, tea.Cmd) {
+func (model *tuiModel) finishStream(message streamDoneMsg) (*tuiModel, tea.Cmd) {
 	if model.turnCancel != nil {
 		model.turnCancel()
 	}
@@ -3644,7 +3647,7 @@ func (model *tuiModel) effectiveApprovalMode() approvalMode {
 	return model.approvalMode
 }
 
-func (model *tuiModel) finishReview(message reviewDoneMsg) (tea.Model, tea.Cmd) {
+func (model *tuiModel) finishReview(message reviewDoneMsg) (*tuiModel, tea.Cmd) {
 	if model.turnCancel != nil {
 		model.turnCancel()
 	}
@@ -3729,7 +3732,7 @@ func (model *tuiModel) finishReview(message reviewDoneMsg) (tea.Model, tea.Cmd) 
 	return model, model.resumeApproval(decisions)
 }
 
-func (model *tuiModel) rejectAutomaticApproval(reason string) (tea.Model, tea.Cmd) {
+func (model *tuiModel) rejectAutomaticApproval(reason string) (*tuiModel, tea.Cmd) {
 	decisions := make(map[string]dagent.ApprovalChoice, len(model.approval.requests))
 	for _, request := range model.approval.requests {
 		model.markToolRejected(request.Call.ID, reason)
@@ -4097,11 +4100,11 @@ func (model *tuiModel) relayout() {
 			viewportWidth--
 		}
 		if !model.ready {
-			model.viewport = viewport.New(viewportWidth, viewportHeight)
+			model.viewport = viewport.New(viewport.WithWidth(viewportWidth), viewport.WithHeight(viewportHeight))
 			model.ready = true
 		} else {
-			model.viewport.Width = viewportWidth
-			model.viewport.Height = viewportHeight
+			model.viewport.SetWidth(viewportWidth)
+			model.viewport.SetHeight(viewportHeight)
 		}
 		return
 	}
@@ -4114,11 +4117,11 @@ func (model *tuiModel) relayout() {
 			viewportWidth--
 		}
 		if !model.ready {
-			model.viewport = viewport.New(viewportWidth, viewportHeight)
+			model.viewport = viewport.New(viewport.WithWidth(viewportWidth), viewport.WithHeight(viewportHeight))
 			model.ready = true
 		} else {
-			model.viewport.Width = viewportWidth
-			model.viewport.Height = viewportHeight
+			model.viewport.SetWidth(viewportWidth)
+			model.viewport.SetHeight(viewportHeight)
 		}
 		return
 	}
@@ -4154,13 +4157,13 @@ func (model *tuiModel) relayout() {
 		viewportWidth--
 	}
 	if !model.ready {
-		model.viewport = viewport.New(viewportWidth, viewportHeight)
+		model.viewport = viewport.New(viewport.WithWidth(viewportWidth), viewport.WithHeight(viewportHeight))
 		model.ready = true
 	} else {
-		model.viewport.Width = viewportWidth
-		model.viewport.Height = viewportHeight
+		model.viewport.SetWidth(viewportWidth)
+		model.viewport.SetHeight(viewportHeight)
 	}
-	model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height)
+	model.chatScroll.updateLayout(model.viewport.TotalLineCount(), model.viewport.Height())
 	model.viewport.SetYOffset(model.chatScroll.Offset)
 }
 
@@ -4507,11 +4510,11 @@ func (model *tuiModel) renderYoloModeNotice() string {
 }
 
 func (model *tuiModel) renderViewport() string {
-	content := lipgloss.NewStyle().Height(max(model.viewport.Height, 1)).Render(model.viewport.View())
-	if !model.scrollbarVisible() || model.viewport.TotalLineCount() <= model.viewport.Height {
+	content := lipgloss.NewStyle().Height(max(model.viewport.Height(), 1)).Render(model.viewport.View())
+	if !model.scrollbarVisible() || model.viewport.TotalLineCount() <= model.viewport.Height() {
 		return content
 	}
-	height := max(model.viewport.Height, 1)
+	height := max(model.viewport.Height(), 1)
 	thumbStart, thumbHeight := model.chatScroll.thumb(height)
 	track := make([]string, height)
 	for row := range height {
@@ -4572,9 +4575,9 @@ func (model *tuiModel) renderContextUsage() string {
 }
 
 func (model *tuiModel) renderTranscript() string {
-	width := max(model.viewport.Width-4, 20)
-	sections := make([]string, 0, len(model.items)+4)
-	layout := make([]transcriptBlockLayout, 0, len(model.items)+4)
+	width := max(model.viewport.Width()-4, 20)
+	sections := make([]string, 0, len(model.items)+len(model.inputQueue)+4)
+	layout := make([]transcriptBlockLayout, 0, len(model.items)+len(model.inputQueue)+4)
 	line := 0
 	appendSection := func(id transcriptBlockID, rendered string) {
 		if len(sections) > 0 {
@@ -4616,6 +4619,10 @@ func (model *tuiModel) renderTranscript() string {
 		appendSection(transcriptBlockID{kind: transcriptBlockItem, index: index}, model.renderTranscriptItem(model.items[index], width))
 		index++
 	}
+	for index, input := range model.inputQueue {
+		text := input.mode.prefix() + input.display
+		appendSection(transcriptBlockID{kind: transcriptBlockQueued, index: index}, renderQueuedTranscriptWithGlyphs(text, width, model.glyphs))
+	}
 	if model.running {
 		appendSection(transcriptBlockID{kind: transcriptBlockRunning}, lipgloss.NewStyle().Foreground(colorMuted).PaddingLeft(1).Render(
 			model.spinner.View()+" "+unicodesecurity.RenderTerminalSafe(model.status)+model.glyphs.Ellipsis))
@@ -4653,6 +4660,21 @@ func (model *tuiModel) renderWelcome(width int) string {
 
 func renderItem(item transcriptItem, width int) string {
 	return renderItemWithGlyphs(item, width, unicodeUIGlyphs)
+}
+
+func renderQueuedTranscriptWithGlyphs(message string, width int, glyphs uiGlyphs) string {
+	text := unicodesecurity.RenderTerminalSafe(message)
+	text, _ = collapseUserTranscriptWithGlyphs(text, false, glyphs)
+	return queuedTranscriptContainerStyle(width).Render(queuedTranscriptTextStyle().Render("> " + text))
+}
+
+func queuedTranscriptContainerStyle(width int) lipgloss.Style {
+	return lipgloss.NewStyle().BorderLeft(true).BorderStyle(lipgloss.ThickBorder()).BorderForeground(colorMuted).
+		PaddingLeft(1).Width(max(width-4, 10))
+}
+
+func queuedTranscriptTextStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(colorMuted)
 }
 
 func renderItemWithGlyphs(item transcriptItem, width int, glyphs uiGlyphs) string {

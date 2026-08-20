@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
@@ -64,12 +64,12 @@ func TestApprovalToolRenderersShowSpecificBoundedPreviews(t *testing.T) {
 func TestApprovalMenuNavigationNumericAndSemanticQuickKeys(t *testing.T) {
 	for _, test := range []struct {
 		name     string
-		keys     []tea.KeyMsg
+		keys     []tea.KeyPressMsg
 		decision dagent.ApprovalDecision
 	}{
-		{name: "enter approve", keys: []tea.KeyMsg{{Type: tea.KeyEnter}}, decision: dagent.ApprovalApprove},
-		{name: "numeric reject", keys: []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune{'3'}}}, decision: dagent.ApprovalReject},
-		{name: "navigate reject", keys: []tea.KeyMsg{{Type: tea.KeyDown}, {Type: tea.KeyRunes, Runes: []rune{'j'}}, {Type: tea.KeyEnter}}, decision: dagent.ApprovalReject},
+		{name: "enter approve", keys: []tea.KeyPressMsg{{Code: tea.KeyEnter}}, decision: dagent.ApprovalApprove},
+		{name: "numeric reject", keys: []tea.KeyPressMsg{testTextKey(string([]rune{'3'}))}, decision: dagent.ApprovalReject},
+		{name: "navigate reject", keys: []tea.KeyPressMsg{{Code: tea.KeyDown}, testTextKey(string([]rune{'j'})), {Code: tea.KeyEnter}}, decision: dagent.ApprovalReject},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &fakeRunner{streams: []eventStream{&fakeEventStream{}}}
@@ -95,7 +95,7 @@ func TestApprovalAutoQuickKeyPersistsModeAndApprovesCurrentBatch(t *testing.T) {
 	model := newTUIModel(t.Context(), runner, "/work", "main-model", "thread-1", false, false, "")
 	model.approval = newApprovalState([]dagent.ApprovalRequest{approvalTestRequest()})
 	model.approval.ready = true
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model.Update(testTextKey(string([]rune{'a'})))
 	if model.approvalMode != approvalAuto || len(runner.inputs) != 1 {
 		t.Fatalf("mode=%s inputs=%d", model.approvalMode, len(runner.inputs))
 	}
@@ -110,7 +110,7 @@ func TestApprovalAutoFallbackOffersManualWithoutDeciding(t *testing.T) {
 	model.approval = newApprovalState([]dagent.ApprovalRequest{approvalTestRequest()})
 	model.approval.ready = true
 	model.approval.autoFallback = true
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model.Update(testTextKey(string([]rune{'a'})))
 	if model.approvalMode != approvalManual || model.approval == nil {
 		t.Fatalf("mode=%s approval=%#v", model.approvalMode, model.approval)
 	}

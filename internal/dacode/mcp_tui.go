@@ -11,7 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	talonmcp "github.com/semistrict/dago/datalon/mcp"
 	"github.com/semistrict/dago/datalon/mcp/oauthpolicy"
 )
@@ -208,14 +208,14 @@ func (model *tuiModel) refreshMCPViewer() tea.Cmd {
 	}
 }
 
-func (model *tuiModel) handleMCPViewerKey(message tea.KeyMsg) tea.Cmd {
+func (model *tuiModel) handleMCPViewerKey(message tea.KeyPressMsg) tea.Cmd {
 	state := model.mcpViewer
 	if state == nil {
 		return nil
 	}
 	key := message.String()
-	if message.Type == tea.KeyRunes && len(message.Runes) > 0 {
-		state.setFilter(state.query + string(message.Runes))
+	if message.Text != "" {
+		state.setFilter(state.query + message.Text)
 		return nil
 	}
 	if key == "backspace" || key == "delete" {
@@ -299,7 +299,7 @@ func (model *tuiModel) handleMCPLoginEvent(message mcpLoginEventMsg) tea.Cmd {
 	return waitMCPLoginEvent(message.flow)
 }
 
-func (model *tuiModel) handleMCPLoginKey(message tea.KeyMsg) tea.Cmd {
+func (model *tuiModel) handleMCPLoginKey(message tea.KeyPressMsg) tea.Cmd {
 	state := model.mcpLogin
 	if state == nil {
 		return nil
@@ -307,8 +307,8 @@ func (model *tuiModel) handleMCPLoginKey(message tea.KeyMsg) tea.Cmd {
 	// Once callback entry has started, every printable rune is callback data.
 	// In particular, a literal "c" in a callback must not be mistaken for the
 	// copy-URL shortcut. The shortcut remains available before entry begins.
-	if message.Type == tea.KeyRunes && len(message.Runes) > 0 && (state.input != nil || (message.String() != "c" && message.String() != "C")) {
-		text := string(message.Runes)
+	if message.Text != "" && (state.input != nil || (message.String() != "c" && message.String() != "C")) {
+		text := message.Text
 		if validMCPLoginInput(text) && len(state.input)+len(text) <= mcpLoginInputLimit {
 			state.input = append(state.input, text...)
 		}
@@ -414,7 +414,7 @@ func (model *tuiModel) handleMCPRuntime(message mcpRuntimeMsg) tea.Cmd {
 	return nil
 }
 
-func (model *tuiModel) handleMCPReconnectKey(message tea.KeyMsg) tea.Cmd {
+func (model *tuiModel) handleMCPReconnectKey(message tea.KeyPressMsg) tea.Cmd {
 	choice := model.mcpReconnectPrompt.handleKey(message.String())
 	switch choice {
 	case mcpReconnectNow:
@@ -428,7 +428,7 @@ func (model *tuiModel) handleMCPReconnectKey(message tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-func (model *tuiModel) handleMCPErrorKey(message tea.KeyMsg) tea.Cmd {
+func (model *tuiModel) handleMCPErrorKey(message tea.KeyPressMsg) tea.Cmd {
 	switch message.String() {
 	case "c", "C":
 		return model.stageTerminalSequences(osc52ClipboardSequence(model.mcpErrorDetail), "")

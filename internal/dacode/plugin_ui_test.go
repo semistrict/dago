@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -149,7 +149,7 @@ func TestPluginManagerKeyHandlingCoversNavigationAndEveryMutation(t *testing.T) 
 		Installed:    []pluginManagerPlugin{{ID: "active@local", Enabled: true}},
 		Marketplaces: []pluginManagerMarketplace{{Name: "local"}},
 	}})
-	command, close := state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyEnter})
+	command, close := state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if close || command == nil {
 		t.Fatalf("install key = command:%v close:%v", command != nil, close)
 	}
@@ -158,47 +158,47 @@ func TestPluginManagerKeyHandlingCoversNavigationAndEveryMutation(t *testing.T) 
 		t.Fatalf("install = %#v", message)
 	}
 	state.mutating = false
-	state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyRight})
-	command, _ = state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyEnter})
+	state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyRight})
+	command, _ = state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyEnter})
 	message = command().(pluginManagerMutationMsg)
 	if message.action != pluginMutationDisable || message.target != "active@local" {
 		t.Fatalf("disable = %#v", message)
 	}
 	state.mutating = false
-	command, _ = state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'U'}})
+	command, _ = state.handleKey(t.Context(), controller, testTextKey(string([]rune{'U'})))
 	message = command().(pluginManagerMutationMsg)
 	if message.action != pluginMutationUninstall {
 		t.Fatalf("uninstall = %#v", message)
 	}
 	state.mutating = false
-	state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyTab})
-	state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyTab})
+	state.handleKey(t.Context(), controller, testTextKey(string([]rune{'A'})))
 	if !state.addingMarketplace {
 		t.Fatal("add marketplace input did not open")
 	}
-	state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" /tmp/local ")})
-	command, _ = state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyEnter})
+	state.handleKey(t.Context(), controller, testTextKey(string([]rune(" /tmp/local "))))
+	command, _ = state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyEnter})
 	message = command().(pluginManagerMutationMsg)
 	if message.action != pluginMutationAddMarketplace || message.target != "/tmp/local" {
 		t.Fatalf("add marketplace = %#v", message)
 	}
 	state.mutating, state.addingMarketplace = false, false
-	command, _ = state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	command, _ = state.handleKey(t.Context(), controller, testTextKey(string([]rune{'D'})))
 	if command != nil || !state.confirmRemoval {
 		t.Fatalf("remove confirmation = command:%v active:%v", command != nil, state.confirmRemoval)
 	}
-	state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyEsc})
+	state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if state.confirmRemoval {
 		t.Fatal("remove confirmation did not cancel")
 	}
-	state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
-	command, _ = state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyEnter})
+	state.handleKey(t.Context(), controller, testTextKey(string([]rune{'D'})))
+	command, _ = state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyEnter})
 	message = command().(pluginManagerMutationMsg)
 	if message.action != pluginMutationRemoveMarketplace || message.target != "local" {
 		t.Fatalf("remove marketplace = %#v", message)
 	}
 	state.mutating = false
-	if command, close = state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyEsc}); command != nil || !close {
+	if command, close = state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyEsc}); command != nil || !close {
 		t.Fatalf("escape = command:%v close:%v", command != nil, close)
 	}
 }
@@ -208,16 +208,16 @@ func TestPluginManagerMarketplaceInputIsBoundedAndCancellable(t *testing.T) {
 	state := newPluginManagerState()
 	state.loading = false
 	state.tab = pluginTabMarketplaces
-	state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	command, close := state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyEnter})
+	state.handleKey(t.Context(), controller, testTextKey(string([]rune{'a'})))
+	command, close := state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if command != nil || close || state.error != "Marketplace source is required." {
 		t.Fatalf("empty source = command:%v close:%v error:%q", command != nil, close, state.error)
 	}
-	state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(strings.Repeat("x", 5000))})
+	state.handleKey(t.Context(), controller, testTextKey(strings.Repeat("x", 5000)))
 	if len([]rune(state.marketplaceInput.Value())) != state.marketplaceInput.CharLimit {
 		t.Fatalf("input length = %d", len([]rune(state.marketplaceInput.Value())))
 	}
-	state.handleKey(t.Context(), controller, tea.KeyMsg{Type: tea.KeyEsc})
+	state.handleKey(t.Context(), controller, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if state.addingMarketplace || state.marketplaceInput.Value() != "" || state.error != "" {
 		t.Fatalf("cancelled input state = %#v", state)
 	}

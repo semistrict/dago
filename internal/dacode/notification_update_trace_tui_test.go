@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/semistrict/dago/daupdate"
 )
 
@@ -275,8 +276,9 @@ func TestTUIModalToastsStayBoundedAndASCII(t *testing.T) {
 			t.Fatalf("line %d width = %d\n%s", index, width, view)
 		}
 	}
+	plain := ansi.Strip(view)
 	for _, expected := range []string{"Notification Settings", "What would you like to build?", "openai:model"} {
-		if !strings.Contains(view, expected) {
+		if !strings.Contains(plain, expected) {
 			t.Fatalf("view missing %q\n%s", expected, view)
 		}
 	}
@@ -310,7 +312,7 @@ func TestTUIBrowserLayoutKeepsStatusOnPhysicalBottomRow(t *testing.T) {
 	model.toasts.add("actionable", toastWarning, maximumToastDuration, "", time.Now())
 	model.relayout()
 	if height := lipgloss.Height(model.View()); height != 24 {
-		t.Fatalf("browser frame with toast height = %d, want exact 24-row frame (viewport=%d composer=%d toast=%d)\n%s", height, model.viewport.Height, model.composer.Height(), model.toastHeight, model.View())
+		t.Fatalf("browser frame with toast height = %d, want exact 24-row frame (viewport=%d composer=%d toast=%d)\n%s", height, model.viewport.Height(), model.composer.Height(), model.toastHeight, model.View())
 	}
 	if strings.Contains(model.View(), "[ X ] clear") || strings.Contains(model.View(), "[ COPY ] copy") {
 		t.Fatal("browser layout restored removed draft actions")

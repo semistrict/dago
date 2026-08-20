@@ -3,8 +3,8 @@ package dacode
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dagoal"
@@ -73,7 +73,7 @@ func (state *goalReviewState) resize(width int) {
 	state.input.SetWidth(max(width-6, 12))
 }
 
-func (state *goalReviewState) handleKey(message tea.KeyMsg) (*goalReviewDecision, tea.Cmd) {
+func (state *goalReviewState) handleKey(message tea.KeyPressMsg) (*goalReviewDecision, tea.Cmd) {
 	if state.mode != goalReviewMenu {
 		switch message.String() {
 		case "esc":

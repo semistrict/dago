@@ -7,9 +7,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	lipgloss2 "charm.land/lipgloss/v2"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/internal/unicodesecurity"
 )
@@ -22,12 +22,14 @@ func newApprovalState(requests []dagent.ApprovalRequest) *approvalState {
 	reason.CharLimit = maxApprovalReasonCharacters
 	reason.SetHeight(1)
 	reason.MaxHeight = 1
-	reason.FocusedStyle.Base = lipgloss.NewStyle().Foreground(colorBody)
-	reason.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	reason.FocusedStyle.Text = lipgloss.NewStyle().Foreground(colorBody)
-	reason.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(colorError).Bold(true)
-	reason.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(colorMuted)
-	reason.BlurredStyle = reason.FocusedStyle
+	styles := reason.Styles()
+	styles.Focused.Base = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorBody)))
+	styles.Focused.CursorLine = lipgloss2.NewStyle()
+	styles.Focused.Text = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorBody)))
+	styles.Focused.Prompt = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorError))).Bold(true)
+	styles.Focused.Placeholder = lipgloss2.NewStyle().Foreground(lipgloss2.Color(string(colorMuted)))
+	styles.Blurred = styles.Focused
+	reason.SetStyles(styles)
 	return &approvalState{requests: requests, reason: reason}
 }
 
@@ -71,7 +73,7 @@ func (model *tuiModel) redactSensitiveApprovalTranscript(requests []dagent.Appro
 	}
 }
 
-func (model *tuiModel) handleApprovalMenuKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleApprovalMenuKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	state := model.approval
 	if state == nil || !model.manualApprovalVisible() || !state.ready || state.deferred || state.typingProtected || state.preparingReview || state.reviewing {
 		return nil, false
@@ -161,8 +163,8 @@ func (model *tuiModel) userIsTyping(now time.Time) bool {
 	return !model.lastTypedAt.IsZero() && now.Sub(model.lastTypedAt) < approvalTypingIdleDuration
 }
 
-func isComposerTypingKey(message tea.KeyMsg) bool {
-	if message.Paste || message.Type == tea.KeyRunes {
+func isComposerTypingKey(message tea.KeyPressMsg) bool {
+	if message.Text != "" {
 		return true
 	}
 	switch message.String() {
@@ -173,7 +175,7 @@ func isComposerTypingKey(message tea.KeyMsg) bool {
 	}
 }
 
-func (model *tuiModel) noteComposerTyping(message tea.KeyMsg) tea.Cmd {
+func (model *tuiModel) noteComposerTyping(message tea.KeyPressMsg) tea.Cmd {
 	if !isComposerTypingKey(message) || model.askUser != nil || model.sessionPicker != nil || model.agentPicker != nil || model.effortPicker != nil || model.contextScreen {
 		return nil
 	}
@@ -279,7 +281,7 @@ func (model *tuiModel) closeApprovalReason() {
 	model.refreshTranscript()
 }
 
-func (model *tuiModel) handleApprovalReasonKey(message tea.KeyMsg) (tea.Cmd, bool) {
+func (model *tuiModel) handleApprovalReasonKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 	state := model.approval
 	if state == nil || !state.reasonMode {
 		return nil, false

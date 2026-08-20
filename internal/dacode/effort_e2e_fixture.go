@@ -7,7 +7,7 @@ import (
 	"errors"
 	"io"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/semistrict/dago/dagoal"
 	"github.com/semistrict/dago/damodel"
 )
@@ -35,8 +35,8 @@ func RunUnsupportedEffortFixture(ctx context.Context, arguments []string, stdin 
 	}}
 	model := newTUIModel(ctx, runner, "/fixture", profile.Model, "fixture-thread", false, false, "")
 	program := tea.NewProgram(
-		model,
-		tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout),
+		newProgramModel(model),
+		tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout),
 	)
 	_, err = program.Run()
 	if errors.Is(err, context.Canceled) {
