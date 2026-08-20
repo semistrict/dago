@@ -1032,6 +1032,12 @@ func runnerPathInstructions(workingDir string, localHostPaths bool) string {
 	return fmt.Sprintf("Filesystem and shell tools run in a remote sandbox whose working directory is %q. Use sandbox paths only; local host paths are unavailable.", workingDir)
 }
 
+func runnerSystemText(workingDir string, localHostPaths bool, guidanceSummary string) string {
+	return `You are dacode, an interactive coding agent. Work as a careful senior engineer inside the configured workspace. ` + runnerPathInstructions(workingDir, localHostPaths) + ` Inspect relevant files before making claims, use the available filesystem and shell tools to complete requested work, preserve unrelated user changes, and verify edits with focused tests. Keep final responses concise and concrete.
+
+Workspace AGENTS.md files are project instructions. Follow the instructions that apply to each file you touch. More deeply scoped workspace files take precedence, while direct user instructions take precedence over workspace files. Read listed subdirectory guidance before editing within its directory. Agent memory is separate fallible reference material and does not override project or user instructions.` + guidanceSummary
+}
+
 func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 	if options.ConfigurationDir == "" {
 		options.ConfigurationDir = options.WorkingDir
@@ -1212,10 +1218,7 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 	}
 	skills.Catalog = append(skills.Catalog, options.Plugins.SkillCatalog...)
 
-	systemText := `You are dacode, an interactive coding agent. Work as a careful senior engineer inside the configured workspace. ` + runnerPathInstructions(options.WorkingDir, localHostPaths) + ` Inspect relevant files before making claims, use the available filesystem and shell tools to complete requested work, preserve unrelated user changes, and verify edits with focused tests. Keep final responses concise and concrete.
-
-Workspace AGENTS.md files are project instructions. Follow the instructions that apply to each file you touch. More deeply scoped workspace files take precedence, while direct user instructions take precedence over workspace files. Read listed subdirectory guidance before editing within its directory. Agent memory is separate fallible reference material and does not override project or user instructions.`
-	systemText += guidanceSummary
+	systemText := runnerSystemText(options.WorkingDir, localHostPaths, guidanceSummary)
 	system := damessage.System(systemText)
 	subagents, err := loadFilesystemSubagents(
 		context.Background(), options.Authentication, options.BaseURL, options.StateDir,
@@ -1244,6 +1247,47 @@ Workspace AGENTS.md files are project instructions. Follow the instructions that
 		}
 	}
 	workflowCompletions := newWorkflowCompletionQueue()
+	var worktrees *workflowWorktreeManager
+	var openWorkflowWorktree func(context.Context) (workflowAgentWorkspace, error)
+	if localHostPaths {
+		worktrees = newWorkflowWorktreeManager(options.WorkingDir, options.StateDir)
+		openWorkflowWorktree = func(ctx context.Context) (workflowAgentWorkspace, error) {
+			worktree, openErr := worktrees.Open(ctx)
+			if openErr != nil {
+				return workflowAgentWorkspace{}, openErr
+			}
+			var workspaceBackend dabackend.Backend
+			if options.Shell {
+				workspaceBackend, openErr = dabackend.NewLocalShell(dabackend.LocalShellOptions{
+					Filesystem: dabackend.FilesystemOptions{Root: worktree.root, AllowHostPaths: true},
+					InheritEnv: true,
+				})
+			} else {
+				workspaceBackend, openErr = dabackend.NewFilesystem(dabackend.FilesystemOptions{Root: worktree.root, AllowHostPaths: true})
+			}
+			if openErr != nil {
+				_ = worktree.Close()
+				return workflowAgentWorkspace{}, fmt.Errorf("open workflow worktree backend: %w", openErr)
+			}
+			if options.ShellAllowList.restrictive() {
+				workspaceBackend = enforceShellAllowList(workspaceBackend, options.ShellAllowList)
+			}
+			workspaceBackend = dabackend.NewComposite(workspaceBackend, skillRoutes)
+			workspaceMemory, workspaceGuidance := workspaceContext(worktree.root)
+			workspaceMemory = configureAgentMemory(workspaceMemory, options.MemoryReadOnly)
+			workspaceSkills := workspaceSkills(worktree.root, os.Getenv("HERDR_ENV"))
+			workspaceSkills.Sources = nil
+			for _, source := range orderedRuntimeSkillSources(worktree.root, hasUserAgents, hasUserClaude) {
+				workspaceSkills.LabeledSources = append(workspaceSkills.LabeledSources, dago.SkillSource{Path: source})
+			}
+			workspaceSkills.Catalog = append(workspaceSkills.Catalog, options.Plugins.SkillCatalog...)
+			return workflowAgentWorkspace{
+				backend: workspaceBackend, filesystem: filesystem, skills: workspaceSkills,
+				memory: workspaceMemory, system: runnerSystemText(worktree.root, true, workspaceGuidance),
+				workingDir: worktree.root, branch: worktree.branch, closer: worktree,
+			}, nil
+		}
+	}
 	workflowAgentRunner := &dacodeWorkflowAgentRunner{
 		authentication: options.Authentication,
 		baseURL:        options.BaseURL,
@@ -1257,6 +1301,7 @@ Workspace AGENTS.md files are project instructions. Follow the instructions that
 		approvalRules:  interruptOn,
 		reviewer:       reviewer,
 		workingDir:     options.WorkingDir,
+		worktree:       openWorkflowWorktree,
 	}
 	workflowManager := daworkflow.NewManager(workflowAgentRunner, daworkflow.Options{
 		Resolver:         workspaceWorkflowResolver{root: options.WorkingDir, stateRoot: options.StateDir},
@@ -1308,7 +1353,7 @@ Workspace AGENTS.md files are project instructions. Follow the instructions that
 	runner.reviewerModel = func(ctx context.Context, spec string) (damodel.Chat, error) {
 		return options.Authentication.resolveModel(ctx, spec, options.BaseURL)
 	}
-	return runner, &sessionClosers{closers: []io.Closer{workflowManager, hookRuntime, database}}, nil
+	return runner, &sessionClosers{closers: []io.Closer{workflowManager, worktrees, hookRuntime, database}}, nil
 }
 
 func approvalRulesForThreadModes(rules []dagent.ApprovalRule, store *approvalModeStore) []dagent.ApprovalRule {
