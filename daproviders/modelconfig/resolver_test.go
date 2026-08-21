@@ -37,7 +37,7 @@ func newTestResolver(t *testing.T, environment map[string]string, factories map[
 }
 
 func TestPinnedProviderRegistry(t *testing.T) {
-	want := []string{"anthropic", "azure_openai", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google_genai", "google_vertexai", "groq", "huggingface", "ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai", "openai_oauth", "openrouter", "perplexity", "together", "xai"}
+	want := []string{"anthropic", "azure_openai", "baseten", "bedrock", "claude_agent", "cohere", "deepseek", "fireworks", "google_genai", "google_vertexai", "groq", "huggingface", "ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai", "openai_oauth", "openrouter", "perplexity", "together", "xai"}
 	providers := Providers()
 	got := make([]string, len(providers))
 	for index, provider := range providers {
@@ -109,6 +109,7 @@ func TestParsePinnedFamiliesAndExplicitProviders(t *testing.T) {
 		"nvidia/llama":                     {Provider: "nvidia", Model: "nvidia/llama"},
 		"accounts/fireworks/models/kimi":   {Provider: "fireworks", Model: "accounts/fireworks/models/kimi"},
 		"us.anthropic.claude-sonnet-4-5:0": {Provider: "bedrock", Model: "us.anthropic.claude-sonnet-4-5:0"},
+		"claude_agent:sonnet":              {Provider: "claude_agent", Model: "sonnet"},
 		"azure:model":                      {Provider: "azure_openai", Model: "model"},
 	}
 	for input, want := range tests {

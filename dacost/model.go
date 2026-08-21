@@ -2,6 +2,7 @@ package dacost
 
 import (
 	"context"
+	"io"
 	"iter"
 	"math"
 	"reflect"
@@ -50,6 +51,13 @@ func nilChat(model damodel.Chat) bool {
 type usageChat struct{ chat damodel.Chat }
 
 func (model *usageChat) Profile() damodel.Profile { return model.chat.Profile() }
+
+func (model *usageChat) Close() error {
+	if closer, ok := model.chat.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
 
 func (model *usageChat) Invoke(ctx context.Context, request damodel.Request) (damodel.Response, error) {
 	response, err := model.chat.Invoke(ctx, request)

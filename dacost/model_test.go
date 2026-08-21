@@ -97,7 +97,33 @@ func TestNormalizeUsagePreservesOptionalModelCapabilities(t *testing.T) {
 	}
 }
 
+func TestNormalizeUsagePreservesModelClose(t *testing.T) {
+	closed := false
+	inner := closingModel{Chat: modeltest.New(damodel.Profile{}, modeltest.Step{}), closed: &closed}
+	wrapped := NormalizeUsage(inner)
+	closer, ok := wrapped.(io.Closer)
+	if !ok {
+		t.Fatal("normalized model lost Close")
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !closed {
+		t.Fatal("normalized model did not close its wrapped model")
+	}
+}
+
 type capabilityModel struct{ damodel.Chat }
 
 func (model capabilityModel) BindTools([]datool.Definition) (damodel.Chat, error)     { return model, nil }
 func (capabilityModel) CountTokens(context.Context, []damessage.Message) (int, error) { return 7, nil }
+
+type closingModel struct {
+	damodel.Chat
+	closed *bool
+}
+
+func (model closingModel) Close() error {
+	*model.closed = true
+	return nil
+}

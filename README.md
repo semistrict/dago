@@ -670,6 +670,20 @@ configuration](docs/MODELS.md). `dacode` exposes `--model-params`,
 `--clear-default-model`; selecting an integration not compiled into the application
 fails explicitly without network or package discovery.
 
+`--model claude_agent:sonnet` selects the compiled Claude CLI provider. It uses
+print-mode bidirectional stream JSON, disables Claude's built-in tool and local
+customization surfaces, and exposes only the current agent request's tools through an
+ephemeral authenticated loopback MCP server. The outer dago agent executes those
+tools and returns their results through MCP while the same CLI process remains alive;
+partial text and reasoning events stream through `dacode` as they arrive. Native JSONL
+reconstruction and `--resume` are used only after a process restart. See [model
+configuration](docs/MODELS.md#coding-agent-flags) for the isolation boundary and
+supported parameters.
+
+`--model anthropic:MODEL` selects the direct Messages API provider. Hosted web search
+is enabled by default, and `hosted_tools`, `mcp_servers`, `betas`, plus forward-compatible
+top-level Messages parameters can be supplied with `--model-params`.
+
 Local Ollama model discovery is explicit and credential-free. Supply the HTTP
 transport and endpoint positionally, then call `Discover` when a local model picker
 or configuration flow needs a refresh:
@@ -1125,6 +1139,8 @@ limits are listed in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 | `browser/...` | Reusable browser WebAssembly filesystem, IndexedDB checkpoint, promise bridge, just-bash, directory-handle, and WebGPU adapters; see [`browser/README.md`](browser/README.md) |
 | `dacheckpoint/sqlite`, `dacheckpoint/postgres` | Python-schema-compatible durable savers |
 | `dastore`, `dastore/sqlite`, `dacache` | Namespaced data store and cache contracts and implementations |
+| `daproviders/anthropic` | Direct Anthropic Messages API with hosted tools, remote MCP, and native SSE |
+| `daproviders/claudeagent` | Persistent isolated Claude CLI model with caller-owned tools over MCP |
 | `daproviders/openai` | Focused Responses API adapter and credential flows |
 | `daproviders/nemotron` | Opt-in Nemotron harness profiles and model-output repair middleware |
 | `daproviders/profile` | Explicit provider-construction profiles, model-spec resolution, provider matching, and Bedrock detection |

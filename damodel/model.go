@@ -281,6 +281,13 @@ func nilChat(chat Chat) bool {
 
 func (chat *profiledChat) Profile() Profile { return cloneProfile(chat.profile) }
 
+func (chat *profiledChat) Close() error {
+	if closer, ok := chat.Chat.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 func (chat *profiledChat) BindTools(definitions []datool.Definition) (Chat, error) {
 	binder, ok := chat.Chat.(Binder)
 	if !ok {

@@ -703,6 +703,20 @@ local fallback is removed. The Tavily key stays in the tool closure, is never ad
 graph state or prompts, and each fallback search requires the ordinary tool-approval
 decision unless the active approval mode bypasses it.
 
+The Claude CLI provider creates one loopback-only MCP endpoint with an unguessable path
+and bearer authority for each persistent CLI process. That server exposes schemas, not
+tool implementations; a selected call blocks until the outer agent loop supplies its
+result. The child runs in an empty workspace with explicit empty settings and setting
+sources, and disabled built-in tools, browser, skills, slash
+commands, and suggestions. The child retains the authenticated user home because the
+subscription login is selected through the CLI's local Keychain state; an installed-binary
+test verifies that user `CLAUDE.md` content and hooks still do not load. Conversation
+reconstruction writes only to the unique temporary-workspace project entry in Claude's
+native JSONL format and is used only after a process restart. Process replacement or
+explicit close removes the endpoint, workspace, and project entry. Ambient Claude
+authentication remains an upstream CLI/keychain boundary, and administrator-managed
+policy cannot be overridden by the child process.
+
 `dago dev` is an unauthenticated local development server. It binds to loopback by
 default, allows the hosted Studio origin and loopback browser origins, and places its
 generated wrapper plus SQLite state under `.dago_api`. Do not bind it to a shared or

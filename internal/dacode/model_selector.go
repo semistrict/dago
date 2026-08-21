@@ -180,6 +180,8 @@ func modelSelectorCatalog(recent []string) []modelSelectorEntry {
 		recent = recent[:maxRecentModelEntries]
 	}
 	recommended := []modelSelectorEntry{
+		{Spec: "claude_agent:opus", Label: "Claude Agent Opus"},
+		{Spec: "claude_agent:sonnet", Label: "Claude Agent Sonnet"},
 		{Spec: "anthropic:claude-opus-4-8", Label: "Claude Opus 4.8"},
 		{Spec: "anthropic:claude-opus-5", Label: "Claude Opus 5"},
 		{Spec: "anthropic:claude-sonnet-5", Label: "Claude Sonnet 5"},

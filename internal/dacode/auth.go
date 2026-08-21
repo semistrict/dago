@@ -24,14 +24,16 @@ const (
 )
 
 type modelAuthentication struct {
-	apiKey        string
-	credentials   openai.CredentialSource
-	subscription  bool
-	pairedURL     string
-	hasPairedURL  bool
-	resolver      *modelconfig.Resolver
-	modelOptions  modelconfig.ResolveOptions
-	decorateModel func(damodel.Chat) damodel.Chat
+	apiKey           string
+	credentials      openai.CredentialSource
+	subscription     bool
+	pairedURL        string
+	hasPairedURL     bool
+	resolver         *modelconfig.Resolver
+	workflowResolver *modelconfig.Resolver
+	primaryProvider  string
+	modelOptions     modelconfig.ResolveOptions
+	decorateModel    func(damodel.Chat) damodel.Chat
 }
 
 func (authentication modelAuthentication) String() string {
@@ -121,8 +123,18 @@ func (authentication modelAuthentication) newModel(model, baseURL string) (damod
 }
 
 func (authentication modelAuthentication) resolveModel(ctx context.Context, model, baseURL string) (damodel.Chat, error) {
+	if provider, _, explicit := strings.Cut(model, ":"); explicit && provider != "openai" && provider != "openai_oauth" && authentication.workflowResolver != nil {
+		resolution, err := authentication.workflowResolver.Resolve(ctx, model, modelconfig.ResolveOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return authentication.decorate(resolution.Model), nil
+	}
 	if authentication.resolver != nil {
 		options := authentication.modelOptions
+		if provider, _, explicit := strings.Cut(model, ":"); explicit && authentication.primaryProvider != "" && !strings.EqualFold(provider, authentication.primaryProvider) {
+			options = modelconfig.ResolveOptions{}
+		}
 		if baseURL != "" && options.BaseURL == nil {
 			options.BaseURL = new(baseURL)
 		}

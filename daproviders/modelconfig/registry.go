@@ -93,7 +93,7 @@ func builtinProviders() map[string]Provider {
 		"together": "TOGETHER_API_KEY", "xai": "XAI_API_KEY",
 	}
 	names := []string{
-		"anthropic", "azure_openai", "baseten", "bedrock", "cohere", "deepseek",
+		"anthropic", "azure_openai", "baseten", "bedrock", "claude_agent", "cohere", "deepseek",
 		"fireworks", "google_genai", "google_vertexai", "groq", "huggingface",
 		"ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai",
 		"openai_oauth", "openrouter", "perplexity", "together", "xai",
@@ -102,7 +102,7 @@ func builtinProviders() map[string]Provider {
 	for _, name := range names {
 		authentication := AuthenticationRequired
 		switch name {
-		case "bedrock", "google_vertexai":
+		case "bedrock", "claude_agent", "google_vertexai":
 			authentication = AuthenticationAmbient
 		case "ollama":
 			authentication = AuthenticationOptional

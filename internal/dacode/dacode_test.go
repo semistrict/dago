@@ -24,11 +24,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/semistrict/dago"
 	"github.com/semistrict/dago/dacheckpoint"
+	"github.com/semistrict/dago/dacredential"
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/dagoal"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
+	"github.com/semistrict/dago/daproviders/modelconfig"
 	"github.com/semistrict/dago/daproviders/openai"
 	"github.com/semistrict/dago/dastate"
 	"github.com/semistrict/dago/datool"
@@ -461,6 +463,48 @@ func TestRunnerStartsWithHostShellAndApprovalGates(t *testing.T) {
 	if err := closer.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRunnerCloserClosesOwnedModel(t *testing.T) {
+	closed := false
+	model := &runnerClosingModel{
+		Chat:   modeltest.New(damodel.Profile{Provider: "claude_agent", Model: "sonnet"}, modeltest.Step{}),
+		closed: &closed,
+	}
+	credentials := dacredential.NewStore(filepath.Join(t.TempDir(), "auth.json"), time.Now, dacredential.Options{})
+	resolver := modelconfig.NewResolver(credentials, func(string) (string, bool) { return "", false }, map[string]modelconfig.Factory{
+		"claude_agent": func(context.Context, modelconfig.Spec, dacredential.Resolution, modelconfig.Construction) (damodel.Chat, error) {
+			return model, nil
+		},
+	}, modelconfig.Options{})
+	runner, closer, err := newRunner(runnerOptions{
+		Authentication: modelAuthentication{resolver: resolver, primaryProvider: "claude_agent"},
+		Model:          "claude_agent:sonnet",
+		WorkingDir:     t.TempDir(),
+		StateDir:       t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner == nil {
+		t.Fatal("runner is nil")
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !closed {
+		t.Fatal("runner closer did not close its owned model")
+	}
+}
+
+type runnerClosingModel struct {
+	damodel.Chat
+	closed *bool
+}
+
+func (model *runnerClosingModel) Close() error {
+	*model.closed = true
+	return nil
 }
 
 func TestRunnerPathInstructionsMatchLocalAndRemoteExecution(t *testing.T) {
@@ -1116,6 +1160,48 @@ func TestWorkflowAgentUsesRequiredStructuredToolInsteadOfProviderJSON(t *testing
 	}
 	if _, err := json.Marshal(response.Transcript); err != nil {
 		t.Fatalf("workflow transcript is not persistable after malformed structured output: %v", err)
+	}
+}
+
+func TestWorkflowAgentCanUseProviderDifferentFromParent(t *testing.T) {
+	worker := modeltest.New(damodel.Profile{Provider: "claude_agent", Model: "sonnet", NativeStreaming: true}, modeltest.Step{
+		Check: func(request damodel.Request) error {
+			if len(request.Messages) == 0 || request.Messages[len(request.Messages)-1].TextContent() != "Use the other provider." {
+				return fmt.Errorf("worker messages = %#v", request.Messages)
+			}
+			return nil
+		},
+		Chunks: []damodel.Chunk{{MessageDelta: damessage.Assistant("cross-provider result"), Done: true}},
+	})
+	credentials := dacredential.NewStore(filepath.Join(t.TempDir(), "auth.json"), time.Now, dacredential.Options{})
+	factoryCalls := 0
+	resolver := modelconfig.NewResolver(credentials, func(string) (string, bool) { return "", false }, map[string]modelconfig.Factory{
+		"claude_agent": func(_ context.Context, spec modelconfig.Spec, _ dacredential.Resolution, construction modelconfig.Construction) (damodel.Chat, error) {
+			factoryCalls++
+			if spec.Provider != "claude_agent" || spec.Model != "sonnet" {
+				return nil, fmt.Errorf("worker spec = %#v", spec)
+			}
+			if len(construction.Parameters) != 0 {
+				return nil, fmt.Errorf("worker inherited parent parameters = %#v", construction.Parameters)
+			}
+			return worker, nil
+		},
+	}, modelconfig.Options{})
+	runner := &dacodeWorkflowAgentRunner{
+		authentication: modelAuthentication{
+			apiKey: "parent-openai-key", workflowResolver: resolver, primaryProvider: "openai",
+			modelOptions: modelconfig.ResolveOptions{Parameters: map[string]any{"web_search": false}},
+		},
+		model: "openai:gpt-parent",
+	}
+	response, err := runner.RunWorkflowAgent(t.Context(), daworkflow.AgentRequest{
+		Prompt: "Use the other provider.", Model: "claude_agent:sonnet",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Value != "cross-provider result" || factoryCalls != 1 {
+		t.Fatalf("response = %#v, factory calls = %d", response, factoryCalls)
 	}
 }
 

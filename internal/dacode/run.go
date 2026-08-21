@@ -764,9 +764,7 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 	authManager := newAuthManager(dacredential.NewStore(authPath, time.Now, dacredential.Options{}), os.LookupEnv)
 	model.authManager = newAuthTUIController(authManager, filepath.Join(options.stateDir, oauthStoreFilename), openai.Login, openExternalURL)
 	oauthConfigured, oauthStatusErr := storedOAuthSession(filepath.Join(options.stateDir, oauthStoreFilename))
-	availabilityResolver := modelconfig.NewResolver(authManager.store, os.LookupEnv, map[string]modelconfig.Factory{
-		"openai": openAIModelFactory, "openrouter": openRouterModelFactory,
-	}, modelconfig.Options{})
+	availabilityResolver := modelconfig.NewResolver(authManager.store, os.LookupEnv, configuredModelFactories(), modelconfig.Options{})
 	if oauthStatusErr != nil || model.configureModelProviderAvailability(ctx, availabilityResolver, oauthConfigured) != nil {
 		model.appendItem(transcriptItem{kind: itemError, text: "Model availability could not be loaded; selector status is unknown."})
 	}

@@ -1353,7 +1353,11 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 	runner.reviewerModel = func(ctx context.Context, spec string) (damodel.Chat, error) {
 		return options.Authentication.resolveModel(ctx, spec, options.BaseURL)
 	}
-	return runner, &sessionClosers{closers: []io.Closer{workflowManager, worktrees, hookRuntime, database}}, nil
+	closers := []io.Closer{workflowManager, worktrees, hookRuntime, database}
+	if modelCloser, ok := model.(io.Closer); ok {
+		closers = append([]io.Closer{modelCloser}, closers...)
+	}
+	return runner, &sessionClosers{closers: closers}, nil
 }
 
 func approvalRulesForThreadModes(rules []dagent.ApprovalRule, store *approvalModeStore) []dagent.ApprovalRule {

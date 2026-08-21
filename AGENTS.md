@@ -95,6 +95,20 @@ The suite uses `deepseek/deepseek-v4-flash-0731` by default. Set
 The same target also verifies that Shelley's custom-model builder can call the
 default model with a forced tool request.
 
+The Claude CLI provider has an installed-binary integration that uses a local
+deterministic Messages endpoint and requires no model credential:
+
+```sh
+DAGO_CLAUDE_AGENT_CLI_INTEGRATION=1 go test ./daproviders/claudeagent -run '^TestInstalledCLIRestartReconstructsVariedToolHistory$' -count=1 -v
+```
+
+Credentialed model coverage is separately opt-in and uses the installed CLI's
+existing authentication. Set `DAGO_CLAUDE_AGENT_LIVE_MODEL` to override `sonnet`:
+
+```sh
+DAGO_CLAUDE_AGENT_LIVE=1 go test ./daproviders/claudeagent -run '^TestLiveRestartReconstructsVariedToolHistory$' -count=1 -v
+```
+
 For shelley-in-dago, install UI dependencies first and run the Go and UI checks from their
 respective module directories:
 

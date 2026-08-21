@@ -1,6 +1,6 @@
 {
   "generated": true,
-  "source_sha256": "17ee709a5a61cb569f4ec2a381fc9ac071b19c177092fe374feeadad16551d9a",
+  "source_sha256": "3cfb5933aa5ff5d2b3df4b2a521038c8e2b97c66c1a3b40f91ba1b82508336cc",
   "contract": {
     "checkpoint": {
       "channel_values": {
@@ -58,6 +58,15 @@
         "source": "langchain-python",
         "test_selectors": [
           "test_state_schema_single_custom_field"
+        ]
+      },
+      {
+        "path": "libs/partners/anthropic/tests/unit_tests/test_chat_models.py",
+        "source": "langchain-python",
+        "test_selectors": [
+          "test_auto_append_betas_for_tool_types",
+          "test_auto_append_betas_for_mcp_servers",
+          "test_reasoning_effort_defaults_adaptive_thinking"
         ]
       },
       {

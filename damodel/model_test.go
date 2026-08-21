@@ -13,6 +13,7 @@ import (
 type profileTestChat struct {
 	profile Profile
 	bound   bool
+	closed  bool
 }
 
 func (chat *profileTestChat) Invoke(context.Context, Request) (Response, error) {
@@ -26,6 +27,10 @@ func (chat *profileTestChat) BindTools([]datool.Definition) (Chat, error) {
 	copy := *chat
 	copy.bound = true
 	return &copy, nil
+}
+func (chat *profileTestChat) Close() error {
+	chat.closed = true
+	return nil
 }
 
 func TestEmptyStream(t *testing.T) {
@@ -68,6 +73,21 @@ func TestWithProfilePreservesOverridesAcrossBinding(t *testing.T) {
 	}
 	if !bound.(*profiledChat).Chat.(*profileTestChat).bound {
 		t.Fatal("underlying model was not bound")
+	}
+}
+
+func TestWithProfilePreservesModelClose(t *testing.T) {
+	base := &profileTestChat{}
+	configured := WithProfile(base, nil)
+	closer, ok := configured.(io.Closer)
+	if !ok {
+		t.Fatal("profiled model lost Close")
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !base.closed {
+		t.Fatal("profiled model did not close its wrapped model")
 	}
 }
 

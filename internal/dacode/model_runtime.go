@@ -15,6 +15,8 @@ import (
 
 	"github.com/semistrict/dago/dacredential"
 	"github.com/semistrict/dago/damodel"
+	"github.com/semistrict/dago/daproviders/anthropic"
+	"github.com/semistrict/dago/daproviders/claudeagent"
 	"github.com/semistrict/dago/daproviders/modelconfig"
 	"github.com/semistrict/dago/daproviders/openai"
 	"github.com/semistrict/dago/daproviders/openrouter"
@@ -39,22 +41,170 @@ func resolveConfiguredModelAuthentication(ctx context.Context, model, apiKey, st
 			return modelAuthentication{}, err
 		}
 		authentication.modelOptions = options
-		if authentication.subscription {
-			return authentication, nil
-		}
 	case "openai_oauth":
 		authentication, err = resolveOAuthAuthentication(ctx, stateDirectory, stderr, defaultAuthenticationHooks())
 		if err != nil {
 			return modelAuthentication{}, err
 		}
+	}
+	resolver := modelconfig.NewResolver(credentials, os.LookupEnv, configuredModelFactories(), modelconfig.Options{})
+	authentication.primaryProvider = spec.Provider
+	if spec.Provider == "openai" || spec.Provider == "openai_oauth" {
 		authentication.modelOptions = options
+		authentication.workflowResolver = resolver
 		return authentication, nil
 	}
-	authentication.resolver = modelconfig.NewResolver(credentials, os.LookupEnv, map[string]modelconfig.Factory{
-		"openai":     openAIModelFactory,
-		"openrouter": openRouterModelFactory,
-	}, modelconfig.Options{})
+	authentication.resolver = resolver
 	return authentication, nil
+}
+
+func configuredModelFactories() map[string]modelconfig.Factory {
+	return map[string]modelconfig.Factory{
+		"anthropic":    anthropicModelFactory,
+		"claude_agent": claudeAgentModelFactory,
+		"openai":       openAIModelFactory,
+		"openrouter":   openRouterModelFactory,
+	}
+}
+
+func anthropicModelFactory(_ context.Context, spec modelconfig.Spec, credential dacredential.Resolution, construction modelconfig.Construction) (damodel.Chat, error) {
+	if credential.Credential.APIKey == nil {
+		return nil, errors.New("anthropic factory requires an API key credential")
+	}
+	parameters := cloneModelParameters(construction.Parameters)
+	options := anthropic.Options{BaseURL: anthropicMessagesEndpoint(construction.BaseURL), WebSearch: true}
+	if value, exists := parameters["context_window"]; exists {
+		parsed, ok := modelInteger(value)
+		if !ok || parsed < 1 {
+			return nil, errors.New("context_window must be a positive integer")
+		}
+		options.ContextWindow = parsed
+		delete(parameters, "context_window")
+	}
+	if value, exists := parameters["max_output_tokens"]; exists {
+		parsed, ok := modelInteger(value)
+		if !ok || parsed < 1 {
+			return nil, errors.New("max_output_tokens must be a positive integer")
+		}
+		options.MaxOutputTokens = parsed
+		delete(parameters, "max_output_tokens")
+	}
+	if value, exists := parameters["web_search"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return nil, errors.New("web_search must be a boolean")
+		}
+		options.WebSearch = enabled
+		delete(parameters, "web_search")
+	}
+	var err error
+	if options.HostedTools, err = popRawArrayParameter(parameters, "hosted_tools"); err != nil {
+		return nil, err
+	}
+	if options.MCPServers, err = popRawArrayParameter(parameters, "mcp_servers"); err != nil {
+		return nil, err
+	}
+	if options.Betas, err = popStringArrayParameter(parameters, "betas"); err != nil {
+		return nil, err
+	}
+	delete(parameters, "max_retries")
+	options.Parameters = make(map[string]json.RawMessage, len(parameters))
+	for name, value := range parameters {
+		encoded, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("%s is not JSON-compatible", name)
+		}
+		options.Parameters[name] = encoded
+	}
+	if construction.HasMaxRetries {
+		options.RetryBackoff = retryBackoff(construction.MaxRetries)
+	}
+	return anthropic.New(credential.Credential.APIKey.Key, spec.Model, options), nil
+}
+
+func anthropicMessagesEndpoint(value string) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" || strings.HasSuffix(value, "/messages") {
+		return value
+	}
+	if strings.HasSuffix(value, "/v1") {
+		return value + "/messages"
+	}
+	return value + "/v1/messages"
+}
+
+func popRawArrayParameter(values map[string]any, name string) ([]json.RawMessage, error) {
+	value, exists := values[name]
+	if !exists {
+		return nil, nil
+	}
+	delete(values, name)
+	items, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array", name)
+	}
+	result := make([]json.RawMessage, len(items))
+	for index, item := range items {
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return nil, fmt.Errorf("%s item %d is not JSON-compatible", name, index)
+		}
+		result[index] = encoded
+	}
+	return result, nil
+}
+
+func popStringArrayParameter(values map[string]any, name string) ([]string, error) {
+	value, exists := values[name]
+	if !exists {
+		return nil, nil
+	}
+	delete(values, name)
+	items, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array of strings", name)
+	}
+	result := make([]string, len(items))
+	for index, item := range items {
+		text, ok := item.(string)
+		if !ok || text == "" {
+			return nil, fmt.Errorf("%s item %d must be a non-empty string", name, index)
+		}
+		result[index] = text
+	}
+	return result, nil
+}
+
+func claudeAgentModelFactory(_ context.Context, spec modelconfig.Spec, _ dacredential.Resolution, construction modelconfig.Construction) (damodel.Chat, error) {
+	parameters := cloneModelParameters(construction.Parameters)
+	cliPath, err := popStringParameter(parameters, "cli_path")
+	if err != nil {
+		return nil, err
+	}
+	options := claudeagent.Options{CLIPath: cliPath}
+	for name, destination := range map[string]*int{
+		"context_window": &options.ContextWindow, "max_output_tokens": &options.MaxOutputTokens,
+	} {
+		value, exists := parameters[name]
+		if !exists {
+			continue
+		}
+		parsed, ok := modelInteger(value)
+		if !ok || parsed < 1 {
+			return nil, fmt.Errorf("%s must be a positive integer", name)
+		}
+		*destination = parsed
+		delete(parameters, name)
+	}
+	if len(parameters) != 0 {
+		names := make([]string, 0, len(parameters))
+		for name := range parameters {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("Claude agent adapter does not support model parameters: %s", strings.Join(names, ", "))
+	}
+	return claudeagent.New(spec.Model, options), nil
 }
 
 func resolveOAuthAuthentication(ctx context.Context, stateDirectory string, stderr io.Writer, hooks authenticationHooks) (modelAuthentication, error) {

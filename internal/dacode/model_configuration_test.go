@@ -91,14 +91,51 @@ func TestConfiguredModelAuthenticationUsesOfflineFactoriesAndNoProviderDiscovery
 
 func TestConfiguredModelAuthenticationRejectsUnavailableProviderAtConstruction(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("ANTHROPIC_API_KEY", "anthropic-fixture-key")
-	authentication, err := resolveConfiguredModelAuthentication(t.Context(), "anthropic:claude-opus-5", "", t.TempDir(), nil, modelconfig.ResolveOptions{})
+	t.Setenv("COHERE_API_KEY", "cohere-fixture-key")
+	authentication, err := resolveConfiguredModelAuthentication(t.Context(), "cohere:command-r", "", t.TempDir(), nil, modelconfig.ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = authentication.resolveModel(t.Context(), "anthropic:claude-opus-5", "")
+	_, err = authentication.resolveModel(t.Context(), "cohere:command-r", "")
 	if !errors.Is(err, modelconfig.ErrProviderUnavailable) {
 		t.Fatalf("error = %v, want ErrProviderUnavailable", err)
+	}
+}
+
+func TestConfiguredClaudeAgentUsesAmbientCLIAuthority(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	authentication, err := resolveConfiguredModelAuthentication(t.Context(), "claude_agent:sonnet", "", t.TempDir(), nil, modelconfig.ResolveOptions{
+		Parameters: map[string]any{"cli_path": "/fixture/claude", "context_window": 200_000, "max_output_tokens": 32_000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, err := authentication.resolveModel(t.Context(), "claude_agent:sonnet", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := chat.Profile()
+	if profile.Provider != "claude_agent" || profile.Model != "sonnet" || profile.ContextWindow != 200_000 || profile.MaxOutputTokens != 32_000 || !profile.ToolCalling {
+		t.Fatalf("profile = %#v", profile)
+	}
+}
+
+func TestConfiguredAnthropicUsesMessagesAPIWithHostedSearch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-fixture-key")
+	authentication, err := resolveConfiguredModelAuthentication(t.Context(), "anthropic:claude-opus-5", "", t.TempDir(), nil, modelconfig.ResolveOptions{
+		Parameters: map[string]any{"context_window": 1_000_000, "max_output_tokens": 64_000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, err := authentication.resolveModel(t.Context(), "anthropic:claude-opus-5", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := chat.Profile()
+	if profile.Provider != "anthropic" || profile.Model != "claude-opus-5" || profile.ContextWindow != 1_000_000 || profile.MaxOutputTokens != 64_000 || !profile.SupportsWebSearch {
+		t.Fatalf("profile = %#v", profile)
 	}
 }
 
