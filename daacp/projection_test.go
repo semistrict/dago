@@ -207,6 +207,68 @@ func TestProjectorStartsProgressOnlyToolOnce(t *testing.T) {
 	}
 }
 
+func TestProjectorTreatsTransparentToolLifecycleAsOrdinaryCall(t *testing.T) {
+	client := &testClient{}
+	projector := startProjectorTestConnection(t, client)
+	parent := damessage.Message{
+		Role: damessage.RoleAssistant,
+		ToolCalls: []damessage.ToolCall{{
+			ID: "eval-call", Name: "js_eval", Arguments: json.RawMessage(`{"code":"await tools.read_file({file_path:'/guide.md'})"}`),
+		}},
+		Metadata: map[string]json.RawMessage{
+			"dago.ptc_transparency.v1": json.RawMessage(`{"parent_call_ids":["eval-call"]}`),
+		},
+	}
+	if err := projector.event(t.Context(), dagent.Event{Mode: dagent.EventUpdate, Update: dastate.Values{
+		dagent.MessagesKey: []damessage.Message{parent},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	start := datool.Progress{
+		CallID: "ptc-read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/guide.md"}`),
+		ParentCallID: "eval-call",
+	}
+	if err := projector.event(t.Context(), dagent.Event{Mode: dagent.EventToolProgress, ToolProgress: &start}); err != nil {
+		t.Fatal(err)
+	}
+	completed := datool.Progress{
+		CallID: "ptc-read", Name: "read_file", ParentCallID: "eval-call",
+		Output: "contents", Status: damessage.ToolStatusSuccess,
+	}
+	if err := projector.event(t.Context(), dagent.Event{Mode: dagent.EventToolProgress, ToolProgress: &completed}); err != nil {
+		t.Fatal(err)
+	}
+	parentResult := damessage.Tool("eval-call", "contents")
+	parentResult.Name = "js_eval"
+	if err := projector.event(t.Context(), dagent.Event{Mode: dagent.EventUpdate, Update: dastate.Values{
+		dagent.MessagesKey: []damessage.Message{parentResult},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.event(t.Context(), dagent.Event{Mode: dagent.EventToken, Chunk: &damodel.Chunk{MessageDelta: damessage.Message{
+		Role: damessage.RoleAssistant, Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: "barrier"}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	updates := waitForAgentText(t, client, "barrier")
+	if len(updates) != 3 {
+		t.Fatalf("updates = %#v, want only the underlying tool lifecycle", updates)
+	}
+	started := updates[0].Update.ToolCall
+	if started == nil || started.ToolCallId != "ptc-read" || started.Title != "read_file" || started.Status != acp.ToolCallStatusPending || len(started.Locations) != 1 || started.Locations[0].Path != "/guide.md" {
+		t.Fatalf("tool start = %#v", updates[0])
+	}
+	input, ok := started.RawInput.(map[string]any)
+	if !ok || input["file_path"] != "/guide.md" {
+		t.Fatalf("raw input = %#v", started.RawInput)
+	}
+	finished := updates[1].Update.ToolCallUpdate
+	if finished == nil || finished.Status == nil || *finished.Status != acp.ToolCallStatusCompleted || finished.RawOutput != "contents" || len(finished.Content) != 1 {
+		t.Fatalf("tool completion = %#v", updates[1])
+	}
+}
+
 func TestProjectorFallsBackToFinalMessageWhenNoTokensStream(t *testing.T) {
 	client := &testClient{}
 	projector := startProjectorTestConnection(t, client)
@@ -270,6 +332,24 @@ func waitForUpdates(t *testing.T, client *testClient, count int) []acp.SessionNo
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("received %d updates, want at least %d: %#v", len(updates), count, updates)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitForAgentText(t *testing.T, client *testClient, text string) []acp.SessionNotification {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, updates := client.snapshot()
+		for _, update := range updates {
+			chunk := update.Update.AgentMessageChunk
+			if chunk != nil && chunk.Content.Text != nil && chunk.Content.Text.Text == text {
+				return updates
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("did not receive agent text %q: %#v", text, updates)
 		}
 		time.Sleep(time.Millisecond)
 	}

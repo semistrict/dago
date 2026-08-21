@@ -261,7 +261,7 @@ func TestThemePickerPreviewsCancelsAndPersistsSelection(t *testing.T) {
 	}
 	original := model.themeName
 	command, handled := model.handleThemeKey(tea.KeyPressMsg{Code: tea.KeyDown})
-	if !handled || command != nil || model.themeName == original {
+	if !handled || command == nil || model.themeName == original {
 		t.Fatalf("down did not preview: handled=%v command=%v theme=%q", handled, command != nil, model.themeName)
 	}
 	if _, handled := model.handleThemeKey(tea.KeyPressMsg{Code: tea.KeyEsc}); !handled || model.themeName != original || model.themePicker != nil {
@@ -274,7 +274,8 @@ func TestThemePickerPreviewsCancelsAndPersistsSelection(t *testing.T) {
 	if !handled || command == nil || model.themeName != "nord" || model.themePicker != nil {
 		t.Fatalf("Enter did not commit Nord: handled=%v command=%v theme=%q", handled, command != nil, model.themeName)
 	}
-	message, ok := command().(themePreferenceSavedMsg)
+	messages := runTUITestCommand(model, command)
+	message, ok := findThemePreferenceSavedMessage(messages)
 	if !ok || message.err != nil {
 		t.Fatalf("save message = %#v", message)
 	}
@@ -300,15 +301,26 @@ func TestThemePickerTerminalDefaultAndLabels(t *testing.T) {
 	if !handled || command == nil || model.themeName != "ansi-dark" {
 		t.Fatalf("t did not select terminal theme: handled=%v command=%v theme=%q", handled, command != nil, model.themeName)
 	}
-	message := command().(themePreferenceSavedMsg)
-	updated, _ := model.Update(message)
-	model = updated
+	messages := runTUITestCommand(model, command)
+	message, ok := findThemePreferenceSavedMessage(messages)
+	if !ok || message.err != nil {
+		t.Fatalf("terminal save message = %#v", message)
+	}
 	if model.terminalTheme != "ansi-dark" || !strings.Contains(model.renderThemePicker(), "ansi-dark (current, default)") {
 		t.Fatalf("terminal default not reflected: %q\n%s", model.terminalTheme, model.renderThemePicker())
 	}
 	if _, handled := model.handleThemeKey(tea.KeyPressMsg{Code: tea.KeyEsc}); !handled || model.themeName != "ansi-dark" {
 		t.Fatal("Esc reverted a terminal default chosen in this picker")
 	}
+}
+
+func findThemePreferenceSavedMessage(messages []tea.Msg) (themePreferenceSavedMsg, bool) {
+	for _, message := range messages {
+		if saved, ok := message.(themePreferenceSavedMsg); ok {
+			return saved, true
+		}
+	}
+	return themePreferenceSavedMsg{}, false
 }
 
 func indexTheme(names []string, target string) int {

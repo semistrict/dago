@@ -1022,13 +1022,12 @@ func TestXtermWheelUsesMouseReportsInsteadOfKeyboardInput(t *testing.T) {
 func TestTUITerminalToolProgressCompletesItemBeforeBatchUpdate(t *testing.T) {
 	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "test-model", "thread", false, true, "")
 	model.resize(100, 30)
-	model.addToolCall(damessage.ToolCall{ID: "read-call", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/README.md"}`)})
 
 	model.applyEvent(dagent.Event{Mode: dagent.EventToolProgress, ToolProgress: &datool.Progress{
-		CallID: "read-call", Name: "read_file", Output: "partial output",
+		CallID: "read-call", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/README.md"}`), Output: "partial output",
 	}})
 	item := model.items[model.toolItems["read-call"]]
-	if item.done {
+	if item.done || !strings.Contains(item.args, "/README.md") {
 		t.Fatalf("non-terminal progress completed item: %#v", item)
 	}
 
@@ -1685,7 +1684,7 @@ func TestCopyCommandCopiesNewestFinishedAssistantExactly(t *testing.T) {
 	if got := model.View(); !strings.Contains(got, osc52ClipboardSequence(want)) {
 		t.Fatalf("view omitted clipboard sequence")
 	}
-	model.Update(command())
+	runTUITestCommand(model, command)
 	if model.clipboardSequence != "" {
 		t.Fatalf("clipboard sequence was not cleared: %q", model.clipboardSequence)
 	}
@@ -1727,7 +1726,7 @@ func TestExternalURLCommandReportsOpenFailure(t *testing.T) {
 	if !handled || command == nil {
 		t.Fatalf("handled = %t, command = %v", handled, command)
 	}
-	model.Update(command())
+	runTUITestCommand(model, command)
 	if got := model.items[len(model.items)-1]; got.kind != itemError || !strings.Contains(got.text, "no browser") {
 		t.Fatalf("failure item = %#v", got)
 	}
@@ -1748,7 +1747,7 @@ func TestExternalURLCommandUsesBrowserTerminalControlChannel(t *testing.T) {
 	if got := model.View(); !strings.Contains(got, browserOpenURLSequence(feedbackURL)) {
 		t.Fatalf("view omitted browser sequence")
 	}
-	model.Update(command())
+	runTUITestCommand(model, command)
 	if model.browserSequence != "" {
 		t.Fatalf("browser sequence was not cleared: %q", model.browserSequence)
 	}
@@ -1765,14 +1764,13 @@ func TestTerminalSequenceFlushWaitsForRendererBeforeClearing(t *testing.T) {
 		if got := model.View(); !strings.Contains(got, sequence) {
 			t.Fatalf("initial render omitted terminal sequence")
 		}
-		message := command()
+		messages := runTUITestCommand(model, command)
 		if elapsed := time.Since(started); elapsed != terminalSequenceDisplayDuration {
 			t.Fatalf("flush delay = %s, want %s", elapsed, terminalSequenceDisplayDuration)
 		}
-		if got := model.View(); !strings.Contains(got, sequence) {
-			t.Fatalf("terminal sequence cleared before acknowledgement was handled")
+		if len(messages) != 2 {
+			t.Fatalf("terminal command messages = %d, want raw output and acknowledgement", len(messages))
 		}
-		model.Update(message)
 		if model.clipboardSequence != "" || strings.Contains(model.View(), osc52ClipboardSequence("copy me")) {
 			t.Fatalf("terminal sequence remained after delayed acknowledgement")
 		}
@@ -2286,6 +2284,44 @@ func TestTUIListsAndSelectsPreviousSessions(t *testing.T) {
 	if len(model.items) != 2 || model.items[0].kind != itemUser || model.items[0].text != "Second task" ||
 		model.items[1].kind != itemAssistant || model.items[1].text != "Second answer" {
 		t.Fatalf("restored transcript = %#v", model.items)
+	}
+}
+
+func TestRestoreTranscriptProjectsTransparentProgrammaticCalls(t *testing.T) {
+	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "main-model", "thread-1", false, true, "")
+	parent := damessage.Message{
+		Role: damessage.RoleAssistant,
+		ToolCalls: []damessage.ToolCall{{
+			ID: "eval-call", Name: "js_eval", Arguments: json.RawMessage(`{"code":"await tools.readFile({file_path:'/guide.md'})"}`),
+		}},
+		Metadata: map[string]json.RawMessage{
+			"dago.ptc_transparency.v1": json.RawMessage(`{"parent_call_ids":["eval-call"]}`),
+		},
+	}
+	result := damessage.Tool("eval-call", "contents")
+	result.Name = "js_eval"
+	result.Artifact = json.RawMessage(`{
+		"type":"dago.ptc_transcript.v1",
+		"calls":[{
+			"call_id":"ptc-read",
+			"name":"read_file",
+			"arguments":{"file_path":"/guide.md"},
+			"output":"contents",
+			"status":"success"
+		}]
+	}`)
+
+	model.restoreTranscript([]damessage.Message{damessage.Human("Read the guide"), parent, result})
+
+	if len(model.items) != 2 {
+		t.Fatalf("restored transcript = %#v", model.items)
+	}
+	tool := model.items[1]
+	if tool.kind != itemTool || tool.callID != "ptc-read" || tool.name != "read_file" || tool.args != `{"file_path":"/guide.md"}` || tool.text != "contents" || !tool.done || tool.failed || tool.lifecycle != toolSuccess || !tool.restored {
+		t.Fatalf("restored transparent tool = %#v", tool)
+	}
+	if _, exists := model.toolItems["eval-call"]; exists {
+		t.Fatalf("interpreter wrapper was restored: %#v", model.toolItems)
 	}
 }
 

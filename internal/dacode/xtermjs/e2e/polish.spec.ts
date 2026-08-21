@@ -318,11 +318,14 @@ test("theme preview, cancel, ANSI reset, persistence, and narrow modal preserve 
       screen.getBoundingClientRect().right > host.getBoundingClientRect().right + 1;
     let composer = false;
     let selection = false;
+    const visibleLines: string[] = [];
     for (let row = buffer.viewportY; row < buffer.viewportY + terminal.rows; row += 1) {
       const line = buffer.getLine(row)?.translateToString(true) ?? "";
-			composer ||= line.includes("What would you");
+      visibleLines.push(line);
       selection ||= line.includes("LangChain");
     }
+    composer = visibleLines.some((line) => line.includes("What would")) &&
+      visibleLines.some((line) => line.includes("you"));
     return { overflow, composer, selection };
   });
   expect(bounds).toEqual({ overflow: false, composer: true, selection: true });

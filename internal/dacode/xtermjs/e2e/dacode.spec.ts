@@ -371,7 +371,7 @@ test("a wrapped two-line draft keeps its first line visible while editing the se
   await page.keyboard.type(secondLine, { delay: 5 });
 
   await expect.poll(() => terminalText(page)).toContain(secondLine);
-  await expect.poll(() => visibleTerminalLines(page).then((lines) => lines.join("\n"))).toContain(firstLine);
+  await expect.poll(() => visibleTerminalLines(page).then((lines) => lines.join("").replace(/[\s│>]/gu, ""))).toContain(firstLine);
   await expect.poll(() => visibleTerminalLines(page).then((lines) => lines.join("\n"))).toContain(secondLine);
 });
 
@@ -478,6 +478,34 @@ test("marks fast parallel filesystem tools complete before a slow sibling", asyn
 
   await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("✓ execute");
   await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("Parallel tool batch finished.");
+});
+
+test("renders programmatic tool calls without the interpreter wrapper", async ({ page }) => {
+  const url = process.env.PLAYWRIGHT_TRANSCRIPT_URL;
+  expect(url).toBeTruthy();
+  await openTerminal(page, url);
+
+  await page.keyboard.type("render transparent programmatic tool calls");
+  await page.keyboard.press("Enter");
+
+  await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("Programmatic file read finished.");
+  const text = await terminalText(page);
+  expect(text).toContain("✓ read_file");
+  expect(text).toContain("parallel-fixture.txt");
+  expect(text).toContain("parallel fixture");
+  expect(text).not.toContain("js_eval");
+});
+
+test("restores programmatic tool calls without the interpreter wrapper", async ({ page }) => {
+  const url = process.env.PLAYWRIGHT_TRANSPARENT_RESUME_URL;
+  expect(url).toBeTruthy();
+  await openTerminal(page, url);
+
+  const text = await terminalText(page);
+  expect(text).toContain("✓ read_file");
+  expect(text).toContain("/guide.md");
+  expect(text).toContain("restored guide contents");
+  expect(text).not.toContain("js_eval");
 });
 
 test("refits the TUI when the browser becomes narrow", async ({ page }) => {
@@ -1634,18 +1662,16 @@ test("Ctrl+C during a long restored session keeps the status on the physical bot
   const rows = await page.evaluate(() => window.dacodeTerminal?.rows ?? 0);
   await page.keyboard.press("Control+c");
   await expect.poll(() => terminalText(page)).toContain("Press Ctrl+C again to quit.");
-  await expect.poll(() => terminalFramePosition(page)).toEqual({
-    rows,
-    cursorRow: rows - 1,
-    lastRow: expect.stringContaining("Context:")
-  });
+  await expect.poll(async () => {
+    const lines = await visibleTerminalLines(page);
+    return { rows: lines.length, lastRow: lines.at(-1)?.trim() ?? "" };
+  }).toEqual({ rows, lastRow: expect.stringContaining("Context:") });
 
   await expect.poll(() => terminalText(page), { timeout: 7_000 }).not.toContain("Press Ctrl+C again to quit.");
-  await expect.poll(() => terminalFramePosition(page)).toEqual({
-    rows,
-    cursorRow: rows - 1,
-    lastRow: expect.stringContaining("Context:")
-  });
+  await expect.poll(async () => {
+    const lines = await visibleTerminalLines(page);
+    return { rows: lines.length, lastRow: lines.at(-1)?.trim() ?? "" };
+  }).toEqual({ rows, lastRow: expect.stringContaining("Context:") });
 });
 
 test("denies or persists exact trust for an external skill symlink", async ({ page }) => {

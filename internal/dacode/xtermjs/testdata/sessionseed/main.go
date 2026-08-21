@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,19 +16,20 @@ import (
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 )
 
 func main() {
 	if len(os.Args) < 3 || len(os.Args) > 4 {
-		fmt.Fprintln(os.Stderr, "usage: sessionseed DATABASE DIRECTORY [hostile|virtualized|lifecycle|offload]")
+		fmt.Fprintln(os.Stderr, "usage: sessionseed DATABASE DIRECTORY [hostile|virtualized|lifecycle|offload|transparent]")
 		os.Exit(2)
 	}
 	mode := ""
 	if len(os.Args) == 4 {
 		mode = os.Args[3]
 	}
-	if mode != "" && mode != "hostile" && mode != "virtualized" && mode != "lifecycle" && mode != "offload" {
-		fmt.Fprintln(os.Stderr, "mode must be hostile, virtualized, lifecycle, or offload")
+	if mode != "" && mode != "hostile" && mode != "virtualized" && mode != "lifecycle" && mode != "offload" && mode != "transparent" {
+		fmt.Fprintln(os.Stderr, "mode must be hostile, virtualized, lifecycle, offload, or transparent")
 		os.Exit(2)
 	}
 	if err := seed(os.Args[1], os.Args[2], mode); err != nil {
@@ -70,6 +72,38 @@ func seed(databasePath, directory, mode string) error {
 		}
 		_, err = agent.UpdateState(context.Background(), dacheckpoint.Config{ThreadID: "playwright-virtualized"}, dastate.Values{
 			dagent.MessagesKey: messages, "__dacode_working_directory": directory,
+		})
+		return err
+	}
+	if mode == "transparent" {
+		assistant := damessage.Message{
+			Role: damessage.RoleAssistant,
+			ToolCalls: []damessage.ToolCall{{
+				ID: "eval-call", Name: "js_eval", Arguments: json.RawMessage(`{"code":"await tools.readFile({file_path:'/guide.md'})"}`),
+			}},
+			Metadata: map[string]json.RawMessage{},
+		}
+		if err := damessage.SetMetadata(assistant.Metadata, datool.PTCTransparencyMetadataKey, datool.PTCTransparencyMetadata{ParentCallIDs: []string{"eval-call"}}); err != nil {
+			return err
+		}
+		artifact, err := json.Marshal(datool.PTCTranscriptArtifact{
+			Type: datool.PTCTranscriptArtifactType,
+			Calls: []datool.PTCTranscriptCall{{
+				CallID: "ptc-read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"/guide.md"}`),
+				Output: "restored guide contents", Status: damessage.ToolStatusSuccess,
+			}},
+		})
+		if err != nil {
+			return err
+		}
+		result := damessage.Tool("eval-call", "restored guide contents")
+		result.Name = "js_eval"
+		result.Artifact = artifact
+		_, err = agent.UpdateState(context.Background(), dacheckpoint.Config{ThreadID: "playwright-transparent"}, dastate.Values{
+			dagent.MessagesKey: []damessage.Message{
+				damessage.Human("Read the guide"), assistant, result, damessage.Assistant("Guide read complete."),
+			},
+			"__dacode_working_directory": directory,
 		})
 		return err
 	}

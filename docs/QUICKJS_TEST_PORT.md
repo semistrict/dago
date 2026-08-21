@@ -39,6 +39,10 @@ Python test layout.
 - The shared Go tool definition currently describes input JSON only, so prompt
   assertions cover input signatures and use `Promise<unknown>` for returns.
   Native structured return values are nevertheless preserved by the PTC bridge.
+- Go optionally projects PTC invocations through the shared streamed tool
+  lifecycle for user interfaces and protocol adapters. This transparency is
+  disabled by default and does not alter model-visible history or approval
+  middleware behavior.
 - Python worker threads, destructor behavior, traceback-cycle cleanup, Pydantic
   schema-title repair, and event-loop affinity are implementation details with
   no Go runtime counterpart.

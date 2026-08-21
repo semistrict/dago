@@ -86,13 +86,56 @@ type StreamWriter interface {
 	Write(ctx context.Context, value json.RawMessage) error
 }
 
-// Progress is a provider-neutral tool lifecycle update. Status is empty for
-// intermediate output and set for the terminal success or error update.
+// Progress is a provider-neutral tool lifecycle update. Arguments is set on
+// the initial update when a tool call is projected from outside the model
+// stream. Status is empty for initial and intermediate output and set for the
+// terminal success or error update.
 type Progress struct {
-	CallID string               `json:"call_id"`
-	Name   string               `json:"name"`
-	Output string               `json:"output"`
-	Status damessage.ToolStatus `json:"status,omitempty"`
+	CallID       string               `json:"call_id"`
+	Name         string               `json:"name"`
+	Arguments    json.RawMessage      `json:"arguments,omitempty"`
+	ParentCallID string               `json:"parent_call_id,omitempty"`
+	Output       string               `json:"output"`
+	Status       damessage.ToolStatus `json:"status,omitempty"`
+}
+
+// PTCTransparencyMetadataKey identifies assistant-message metadata that lists
+// model tool calls replaced by transparent programmatic child calls.
+const PTCTransparencyMetadataKey = "dago.ptc_transparency.v1"
+
+// PTCTransparencyMetadata identifies model-originated parent calls that
+// projection layers must hide in favor of their ordinary child tool lifecycle.
+type PTCTransparencyMetadata struct {
+	ParentCallIDs []string `json:"parent_call_ids"`
+}
+
+// PTCTranscriptArtifactType identifies a durable transcript of transparent
+// programmatic calls stored in the parent tool result artifact.
+const PTCTranscriptArtifactType = "dago.ptc_transcript.v1"
+
+// PTCTranscriptArtifact preserves transparent programmatic calls for UI
+// reconstruction without adding them to model-visible message history.
+type PTCTranscriptArtifact struct {
+	Type  string              `json:"type"`
+	Calls []PTCTranscriptCall `json:"calls"`
+}
+
+// PTCTranscriptCall is one completed programmatic child tool lifecycle.
+type PTCTranscriptCall struct {
+	CallID    string               `json:"call_id"`
+	Name      string               `json:"name"`
+	Arguments json.RawMessage      `json:"arguments,omitempty"`
+	Output    string               `json:"output"`
+	Status    damessage.ToolStatus `json:"status"`
+}
+
+// ParsePTCTranscriptArtifact decodes a recognized transparent-call artifact.
+func ParsePTCTranscriptArtifact(raw json.RawMessage) (PTCTranscriptArtifact, bool) {
+	var artifact PTCTranscriptArtifact
+	if len(raw) == 0 || json.Unmarshal(raw, &artifact) != nil || artifact.Type != PTCTranscriptArtifactType {
+		return PTCTranscriptArtifact{}, false
+	}
+	return artifact, true
 }
 
 type progressEnvelope struct {

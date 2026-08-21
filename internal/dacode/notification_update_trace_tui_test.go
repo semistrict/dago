@@ -352,20 +352,22 @@ func TestTUIToastExpiryCannotChangeFrameBetweenLayoutAndRender(t *testing.T) {
 	}
 }
 
-func runTUITestCommand(model *tuiModel, command tea.Cmd) {
+func runTUITestCommand(model *tuiModel, command tea.Cmd) []tea.Msg {
 	if command == nil {
-		return
+		return nil
 	}
 	message := command()
 	if batch, ok := message.(tea.BatchMsg); ok {
+		messages := make([]tea.Msg, 0, len(batch))
 		for _, nested := range batch {
-			runTUITestCommand(model, nested)
+			messages = append(messages, runTUITestCommand(model, nested)...)
 		}
-		return
+		return messages
 	}
 	if _, tick := message.(toastExpiryMsg); tick {
-		return
+		return []tea.Msg{message}
 	}
 	_, next := model.Update(message)
-	runTUITestCommand(model, next)
+	messages := []tea.Msg{message}
+	return append(messages, runTUITestCommand(model, next)...)
 }

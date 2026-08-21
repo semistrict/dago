@@ -355,7 +355,7 @@ func (state *threadSelectorState) handleKey(key string, pageHeight int) threadSe
 		if ok {
 			return threadSelectorResult{Action: threadSelectorResume, Session: session}
 		}
-	case " ":
+	case "space":
 		if state.focus == threadSelectorAgentFocus {
 			state.setAllAgents()
 			return threadSelectorResult{Action: threadSelectorPreferencesChanged, Preferences: state.preferences()}

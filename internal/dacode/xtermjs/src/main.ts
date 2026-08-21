@@ -229,6 +229,11 @@ terminal.attachCustomKeyEventHandler((event) => {
     event.preventDefault();
     return false;
   }
+  if (event.key === "Escape" && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+    event.preventDefault();
+    if (event.type === "keydown") send({ type: "input", data: "\u001b[27u" });
+    return false;
+  }
   if (event.type === "keydown" && event.key === "\\" && !event.ctrlKey && !event.altKey && !event.metaKey) {
     lastBackslashAt = performance.now();
     return true;
@@ -262,6 +267,13 @@ terminal.attachCustomKeyEventHandler((event) => {
   if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "j") {
     event.preventDefault();
     if (event.type === "keydown") send({ type: "input", data: "\n" });
+    return false;
+  }
+  if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && /^[a-z\\]$/i.test(event.key)) {
+    event.preventDefault();
+    if (event.type === "keydown") {
+      send({ type: "input", data: `\u001b[${event.key.toLowerCase().codePointAt(0)};5u` });
+    }
     return false;
   }
   return true;

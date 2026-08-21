@@ -118,8 +118,10 @@ func (model *tuiModel) handleThemeKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 		model.themePicker = nil
 		return nil, true
 	}
+	var themeCommand tea.Cmd
 	preview := func() {
 		model.setTheme(picker.names[picker.selected])
+		themeCommand = tea.Raw(model.themeSequence)
 	}
 	switch message.String() {
 	case "up", "shift+tab":
@@ -140,16 +142,18 @@ func (model *tuiModel) handleThemeKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 		name := picker.names[picker.selected]
 		original := picker.original
 		model.setTheme(name)
-		return func() tea.Msg {
+		save := func() tea.Msg {
 			return themePreferenceSavedMsg{name: name, terminal: terminal, original: original, err: model.themeStore.saveTerminal(model.themeRegistry, terminal, name)}
-		}, true
+		}
+		return tea.Batch(tea.Raw(model.themeSequence), save), true
 	case "enter":
 		name := picker.names[picker.selected]
 		model.setTheme(name)
 		model.themePicker = nil
-		return func() tea.Msg {
+		save := func() tea.Msg {
 			return themePreferenceSavedMsg{name: name, err: model.themeStore.saveGlobal(model.themeRegistry, name)}
-		}, true
+		}
+		return tea.Batch(tea.Raw(model.themeSequence), save), true
 	case "esc":
 		target := picker.original
 		if picker.sessionTerminalDefault != "" {
@@ -157,10 +161,11 @@ func (model *tuiModel) handleThemeKey(message tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 		model.setTheme(target)
 		model.themePicker = nil
+		themeCommand = tea.Raw(model.themeSequence)
 	default:
 		return nil, true
 	}
-	return nil, true
+	return themeCommand, true
 }
 
 func (model *tuiModel) renderThemePicker() string {

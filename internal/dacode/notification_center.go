@@ -186,7 +186,7 @@ func (settings *notificationSettingsState) handleKey(message tea.KeyPressMsg) (k
 		settings.selected = wrapIndex(settings.selected-1, len(notificationWarningToggles))
 	case "down", "j", "tab":
 		settings.selected = wrapIndex(settings.selected+1, len(notificationWarningToggles))
-	case "enter", " ":
+	case "enter", "space":
 		selected := notificationWarningToggles[settings.selected].Key
 		if settings.suppressed[selected] {
 			delete(settings.suppressed, selected)

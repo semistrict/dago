@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/semistrict/dago/damessage"
+	"github.com/semistrict/dago/datool"
 )
 
 type sessionInfo struct {
@@ -417,6 +418,7 @@ func (model *tuiModel) handleSessionKey(message tea.KeyPressMsg) (tea.Cmd, bool)
 func (model *tuiModel) restoreTranscript(messages []damessage.Message) {
 	model.items = nil
 	model.toolItems = map[string]int{}
+	model.transparentToolParents = map[string]struct{}{}
 	model.currentAssistant = -1
 	model.transcriptStart = -1
 	model.restoreUsage(messages)
@@ -427,6 +429,13 @@ func (model *tuiModel) restoreTranscript(messages []damessage.Message) {
 				model.appendItem(transcriptItem{kind: itemUser, text: text, restored: true})
 			}
 		case damessage.RoleAssistant:
+			if transparency, ok := damessage.MetadataAs[datool.PTCTransparencyMetadata](message.Metadata, datool.PTCTransparencyMetadataKey); ok {
+				for _, callID := range transparency.ParentCallIDs {
+					if callID != "" {
+						model.transparentToolParents[callID] = struct{}{}
+					}
+				}
+			}
 			if text := message.TextContent(); text != "" {
 				model.appendItem(transcriptItem{kind: itemAssistant, text: text, restored: true, done: true})
 			}
@@ -436,6 +445,9 @@ func (model *tuiModel) restoreTranscript(messages []damessage.Message) {
 				}
 			}
 			for _, call := range message.ToolCalls {
+				if _, hidden := model.transparentToolParents[call.ID]; hidden {
+					continue
+				}
 				model.appendItem(transcriptItem{
 					kind: itemTool, callID: call.ID, name: call.Name, args: compactJSON(call.Arguments), restored: true,
 					lifecycle: toolRunning, lineNums: model.showLineNumbers,
@@ -443,6 +455,30 @@ func (model *tuiModel) restoreTranscript(messages []damessage.Message) {
 				model.toolItems[call.ID] = len(model.items) - 1
 			}
 		case damessage.RoleTool:
+			if _, hidden := model.transparentToolParents[message.ToolCallID]; hidden {
+				if artifact, ok := datool.ParsePTCTranscriptArtifact(message.Artifact); ok {
+					for _, call := range artifact.Calls {
+						if call.CallID == "" || call.Name == "" {
+							continue
+						}
+						status := call.Status
+						if status != damessage.ToolStatusError {
+							status = damessage.ToolStatusSuccess
+						}
+						lifecycle := toolSuccess
+						if status == damessage.ToolStatusError {
+							lifecycle = toolError
+						}
+						model.appendItem(transcriptItem{
+							kind: itemTool, callID: call.CallID, name: call.Name, args: compactJSON(call.Arguments),
+							text: call.Output, restored: true, done: true, failed: status == damessage.ToolStatusError,
+							lifecycle: lifecycle, lineNums: model.showLineNumbers,
+						})
+						model.toolItems[call.CallID] = len(model.items) - 1
+					}
+				}
+				continue
+			}
 			index, exists := model.toolItems[message.ToolCallID]
 			if !exists {
 				model.appendItem(transcriptItem{

@@ -129,9 +129,44 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
 	  }
       const longResponse = body.includes("finish this response, then leave the transcript scrollable");
       const parallelTools = body.includes("show each completed parallel tool immediately");
+      const transparentPTC = body.includes("render transparent programmatic tool calls");
       const hasToolResults = body.includes("function_call_output");
       return (
-      setTimeout(() => {
+	  setTimeout(() => {
+		if (transparentPTC && !hasToolResults) {
+		  response.writeHead(200, { "content-type": "text/event-stream" });
+		  const completed = {
+			type: "response.completed",
+			response: {
+			  id: "response-transparent-ptc",
+			  status: "completed",
+			  output: [{
+				type: "function_call",
+				id: "item-transparent-ptc",
+				call_id: "call-transparent-ptc",
+				name: "js_eval",
+				arguments: JSON.stringify({ code: 'await tools.readFile({ file_path: "parallel-fixture.txt" })' })
+			  }],
+			  usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+			}
+		  };
+		  response.end(`data: ${JSON.stringify(completed)}\n\n`);
+		  return;
+		}
+		if (transparentPTC) {
+		  response.writeHead(200, { "content-type": "text/event-stream" });
+		  const completed = {
+			type: "response.completed",
+			response: {
+			  id: "response-transparent-ptc-complete",
+			  status: "completed",
+			  output: [{ type: "message", id: "message-transparent-ptc", role: "assistant", content: [{ type: "output_text", text: "Programmatic file read finished." }] }],
+			  usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 }
+			}
+		  };
+		  response.end(`data: ${JSON.stringify(completed)}\n\n`);
+		  return;
+		}
 		if (body.includes("render provider hosted web search")) {
 		  response.writeHead(200, { "content-type": "text/event-stream" });
 		  const search = {
@@ -725,6 +760,7 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
     ["direct-resume", "", root],
     ["hostile", "hostile", root],
     ["transcript-history", "virtualized", root],
+	["transparent-resume", "transparent", root],
     ["approval-persist", "", root],
     ["approval-invalid", "", root],
     ["resume-flow", "lifecycle", resumeOriginalWorkspace],
@@ -754,7 +790,7 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
     mode: 0o600
   });
 
-  for (const name of ["default", "manual", "resume", "direct-resume", "resume-flow", "offload", "offload-error", "onboarding", "restart-success", "restart-error", "restart-unavailable", "hostile", "transcript", "editor", "effort", "startup", "input", "ask-user", "ask-user-cancel", "approval-persist", "approval-invalid", "skills", "goal-rubric", "goal-startup", "approval-widget", "plugins", "workflow-fake", "workflow-worktree"]) {
+  for (const name of ["default", "manual", "resume", "direct-resume", "resume-flow", "offload", "offload-error", "onboarding", "restart-success", "restart-error", "restart-unavailable", "hostile", "transcript", "transparent-resume", "editor", "effort", "startup", "input", "ask-user", "ask-user-cancel", "approval-persist", "approval-invalid", "skills", "goal-rubric", "goal-startup", "approval-widget", "plugins", "workflow-fake", "workflow-worktree"]) {
     const stateDirectory = path.join(temporary, `state-${name}`);
     await mkdir(stateDirectory, { recursive: true });
     await writeFile(
@@ -857,7 +893,7 @@ secondary = "#FF77CC"
   for (const name of [
     "default", "manual", "yolo", "resume", "direct-resume", "resume-flow", "offload", "offload-error",
     "restart-success", "restart-error", "restart-unavailable", "approval-persist", "approval-invalid", "hostile",
-    "transcript", "transcript-history", "editor", "effort", "auto-notice", "unsupported-effort", "startup", "input",
+    "transcript", "transcript-history", "transparent-resume", "editor", "effort", "auto-notice", "unsupported-effort", "startup", "input",
     "ask-user", "ask-user-cancel", "skills", "goal-rubric", "goal-startup", "approval-widget", "theme", "plugins",
     "diagnostics", "fanout", "auth-mcp-auto", "auth-error", "auth-cancel", "workflow-fake", "workflow-worktree"
   ]) {
@@ -1045,11 +1081,12 @@ secondary = "#FF77CC"
     startServer(polishBinary, temporary, "polish-hook", slowAPIURL, [], { DAGO_POLISH_MODE: "hook" }),
     startServer(polishBinary, temporary, "polish-ascii", slowAPIURL, [], { DAGO_POLISH_MODE: "ascii" }),
     startServer(binary, temporary, "workflow-fake", workflowFixture.url, ["--approve-for-me"]),
-    startServer(binary, temporary, "workflow-worktree", workflowFixture.url, ["--approve-for-me"], {}, false, workflowWorktreeWorkspace)
+    startServer(binary, temporary, "workflow-worktree", workflowFixture.url, ["--approve-for-me"], {}, false, workflowWorktreeWorkspace),
+	startServer(binary, temporary, "transparent-resume", slowAPIURL, ["resume", "playwright-transparent"])
   ];
 
   try {
-    const [baseURL, manualURL, yoloURL, resumeURL, directResumeURL, resumeFlowURL, offloadURL, offloadErrorURL, onboardingURL, restartSuccessURL, restartErrorURL, restartUnavailableURL, approvalPersistURL, approvalInvalidURL, hostileURL, transcriptURL, transcriptHistoryURL, editorURL, effortURL, autoNoticeURL, unsupportedEffortURL, startupURL, inputURL, askUserURL, askUserCancelURL, skillsURL, goalRubricURL, goalStartupURL, approvalWidgetURL, themeURL, pluginsURL, diagnosticsURL, fanoutURL, authMCPAutoURL, authErrorURL, authCancelURL, notifyURL, notifySettingsURL, notifyActionsURL, notifyLayoutURL, notifyFailURL, traceURL, traceFailURL, traceUnconfiguredURL, traceTimeoutURL, traceUnsafeURL, updateWindowsURL, updateCurrentURL, updateAvailableURL, updateAvailableUIURL, updateStartupChoiceURL, updateSlowURL, updateRetryURL, updateFailURL, updateSharedURL, autoDisabledURL, autoMalformedURL, autoSymlinkURL, autoUnwritableURL, interactionsURL, interactionsDirectURL, interactionsStartupFailedURL, polishURL, polishFailureURL, polishResumedURL, polishFallbackURL, polishPromptURL, polishGoalURL, polishQueuedURL, polishAnchorURL, polishHookURL, polishASCIIURL, workflowFakeURL, workflowWorktreeURL] = await Promise.all(
+    const [baseURL, manualURL, yoloURL, resumeURL, directResumeURL, resumeFlowURL, offloadURL, offloadErrorURL, onboardingURL, restartSuccessURL, restartErrorURL, restartUnavailableURL, approvalPersistURL, approvalInvalidURL, hostileURL, transcriptURL, transcriptHistoryURL, editorURL, effortURL, autoNoticeURL, unsupportedEffortURL, startupURL, inputURL, askUserURL, askUserCancelURL, skillsURL, goalRubricURL, goalStartupURL, approvalWidgetURL, themeURL, pluginsURL, diagnosticsURL, fanoutURL, authMCPAutoURL, authErrorURL, authCancelURL, notifyURL, notifySettingsURL, notifyActionsURL, notifyLayoutURL, notifyFailURL, traceURL, traceFailURL, traceUnconfiguredURL, traceTimeoutURL, traceUnsafeURL, updateWindowsURL, updateCurrentURL, updateAvailableURL, updateAvailableUIURL, updateStartupChoiceURL, updateSlowURL, updateRetryURL, updateFailURL, updateSharedURL, autoDisabledURL, autoMalformedURL, autoSymlinkURL, autoUnwritableURL, interactionsURL, interactionsDirectURL, interactionsStartupFailedURL, polishURL, polishFailureURL, polishResumedURL, polishFallbackURL, polishPromptURL, polishGoalURL, polishQueuedURL, polishAnchorURL, polishHookURL, polishASCIIURL, workflowFakeURL, workflowWorktreeURL, transparentResumeURL] = await Promise.all(
       servers.map(serverURL)
     );
     process.env.PLAYWRIGHT_TEST_BASE_URL = baseURL;
@@ -1127,6 +1164,7 @@ secondary = "#FF77CC"
     process.env.PLAYWRIGHT_WORKFLOW_FAKE_URL = workflowFakeURL;
     process.env.PLAYWRIGHT_WORKFLOW_FAKE_API_URL = workflowFixture.url;
     process.env.PLAYWRIGHT_WORKFLOW_WORKTREE_URL = workflowWorktreeURL;
+	process.env.PLAYWRIGHT_TRANSPARENT_RESUME_URL = transparentResumeURL;
     if (liveServer) process.env.PLAYWRIGHT_OPENAI_LIVE_URL = await serverURL(liveServer);
     process.env.PLAYWRIGHT_PLUGIN_EXTRA_CATALOG = extraPluginCatalog;
   } catch (error) {

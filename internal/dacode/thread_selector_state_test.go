@@ -93,6 +93,15 @@ func TestThreadSelectorFocusAndPersistenceReadyPreferences(t *testing.T) {
 	if state.query != "A" {
 		t.Fatalf("search input lost case: %q", state.query)
 	}
+
+	spaceState := newThreadSelectorStateWithOptions([]sessionInfo{
+		{ThreadID: "one", Agent: "builder"}, {ThreadID: "two", Agent: "reviewer"},
+	}, "", threadSelectorOptions{Preferences: threadSelectorPreferences{Agent: "reviewer"}})
+	spaceState.handleKey("tab", 5)
+	result = spaceState.handleKey("space", 5)
+	if result.Action != threadSelectorPreferencesChanged || !result.Preferences.AllAgents || len(spaceState.visible) != 2 {
+		t.Fatalf("space agent reset = %#v visible=%#v", result, spaceState.visible)
+	}
 }
 
 func TestThreadSelectorDeleteAuthorizationAndRollback(t *testing.T) {

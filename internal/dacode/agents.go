@@ -124,6 +124,7 @@ func (model *tuiModel) finishAgentSwitch(message agentSwitchedMsg) {
 	model.goal = nil
 	model.items = nil
 	model.toolItems = map[string]int{}
+	model.transparentToolParents = map[string]struct{}{}
 	model.currentAssistant = -1
 	model.resetUsage()
 	model.status = "Ready"

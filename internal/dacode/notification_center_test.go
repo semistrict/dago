@@ -101,6 +101,11 @@ func TestNotificationSettingsToggleAndRollback(t *testing.T) {
 	if _, _, _, close := settings.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape}); !close {
 		t.Fatal("escape did not close settings")
 	}
+	settings = newNotificationSettings(nil)
+	key, enabled, changed, close = settings.handleKey(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	if key != warningRipgrep || enabled || !changed || close || !settings.suppressed[warningRipgrep] {
+		t.Fatalf("space toggle = %q %v %v %v %#v", key, enabled, changed, close, settings.suppressed)
+	}
 }
 
 func TestNotificationScreensRenderASCIIUI(t *testing.T) {

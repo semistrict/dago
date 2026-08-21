@@ -32,6 +32,69 @@ type interpreterRuntime struct {
 	active  map[string]bool
 }
 
+type interpreterPTCTranscript struct {
+	mu    sync.Mutex
+	calls map[int64]datool.PTCTranscriptCall
+}
+
+func newInterpreterPTCTranscript(enabled bool) *interpreterPTCTranscript {
+	if !enabled {
+		return nil
+	}
+	return &interpreterPTCTranscript{calls: map[int64]datool.PTCTranscriptCall{}}
+}
+
+func (transcript *interpreterPTCTranscript) start(sequence int64, callID, name string, arguments json.RawMessage) {
+	if transcript == nil {
+		return
+	}
+	transcript.mu.Lock()
+	transcript.calls[sequence] = datool.PTCTranscriptCall{
+		CallID: callID, Name: name, Arguments: append(json.RawMessage(nil), arguments...),
+	}
+	transcript.mu.Unlock()
+}
+
+func (transcript *interpreterPTCTranscript) finish(sequence int64, output string, status damessage.ToolStatus) {
+	if transcript == nil {
+		return
+	}
+	transcript.mu.Lock()
+	call := transcript.calls[sequence]
+	call.Output = output
+	call.Status = status
+	transcript.calls[sequence] = call
+	transcript.mu.Unlock()
+}
+
+func (transcript *interpreterPTCTranscript) attach(result datool.Result) datool.Result {
+	if transcript == nil {
+		return result
+	}
+	transcript.mu.Lock()
+	sequences := make([]int64, 0, len(transcript.calls))
+	for sequence := range transcript.calls {
+		sequences = append(sequences, sequence)
+	}
+	sort.Slice(sequences, func(left, right int) bool { return sequences[left] < sequences[right] })
+	calls := make([]datool.PTCTranscriptCall, 0, len(sequences))
+	for _, sequence := range sequences {
+		call := transcript.calls[sequence]
+		if call.Status != "" {
+			calls = append(calls, call)
+		}
+	}
+	transcript.mu.Unlock()
+	if len(calls) == 0 {
+		return result
+	}
+	artifact, err := json.Marshal(datool.PTCTranscriptArtifact{Type: datool.PTCTranscriptArtifactType, Calls: calls})
+	if err == nil {
+		result.Artifact = artifact
+	}
+	return result
+}
+
 type ptcCallBudgetError struct {
 	Limit, Attempted int64
 	Function         string
@@ -96,7 +159,29 @@ func compileInterpreter(options Interpreter) (dagent.Middleware, error) {
 		runtime.tools[key] = selected
 		runtime.mu.Unlock()
 		appendSystem(&request, interpreterPrompt(options.ToolName, selected))
-		return next(ctx, request)
+		response, err := next(ctx, request)
+		if err != nil || !options.PTCTransparency {
+			return response, err
+		}
+		for index := range response.Messages {
+			message := &response.Messages[index]
+			parents := make([]string, 0, len(message.ToolCalls))
+			for _, call := range message.ToolCalls {
+				if call.Name == options.ToolName && call.ID != "" {
+					parents = append(parents, call.ID)
+				}
+			}
+			if len(parents) == 0 {
+				continue
+			}
+			if message.Metadata == nil {
+				message.Metadata = map[string]json.RawMessage{}
+			}
+			if err := damessage.SetMetadata(message.Metadata, datool.PTCTransparencyMetadataKey, datool.PTCTransparencyMetadata{ParentCallIDs: parents}); err != nil {
+				return dagent.ModelResponse{}, fmt.Errorf("mark transparent interpreter calls: %w", err)
+			}
+		}
+		return response, nil
 	}
 	middleware.AfterAgent = func(_ context.Context, _ dastate.Values, runtimeContext dagent.Runtime) (dastate.Values, error) {
 		key := interpreterThreadKey(runtimeContext.Config.ThreadID, runtimeContext.TaskID)
@@ -162,6 +247,7 @@ func (runtime *interpreterRuntime) evaluate(ctx context.Context, input interpret
 		snapshot = nil
 	}
 	var calls atomic.Int64
+	transcript := newInterpreterPTCTranscript(runtime.options.PTCTransparency)
 	hostFunctions := map[string]quickjs.HostFunction{}
 	names := make([]string, 0, len(selected))
 	for name := range selected {
@@ -188,10 +274,44 @@ func (runtime *interpreterRuntime) evaluate(ctx context.Context, input interpret
 				return nil, err
 			}
 			childRuntime := toolRuntime
-			childRuntime.CallID = fmt.Sprintf("ptc_%s_%d", name, callNumber)
+			childRuntime.CallID = interpreterPTCCallID(toolRuntime.CallID, name, callNumber)
+			transcript.start(callNumber, childRuntime.CallID, name, raw)
+			if !runtime.options.PTCTransparency {
+				childRuntime.Stream = nil
+			}
+			if runtime.options.PTCTransparency {
+				if err := datool.EmitProgress(callContext, datool.Progress{
+					CallID: childRuntime.CallID, Name: name, Arguments: raw, ParentCallID: toolRuntime.CallID,
+				}); err != nil {
+					return nil, fmt.Errorf("stream PTC tool %q start: %w", name, err)
+				}
+			}
 			result, err := tool.Execute(callContext, raw, childRuntime)
 			if err != nil {
+				transcript.finish(callNumber, err.Error(), damessage.ToolStatusError)
+				if runtime.options.PTCTransparency {
+					streamErr := datool.EmitProgress(callContext, datool.Progress{
+						CallID: childRuntime.CallID, Name: name, ParentCallID: toolRuntime.CallID,
+						Output: err.Error(), Status: damessage.ToolStatusError,
+					})
+					if streamErr != nil {
+						return nil, errors.Join(err, fmt.Errorf("stream PTC tool %q failure: %w", name, streamErr))
+					}
+				}
 				return nil, err
+			}
+			if runtime.options.PTCTransparency {
+				status := result.Status
+				if status != damessage.ToolStatusError {
+					status = damessage.ToolStatusSuccess
+				}
+				transcript.finish(callNumber, interpreterToolProgressOutput(result), status)
+				if err := datool.EmitProgress(callContext, datool.Progress{
+					CallID: childRuntime.CallID, Name: name, ParentCallID: toolRuntime.CallID,
+					Output: interpreterToolProgressOutput(result), Status: status,
+				}); err != nil {
+					return nil, fmt.Errorf("stream PTC tool %q result: %w", name, err)
+				}
 			}
 			return interpreterToolValue(result), nil
 		}
@@ -226,7 +346,7 @@ func (runtime *interpreterRuntime) evaluate(ctx context.Context, input interpret
 		if evalErr != nil {
 			result := datool.TextResult(formatInterpreterError(evalErr, runtime.options.MaxResultChars))
 			result.Status = damessage.ToolStatusError
-			return result, nil
+			return transcript.attach(result), nil
 		}
 		return datool.Result{}, err
 	}
@@ -245,12 +365,12 @@ func (runtime *interpreterRuntime) evaluate(ctx context.Context, input interpret
 		result := datool.TextResult(formatInterpreterError(evalErr, runtime.options.MaxResultChars))
 		result.Status = damessage.ToolStatusError
 		result.Update = map[string]any{interpreterSnapshotKey: record}
-		return result, nil
+		return transcript.attach(result), nil
 	}
-	return datool.Result{
+	return transcript.attach(datool.Result{
 		Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: formatInterpreterOutcome(outcome, runtime.options.MaxResultChars)}},
 		Update:  map[string]any{interpreterSnapshotKey: record},
-	}, nil
+	}), nil
 }
 
 func interpreterSnapshotField(maxBytes int) dagent.StateField {
@@ -327,6 +447,18 @@ func cloneInterpreterSnapshotValue(value any) any {
 func interpreterHostName(name string) string {
 	digest := sha256.Sum256([]byte(name))
 	return fmt.Sprintf("__dago_ptc_%x", digest[:16])
+}
+
+func interpreterPTCCallID(parent, name string, number int64) string {
+	if parent == "" {
+		return fmt.Sprintf("ptc_%s_%d", name, number)
+	}
+	digest := sha256.Sum256([]byte(parent))
+	return fmt.Sprintf("ptc_%s_%x_%d", name, digest[:6], number)
+}
+
+func interpreterToolProgressOutput(result datool.Result) string {
+	return (damessage.Message{Content: result.Content}).TextContent()
 }
 
 func interpreterToolValue(result datool.Result) any {

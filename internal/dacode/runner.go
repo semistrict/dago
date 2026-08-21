@@ -1318,6 +1318,7 @@ func newRunner(options runnerOptions) (agentRunner, io.Closer, error) {
 		dago.WithBackend(backend),
 		dago.WithTools(options.Tools...),
 		dago.WithFilesystem(filesystem),
+		dago.WithInterpreter(dago.Interpreter{PTCTransparency: true}),
 		dago.WithSkills(skills),
 		dago.WithMemory(memory),
 		dago.WithTodo(),

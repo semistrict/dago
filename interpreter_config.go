@@ -18,4 +18,9 @@ type Interpreter struct {
 	// tools.*. Nil selects the read-only filesystem tools; an empty non-nil
 	// slice disables programmatic tool calling.
 	PTC []string
+	// PTCTransparency emits programmatic tool calls through the ordinary tool
+	// lifecycle stream so user interfaces and protocol adapters can render
+	// them like model-originated calls. It does not add the calls to model
+	// history or route them through tool-call middleware.
+	PTCTransparency bool
 }

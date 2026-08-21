@@ -513,6 +513,7 @@ func (model *tuiModel) applyClearCommand(force bool) tea.Cmd {
 	}
 	model.items = nil
 	model.toolItems = map[string]int{}
+	model.transparentToolParents = map[string]struct{}{}
 	model.currentAssistant = -1
 	model.transcriptStart = -1
 	model.goal = nil

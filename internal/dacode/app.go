@@ -399,6 +399,7 @@ type tuiModel struct {
 
 	items                              []transcriptItem
 	toolItems                          map[string]int
+	transparentToolParents             map[string]struct{}
 	currentAssistant                   int
 	stream                             eventStream
 	turnCancel                         context.CancelFunc
@@ -518,6 +519,8 @@ func newTUIModel(ctx context.Context, runner agentRunner, workingDir, modelName,
 	composer.CharLimit = 0
 	composer.SetHeight(1)
 	composer.MaxHeight = 8
+	composer.DynamicHeight = true
+	composer.MinHeight = 1
 	styleComposer(&composer)
 	composer.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	composer.Focus()
@@ -535,7 +538,7 @@ func newTUIModel(ctx context.Context, runner agentRunner, workingDir, modelName,
 	return &tuiModel{
 		ctx: ctx, runner: runner, workingDir: workingDir, modelName: modelName,
 		threadID: threadID, approvalMode: initialApprovalMode(yolo, autoReview), initial: initial, composer: composer,
-		spinner: spin, currentAssistant: -1, toolItems: map[string]int{}, status: "Ready", contextWindow: profile.ContextWindow, startupReady: true,
+		spinner: spin, currentAssistant: -1, toolItems: map[string]int{}, transparentToolParents: map[string]struct{}{}, status: "Ready", contextWindow: profile.ContextWindow, startupReady: true,
 		pasteBindings: map[string]string{}, inputMedia: map[string]damessage.ContentBlock{},
 		showLineNumbers: true, toolGroupExpanded: map[string]bool{}, transcriptStart: -1,
 		agentName: runner.AgentName(), externalEditorName: editorDisplayName(),
@@ -569,6 +572,9 @@ func (model *tuiModel) Init() tea.Cmd {
 		resolveStatusBranch(model.ctx, model.workingDir),
 		model.refreshWelcomeMCP(),
 		waitForWorkflowCompletion(model.ctx, model.runner),
+	}
+	if model.themeSequence != "" {
+		commands = append(commands, tea.Raw(model.themeSequence))
 	}
 	if model.toasts != nil {
 		if expires, ok := model.toasts.nextExpiry(); ok {
@@ -1007,15 +1013,17 @@ func (model *tuiModel) Update(message tea.Msg) (*tuiModel, tea.Cmd) {
 		return model, model.persistApprovalMode(approvalYOLO, true)
 	case themePreferenceSavedMsg:
 		if typed.err != nil {
+			var themeCommand tea.Cmd
 			if typed.terminal != "" && model.themeName == typed.name {
 				model.setTheme(typed.original)
+				themeCommand = tea.Raw(model.themeSequence)
 				if model.themePicker != nil && model.themePicker.sessionTerminalDefault == typed.name {
 					model.themePicker.sessionTerminalDefault = ""
 				}
 			}
 			model.appendItem(transcriptItem{kind: itemError, text: "Theme changed for this session but its preference could not be saved."})
 			model.refreshTranscript()
-			return model, nil
+			return model, themeCommand
 		}
 		if typed.terminal != "" {
 			model.terminalTheme = typed.name
@@ -3224,7 +3232,11 @@ func (model *tuiModel) stageTerminalSequences(clipboard, browser string) tea.Cmd
 	model.clipboardSequence = clipboard
 	model.browserSequence = browser
 	model.terminalSequenceGeneration++
-	return flushTerminalSequences(model.terminalSequenceGeneration)
+	flush := flushTerminalSequences(model.terminalSequenceGeneration)
+	if clipboard == "" && browser == "" {
+		return flush
+	}
+	return tea.Batch(tea.Raw(clipboard+browser), flush)
 }
 
 func (model *tuiModel) toggleDebugConsole() tea.Cmd {
@@ -3368,6 +3380,9 @@ func (model *tuiModel) addToolCall(call damessage.ToolCall) {
 	if call.ID == "" {
 		return
 	}
+	if model.transparentToolParent(call.ID) {
+		return
+	}
 	if _, exists := model.toolItems[call.ID]; exists {
 		return
 	}
@@ -3405,6 +3420,9 @@ func (model *tuiModel) addServerToolCall(block damessage.ContentBlock, restored 
 }
 
 func (model *tuiModel) completeTool(message damessage.Message) {
+	if model.transparentToolParent(message.ToolCallID) {
+		return
+	}
 	index, exists := model.toolItems[message.ToolCallID]
 	if !exists {
 		model.appendItem(transcriptItem{
@@ -3435,10 +3453,17 @@ func (model *tuiModel) completeTool(message damessage.Message) {
 }
 
 func (model *tuiModel) updateToolProgress(progress datool.Progress) {
+	if progress.ParentCallID != "" {
+		model.suppressTransparentToolParent(progress.ParentCallID)
+	}
+	if model.transparentToolParent(progress.CallID) {
+		return
+	}
 	index, exists := model.toolItems[progress.CallID]
 	if !exists {
 		model.appendItem(transcriptItem{
 			kind: itemTool, callID: progress.CallID, name: progress.Name,
+			args:      compactJSON(progress.Arguments),
 			lifecycle: toolRunning, startedAt: time.Now(), lineNums: model.showLineNumbers,
 		})
 		index = len(model.items) - 1
@@ -3447,6 +3472,9 @@ func (model *tuiModel) updateToolProgress(progress datool.Progress) {
 	item := &model.items[index]
 	if progress.Name != "" {
 		item.name = progress.Name
+	}
+	if len(progress.Arguments) > 0 {
+		item.args = compactJSON(progress.Arguments)
 	}
 	item.text = progress.Output
 	if item.startedAt.IsZero() {
@@ -3464,6 +3492,38 @@ func (model *tuiModel) updateToolProgress(progress datool.Progress) {
 		item.lifecycle = toolSuccess
 	}
 	model.currentAssistant = -1
+}
+
+func (model *tuiModel) transparentToolParent(callID string) bool {
+	_, suppressed := model.transparentToolParents[callID]
+	return suppressed
+}
+
+func (model *tuiModel) suppressTransparentToolParent(callID string) {
+	if callID == "" {
+		return
+	}
+	if model.transparentToolParents == nil {
+		model.transparentToolParents = map[string]struct{}{}
+	}
+	model.transparentToolParents[callID] = struct{}{}
+	index, exists := model.toolItems[callID]
+	if !exists {
+		return
+	}
+	delete(model.toolItems, callID)
+	model.items = append(model.items[:index], model.items[index+1:]...)
+	for id, itemIndex := range model.toolItems {
+		if itemIndex > index {
+			model.toolItems[id] = itemIndex - 1
+		}
+	}
+	if model.currentAssistant == index {
+		model.currentAssistant = -1
+	} else if model.currentAssistant > index {
+		model.currentAssistant--
+	}
+	model.transcriptStart = -1
 }
 
 func (model *tuiModel) finishStream(message streamDoneMsg) (*tuiModel, tea.Cmd) {
@@ -4127,7 +4187,6 @@ func (model *tuiModel) relayout() {
 	}
 	composerWidth := max(model.width-4, 10)
 	model.composer.SetWidth(composerWidth)
-	model.composer.SetHeight(composerContentHeight(model.composer.Value(), max(composerWidth-2, 1)))
 	goalHeight := 0
 	if panel := model.renderGoalPanel(); panel != "" {
 		goalHeight = lipgloss.Height(panel) + 1

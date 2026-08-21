@@ -11,15 +11,17 @@ import (
 	"github.com/semistrict/dago/dagent"
 	"github.com/semistrict/dago/damessage"
 	"github.com/semistrict/dago/dastate"
+	"github.com/semistrict/dago/datool"
 )
 
 type projector struct {
-	connection *acp.AgentSideConnection
-	sessionID  acp.SessionId
-	meta       map[string]any
-	tools      map[string]toolProjection
-	streamed   bool
-	fallback   []damessage.ContentBlock
+	connection  *acp.AgentSideConnection
+	sessionID   acp.SessionId
+	meta        map[string]any
+	tools       map[string]toolProjection
+	hiddenTools map[string]struct{}
+	streamed    bool
+	fallback    []damessage.ContentBlock
 }
 
 type toolProjection struct {
@@ -30,7 +32,10 @@ type toolProjection struct {
 }
 
 func newProjector(connection *acp.AgentSideConnection, sessionID acp.SessionId) *projector {
-	return &projector{connection: connection, sessionID: sessionID, tools: map[string]toolProjection{}}
+	return &projector{
+		connection: connection, sessionID: sessionID,
+		tools: map[string]toolProjection{}, hiddenTools: map[string]struct{}{},
+	}
 }
 
 func (projector *projector) consume(ctx context.Context, stream *dagent.Stream) (dagent.Result, error) {
@@ -107,20 +112,42 @@ func (projector *projector) event(ctx context.Context, event dagent.Event) error
 		if event.ToolProgress == nil || event.ToolProgress.CallID == "" {
 			return nil
 		}
-		if _, exists := projector.tools[event.ToolProgress.CallID]; !exists {
+		_, exists := projector.tools[event.ToolProgress.CallID]
+		if !exists {
 			name := event.ToolProgress.Name
 			if name == "" {
 				name = "Tool"
 			}
-			projector.tools[event.ToolProgress.CallID] = toolProjection{name: name, kind: toolKind(name)}
+			var arguments any
+			if len(event.ToolProgress.Arguments) > 0 {
+				_ = json.Unmarshal(event.ToolProgress.Arguments, &arguments)
+			}
+			projection := toolProjection{
+				name: name, arguments: arguments, kind: toolKind(name), locations: toolLocations(arguments),
+			}
+			projector.tools[event.ToolProgress.CallID] = projection
 			if err := projector.send(ctx, acp.StartToolCall(
 				acp.ToolCallId(event.ToolProgress.CallID), name,
-				acp.WithStartKind(toolKind(name)), acp.WithStartStatus(acp.ToolCallStatusInProgress),
+				acp.WithStartKind(projection.kind), acp.WithStartStatus(acp.ToolCallStatusPending),
+				acp.WithStartRawInput(arguments), acp.WithStartLocations(projection.locations),
 			)); err != nil {
 				return err
 			}
 		}
-		options := []acp.ToolCallUpdateOpt{acp.WithUpdateStatus(acp.ToolCallStatusInProgress)}
+		if !exists && event.ToolProgress.Output == "" && event.ToolProgress.Status == "" {
+			return nil
+		}
+		status := acp.ToolCallStatusInProgress
+		switch event.ToolProgress.Status {
+		case damessage.ToolStatusSuccess:
+			status = acp.ToolCallStatusCompleted
+		case damessage.ToolStatusError:
+			status = acp.ToolCallStatusFailed
+		}
+		options := []acp.ToolCallUpdateOpt{acp.WithUpdateStatus(status)}
+		if event.ToolProgress.Status != "" {
+			options = append(options, acp.WithUpdateRawOutput(event.ToolProgress.Output))
+		}
 		if event.ToolProgress.Output != "" {
 			options = append(options, acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock(event.ToolProgress.Output))}))
 		}
@@ -137,10 +164,20 @@ func (projector *projector) updateMessages(ctx context.Context, value any) error
 	for _, message := range messages {
 		switch message.Role {
 		case damessage.RoleAssistant:
+			if transparency, ok := damessage.MetadataAs[datool.PTCTransparencyMetadata](message.Metadata, datool.PTCTransparencyMetadataKey); ok {
+				for _, callID := range transparency.ParentCallIDs {
+					if callID != "" {
+						projector.hiddenTools[callID] = struct{}{}
+					}
+				}
+			}
 			if len(message.ToolCalls) == 0 {
 				projector.fallback = append(projector.fallback, message.Content...)
 			}
 			for _, call := range message.ToolCalls {
+				if _, hidden := projector.hiddenTools[call.ID]; hidden {
+					continue
+				}
 				if _, exists := projector.tools[call.ID]; exists {
 					continue
 				}
@@ -162,6 +199,9 @@ func (projector *projector) updateMessages(ctx context.Context, value any) error
 				}
 			}
 		case damessage.RoleTool:
+			if _, hidden := projector.hiddenTools[message.ToolCallID]; hidden {
+				continue
+			}
 			status := acp.ToolCallStatusCompleted
 			if message.ToolStatus == damessage.ToolStatusError {
 				status = acp.ToolCallStatusFailed

@@ -727,7 +727,8 @@ Shelley TinyGo application omits `js_eval` from its tool catalog.
 compiled := dago.New(chat,
 	dago.WithSaver(saver),
 	dago.WithInterpreter(dago.Interpreter{
-		PTC: []string{"read_file", "glob", "grep", "search"},
+		PTC:             []string{"read_file", "glob", "grep", "search"},
+		PTCTransparency: true,
 	}),
 )
 ```
@@ -738,6 +739,10 @@ memory pages. A nil `PTC` allowlist exposes only `read_file`, `glob`, and
 `grep`; an empty non-nil list disables PTC. Explicitly allowlisted tools execute
 inside `js_eval` and do not pass through model-tool approval middleware, so mutating
 tools should only be included when that direct authority is intended.
+`PTCTransparency` defaults to false. When enabled, each `tools.*` invocation emits
+the ordinary streamed tool lifecycle with its arguments, output, status, and parent
+`js_eval` call ID. User interfaces and protocol adapters can therefore render PTC
+calls like model-originated tool calls without adding them to model-visible history.
 
 ## OpenAI adapter
 
