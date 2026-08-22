@@ -23,6 +23,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/semistrict/dago"
+	"github.com/semistrict/dago/daacp"
 	"github.com/semistrict/dago/dacheckpoint"
 	"github.com/semistrict/dago/dacredential"
 	"github.com/semistrict/dago/dagent"
@@ -798,6 +799,27 @@ func TestRunACPServesProtocolOnStandardIO(t *testing.T) {
 	if _, err := connection.Authenticate(t.Context(), acp.AuthenticateRequest{MethodId: "cursor_login"}); err != nil {
 		t.Fatal(err)
 	}
+	modelListJSON, err := connection.CallExtension(t.Context(), daacp.ModelListMethod, daacp.ModelListRequest{Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modelList daacp.ModelListResponse
+	if err := json.Unmarshal(modelListJSON, &modelList); err != nil {
+		t.Fatal(err)
+	}
+	if modelList.Version != 1 || modelList.DefaultModel != defaultModel || len(modelList.Models) < 20 {
+		t.Fatalf("model list = %#v", modelList)
+	}
+	foundOpenRouter := false
+	for _, candidate := range modelList.Models {
+		if candidate.ID == "openrouter:anthropic/claude-sonnet-5" && candidate.Name == "Claude Sonnet 5" {
+			foundOpenRouter = true
+			break
+		}
+	}
+	if !foundOpenRouter {
+		t.Fatalf("model list does not contain the expected OpenRouter model: %#v", modelList.Models)
+	}
 	created, err := connection.NewSession(t.Context(), acp.NewSessionRequest{Cwd: root, McpServers: []acp.McpServer{{Http: &acp.McpServerHttpInline{
 		Name: "t3-session", Url: httpServer.URL, Headers: []acp.HttpHeader{{Name: "Authorization", Value: "Bearer session-token"}},
 	}}}})
@@ -889,6 +911,54 @@ func TestRunHeadlessMergesStdinAndWritesJSON(t *testing.T) {
 	}
 	if result.Version != 1 || result.ThreadID == "" || result.Response != "done" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRunACPModelDiscoveryDoesNotRequireModelAuthentication(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("OPENAI_API_KEY", "")
+	root := t.TempDir()
+	stateDirectory := t.TempDir()
+	clientToServerReader, clientToServerWriter := io.Pipe()
+	serverToClientReader, serverToClientWriter := io.Pipe()
+	var stderr bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(t.Context(), []string{
+			"acp", "--model", "openai:gpt-5.6-terra", "--cwd", root, "--state-dir", stateDirectory,
+		}, clientToServerReader, serverToClientWriter, &stderr)
+	}()
+	connection := acp.NewClientSideConnection(discardACPClient{}, clientToServerWriter, serverToClientReader)
+	if _, err := connection.Initialize(t.Context(), acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersionNumber}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Authenticate(t.Context(), acp.AuthenticateRequest{MethodId: "cursor_login"}); err != nil {
+		t.Fatal(err)
+	}
+	modelListJSON, err := connection.CallExtension(t.Context(), daacp.ModelListMethod, daacp.ModelListRequest{Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modelList daacp.ModelListResponse
+	if err := json.Unmarshal(modelListJSON, &modelList); err != nil {
+		t.Fatal(err)
+	}
+	if modelList.Version != 1 || modelList.DefaultModel != "openai:gpt-5.6-terra" || len(modelList.Models) < 20 {
+		t.Fatalf("model list = %#v", modelList)
+	}
+	if modelList.Models[0].ID != "openai:gpt-5.6-terra" || modelList.Models[0].Name != "GPT-5.6 Terra" {
+		t.Fatalf("default model = %#v", modelList.Models[0])
+	}
+	if err := clientToServerWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v; stderr: %s", err, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ACP server did not stop")
 	}
 }
 

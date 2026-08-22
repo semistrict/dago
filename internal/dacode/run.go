@@ -250,18 +250,35 @@ func (closers *sessionClosers) Close() error {
 
 func modelConfigOptions(model string) []acp.SessionConfigOption {
 	category := acp.SessionConfigOptionCategoryModel
-	models := []string{model, "gpt-5.6-sol", defaultModel, suggestedReviewModel}
-	values := make(acp.SessionConfigSelectOptionsUngrouped, 0, len(models))
-	seen := make(map[string]struct{}, len(models))
-	for _, candidate := range models {
-		if candidate == "" {
-			continue
+	entries := normalizeModelSelectorEntries(modelSelectorCatalog(nil))
+	values := make(acp.SessionConfigSelectOptionsUngrouped, 0, len(entries)+1)
+	seen := make(map[string]struct{}, len(entries)+1)
+	labels := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		labels[entry.Spec] = entry.Label
+	}
+	appendModel := func(spec, label string) {
+		if spec == "" {
+			return
 		}
-		if _, exists := seen[candidate]; exists {
-			continue
+		if _, exists := seen[spec]; exists {
+			return
 		}
-		seen[candidate] = struct{}{}
-		values = append(values, acp.SessionConfigSelectOption{Name: candidate, Value: acp.SessionConfigValueId(candidate)})
+		seen[spec] = struct{}{}
+		values = append(values, acp.SessionConfigSelectOption{Name: label, Value: acp.SessionConfigValueId(spec)})
+	}
+	for _, compatibilitySpec := range []string{model, "gpt-5.6-sol", defaultModel, suggestedReviewModel} {
+		label := labels[compatibilitySpec]
+		if label == "" {
+			label = labels["openai:"+compatibilitySpec]
+		}
+		if label == "" {
+			label = modelSelectorDisplayName(compatibilitySpec)
+		}
+		appendModel(compatibilitySpec, label)
+	}
+	for _, entry := range entries {
+		appendModel(entry.Spec, entry.Label)
 	}
 	return []acp.SessionConfigOption{{Select: &acp.SessionConfigOptionSelect{
 		Id: "model", Name: "Model", Category: &category, CurrentValue: acp.SessionConfigValueId(model),
@@ -505,11 +522,14 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 	if options.baseURL != "" {
 		modelOptions.BaseURL = new(options.baseURL)
 	}
-	authentication, err := resolveConfiguredModelAuthentication(
-		ctx, options.model, options.apiKey, options.stateDir, stderr, modelOptions,
-	)
-	if err != nil {
-		return err
+	var authentication modelAuthentication
+	if !options.acp {
+		authentication, err = resolveConfiguredModelAuthentication(
+			ctx, options.model, options.apiKey, options.stateDir, stderr, modelOptions,
+		)
+		if err != nil {
+			return err
+		}
 	}
 	webTools, err := defaultWebTools(ctx)
 	if err != nil {
@@ -543,6 +563,16 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 
 	if options.acp {
 		factory := func(factoryContext context.Context, config daacp.AgentSessionContext) (daacp.Runner, io.Closer, error) {
+			model := config.Model
+			if model == "" {
+				model = options.model
+			}
+			sessionAuthentication, authenticationErr := resolveConfiguredModelAuthentication(
+				factoryContext, model, options.apiKey, options.stateDir, stderr, modelOptions,
+			)
+			if authenticationErr != nil {
+				return nil, nil, authenticationErr
+			}
 			sandboxSession, sandboxErr := openSandboxSession(factoryContext, sandboxRegistry, config.CWD, options)
 			if sandboxErr != nil {
 				return nil, nil, sandboxErr
@@ -584,16 +614,12 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 				return nil, nil, connectErr
 			}
 			tools = append(append(append([]datool.Tool(nil), webTools...), configuredMCP.Tools...), tools...)
-			model := config.Model
-			if model == "" {
-				model = options.model
-			}
 			runnerWorkingDir := config.CWD
 			if sandboxSession != nil {
 				runnerWorkingDir = sandboxSession.WorkingDir()
 			}
 			runner, runnerCloser, runnerErr := newACPSessionRunner(runnerOptions{
-				Authentication: authentication, BaseURL: options.baseURL, Model: model,
+				Authentication: sessionAuthentication, BaseURL: options.baseURL, Model: model,
 				WorkingDir: runnerWorkingDir, ConfigurationDir: config.CWD,
 				StateDir: options.stateDir, AgentName: options.agent,
 				DefaultAgent: options.defaultAgent, RecentAgent: options.recentAgent, AgentConfig: resolved.store,

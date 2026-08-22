@@ -1,8 +1,34 @@
 # Agent Client Protocol
 
-`daacp` implements ACP v1 and exposes one optional, versioned extension for
-background dago workflows. The extension is available when the session runner
-implements `daacp.WorkflowSource`; other runners retain ordinary ACP behavior.
+`daacp` implements ACP v1 and exposes versioned extensions for model discovery
+and background dago workflows. Workflow methods are available when the session
+runner implements `daacp.WorkflowSource`; other runners retain ordinary ACP
+behavior.
+
+## Model discovery extension
+
+Clients can inspect the model selector without creating a session by sending
+`_dago/models/list`:
+
+```json
+{ "version": 1 }
+```
+
+The response is derived from the same model configuration returned by
+`session/new` and `session/load`:
+
+```json
+{
+  "version": 1,
+  "default_model": "gpt-5.6-terra",
+  "models": [
+    { "id": "openai:gpt-5.6-terra", "name": "GPT-5.6 Terra" }
+  ]
+}
+```
+
+Clients must treat model identifiers as opaque values and return the selected
+identifier through the normal ACP session configuration methods.
 
 ## Workflow lifecycle extension
 

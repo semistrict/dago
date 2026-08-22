@@ -88,10 +88,16 @@ func (agent *protocolAgent) attachWorkflowNotifications(sessionID string, curren
 	}()
 }
 
-// HandleExtensionMethod implements dago's request side of the ACP workflow
-// extension. Unknown extension methods retain standard method-not-found behavior.
+// HandleExtensionMethod implements dago's ACP request extensions. Unknown
+// extension methods retain standard method-not-found behavior.
 func (agent *protocolAgent) HandleExtensionMethod(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
+	case ModelListMethod:
+		var request ModelListRequest
+		if err := json.Unmarshal(params, &request); err != nil || request.Version != 1 {
+			return nil, acp.NewInvalidParams(map[string]any{"models": "invalid list request"})
+		}
+		return modelListResponse(agent.options.ConfigOptions), nil
 	case WorkflowCancelMethod:
 		var request workflowCancelRequest
 		if err := json.Unmarshal(params, &request); err != nil || request.Version != 1 || request.SessionID == "" || request.RunID == "" {
