@@ -130,6 +130,31 @@ func TestLoadFailsClosedOnSymlinksMalformedInputAndBounds(t *testing.T) {
 	})
 }
 
+func TestLoadCanSkipTheProjectFileWithoutSkippingTheTrustedGlobalFile(t *testing.T) {
+	start := t.TempDir()
+	if err := os.WriteFile(filepath.Join(start, ".env"), []byte("BROKEN=\"unterminated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	global := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(global, []byte("GLOBAL=value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Load(start, []string{"SHELL=value"}, Options{
+		GlobalPath:      global,
+		SkipProjectFile: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProjectPath != "" || result.GlobalPath != global {
+		t.Fatalf("paths = %q %q", result.ProjectPath, result.GlobalPath)
+	}
+	if result.Values["SHELL"] != "value" || result.Values["GLOBAL"] != "value" {
+		t.Fatalf("values = %#v", result.Values)
+	}
+}
+
 func TestLoadRejectsInvalidStaticArguments(t *testing.T) {
 	for _, invoke := range []func(){
 		func() { _, _ = Load("", nil, Options{}) },

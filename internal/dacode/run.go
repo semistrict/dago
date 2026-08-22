@@ -341,7 +341,7 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 		_, err := fmt.Fprintln(stdout, versionText())
 		return err
 	}
-	environment, err := newCLIEnvironmentOverlay(preliminary.workingDir, stderr)
+	environment, err := newCLIEnvironmentOverlayWithOptions(preliminary.workingDir, stderr, preliminary.acp)
 	if err != nil {
 		return err
 	}
@@ -482,6 +482,15 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 	if err != nil {
 		return fmt.Errorf("resolve state directory: %w", err)
 	}
+	var acpLog *acpDiagnosticLog
+	if options.acp {
+		acpLog, err = openACPDiagnosticLog(options.stateDir)
+		if err != nil {
+			return fmt.Errorf("open ACP diagnostic log: %w", err)
+		}
+		defer acpLog.Close()
+		acpLog.Event("process.start", "working_dir="+workingDir, "state_dir="+options.stateDir)
+	}
 	updateProfile, err := configuredTUIUpdateProfile(options)
 	if err != nil {
 		return fmt.Errorf("configure interactive updates: %w", err)
@@ -567,57 +576,77 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 			if model == "" {
 				model = options.model
 			}
-			sessionAuthentication, authenticationErr := resolveConfiguredModelAuthentication(
+			acpLog.Event("session.new.start", "session_id="+config.ID, "model="+model, "cwd="+config.CWD)
+			acpLog.Event("session.new.model_auth.start")
+			sessionAuthentication, authenticationErr := resolveConfiguredModelAuthenticationForACP(
 				factoryContext, model, options.apiKey, options.stateDir, stderr, modelOptions,
 			)
 			if authenticationErr != nil {
+				acpLog.Failure("session.new.model_auth.failed", authenticationErr)
 				return nil, nil, authenticationErr
 			}
+			acpLog.Event("session.new.model_auth.succeeded")
+			acpLog.Event("session.new.sandbox.start")
 			sandboxSession, sandboxErr := openSandboxSession(factoryContext, sandboxRegistry, config.CWD, options)
 			if sandboxErr != nil {
+				acpLog.Failure("session.new.sandbox.failed", sandboxErr)
 				return nil, nil, sandboxErr
 			}
+			acpLog.Event("session.new.sandbox.succeeded")
+			acpLog.Event("session.new.plugins.start")
 			sessionPlugins, connectErr := loadRuntimePlugins(factoryContext, filepath.Join(options.stateDir, "plugins"), config.CWD, os.LookupEnv)
 			if connectErr != nil {
+				acpLog.Failure("session.new.plugins.failed", connectErr)
 				if sandboxSession != nil {
 					_ = sandboxSessionCloser{sandboxSession}.Close()
 				}
 				return nil, nil, connectErr
 			}
+			acpLog.Event("session.new.plugins.succeeded")
 			writePluginRuntimeWarnings(stderr, sessionPlugins.Warnings)
+			acpLog.Event("session.new.mcp_config.start")
 			sessionMCPResolution, connectErr := resolveMCPConfig(
 				factoryContext, homeDirectory, config.CWD, options.mcpConfigPath,
 				policyPath, options.trustProjectMCP, os.LookupEnv,
 			)
 			if connectErr != nil {
+				acpLog.Failure("session.new.mcp_config.failed", connectErr)
 				if sandboxSession != nil {
 					_ = sandboxSessionCloser{sandboxSession}.Close()
 				}
 				return nil, nil, connectErr
 			}
+			acpLog.Event("session.new.mcp_config.succeeded")
 			sessionMCPResolution = mergePluginMCP(sessionMCPResolution, sessionPlugins.MCP)
 			writeMCPResolutionDiagnostics(stderr, sessionMCPResolution)
+			acpLog.Event("session.new.configured_mcp.start")
 			configuredMCP, connectErr := connectConfiguredMCPServersWithOAuth(factoryContext, sessionMCPResolution.runtimeConnections(), mcpOAuthTokenDirectory)
 			if connectErr != nil {
+				acpLog.Failure("session.new.configured_mcp.failed", connectErr)
 				if sandboxSession != nil {
 					_ = sandboxSessionCloser{sandboxSession}.Close()
 				}
 				return nil, nil, connectErr
 			}
+			acpLog.Event("session.new.configured_mcp.succeeded")
 			writeConfiguredMCPDiagnostics(stderr, configuredMCP.Servers)
+			acpLog.Event("session.new.client_mcp.start")
 			tools, mcpCloser, connectErr := connectMCPServers(factoryContext, config.MCPServers)
 			if connectErr != nil {
+				acpLog.Failure("session.new.client_mcp.failed", connectErr)
 				_ = configuredMCP.Close()
 				if sandboxSession != nil {
 					_ = sandboxSessionCloser{sandboxSession}.Close()
 				}
 				return nil, nil, connectErr
 			}
+			acpLog.Event("session.new.client_mcp.succeeded")
 			tools = append(append(append([]datool.Tool(nil), webTools...), configuredMCP.Tools...), tools...)
 			runnerWorkingDir := config.CWD
 			if sandboxSession != nil {
 				runnerWorkingDir = sandboxSession.WorkingDir()
 			}
+			acpLog.Event("session.new.runner.start")
 			runner, runnerCloser, runnerErr := newACPSessionRunner(runnerOptions{
 				Authentication: sessionAuthentication, BaseURL: options.baseURL, Model: model,
 				WorkingDir: runnerWorkingDir, ConfigurationDir: config.CWD,
@@ -625,12 +654,13 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 				DefaultAgent: options.defaultAgent, RecentAgent: options.recentAgent, AgentConfig: resolved.store,
 				ReviewTools: !options.yolo,
 				Shell:       true, ShellAllowList: options.shellAllowList,
-				AutoReview: false, ReviewModel: options.approvalModel, Tools: tools,
+				AutoReview: true, ReviewModel: options.approvalModel, Tools: tools,
 				RecursionLimit: options.recursionLimit, MemoryReadOnly: !options.memoryAutoSave,
 				Backend: sandboxBackend(sandboxSession),
 				Plugins: sessionPlugins,
 			})
 			if runnerErr != nil {
+				acpLog.Failure("session.new.runner.failed", runnerErr)
 				_ = mcpCloser.Close()
 				_ = configuredMCP.Close()
 				if sandboxSession != nil {
@@ -638,17 +668,21 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 				}
 				return nil, nil, runnerErr
 			}
+			acpLog.Event("session.new.runner.succeeded")
 			compiled, ok := runner.(*dagoRunner)
 			if !ok {
 				_ = runnerCloser.Close()
 				_ = mcpCloser.Close()
 				_ = configuredMCP.Close()
-				return nil, nil, fmt.Errorf("start ACP session: unsupported runner %T", runner)
+				err := fmt.Errorf("start ACP session: unsupported runner %T", runner)
+				acpLog.Failure("session.new.runner_type.failed", err)
+				return nil, nil, err
 			}
 			closers := []io.Closer{runnerCloser, mcpCloser, configuredMCP}
 			if sandboxSession != nil {
 				closers = append(closers, sandboxSessionCloser{sandboxSession})
 			}
+			acpLog.Event("session.new.succeeded")
 			return &acpDagoRunner{runner: compiled, model: model}, &sessionClosers{closers: closers}, nil
 		}
 		server := daacp.NewFactory(factory, daacp.Options{
@@ -657,7 +691,14 @@ func RunWithSandboxRegistry(ctx context.Context, arguments []string, stdin io.Re
 			AuthMethods:   []acp.AuthMethod{{Agent: &acp.AuthMethodAgent{Id: "cursor_login", Name: "Use configured credentials"}}},
 			ConfigOptions: modelConfigOptions(options.model),
 		})
-		return server.Serve(ctx, stdin, stdout)
+		acpLog.Event("transport.serve.start")
+		err := server.Serve(ctx, stdin, stdout)
+		if err != nil {
+			acpLog.Failure("transport.serve.failed", err)
+		} else {
+			acpLog.Event("transport.serve.stopped")
+		}
+		return err
 	}
 	sandboxSession, err := openSandboxSession(ctx, sandboxRegistry, workingDir, options)
 	if err != nil {
@@ -938,6 +979,11 @@ func shellQuoteResumeThreadID(value string) string {
 }
 
 func newACPSessionRunner(options runnerOptions) (runner agentRunner, closer io.Closer, err error) {
+	// Foreground ACP tool approvals are still projected to the client by daacp.
+	// Background workflow workers cannot suspend and surface those prompts through
+	// the foreground session, so give them the same fail-closed model reviewer used
+	// by interactive auto-review mode.
+	options.AutoReview = true
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			runner, closer, err = nil, nil, fmt.Errorf("compile ACP session runner: %v", recovered)

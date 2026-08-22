@@ -375,6 +375,55 @@ func TestAuthenticationLoadsSavedOAuthSession(t *testing.T) {
 	}
 }
 
+func TestAuthenticationLoadsExistingDeepAgentsOAuthSession(t *testing.T) {
+	stateDirectory := t.TempDir()
+	primaryPath := filepath.Join(stateDirectory, oauthStoreFilename)
+	legacyPath := filepath.Join(t.TempDir(), "chatgpt-auth.json")
+	session := writeOAuthSession(t, legacyPath)
+	hooks := authenticationHooks{
+		load: func(path string, _ openai.OAuthOptions) (*openai.OAuthSession, error) {
+			switch path {
+			case primaryPath:
+				return nil, os.ErrNotExist
+			case legacyPath:
+				return session, nil
+			default:
+				t.Fatalf("unexpected store path %q", path)
+				return nil, nil
+			}
+		},
+		legacyStorePath: func() (string, error) { return legacyPath, nil },
+		login: func(context.Context, func(string) error, openai.OAuthOptions) (*openai.OAuthSession, error) {
+			t.Fatal("OAuth login called with an existing Deep Agents session")
+			return nil, nil
+		},
+	}
+	authentication, err := resolveAuthentication(t.Context(), "", stateDirectory, io.Discard, hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !authentication.subscription || authentication.credentials != session {
+		t.Fatalf("authentication = %#v", authentication)
+	}
+}
+
+func TestACPAuthenticationFailsInsteadOfStartingInteractiveLogin(t *testing.T) {
+	loginCalled := false
+	hooks := authenticationHooks{
+		load: func(string, openai.OAuthOptions) (*openai.OAuthSession, error) {
+			return nil, os.ErrNotExist
+		},
+		login: func(context.Context, func(string) error, openai.OAuthOptions) (*openai.OAuthSession, error) {
+			loginCalled = true
+			return nil, nil
+		},
+	}
+	_, err := resolveAuthenticationWithOptions(t.Context(), "", t.TempDir(), io.Discard, hooks, authenticationResolveOptions{})
+	if !errors.Is(err, errACPAuthenticationRequired) || loginCalled {
+		t.Fatalf("error = %v, login called = %t", err, loginCalled)
+	}
+}
+
 func TestAuthenticationStartsOAuthLoginAndPrintsManualURL(t *testing.T) {
 	stateDirectory := t.TempDir()
 	storePath := filepath.Join(stateDirectory, oauthStoreFilename)
@@ -535,6 +584,24 @@ func TestRunnerAutomaticReviewInheritsMainModelByDefault(t *testing.T) {
 	compiled := runner.(*dagoRunner)
 	if compiled.reviewer == nil || compiled.reviewer != compiled.mainReviewer || compiled.reviewerSpec != "" {
 		t.Fatalf("default reviewer did not inherit the main model: %#v", compiled)
+	}
+}
+
+func TestACPSessionRunnerConfiguresBackgroundWorkflowReview(t *testing.T) {
+	runner, closer, err := newACPSessionRunner(runnerOptions{
+		Authentication: modelAuthentication{apiKey: "test-key"},
+		Model:          defaultModel,
+		WorkingDir:     t.TempDir(),
+		StateDir:       t.TempDir(),
+		ReviewTools:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+	compiled := runner.(*dagoRunner)
+	if compiled.reviewer == nil || compiled.reviewer != compiled.mainReviewer {
+		t.Fatalf("ACP background workflow reviewer was not configured: %#v", compiled)
 	}
 }
 
@@ -959,6 +1026,43 @@ func TestRunACPModelDiscoveryDoesNotRequireModelAuthentication(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("ACP server did not stop")
+	}
+}
+
+func TestRunACPContinuesWithoutMalformedProjectDotenv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	const secret = "must-not-appear"
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("BROKEN=\""+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clientToServerReader, clientToServerWriter := io.Pipe()
+	serverToClientReader, serverToClientWriter := io.Pipe()
+	var stderr bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		defer serverToClientWriter.Close()
+		done <- Run(t.Context(), []string{
+			"acp", "--cwd", root, "--state-dir", t.TempDir(),
+		}, clientToServerReader, serverToClientWriter, &stderr)
+	}()
+	connection := acp.NewClientSideConnection(discardACPClient{}, clientToServerWriter, serverToClientReader)
+	if _, err := connection.Initialize(t.Context(), acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersionNumber}); err != nil {
+		t.Fatalf("initialize: %v; stderr: %s", err, stderr.String())
+	}
+	if err := clientToServerWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v; stderr: %s", err, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ACP server did not stop")
+	}
+	if got := stderr.String(); !strings.Contains(got, "Ignoring invalid project dotenv file") || strings.Contains(got, secret) {
+		t.Fatalf("stderr = %q", got)
 	}
 }
 

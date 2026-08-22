@@ -43,20 +43,32 @@ func (authentication modelAuthentication) String() string {
 func (authentication modelAuthentication) GoString() string { return authentication.String() }
 
 type authenticationHooks struct {
-	loadStored func(context.Context) (dacredential.APIKeyCredential, bool, error)
-	load       func(string, openai.OAuthOptions) (*openai.OAuthSession, error)
-	login      func(context.Context, func(string) error, openai.OAuthOptions) (*openai.OAuthSession, error)
-	openURL    func(string) error
+	loadStored      func(context.Context) (dacredential.APIKeyCredential, bool, error)
+	load            func(string, openai.OAuthOptions) (*openai.OAuthSession, error)
+	login           func(context.Context, func(string) error, openai.OAuthOptions) (*openai.OAuthSession, error)
+	openURL         func(string) error
+	legacyStorePath func() (string, error)
 }
 
 func defaultAuthenticationHooks() authenticationHooks {
 	return authenticationHooks{
 		loadStored: loadDefaultOpenAICredential,
 		load:       openai.LoadOAuthSession, login: openai.Login, openURL: openExternalURL,
+		legacyStorePath: legacyOpenAIOAuthStorePath,
 	}
 }
 
 func resolveAuthentication(ctx context.Context, apiKey, stateDirectory string, stderr io.Writer, hooks authenticationHooks) (modelAuthentication, error) {
+	return resolveAuthenticationWithOptions(ctx, apiKey, stateDirectory, stderr, hooks, authenticationResolveOptions{InteractiveLogin: true})
+}
+
+type authenticationResolveOptions struct {
+	InteractiveLogin bool
+}
+
+var errACPAuthenticationRequired = errors.New("model authentication is not configured; run dacode auth or configure provider credentials before starting ACP")
+
+func resolveAuthenticationWithOptions(ctx context.Context, apiKey, stateDirectory string, stderr io.Writer, hooks authenticationHooks, options authenticationResolveOptions) (modelAuthentication, error) {
 	if hooks.loadStored != nil {
 		stored, ok, err := hooks.loadStored(ctx)
 		if err != nil {
@@ -80,6 +92,16 @@ func resolveAuthentication(ctx context.Context, apiKey, stateDirectory string, s
 	if !errors.Is(err, os.ErrNotExist) {
 		return modelAuthentication{}, fmt.Errorf("load saved OpenAI sign-in from %s: %w; remove the file to sign in again", storePath, err)
 	}
+	legacy, legacyErr := loadLegacyOAuthSession(hooks, storePath)
+	if legacyErr != nil {
+		return modelAuthentication{}, legacyErr
+	}
+	if legacy != nil {
+		return modelAuthentication{credentials: legacy, subscription: true}, nil
+	}
+	if !options.InteractiveLogin {
+		return modelAuthentication{}, errACPAuthenticationRequired
+	}
 
 	fmt.Fprintln(stderr, "No API key found. Starting OpenAI subscription sign-in...")
 	loginCtx, cancel := context.WithTimeout(ctx, oauthLoginTimeout)
@@ -98,6 +120,35 @@ func resolveAuthentication(ctx context.Context, apiKey, stateDirectory string, s
 	}
 	fmt.Fprintln(stderr, "Sign-in complete.")
 	return modelAuthentication{credentials: session, subscription: true}, nil
+}
+
+func legacyOpenAIOAuthStorePath() (string, error) {
+	homeDirectory, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDirectory, ".deepagents", ".state", "chatgpt-auth.json"), nil
+}
+
+func loadLegacyOAuthSession(hooks authenticationHooks, primaryPath string) (*openai.OAuthSession, error) {
+	if hooks.legacyStorePath == nil {
+		return nil, nil
+	}
+	legacyPath, err := hooks.legacyStorePath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve existing Deep Agents sign-in: %w", err)
+	}
+	if strings.TrimSpace(legacyPath) == "" || filepath.Clean(legacyPath) == filepath.Clean(primaryPath) {
+		return nil, nil
+	}
+	session, err := hooks.load(legacyPath, openai.OAuthOptions{})
+	if err == nil {
+		return session, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("load existing Deep Agents sign-in from %s: %w", legacyPath, err)
 }
 
 func loadDefaultOpenAICredential(ctx context.Context) (dacredential.APIKeyCredential, bool, error) {

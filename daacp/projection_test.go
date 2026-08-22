@@ -102,7 +102,7 @@ func TestApprovalOptionsMapsOnlyRepresentableDecisions(t *testing.T) {
 	options := approvalOptions([]dagent.ApprovalDecision{
 		dagent.ApprovalApprove, "unsupported", dagent.ApprovalReject, dagent.ApprovalApprove,
 	})
-	if len(options) != 3 {
+	if len(options) != 2 {
 		t.Fatalf("options = %#v", options)
 	}
 	if options[0].Kind != acp.PermissionOptionKindAllowOnce || options[0].OptionId != "approve" {
@@ -111,11 +111,18 @@ func TestApprovalOptionsMapsOnlyRepresentableDecisions(t *testing.T) {
 	if options[1].Kind != acp.PermissionOptionKindRejectOnce || options[1].OptionId != "reject" {
 		t.Fatalf("reject option = %#v", options[1])
 	}
-	if options[2].Kind != acp.PermissionOptionKindAllowOnce {
-		t.Fatalf("second allow option = %#v", options[2])
-	}
 	if got := approvalOptions([]dagent.ApprovalDecision{"always", "never"}); len(got) != 0 {
 		t.Fatalf("unrepresentable options = %#v", got)
+	}
+}
+
+func TestApprovalDecisionRequiresAnAdvertisedOption(t *testing.T) {
+	options := approvalOptions([]dagent.ApprovalDecision{dagent.ApprovalApprove})
+	if decision, ok := approvalDecisionForSelectedOption(options, "approve"); !ok || decision != dagent.ApprovalApprove {
+		t.Fatalf("advertised decision = %q, %v", decision, ok)
+	}
+	if decision, ok := approvalDecisionForSelectedOption(options, "reject"); ok {
+		t.Fatalf("unadvertised decision = %q, %v", decision, ok)
 	}
 }
 

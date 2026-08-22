@@ -13,21 +13,27 @@ import (
 )
 
 type cliEnvironmentOverlay struct {
-	mu         sync.Mutex
-	workingDir string
-	baseline   []string
-	baseNames  map[string]bool
-	applied    map[string]string
-	closed     bool
+	mu                         sync.Mutex
+	workingDir                 string
+	baseline                   []string
+	baseNames                  map[string]bool
+	applied                    map[string]string
+	ignoreInvalidProjectDotenv bool
+	closed                     bool
 }
 
 func newCLIEnvironmentOverlay(workingDir string, stderr io.Writer) (*cliEnvironmentOverlay, error) {
+	return newCLIEnvironmentOverlayWithOptions(workingDir, stderr, false)
+}
+
+func newCLIEnvironmentOverlayWithOptions(workingDir string, stderr io.Writer, ignoreInvalidProjectDotenv bool) (*cliEnvironmentOverlay, error) {
 	if stderr == nil {
 		panic("dacode: environment diagnostic writer is required")
 	}
 	baseline := append([]string(nil), os.Environ()...)
 	overlay := &cliEnvironmentOverlay{
 		workingDir: workingDir, baseline: baseline, baseNames: map[string]bool{}, applied: map[string]string{},
+		ignoreInvalidProjectDotenv: ignoreInvalidProjectDotenv,
 	}
 	for _, entry := range baseline {
 		if key, _, ok := strings.Cut(entry, "="); ok {
@@ -50,6 +56,15 @@ func (overlay *cliEnvironmentOverlay) Reload(stderr io.Writer) (func(), []string
 		panic("dacode: environment overlay and diagnostic writer are required")
 	}
 	resolved, err := daenv.Load(overlay.workingDir, overlay.baseline, daenv.Options{})
+	if err != nil && overlay.ignoreInvalidProjectDotenv {
+		withoutProject, fallbackErr := daenv.Load(overlay.workingDir, overlay.baseline, daenv.Options{SkipProjectFile: true})
+		if fallbackErr == nil {
+			if _, writeErr := fmt.Fprintf(stderr, "Ignoring invalid project dotenv file: %v.\n", err); writeErr != nil {
+				return nil, nil, writeErr
+			}
+			resolved, err = withoutProject, nil
+		}
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("load environment: %w", err)
 	}

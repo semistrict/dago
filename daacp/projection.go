@@ -312,8 +312,8 @@ func (projector *projector) requestApprovals(ctx context.Context, interrupts []d
 			if response.Outcome.Selected == nil {
 				return dagent.ApprovalResponse{}, fmt.Errorf("ACP permission response omitted its outcome")
 			}
-			decision := dagent.ApprovalDecision(response.Outcome.Selected.OptionId)
-			if decision != dagent.ApprovalApprove && decision != dagent.ApprovalReject {
+			decision, ok := approvalDecisionForSelectedOption(options, response.Outcome.Selected.OptionId)
+			if !ok {
 				return dagent.ApprovalResponse{}, fmt.Errorf("ACP permission selected unknown option %q", response.Outcome.Selected.OptionId)
 			}
 			decisions[request.Call.ID] = dagent.ApprovalChoice{Decision: decision}
@@ -322,15 +322,36 @@ func (projector *projector) requestApprovals(ctx context.Context, interrupts []d
 	return dagent.ApprovalResponse{Decisions: decisions}, nil
 }
 
+func approvalDecisionForSelectedOption(options []acp.PermissionOption, selected acp.PermissionOptionId) (dagent.ApprovalDecision, bool) {
+	for _, option := range options {
+		if option.OptionId != selected {
+			continue
+		}
+		switch option.OptionId {
+		case acp.PermissionOptionId(dagent.ApprovalApprove):
+			return dagent.ApprovalApprove, true
+		case acp.PermissionOptionId(dagent.ApprovalReject):
+			return dagent.ApprovalReject, true
+		}
+	}
+	return "", false
+}
+
 func approvalOptions(decisions []dagent.ApprovalDecision) []acp.PermissionOption {
 	var options []acp.PermissionOption
+	seen := make(map[dagent.ApprovalDecision]struct{}, len(decisions))
 	for _, decision := range decisions {
+		if _, ok := seen[decision]; ok {
+			continue
+		}
 		switch decision {
 		case dagent.ApprovalApprove:
+			seen[decision] = struct{}{}
 			options = append(options, acp.PermissionOption{
 				OptionId: acp.PermissionOptionId(dagent.ApprovalApprove), Name: "Allow once", Kind: acp.PermissionOptionKindAllowOnce,
 			})
 		case dagent.ApprovalReject:
+			seen[decision] = struct{}{}
 			options = append(options, acp.PermissionOption{
 				OptionId: acp.PermissionOptionId(dagent.ApprovalReject), Name: "Reject", Kind: acp.PermissionOptionKindRejectOnce,
 			})

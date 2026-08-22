@@ -49,13 +49,16 @@ var projectDenied = map[string]struct{}{
 // Options controls optional discovery and finite parsing limits. Its zero value
 // discovers the user file at ~/.deepagents/.env and applies conservative bounds.
 type Options struct {
-	GlobalPath    string
-	MaxFileBytes  int64
-	MaxLines      int
-	MaxKeyBytes   int
-	MaxValueBytes int
-	MaxTotalBytes int
-	MaxAncestors  int
+	GlobalPath string
+	// SkipProjectFile disables project dotenv discovery while retaining the
+	// inherited process environment and the trusted user dotenv layer.
+	SkipProjectFile bool
+	MaxFileBytes    int64
+	MaxLines        int
+	MaxKeyBytes     int
+	MaxValueBytes   int
+	MaxTotalBytes   int
+	MaxAncestors    int
 }
 
 // Ignored records one rejected dotenv assignment without retaining its value.
@@ -109,9 +112,12 @@ func Load(startDir string, environ []string, options Options) (Result, error) {
 		values[key] = value
 		seen[identity] = struct{}{}
 	}
-	projectPath, err := findProjectFile(start, options.MaxAncestors)
-	if err != nil {
-		return Result{}, err
+	projectPath := ""
+	if !options.SkipProjectFile {
+		projectPath, err = findProjectFile(start, options.MaxAncestors)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	globalPath := options.GlobalPath
 	if globalPath == "" {

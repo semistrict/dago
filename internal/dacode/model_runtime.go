@@ -23,6 +23,14 @@ import (
 )
 
 func resolveConfiguredModelAuthentication(ctx context.Context, model, apiKey, stateDirectory string, stderr io.Writer, options modelconfig.ResolveOptions) (modelAuthentication, error) {
+	return resolveConfiguredModelAuthenticationWithOptions(ctx, model, apiKey, stateDirectory, stderr, options, authenticationResolveOptions{InteractiveLogin: true})
+}
+
+func resolveConfiguredModelAuthenticationForACP(ctx context.Context, model, apiKey, stateDirectory string, stderr io.Writer, options modelconfig.ResolveOptions) (modelAuthentication, error) {
+	return resolveConfiguredModelAuthenticationWithOptions(ctx, model, apiKey, stateDirectory, stderr, options, authenticationResolveOptions{})
+}
+
+func resolveConfiguredModelAuthenticationWithOptions(ctx context.Context, model, apiKey, stateDirectory string, stderr io.Writer, options modelconfig.ResolveOptions, authenticationOptions authenticationResolveOptions) (modelAuthentication, error) {
 	authPath, err := authStorePath("")
 	if err != nil {
 		return modelAuthentication{}, err
@@ -36,13 +44,13 @@ func resolveConfiguredModelAuthentication(ctx context.Context, model, apiKey, st
 	authentication := modelAuthentication{modelOptions: options}
 	switch spec.Provider {
 	case "openai":
-		authentication, err = resolveAuthentication(ctx, apiKey, stateDirectory, stderr, defaultAuthenticationHooks())
+		authentication, err = resolveAuthenticationWithOptions(ctx, apiKey, stateDirectory, stderr, defaultAuthenticationHooks(), authenticationOptions)
 		if err != nil {
 			return modelAuthentication{}, err
 		}
 		authentication.modelOptions = options
 	case "openai_oauth":
-		authentication, err = resolveOAuthAuthentication(ctx, stateDirectory, stderr, defaultAuthenticationHooks())
+		authentication, err = resolveOAuthAuthenticationWithOptions(ctx, stateDirectory, stderr, defaultAuthenticationHooks(), authenticationOptions)
 		if err != nil {
 			return modelAuthentication{}, err
 		}
@@ -208,6 +216,10 @@ func claudeAgentModelFactory(_ context.Context, spec modelconfig.Spec, _ dacrede
 }
 
 func resolveOAuthAuthentication(ctx context.Context, stateDirectory string, stderr io.Writer, hooks authenticationHooks) (modelAuthentication, error) {
+	return resolveOAuthAuthenticationWithOptions(ctx, stateDirectory, stderr, hooks, authenticationResolveOptions{InteractiveLogin: true})
+}
+
+func resolveOAuthAuthenticationWithOptions(ctx context.Context, stateDirectory string, stderr io.Writer, hooks authenticationHooks, options authenticationResolveOptions) (modelAuthentication, error) {
 	if stderr == nil {
 		stderr = io.Discard
 	}
@@ -218,6 +230,16 @@ func resolveOAuthAuthentication(ctx context.Context, stateDirectory string, stde
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return modelAuthentication{}, fmt.Errorf("load saved OpenAI sign-in from %s: %w; remove the file to sign in again", storePath, err)
+	}
+	legacy, legacyErr := loadLegacyOAuthSession(hooks, storePath)
+	if legacyErr != nil {
+		return modelAuthentication{}, legacyErr
+	}
+	if legacy != nil {
+		return modelAuthentication{credentials: legacy, subscription: true}, nil
+	}
+	if !options.InteractiveLogin {
+		return modelAuthentication{}, errACPAuthenticationRequired
 	}
 	fmt.Fprintln(stderr, "No subscription sign-in found. Starting sign-in...")
 	loginCtx, cancel := context.WithTimeout(ctx, oauthLoginTimeout)
