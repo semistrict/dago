@@ -1,4 +1,6 @@
-.PHONY: check checkpoint-interop coverage dacode-e2e drift fmt fmt-check generate module-floor openrouter-e2e test test-openai-live test-race tinygo vet
+.PHONY: check checkpoint-interop coverage dacode-e2e drift fmt fmt-check generate module-floor openrouter-e2e t3-desktop test test-openai-live test-race tinygo vet
+
+T3_DACODE_BIN ?= /tmp/dago-t3-desktop/dacode
 
 check: fmt-check drift module-floor vet test test-race
 
@@ -43,6 +45,13 @@ coverage:
 
 dacode-e2e:
 	cd internal/dacode/xtermjs && pnpm test:e2e
+
+t3-desktop:
+	git submodule update --init t3code
+	cd t3code && CI=true corepack pnpm install --frozen-lockfile
+	mkdir -p "$(dir $(T3_DACODE_BIN))"
+	go build -o "$(T3_DACODE_BIN)" ./cmd/dacode
+	cd t3code && PATH="$(dir $(T3_DACODE_BIN)):$$PATH" corepack pnpm dev:desktop
 
 checkpoint-interop:
 	./scripts/check-checkpoint-interop.sh
