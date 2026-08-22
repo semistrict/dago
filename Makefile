@@ -1,6 +1,7 @@
 .PHONY: check checkpoint-interop coverage dacode-e2e drift fmt fmt-check generate module-floor openrouter-e2e t3-desktop test test-openai-live test-race tinygo vet
 
 T3_DACODE_BIN ?= /tmp/dago-t3-desktop/dacode
+T3_NODE_BIN_DIR ?= $(shell if test -x /opt/homebrew/opt/node@24/bin/node; then echo /opt/homebrew/opt/node@24/bin; else dirname "$$(command -v node)"; fi)
 
 check: fmt-check drift module-floor vet test test-race
 
@@ -48,10 +49,12 @@ dacode-e2e:
 
 t3-desktop:
 	git submodule update --init t3code
-	cd t3code && CI=true corepack pnpm install --frozen-lockfile
+	@PATH="$(T3_NODE_BIN_DIR):$$PATH" node -e 'if (process.versions.node.split(".")[0] !== "24") { throw new Error("T3 Code requires Node 24") }'
+	cd t3code && PATH="$(T3_NODE_BIN_DIR):$$PATH" CI=true corepack pnpm install --frozen-lockfile
 	mkdir -p "$(dir $(T3_DACODE_BIN))"
 	go build -o "$(T3_DACODE_BIN)" ./cmd/dacode
-	cd t3code && PATH="$(dir $(T3_DACODE_BIN)):$$PATH" corepack pnpm dev:desktop
+	cd t3code && PATH="$(T3_NODE_BIN_DIR):$$PATH" CI=true corepack pnpm build:desktop
+	cd t3code && PATH="$(dir $(T3_DACODE_BIN)):$(T3_NODE_BIN_DIR):$$PATH" corepack pnpm dev:desktop
 
 checkpoint-interop:
 	./scripts/check-checkpoint-interop.sh

@@ -1,7 +1,7 @@
 # Agent Client Protocol
 
 `daacp` implements ACP v1 and exposes one optional, versioned extension for
-background Dago workflows. The extension is available when the session runner
+background dago workflows. The extension is available when the session runner
 implements `daacp.WorkflowSource`; other runners retain ordinary ACP behavior.
 
 ## Workflow lifecycle extension
