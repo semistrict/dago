@@ -44,14 +44,14 @@ func TestInvokeUsesIsolatedBidirectionalProtocol(t *testing.T) {
 	}
 	for _, pair := range [][2]string{
 		{"--input-format", "stream-json"}, {"--output-format", "stream-json"},
-		{"--tools", ""}, {"--settings", "{}"}, {"--system-prompt", "Answer compactly."},
+		{"--tools", "Skill"}, {"--settings", `{"disableSkillShellExecution":true}`}, {"--system-prompt", "Answer compactly."},
 		{"--model", "sonnet"}, {"--permission-mode", "dontAsk"}, {"--effort", "high"},
 	} {
 		if !hasArgumentPair(snapshot.Args, pair[0], pair[1]) {
 			t.Errorf("arguments missing %q %q: %q", pair[0], pair[1], snapshot.Args)
 		}
 	}
-	for _, flag := range []string{"-p", "--verbose", "--include-partial-messages", "--no-session-persistence", "--no-chrome", "--disable-slash-commands", "--strict-mcp-config", "--setting-sources="} {
+	for _, flag := range []string{"-p", "--verbose", "--include-partial-messages", "--no-session-persistence", "--no-chrome", "--strict-mcp-config", "--setting-sources="} {
 		if !slices.Contains(snapshot.Args, flag) {
 			t.Errorf("arguments missing %q: %q", flag, snapshot.Args)
 		}
@@ -73,8 +73,11 @@ func TestInvokeUsesIsolatedBidirectionalProtocol(t *testing.T) {
 	if snapshot.Home != expectedHome || strings.HasPrefix(snapshot.CWD, snapshot.Home) {
 		t.Fatalf("authenticated home = %q, cwd = %q", snapshot.Home, snapshot.CWD)
 	}
-	if response.Message.Usage == nil || response.Message.Usage.InputTokens != 6 || response.Message.Usage.OutputTokens != 2 || response.Message.Usage.Provider != providerName {
+	if response.Message.Usage == nil || response.Message.Usage.InputTokens != 8 || response.Message.Usage.OutputTokens != 2 || response.Message.Usage.Provider != providerName {
 		t.Fatalf("usage = %#v", response.Message.Usage)
+	}
+	if response.Message.Usage.InputDetails["cache_read"] != 3 || response.Message.Usage.InputDetails["cache_creation"] != 2 {
+		t.Fatalf("input usage details = %#v", response.Message.Usage.InputDetails)
 	}
 	reason, _ := damodel.Outcome(response.Message)
 	if reason != damodel.FinishReasonStop {
@@ -289,6 +292,72 @@ func TestInvokeReturnsMCPRequestsForCallerExecution(t *testing.T) {
 	}
 }
 
+func TestInternalSkillUseContinuesUntilFinalAssistantResponse(t *testing.T) {
+	t.Setenv("DAGO_CLAUDE_AGENT_HELPER", "skill_internal")
+	client := helperClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+	response, err := client.Invoke(t.Context(), damodel.Request{
+		Messages: []damessage.Message{damessage.Human("use the workflow manual")},
+		Skills:   []damodel.Skill{{Name: "workflow-manual", Description: "Use the workflow tool correctly.", Instructions: "Call workflow with a script field."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message.TextContent() != "used the skill" || len(response.Message.ToolCalls) != 0 {
+		t.Fatalf("response = %#v", response.Message)
+	}
+}
+
+func TestOversizedToolDescriptionBecomesSessionSkill(t *testing.T) {
+	description := "Workflow manual:\n" + strings.Repeat("detailed instructions ", 180)
+	definitions, skills := prepareSessionSkills([]datool.Definition{{
+		Name: "workflow", Description: description, InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}, nil)
+	if len(definitions) != 1 || len(definitions[0].Description) > maximumInlineToolDescription {
+		t.Fatalf("prepared description length = %d", len(definitions[0].Description))
+	}
+	if len(skills) != 1 || skills[0].Instructions != description {
+		t.Fatalf("session skills = %#v", skills)
+	}
+	if !strings.Contains(definitions[0].Description, skills[0].Name) || !strings.Contains(definitions[0].Description, "Skill") {
+		t.Fatalf("replacement description = %q", definitions[0].Description)
+	}
+}
+
+func TestSessionSkillsAreMaterializedAsAnIsolatedPlugin(t *testing.T) {
+	t.Setenv("DAGO_CLAUDE_AGENT_HELPER", "snapshot")
+	client := helperClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+	response, err := client.Invoke(t.Context(), damodel.Request{
+		Messages: []damessage.Message{damessage.Human("hello")},
+		Skills:   []damodel.Skill{{Name: "workflow-manual", Description: "Use the workflow tool correctly.", Instructions: "The complete workflow instructions."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		Args        []string `json:"args"`
+		PluginSkill string   `json:"plugin_skill"`
+	}
+	if err := json.Unmarshal([]byte(response.Message.TextContent()), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	pluginDirectory := argumentValue(snapshot.Args, "--plugin-dir")
+	if pluginDirectory == "" || !strings.Contains(snapshot.PluginSkill, "name: workflow-manual") || !strings.Contains(snapshot.PluginSkill, "The complete workflow instructions.") {
+		t.Fatalf("plugin dir = %q, skill = %q", pluginDirectory, snapshot.PluginSkill)
+	}
+	if !hasArgumentPair(snapshot.Args, "--tools", "Skill") || slices.Contains(snapshot.Args, "--disable-slash-commands") {
+		t.Fatalf("skill launch arguments = %q", snapshot.Args)
+	}
+	root := client.process.root
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("session plugin root survived close: %v", err)
+	}
+}
+
 func TestStreamEmitsToolCallsInTerminalChunk(t *testing.T) {
 	t.Setenv("DAGO_CLAUDE_AGENT_HELPER", "tools")
 	client := helperClient(t)
@@ -470,12 +539,20 @@ func TestClaudeAgentHelperProcess(t *testing.T) {
 				}
 			}
 		}
-		text, _ := json.Marshal(map[string]any{"args": arguments, "frame": frame, "cwd": cwd, "home": os.Getenv("HOME"), "transcript": transcript})
+		pluginSkill := ""
+		if pluginDirectory := argumentValue(arguments, "--plugin-dir"); pluginDirectory != "" {
+			matches, _ := filepath.Glob(filepath.Join(pluginDirectory, "skills", "*", "SKILL.md"))
+			if len(matches) > 0 {
+				content, _ := os.ReadFile(matches[0])
+				pluginSkill = string(content)
+			}
+		}
+		text, _ := json.Marshal(map[string]any{"args": arguments, "frame": frame, "cwd": cwd, "home": os.Getenv("HOME"), "transcript": transcript, "plugin_skill": pluginSkill})
 		writeHelperJSON(map[string]any{"type": "assistant", "message": map[string]any{
 			"id": messageID, "model": "claude-sonnet", "content": []any{map[string]any{"type": "text", "text": string(text)}},
-			"usage": map[string]any{"input_tokens": 3, "cache_read_input_tokens": 3, "output_tokens": 2},
+			"usage": map[string]any{"input_tokens": 3, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3, "output_tokens": 2},
 		}})
-		writeHelperJSON(map[string]any{"type": "result", "subtype": "success", "usage": map[string]any{"input_tokens": 3, "cache_read_input_tokens": 3, "output_tokens": 2}})
+		writeHelperJSON(map[string]any{"type": "result", "subtype": "success", "usage": map[string]any{"input_tokens": 3, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3, "output_tokens": 2}})
 	case "streaming":
 		writeHelperJSON(map[string]any{"type": "stream_event", "event": map[string]any{
 			"type": "message_start", "message": map[string]any{"id": "msg_stream", "model": "claude-sonnet", "usage": map[string]any{"input_tokens": 3, "output_tokens": 0}},
@@ -520,6 +597,17 @@ func TestClaudeAgentHelperProcess(t *testing.T) {
 			}, "usage": map[string]any{"input_tokens": 4, "output_tokens": 1},
 		}})
 		writeHelperJSON(map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_stop"}})
+	case "skill_internal":
+		writeHelperJSON(map[string]any{"type": "assistant", "message": map[string]any{
+			"id": "msg_skill", "model": "claude-sonnet", "content": []any{
+				map[string]any{"type": "tool_use", "id": "skill_1", "name": "Skill", "input": map[string]any{"skill": "dago-session:workflow-manual"}},
+			},
+		}})
+		writeHelperJSON(map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_stop"}})
+		writeHelperJSON(map[string]any{"type": "assistant", "message": map[string]any{
+			"id": "msg_answer", "model": "claude-sonnet", "content": []any{map[string]any{"type": "text", "text": "used the skill"}},
+		}})
+		writeHelperJSON(map[string]any{"type": "result", "subtype": "success"})
 	case "mcp_continuation":
 		config := argumentValue(arguments, "--mcp-config")
 		var payload struct {

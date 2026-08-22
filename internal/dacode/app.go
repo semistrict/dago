@@ -401,6 +401,8 @@ type tuiModel struct {
 	toolItems                          map[string]int
 	transparentToolParents             map[string]struct{}
 	currentAssistant                   int
+	pendingAssistant                   int
+	pendingAssistantText               string
 	stream                             eventStream
 	turnCancel                         context.CancelFunc
 	running                            bool
@@ -538,7 +540,7 @@ func newTUIModel(ctx context.Context, runner agentRunner, workingDir, modelName,
 	return &tuiModel{
 		ctx: ctx, runner: runner, workingDir: workingDir, modelName: modelName,
 		threadID: threadID, approvalMode: initialApprovalMode(yolo, autoReview), initial: initial, composer: composer,
-		spinner: spin, currentAssistant: -1, toolItems: map[string]int{}, transparentToolParents: map[string]struct{}{}, status: "Ready", contextWindow: profile.ContextWindow, startupReady: true,
+		spinner: spin, currentAssistant: -1, pendingAssistant: -1, toolItems: map[string]int{}, transparentToolParents: map[string]struct{}{}, status: "Ready", contextWindow: profile.ContextWindow, startupReady: true,
 		pasteBindings: map[string]string{}, inputMedia: map[string]damessage.ContentBlock{},
 		showLineNumbers: true, toolGroupExpanded: map[string]bool{}, transcriptStart: -1,
 		agentName: runner.AgentName(), externalEditorName: editorDisplayName(),
@@ -2989,6 +2991,8 @@ func (model *tuiModel) startStream(input runInput) tea.Cmd {
 	model.stream = model.runner.Start(turnContext, input)
 	model.running = true
 	model.cancelling = false
+	model.pendingAssistant = -1
+	model.pendingAssistantText = ""
 	model.applyCursorPreference(false)
 	model.status = "Thinking"
 	if model.subagentPanel != nil {
@@ -3046,6 +3050,12 @@ func (model *tuiModel) applyEvent(event dagent.Event) {
 		text := event.Chunk.MessageDelta.TextContent()
 		if text != "" {
 			model.appendAssistant(text)
+			if model.pendingAssistant < 0 {
+				model.pendingAssistant = model.currentAssistant
+			}
+			if model.pendingAssistant == model.currentAssistant {
+				model.pendingAssistantText += text
+			}
 			model.status = "Responding"
 		}
 		for _, block := range event.Chunk.MessageDelta.Content {
@@ -3073,9 +3083,12 @@ func (model *tuiModel) applyEvent(event dagent.Event) {
 			switch message.Role {
 			case damessage.RoleAssistant:
 				text := message.TextContent()
-				if text != "" && (model.currentAssistant < 0 || model.items[model.currentAssistant].text == "") {
+				reconciled := model.reconcilePendingAssistant(text)
+				if text != "" && !reconciled && (model.currentAssistant < 0 || model.items[model.currentAssistant].text == "") {
 					model.appendAssistant(text)
 				}
+				model.pendingAssistant = -1
+				model.pendingAssistantText = ""
 				for _, block := range message.Content {
 					if block.Type == damessage.BlockServerTool {
 						model.addServerToolCall(block, false)
@@ -3149,6 +3162,18 @@ func (model *tuiModel) appendAssistant(text string) {
 	}
 	model.appendItem(transcriptItem{kind: itemAssistant, text: text, streaming: true})
 	model.currentAssistant = len(model.items) - 1
+}
+
+func (model *tuiModel) reconcilePendingAssistant(authoritative string) bool {
+	if authoritative == "" || model.pendingAssistant < 0 || model.pendingAssistant >= len(model.items) || model.pendingAssistantText == "" {
+		return false
+	}
+	item := &model.items[model.pendingAssistant]
+	if item.kind != itemAssistant || !strings.HasPrefix(authoritative, model.pendingAssistantText) {
+		return false
+	}
+	item.text += strings.TrimPrefix(authoritative, model.pendingAssistantText)
+	return true
 }
 
 func (model *tuiModel) finishCurrentAssistant() {

@@ -563,6 +563,7 @@ func (compiler *compiler) modelHandler() ModelHandler {
 			Messages: messages, SystemMessage: providerSystem, Tools: definitions, ToolChoice: request.ToolChoice,
 			ResponseFormat: request.ResponseFormat, PromptCache: request.PromptCache,
 			Reasoning: request.Reasoning,
+			Skills:    append([]damodel.Skill(nil), request.Skills...),
 			Metadata:  cloneRawMap(request.Metadata), Tags: append([]string(nil), request.Tags...),
 		}
 		var response damodel.Response

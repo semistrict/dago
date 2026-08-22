@@ -3,6 +3,7 @@ package dago
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -249,6 +250,33 @@ func TestSkillsCatalogBodySuppliesActivationAndFilesystemOverridesIt(t *testing.
 	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
 	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 
+	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSkillsUseNativeModelArtifactsWithoutPromptInjection(t *testing.T) {
+	memory := dabackend.NewMemory(map[string]dabackend.FileData{
+		"/project/research/SKILL.md": {Content: "---\nname: research\ndescription: Research carefully\n---\nUse primary sources.", Encoding: dabackend.EncodingUTF8},
+	})
+	middleware := mustSkills(memory, Skills{
+		Sources: []string{"/project"},
+		Catalog: []Skill{{Name: "review", Description: "Review changes", Body: "Inspect the diff."}},
+	})
+	script := modeltest.New(damodel.Profile{NativeSkills: true}, modeltest.Step{Check: func(request damodel.Request) error {
+		if len(request.Skills) != 2 {
+			return &skillTestError{fmt.Sprintf("native skills = %#v", request.Skills)}
+		}
+		if request.Skills[0].Name != "research" || request.Skills[0].Instructions != "Use primary sources." ||
+			request.Skills[1].Name != "review" || request.Skills[1].Instructions != "Inspect the diff." {
+			return &skillTestError{fmt.Sprintf("native skills = %#v", request.Skills)}
+		}
+		if strings.Contains(request.Messages[0].TextContent(), "Skills System") || strings.Contains(request.Messages[0].TextContent(), "Use primary sources.") {
+			return &skillTestError{"native skill instructions were injected into the prompt"}
+		}
+		return nil
+	}, Response: damodel.Response{Message: damessage.Assistant("done")}})
+	compiled := dagent.New(script, dagent.Options{Middleware: []dagent.Middleware{middleware}})
 	if _, err := compiled.Invoke(context.Background(), dagent.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}

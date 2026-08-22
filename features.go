@@ -1579,10 +1579,12 @@ func newSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, er
 			return dagent.Middleware{}, fmt.Errorf("skill source %d has a label but no path", index)
 		}
 	}
-	discover := func(ctx context.Context) ([]Skill, []string, error) {
+	discover := func(ctx context.Context) ([]Skill, []Skill, []string, error) {
 		byName := map[string]Skill{}
+		nativeByName := map[string]Skill{}
 		for _, item := range options.Catalog {
 			byName[item.Name] = item
+			nativeByName[item.Name] = item
 		}
 		var warnings []string
 		warn := func(value string) {
@@ -1596,7 +1598,7 @@ func newSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, er
 			listing, err := backend.List(ctx, root)
 			if err != nil {
 				if ctx.Err() != nil {
-					return nil, warnings, ctx.Err()
+					return nil, nil, warnings, ctx.Err()
 				}
 				warn(fmt.Sprintf("cannot load skills from %q: %v", root, err))
 			}
@@ -1610,7 +1612,7 @@ func newSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, er
 			}
 			downloads := backend.Download(ctx, skillPaths)
 			if len(downloads) != len(skillPaths) {
-				return nil, warnings, fmt.Errorf("skills backend returned %d downloads for %d paths", len(downloads), len(skillPaths))
+				return nil, nil, warnings, fmt.Errorf("skills backend returned %d downloads for %d paths", len(downloads), len(skillPaths))
 			}
 			for index, download := range downloads {
 				skillPath := skillPaths[index]
@@ -1636,20 +1638,27 @@ func newSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, er
 					warn(fmt.Sprintf("cannot load %s: %v", skillPath, err))
 					continue
 				}
+				nativeByName[skill.Name] = skill
 				skill.Body = ""
 				// Sources are priority ordered: later sources replace earlier skills.
 				byName[skill.Name] = skill
 			}
 		}
 		result := make([]Skill, 0, len(byName))
+		native := make([]Skill, 0, len(nativeByName))
 		for _, skill := range byName {
 			result = append(result, skill)
 		}
+		for _, skill := range nativeByName {
+			native = append(native, skill)
+		}
 		sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
-		return result, warnings, nil
+		sort.Slice(native, func(i, j int) bool { return native[i].Name < native[j].Name })
+		return result, native, warnings, nil
 	}
 	return dagent.Middleware{Name: "skills", SerializedName: "SkillsMiddleware", Fields: map[string]dagent.StateField{
 		"skills":             {Kind: dagent.FieldLast, Contract: "dago.skills.v1", Private: true, Clone: cloneSkillState},
+		"native_skills":      {Kind: dagent.FieldLast, Contract: "dago.skills.native.v1", Private: true, Clone: cloneSkillState},
 		"skills_load_errors": {Kind: dagent.FieldLast, Contract: "dago.skills.errors.v1", Private: true, Clone: cloneStrings},
 	}, BeforeAgent: func(ctx context.Context, values dastate.Values, runtime dagent.Runtime) (dastate.Values, error) {
 		if _, loaded := values["skills"]; loaded {
@@ -1660,9 +1669,15 @@ func newSkills(backend dabackend.Backend, options Skills) (dagent.Middleware, er
 			return nil, bindErr
 		}
 		ctx = boundCtx
-		skills, warnings, err := discover(ctx)
-		return dastate.Values{"skills": skillsToState(skills), "skills_load_errors": warnings}, err
+		skills, nativeSkills, warnings, err := discover(ctx)
+		return dastate.Values{"skills": skillsToState(skills), "native_skills": skillsToState(nativeSkills), "skills_load_errors": warnings}, err
 	}, WrapModelCall: func(ctx context.Context, request dagent.ModelRequest, next dagent.ModelHandler) (dagent.ModelResponse, error) {
+		if _, loaded := request.State["native_skills"]; request.Model.Profile().NativeSkills && loaded {
+			for _, skill := range skillsFromState(request.State["native_skills"]) {
+				request.Skills = append(request.Skills, damodel.Skill{Name: skill.Name, Description: skill.Description, Instructions: skill.Body})
+			}
+			return next(ctx, request)
+		}
 		if template == "" {
 			return next(ctx, request)
 		}

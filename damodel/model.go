@@ -135,6 +135,15 @@ type Reasoning struct {
 	Summary string `json:"summary,omitempty"`
 }
 
+// Skill is one complete, provider-neutral progressively disclosed instruction
+// artifact. Providers with native skill support materialize Instructions out of
+// band rather than adding them to the model's ordinary prompt.
+type Skill struct {
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Instructions string `json:"instructions"`
+}
+
 // Request is one model invocation.
 type Request struct {
 	Messages []damessage.Message `json:"messages"`
@@ -148,6 +157,7 @@ type Request struct {
 	ResponseFormat *ResponseFormat            `json:"response_format,omitempty"`
 	PromptCache    *PromptCache               `json:"prompt_cache,omitempty"`
 	Reasoning      *Reasoning                 `json:"reasoning,omitempty"`
+	Skills         []Skill                    `json:"skills,omitempty"`
 	Metadata       map[string]json.RawMessage `json:"metadata,omitempty"`
 	Tags           []string                   `json:"tags,omitempty"`
 	Stop           []string                   `json:"stop,omitempty"`
@@ -229,6 +239,7 @@ type Profile struct {
 	ParallelToolCalls             bool     `json:"parallel_tool_calls,omitempty"`
 	StructuredOutput              bool     `json:"structured_output,omitempty"`
 	NativeStreaming               bool     `json:"native_streaming,omitempty"`
+	NativeSkills                  bool     `json:"native_skills,omitempty"`
 	SupportsPromptCaching         bool     `json:"supports_prompt_caching,omitempty"`
 	SupportsSeparateSystemMessage bool     `json:"supports_separate_system_message,omitempty"`
 	SupportsReasoning             bool     `json:"supports_reasoning,omitempty"`

@@ -373,6 +373,7 @@ func cloneModelRequest(request damodel.Request) damodel.Request {
 		value := *request.PromptCache
 		copy.PromptCache = &value
 	}
+	copy.Skills = append([]damodel.Skill(nil), request.Skills...)
 	if request.Metadata != nil {
 		copy.Metadata = make(map[string]json.RawMessage, len(request.Metadata))
 		for key, value := range request.Metadata {

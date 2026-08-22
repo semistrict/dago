@@ -671,12 +671,14 @@ configuration](docs/MODELS.md). `dacode` exposes `--model-params`,
 fails explicitly without network or package discovery.
 
 `--model claude_agent:sonnet` selects the compiled Claude CLI provider. It uses
-print-mode bidirectional stream JSON, disables Claude's built-in tool and local
-customization surfaces, and exposes only the current agent request's tools through an
-ephemeral authenticated loopback MCP server. The outer dago agent executes those
-tools and returns their results through MCP while the same CLI process remains alive;
-partial text and reasoning events stream through `dacode` as they arrive. Native JSONL
-reconstruction and `--resume` are used only after a process restart. See [model
+print-mode bidirectional stream JSON, disables local customization and every built-in
+tool except `Skill`, and exposes only the current agent request's tools through an
+ephemeral authenticated loopback MCP server. Effective skills are materialized in a
+temporary session plugin, and an MCP tool description larger than Claude's inline
+limit becomes a generated skill with a short loading instruction. The outer dago
+agent executes MCP tools and returns their results while the same CLI process remains
+alive; partial text and reasoning events stream through `dacode` as they arrive.
+Native JSONL reconstruction and `--resume` are used only after a process restart. See [model
 configuration](docs/MODELS.md#coding-agent-flags) for the isolation boundary and
 supported parameters.
 

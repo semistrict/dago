@@ -133,6 +133,22 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
       const hasToolResults = body.includes("function_call_output");
       return (
 	  setTimeout(() => {
+		if (body.includes("stream assistant text before a tool call")) {
+		  response.writeHead(200, { "content-type": "text/event-stream" });
+		  if (hasToolResults) {
+			const completed = { type: "response.completed", response: { id: "response-stream-before-tool-complete", status: "completed", output: [{ type: "message", id: "message-stream-before-tool-complete", role: "assistant", content: [{ type: "output_text", text: "Fixture inspection complete." }] }], usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } };
+			response.end(`data: ${JSON.stringify(completed)}\n\n`);
+			return;
+		  }
+		  const preamble = "I will inspect the fixture now.";
+		  response.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: preamble })}\n\n`);
+		  const completed = { type: "response.completed", response: { id: "response-stream-before-tool", status: "completed", output: [
+			{ type: "message", id: "message-stream-before-tool", role: "assistant", content: [{ type: "output_text", text: preamble }] },
+			{ type: "function_call", id: "item-stream-before-tool", call_id: "call-stream-before-tool", name: "read_file", arguments: JSON.stringify({ file_path: path.join(transcriptWorkspace, "parallel-fixture.txt") }) }
+		  ], usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } };
+		  response.end(`data: ${JSON.stringify(completed)}\n\n`);
+		  return;
+		}
 		if (transparentPTC && !hasToolResults) {
 		  response.writeHead(200, { "content-type": "text/event-stream" });
 		  const completed = {

@@ -176,6 +176,25 @@ func TestProviderServerToolBlocksRenderAsCompletedToolCalls(t *testing.T) {
 	}
 }
 
+func TestStreamedAssistantBeforeToolIsNotDuplicatedByAuthoritativeUpdate(t *testing.T) {
+	model := newTUIModel(t.Context(), &fakeRunner{}, "/work", "model", "thread", false, false, "")
+	call := damessage.ToolCall{ID: "workflow-1", Name: "workflow", Arguments: json.RawMessage(`{"script":"run"}`)}
+	model.applyEvent(dagent.Event{Mode: dagent.EventToken, Chunk: &damodel.Chunk{MessageDelta: damessage.Assistant("I will start the workflow.")}})
+	model.applyEvent(dagent.Event{Mode: dagent.EventToken, Chunk: &damodel.Chunk{MessageDelta: damessage.Message{Role: damessage.RoleAssistant, ToolCalls: []damessage.ToolCall{call}}}})
+	model.applyEvent(dagent.Event{Mode: dagent.EventUpdate, Update: dastate.Values{dagent.MessagesKey: []damessage.Message{{
+		Role: damessage.RoleAssistant, Content: []damessage.ContentBlock{{Type: damessage.BlockText, Text: "I will start the workflow."}}, ToolCalls: []damessage.ToolCall{call},
+	}}}})
+	assistantCount := 0
+	for _, item := range model.items {
+		if item.kind == itemAssistant {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("assistant count = %d, items = %#v", assistantCount, model.items)
+	}
+}
+
 func TestInlineDiffLineNumbersBoundsAndSensitiveRedaction(t *testing.T) {
 	diff, ok := inlineToolDiff("edit_file", `{"file_path":"main.go","old_string":"old\n","new_string":"new\n"}`)
 	if !ok {

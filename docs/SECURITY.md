@@ -707,15 +707,19 @@ The Claude CLI provider creates one loopback-only MCP endpoint with an unguessab
 and bearer authority for each persistent CLI process. That server exposes schemas, not
 tool implementations; a selected call blocks until the outer agent loop supplies its
 result. The child runs in an empty workspace with explicit empty settings and setting
-sources, and disabled built-in tools, browser, skills, slash
-commands, and suggestions. The child retains the authenticated user home because the
-subscription login is selected through the CLI's local Keychain state; an installed-binary
-test verifies that user `CLAUDE.md` content and hooks still do not load. Conversation
-reconstruction writes only to the unique temporary-workspace project entry in Claude's
-native JSONL format and is used only after a process restart. Process replacement or
-explicit close removes the endpoint, workspace, and project entry. Ambient Claude
-authentication remains an upstream CLI/keychain boundary, and administrator-managed
-policy cannot be overridden by the child process.
+sources, disabled browser and suggestions, and only the built-in `Skill` tool enabled.
+Effective request skills are copied into a private, bounded session plugin below the
+same temporary root; skill shell execution is disabled. Oversized MCP descriptions are
+replaced with a short instruction and retained verbatim in generated session skills.
+The child retains the authenticated user home because the subscription login is
+selected through the CLI's local Keychain state; installed-binary tests verify that
+user `CLAUDE.md` content and hooks still do not load and that generated skill content
+reaches the model. Conversation reconstruction writes only to the unique
+temporary-workspace project entry in Claude's native JSONL format and is used only
+after a process restart. Process replacement or explicit close removes the endpoint,
+plugin, workspace, and project entry. Ambient Claude authentication remains an
+upstream CLI/keychain boundary, and administrator-managed policy cannot be overridden
+by the child process.
 
 `dago dev` is an unauthenticated local development server. It binds to loopback by
 default, allows the hosted Studio origin and loopback browser origins, and places its
