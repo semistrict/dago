@@ -68,6 +68,7 @@ type ModelRequest struct {
 	ResponseFormat *damodel.ResponseFormat
 	PromptCache    *damodel.PromptCache
 	Reasoning      *damodel.Reasoning
+	Skills         []damodel.Skill
 	State          dastate.Values
 	Runtime        Runtime
 	// MessagesReadOnly marks an active-thread view that wrappers may scan and
@@ -109,6 +110,7 @@ func (request ModelRequest) Clone() ModelRequest {
 		reasoning := *request.Reasoning
 		copy.Reasoning = &reasoning
 	}
+	copy.Skills = append([]damodel.Skill(nil), request.Skills...)
 	copy.State = request.State.Clone()
 	copy.InvocationMetadata = cloneRawMap(request.InvocationMetadata)
 	copy.InvocationTags = append([]string(nil), request.InvocationTags...)

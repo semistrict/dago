@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -165,6 +166,84 @@ func TestInstalledCLIRestartReconstructsVariedToolHistory(t *testing.T) {
 	}
 	if _, err := os.Stat(projectDirectory); !os.IsNotExist(err) {
 		t.Fatalf("installed CLI project directory survived close: %v", err)
+	}
+}
+
+func TestInstalledCLILoadsSessionSkillAndPreservesLongToolManual(t *testing.T) {
+	if os.Getenv("DAGO_CLAUDE_AGENT_CLI_INTEGRATION") != "1" {
+		t.Skip("set DAGO_CLAUDE_AGENT_CLI_INTEGRATION=1 to exercise the installed Claude CLI")
+	}
+	cliPath, err := exec.LookPath("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticatedHome := filepath.Join(t.TempDir(), "home")
+	if err := initializeHome(authenticatedHome, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	const skillSentinel = "SESSION_SKILL_FULL_INSTRUCTIONS"
+	longManual := "Workflow manual:\n" + skillSentinel + "\n" + strings.Repeat("Detailed workflow instruction. ", 120)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/messages" {
+			http.NotFound(writer, request)
+			return
+		}
+		body, readErr := io.ReadAll(request.Body)
+		if readErr != nil {
+			t.Error(readErr)
+			return
+		}
+		var payload struct {
+			Model string `json:"model"`
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"tools"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Errorf("decode CLI request: %v: %s", err, body)
+			return
+		}
+		requestNumber := requests.Add(1)
+		if requestNumber == 1 {
+			for _, tool := range payload.Tools {
+				if strings.Contains(tool.Name, "workflow") {
+					if len(tool.Description) > maximumInlineToolDescription || strings.Contains(tool.Description, skillSentinel) || !strings.Contains(tool.Description, "Skill") {
+						t.Errorf("forwarded workflow description = %q", tool.Description)
+					}
+				}
+			}
+			writeFakeAnthropicToolResponse(writer, payload.Model, []fakeToolCall{{
+				id: "toolu_skill_1", name: "Skill", arguments: `{"skill":"dago-session:` + toolManualSkillName("workflow") + `"}`,
+			}})
+			return
+		}
+		if !bytes.Contains(body, []byte(skillSentinel)) {
+			t.Errorf("skill result did not contain the complete instructions")
+		}
+		writeFakeAnthropicTextResponse(writer, payload.Model, "SESSION_SKILL_OK")
+	}))
+	defer server.Close()
+	t.Setenv("ANTHROPIC_API_KEY", "fixture-key")
+	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
+	t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+	t.Setenv("DISABLE_AUTOUPDATER", "1")
+
+	client := New("sonnet", Options{CLIPath: cliPath})
+	client.homeDirectory = func() (string, error) { return authenticatedHome, nil }
+	t.Cleanup(func() { _ = client.Close() })
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	response, err := client.Invoke(ctx, damodel.Request{
+		Messages: []damessage.Message{damessage.Human("Use the workflow manual.")},
+		Tools:    []datool.Definition{{Name: "workflow", Description: longManual, InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message.TextContent() != "SESSION_SKILL_OK" || len(response.Message.ToolCalls) != 0 || requests.Load() != 2 {
+		t.Fatalf("response = %#v, requests = %d", response.Message, requests.Load())
 	}
 }
 

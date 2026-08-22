@@ -1,12 +1,13 @@
 // Package claudeagent adapts the Claude CLI print protocol to damodel.Chat.
 //
 // The adapter runs each model turn in an empty working directory, with local
-// customization sources, built-in tools, skills, and browser integration
-// disabled. The authenticated user home remains available solely so the CLI can
-// use its existing local login. Prior messages are materialized as Claude's
-// native JSONL transcript and replayed with --resume. Request tools are exposed
-// through an ephemeral loopback MCP server. Claude is stopped at the first MCP
-// tool request so the caller-owned runtime remains the only tool executor.
+// customization sources, all built-in tools except Skill, and browser integration
+// disabled. Request skills are materialized into an ephemeral session plugin.
+// The authenticated user home remains available solely so the CLI can use its
+// existing local login. Prior messages are materialized as Claude's native JSONL
+// transcript and replayed with --resume. Request tools are exposed through an
+// ephemeral loopback MCP server. Claude is stopped at the first MCP tool request
+// so the caller-owned runtime remains the only tool executor.
 package claudeagent
 
 import (
@@ -14,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -40,10 +42,14 @@ import (
 )
 
 const (
-	providerName       = "claude_agent"
-	toolServerName     = "model_tools"
-	maximumOutputLine  = 4 << 20
-	maximumDiagnostics = 32 << 10
+	providerName                 = "claude_agent"
+	toolServerName               = "model_tools"
+	sessionPluginName            = "dago-session"
+	maximumInlineToolDescription = 2048
+	maximumSessionSkills         = 1000
+	maximumSessionSkillBytes     = 1 << 20
+	maximumOutputLine            = 4 << 20
+	maximumDiagnostics           = 32 << 10
 )
 
 var mcpToolName = regexp.MustCompile(`\A[A-Za-z0-9_-]{1,128}\z`)
@@ -87,7 +93,7 @@ func (client *Client) Profile() damodel.Profile {
 	return damodel.Profile{
 		Provider: providerName, Model: client.model,
 		ContextWindow: client.options.ContextWindow, MaxOutputTokens: client.options.MaxOutputTokens,
-		ToolCalling: true, ParallelToolCalls: true, StructuredOutput: true, NativeStreaming: true,
+		ToolCalling: true, ParallelToolCalls: true, StructuredOutput: true, NativeStreaming: true, NativeSkills: true,
 		SupportsSeparateSystemMessage: true, SupportsReasoning: true,
 		ReasoningLevels: []string{"low", "medium", "high", "xhigh", "max"},
 	}
@@ -301,7 +307,8 @@ func (client *Client) run(ctx context.Context, request damodel.Request, emit fun
 	if request.ToolChoice != nil && strings.EqualFold(request.ToolChoice.Mode, "none") {
 		definitions = nil
 	}
-	key, err := processKey(request, definitions)
+	definitions, sessionSkills := prepareSessionSkills(definitions, request.Skills)
+	key, err := processKey(request, definitions, sessionSkills)
 	if err != nil {
 		return damodel.Response{}, err
 	}
@@ -309,7 +316,7 @@ func (client *Client) run(ctx context.Context, request damodel.Request, emit fun
 	continuing := client.process != nil && client.key == key && client.process.alive() && messagePrefix(incoming, client.history)
 	if !continuing {
 		client.stopProcess()
-		process, currentContent, startErr := client.startProcess(request, definitions, incoming)
+		process, currentContent, startErr := client.startProcess(request, definitions, sessionSkills, incoming)
 		if startErr != nil {
 			return damodel.Response{}, startErr
 		}
@@ -343,7 +350,7 @@ func (client *Client) run(ctx context.Context, request damodel.Request, emit fun
 	response, readErr := client.process.read(ctx, emit)
 	if readErr != nil && continuing && ctx.Err() == nil {
 		client.stopProcess()
-		process, currentContent, startErr := client.startProcess(request, definitions, incoming)
+		process, currentContent, startErr := client.startProcess(request, definitions, sessionSkills, incoming)
 		if startErr != nil {
 			return damodel.Response{}, errors.Join(readErr, startErr)
 		}
@@ -390,7 +397,7 @@ type cliProcess struct {
 	replayed         map[string]bool
 }
 
-func (client *Client) startProcess(request damodel.Request, definitions []datool.Definition, messages []damessage.Message) (*cliProcess, any, error) {
+func (client *Client) startProcess(request damodel.Request, definitions []datool.Definition, skills []damodel.Skill, messages []damessage.Message) (*cliProcess, any, error) {
 	root, err := os.MkdirTemp("", "dago-claude-agent-")
 	if err != nil {
 		return nil, nil, fmt.Errorf("claude agent: create isolation root: %w", err)
@@ -405,6 +412,11 @@ func (client *Client) startProcess(request damodel.Request, definitions []datool
 	if err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("claude agent: resolve isolated working directory: %w", err)
+	}
+	pluginDirectory, err := materializeSessionPlugin(root, skills)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
 	}
 	homeDirectory, err := client.homeDirectory()
 	if err != nil {
@@ -433,7 +445,7 @@ func (client *Client) startProcess(request damodel.Request, definitions []datool
 		cleanup()
 		return nil, nil, err
 	}
-	arguments, err := client.arguments(request, systemText(request), sessionID, replaying, bridge)
+	arguments, err := client.arguments(request, systemText(request), sessionID, replaying, bridge, pluginDirectory)
 	if err != nil {
 		bridge.Close()
 		cleanup()
@@ -579,14 +591,16 @@ func (client *Client) Close() error {
 	return nil
 }
 
-func (client *Client) arguments(request damodel.Request, systemPrompt, sessionID string, replaying bool, bridge *toolBridge) ([]string, error) {
+func (client *Client) arguments(request damodel.Request, systemPrompt, sessionID string, replaying bool, bridge *toolBridge, pluginDirectory string) ([]string, error) {
 	arguments := []string{
 		"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--include-partial-messages", "--no-session-persistence",
-		"--no-chrome", "--disable-slash-commands",
-		"--strict-mcp-config", "--tools", "", "--setting-sources=", "--settings", "{}",
+		"--no-chrome", "--strict-mcp-config", "--tools", "Skill", "--setting-sources=", "--settings", `{"disableSkillShellExecution":true}`,
 		"--prompt-suggestions", "false", "--system-prompt", systemPrompt, "--model", client.model,
 		"--permission-mode", "dontAsk",
+	}
+	if pluginDirectory != "" {
+		arguments = append(arguments, "--plugin-dir", pluginDirectory)
 	}
 	if replaying {
 		arguments = append(arguments, "--resume", sessionID)
@@ -625,19 +639,127 @@ func systemText(request damodel.Request) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func processKey(request damodel.Request, definitions []datool.Definition) (string, error) {
+func processKey(request damodel.Request, definitions []datool.Definition, skills []damodel.Skill) (string, error) {
 	value := struct {
 		System         string
 		Tools          []datool.Definition
+		Skills         []damodel.Skill
 		ToolChoice     *damodel.ToolChoice
 		ResponseFormat *damodel.ResponseFormat
 		Reasoning      *damodel.Reasoning
-	}{systemText(request), definitions, request.ToolChoice, request.ResponseFormat, request.Reasoning}
+	}{systemText(request), definitions, skills, request.ToolChoice, request.ResponseFormat, request.Reasoning}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", fmt.Errorf("claude agent: encode process configuration: %w", err)
 	}
 	return string(encoded), nil
+}
+
+func prepareSessionSkills(definitions []datool.Definition, provided []damodel.Skill) ([]datool.Definition, []damodel.Skill) {
+	prepared := append([]datool.Definition(nil), definitions...)
+	byName := make(map[string]damodel.Skill, len(provided)+len(definitions))
+	for _, skill := range provided {
+		byName[skill.Name] = skill
+	}
+	for index := range prepared {
+		description := prepared[index].Description
+		if len(description) <= maximumInlineToolDescription {
+			continue
+		}
+		name := toolManualSkillName(prepared[index].Name)
+		byName[name] = damodel.Skill{
+			Name: name, Description: "Detailed instructions for the " + prepared[index].Name + " MCP tool. Load before calling this tool.",
+			Instructions: description,
+		}
+		prepared[index].Description = "Before calling this tool, use the Skill tool to load `" + sessionPluginName + ":" + name + "`; it contains the complete instructions."
+	}
+	skills := make([]damodel.Skill, 0, len(byName))
+	for _, skill := range byName {
+		skills = append(skills, skill)
+	}
+	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+	return prepared, skills
+}
+
+func toolManualSkillName(toolName string) string {
+	var normalized strings.Builder
+	separator := false
+	for _, value := range strings.ToLower(toolName) {
+		if value >= 'a' && value <= 'z' || value >= '0' && value <= '9' {
+			normalized.WriteRune(value)
+			separator = false
+		} else if normalized.Len() > 0 && !separator {
+			normalized.WriteByte('-')
+			separator = true
+		}
+	}
+	base := strings.Trim(normalized.String(), "-")
+	if base == "" {
+		base = "tool"
+	}
+	if len(base) > 45 {
+		base = strings.TrimRight(base[:45], "-")
+	}
+	digest := sha256.Sum256([]byte(toolName))
+	return "mcp-" + base + "-" + hex.EncodeToString(digest[:4])
+}
+
+func materializeSessionPlugin(root string, skills []damodel.Skill) (string, error) {
+	if len(skills) == 0 {
+		return "", nil
+	}
+	if len(skills) > maximumSessionSkills {
+		return "", fmt.Errorf("claude agent: session has %d skills, maximum is %d", len(skills), maximumSessionSkills)
+	}
+	pluginDirectory := filepath.Join(root, "skill-plugin")
+	manifestDirectory := filepath.Join(pluginDirectory, ".claude-plugin")
+	if err := os.MkdirAll(manifestDirectory, 0o700); err != nil {
+		return "", fmt.Errorf("claude agent: create session plugin: %w", err)
+	}
+	manifest, _ := json.Marshal(map[string]string{
+		"name": sessionPluginName, "version": "1.0.0", "description": "Session-scoped model skills.",
+	})
+	if err := os.WriteFile(filepath.Join(manifestDirectory, "plugin.json"), manifest, 0o600); err != nil {
+		return "", fmt.Errorf("claude agent: write session plugin manifest: %w", err)
+	}
+	seen := make(map[string]bool, len(skills))
+	for _, skill := range skills {
+		if !validSkillName(skill.Name) {
+			return "", fmt.Errorf("claude agent: invalid session skill name %q", skill.Name)
+		}
+		if seen[skill.Name] {
+			return "", fmt.Errorf("claude agent: duplicate session skill %q", skill.Name)
+		}
+		seen[skill.Name] = true
+		if strings.TrimSpace(skill.Description) == "" {
+			return "", fmt.Errorf("claude agent: session skill %q has no description", skill.Name)
+		}
+		if len(skill.Instructions) > maximumSessionSkillBytes {
+			return "", fmt.Errorf("claude agent: session skill %q exceeds %d bytes", skill.Name, maximumSessionSkillBytes)
+		}
+		description, _ := json.Marshal(skill.Description)
+		content := "---\nname: " + skill.Name + "\ndescription: " + string(description) + "\n---\n\n" + strings.TrimSpace(skill.Instructions) + "\n"
+		directory := filepath.Join(pluginDirectory, "skills", skill.Name)
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return "", fmt.Errorf("claude agent: create session skill %q: %w", skill.Name, err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte(content), 0o600); err != nil {
+			return "", fmt.Errorf("claude agent: write session skill %q: %w", skill.Name, err)
+		}
+	}
+	return pluginDirectory, nil
+}
+
+func validSkillName(name string) bool {
+	if len(name) == 0 || len(name) > 64 || name[0] == '-' || name[len(name)-1] == '-' || strings.Contains(name, "--") {
+		return false
+	}
+	for _, value := range name {
+		if value != '-' && (value < 'a' || value > 'z') && (value < '0' || value > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func visibleMessages(messages []damessage.Message) []damessage.Message {
@@ -921,6 +1043,9 @@ func readCLIOutput(ctx context.Context, scanner *bufio.Scanner, bridge *toolBrid
 				case "thinking":
 					response.Message.Content = append(response.Message.Content, damessage.ContentBlock{Type: damessage.BlockReasoning, Reasoning: block.Thinking})
 				case "tool_use":
+					if block.Name == "Skill" {
+						continue
+					}
 					if bridge != nil {
 						bridge.registerToolCall(block.ID, block.Name, block.Input)
 					}
@@ -999,7 +1124,8 @@ func mergeUsage(message *damessage.Message, usage cliUsage, model string) {
 	}
 	message.Usage = &damessage.Usage{
 		InputTokens: input, OutputTokens: usage.OutputTokens, TotalTokens: input + usage.OutputTokens,
-		Provider: providerName, Model: model,
+		InputDetails: map[string]int{"cache_creation": usage.CacheCreationInputTokens, "cache_read": usage.CacheReadInputTokens},
+		Provider:     providerName, Model: model,
 	}
 }
 

@@ -457,6 +457,20 @@ test("automatically retries a transient model transport failure", async ({ page 
   expect(text).not.toContain("read websocket response");
 });
 
+test("does not duplicate streamed assistant text before a tool call", async ({ page }) => {
+  const url = process.env.PLAYWRIGHT_TRANSCRIPT_URL;
+  expect(url).toBeTruthy();
+  await openTerminal(page, url);
+
+  await page.keyboard.type("stream assistant text before a tool call");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalText(page), { timeout: 10_000 }).toContain("Fixture inspection complete.");
+
+  const text = await terminalText(page);
+  expect(text.match(/I will inspect the fixture now\./g)).toHaveLength(1);
+  expect(text).toContain("✓ read_file");
+});
+
 test("marks fast parallel filesystem tools complete before a slow sibling", async ({ page }) => {
   const url = process.env.PLAYWRIGHT_TRANSCRIPT_URL;
   expect(url).toBeTruthy();
