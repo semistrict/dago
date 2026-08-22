@@ -36,6 +36,7 @@ import (
 	"github.com/semistrict/dago/datalon/mcp/oauthpolicy"
 	"github.com/semistrict/dago/datool"
 	"github.com/semistrict/dago/daweb"
+	"github.com/semistrict/dago/daworkflow"
 )
 
 var dotenvEnvironmentMu sync.Mutex
@@ -218,6 +219,18 @@ func (runner *acpDagoRunner) SaveACPModelSelection(ctx context.Context, id, mode
 		return fmt.Errorf("save ACP session model %q: %w", model, err)
 	}
 	return nil
+}
+
+func (runner *acpDagoRunner) SubscribeWorkflows() (<-chan daworkflow.Status, func()) {
+	return runner.runner.workflows.Subscribe()
+}
+
+func (runner *acpDagoRunner) Workflows() []daworkflow.Status {
+	return runner.runner.Workflows()
+}
+
+func (runner *acpDagoRunner) CancelWorkflow(runID string) bool {
+	return runner.runner.CancelWorkflow(runID)
 }
 
 type sessionClosers struct{ closers []io.Closer }

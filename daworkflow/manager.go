@@ -162,9 +162,11 @@ type Manager struct {
 	options        Options
 	next           atomic.Uint64
 
-	mu     sync.Mutex
-	runs   map[string]*managedRun
-	closed bool
+	mu             sync.Mutex
+	runs           map[string]*managedRun
+	nextSubscriber uint64
+	subscribers    map[uint64]chan Status
+	closed         bool
 }
 
 // NewManager constructs a same-process background workflow service.
@@ -175,7 +177,10 @@ func NewManager(runner AgentRunner, options Options) *Manager {
 	options = New(runner, options).options
 	// Runs outlive the request that starts them and are stopped by Cancel or Close.
 	lifetime, cancelLifetime := context.WithCancel(context.Background())
-	return &Manager{lifetime: lifetime, cancelLifetime: cancelLifetime, runner: runner, options: options, runs: map[string]*managedRun{}}
+	return &Manager{
+		lifetime: lifetime, cancelLifetime: cancelLifetime, runner: runner, options: options,
+		runs: map[string]*managedRun{}, subscribers: map[uint64]chan Status{},
+	}
 }
 
 // Middleware exposes workflow start, check, cancel, and list tools.
@@ -269,6 +274,7 @@ func (manager *Manager) Start(ctx context.Context, request StartRequest) (Status
 		manager.mu.Lock()
 		managed.status.Events = append(managed.status.Events, event)
 		managed.status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		manager.publishLocked(managed.status)
 		manager.mu.Unlock()
 		if configuredProgress != nil {
 			return configuredProgress(progressContext, event)
@@ -315,6 +321,7 @@ func (manager *Manager) Start(ctx context.Context, request StartRequest) (Status
 		return Status{}, fmt.Errorf("workflow manager is closed")
 	}
 	manager.runs[runID] = managed
+	manager.publishLocked(status)
 	manager.mu.Unlock()
 	go manager.execute(runContext, managed, prepared, options)
 	return status, nil
@@ -349,9 +356,65 @@ func (manager *Manager) execute(ctx context.Context, managed *managedRun, prepar
 		}
 	}
 	status := cloneStatus(managed.status)
+	manager.publishLocked(managed.status)
 	manager.mu.Unlock()
 	if options.Completed != nil {
 		options.Completed(context.WithoutCancel(ctx), status)
+	}
+}
+
+// Subscribe returns workflow snapshots whenever a run starts, changes, or
+// settles. Delivery is latest-state and non-blocking: a slow subscriber loses
+// intermediate snapshots but always receives the newest available state.
+// The returned unsubscribe function is safe to call more than once.
+func (manager *Manager) Subscribe() (<-chan Status, func()) {
+	if manager == nil {
+		closed := make(chan Status)
+		close(closed)
+		return closed, func() {}
+	}
+	manager.mu.Lock()
+	if manager.closed {
+		manager.mu.Unlock()
+		closed := make(chan Status)
+		close(closed)
+		return closed, func() {}
+	}
+	manager.nextSubscriber++
+	id := manager.nextSubscriber
+	updates := make(chan Status, 1)
+	manager.subscribers[id] = updates
+	manager.mu.Unlock()
+	var once sync.Once
+	return updates, func() {
+		once.Do(func() {
+			manager.mu.Lock()
+			if current, ok := manager.subscribers[id]; ok {
+				delete(manager.subscribers, id)
+				close(current)
+			}
+			manager.mu.Unlock()
+		})
+	}
+}
+
+// publishLocked broadcasts an isolated latest-state snapshot. manager.mu must
+// be held by the caller.
+func (manager *Manager) publishLocked(status Status) {
+	snapshot := cloneStatus(status)
+	for _, updates := range manager.subscribers {
+		select {
+		case updates <- snapshot:
+		default:
+			select {
+			case <-updates:
+			default:
+			}
+			select {
+			case updates <- snapshot:
+			default:
+			}
+		}
 	}
 }
 
@@ -500,6 +563,10 @@ func (manager *Manager) Close() error {
 		if run.status.Status == "running" {
 			run.cancel()
 		}
+	}
+	for id, updates := range manager.subscribers {
+		delete(manager.subscribers, id)
+		close(updates)
 	}
 	manager.mu.Unlock()
 	return nil

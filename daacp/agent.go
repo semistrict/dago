@@ -37,11 +37,12 @@ type protocolAgent struct {
 }
 
 type session struct {
-	context   AgentSessionContext
-	runner    Runner
-	closer    io.Closer
-	active    *activeTurn
-	switching bool
+	context        AgentSessionContext
+	runner         Runner
+	closer         io.Closer
+	active         *activeTurn
+	switching      bool
+	workflowCancel context.CancelFunc
 }
 
 type activeTurn struct {
@@ -102,8 +103,10 @@ func (agent *protocolAgent) NewSession(ctx context.Context, request acp.NewSessi
 		return acp.NewSessionResponse{}, fmt.Errorf("create ACP session runner: %w", err)
 	}
 	agent.mu.Lock()
-	agent.sessions[id] = &session{context: cloneAgentSessionContext(sessionContext), runner: runner, closer: closer}
+	current := &session{context: cloneAgentSessionContext(sessionContext), runner: runner, closer: closer}
+	agent.sessions[id] = current
 	agent.mu.Unlock()
+	agent.attachWorkflowNotifications(id, current)
 	return acp.NewSessionResponse{
 		SessionId: acp.SessionId(id), ConfigOptions: configOptionsWithModel(agent.options.ConfigOptions, sessionContext.Model),
 	}, nil
@@ -164,8 +167,10 @@ func (agent *protocolAgent) LoadSession(ctx context.Context, request acp.LoadSes
 	}
 	agent.mu.Lock()
 	previous := agent.sessions[id]
-	agent.sessions[id] = &session{context: cloneAgentSessionContext(sessionContext), runner: runner, closer: closer}
+	current := &session{context: cloneAgentSessionContext(sessionContext), runner: runner, closer: closer}
+	agent.sessions[id] = current
 	agent.mu.Unlock()
+	agent.attachWorkflowNotifications(id, current)
 	if previous != nil {
 		agent.closeSessionResources(previous)
 	}
@@ -398,14 +403,20 @@ func (agent *protocolAgent) switchSessionModel(ctx context.Context, id string, e
 		return acp.NewInvalidParams(map[string]any{"sessionId": "unknown session"})
 	}
 	previousCloser := current.closer
+	previousWorkflowCancel := current.workflowCancel
 	current.context = cloneAgentSessionContext(nextContext)
 	current.runner = runner
 	current.closer = closer
+	current.workflowCancel = nil
 	current.switching = false
 	agent.mu.Unlock()
+	if previousWorkflowCancel != nil {
+		previousWorkflowCancel()
+	}
 	if previousCloser != nil {
 		_ = previousCloser.Close()
 	}
+	agent.attachWorkflowNotifications(id, current)
 	return nil
 }
 
@@ -634,6 +645,10 @@ func (agent *protocolAgent) closeSessionResources(current *session) {
 	}
 	agent.mu.Lock()
 	active := current.active
+	workflowCancel := current.workflowCancel
+	current.workflowCancel = nil
+	closer := current.closer
+	current.closer = nil
 	agent.mu.Unlock()
 	if active != nil {
 		active.cancel()
@@ -644,8 +659,11 @@ func (agent *protocolAgent) closeSessionResources(current *session) {
 		}
 		cancel()
 	}
-	if current.closer != nil {
-		_ = current.closer.Close()
+	if workflowCancel != nil {
+		workflowCancel()
+	}
+	if closer != nil {
+		_ = closer.Close()
 	}
 }
 

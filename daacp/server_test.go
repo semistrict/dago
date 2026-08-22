@@ -20,6 +20,7 @@ import (
 	"github.com/semistrict/dago/damodel"
 	"github.com/semistrict/dago/damodel/modeltest"
 	"github.com/semistrict/dago/datool"
+	"github.com/semistrict/dago/daworkflow"
 )
 
 func TestNewPanicsForTypedNilRunner(t *testing.T) {
@@ -211,6 +212,71 @@ func TestCloseSessionCancelsActivePromptBeforeClosingResources(t *testing.T) {
 	}
 	if closed.Load() != 1 {
 		t.Fatalf("closed = %d", closed.Load())
+	}
+}
+
+func TestServerPublishesAndControlsWorkflowExtensions(t *testing.T) {
+	base := dagent.New(modeltest.New(damodel.Profile{}), dagent.Options{})
+	source := &workflowTestRunner{
+		Runner:  base,
+		updates: make(chan daworkflow.Status, 1),
+		workflows: []daworkflow.Status{{
+			Version: 1, TaskID: "workflow-1", RunID: "wf_1", Name: "review", Status: "running",
+		}},
+	}
+	client := &testClient{extensions: make(chan testExtension, 1)}
+	connection, stop := startTestConnection(t, NewFactory(func(context.Context, SessionConfig) (Runner, io.Closer, error) {
+		return source, nil, nil
+	}, Options{}), client)
+	defer stop()
+	if _, err := connection.Initialize(t.Context(), acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersionNumber}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := connection.NewSession(t.Context(), acp.NewSessionRequest{Cwd: t.TempDir(), McpServers: []acp.McpServer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source.updates <- source.workflows[0]
+	select {
+	case extension := <-client.extensions:
+		if extension.method != WorkflowUpdateMethod {
+			t.Fatalf("workflow extension method = %q", extension.method)
+		}
+		var update WorkflowUpdate
+		if err := json.Unmarshal(extension.params, &update); err != nil {
+			t.Fatal(err)
+		}
+		if update.Version != 1 || update.SessionID != string(created.SessionId) || update.Workflow.RunID != "wf_1" {
+			t.Fatalf("workflow update = %#v", update)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("workflow extension notification was not received")
+	}
+
+	raw, err := connection.CallExtension(t.Context(), WorkflowListMethod, workflowListRequest{
+		Version: 1, SessionID: string(created.SessionId),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		Version   int                 `json:"version"`
+		Workflows []daworkflow.Status `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if listed.Version != 1 || len(listed.Workflows) != 1 || listed.Workflows[0].RunID != "wf_1" {
+		t.Fatalf("listed workflows = %#v", listed)
+	}
+	if _, err := connection.CallExtension(t.Context(), WorkflowCancelMethod, workflowCancelRequest{
+		Version: 1, SessionID: string(created.SessionId), RunID: "wf_1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if source.cancelled != "wf_1" {
+		t.Fatalf("cancelled workflow = %q", source.cancelled)
 	}
 }
 
@@ -458,11 +524,44 @@ type closerFunc func() error
 
 func (closer closerFunc) Close() error { return closer() }
 
+type workflowTestRunner struct {
+	Runner
+	updates   chan daworkflow.Status
+	workflows []daworkflow.Status
+	cancelled string
+}
+
+func (runner *workflowTestRunner) SubscribeWorkflows() (<-chan daworkflow.Status, func()) {
+	return runner.updates, func() {}
+}
+
+func (runner *workflowTestRunner) Workflows() []daworkflow.Status {
+	return append([]daworkflow.Status(nil), runner.workflows...)
+}
+
+func (runner *workflowTestRunner) CancelWorkflow(runID string) bool {
+	runner.cancelled = runID
+	return runID == "wf_1"
+}
+
 type testClient struct {
 	mu         sync.Mutex
 	permission dagent.ApprovalDecision
 	request    *acp.RequestPermissionRequest
 	updates    []acp.SessionNotification
+	extensions chan testExtension
+}
+
+type testExtension struct {
+	method string
+	params json.RawMessage
+}
+
+func (client *testClient) HandleExtensionMethod(_ context.Context, method string, params json.RawMessage) (any, error) {
+	if client.extensions != nil {
+		client.extensions <- testExtension{method: method, params: append(json.RawMessage(nil), params...)}
+	}
+	return nil, nil
 }
 
 func (client *testClient) RequestPermission(_ context.Context, request acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {

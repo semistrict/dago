@@ -1,0 +1,4 @@
+[submodule "t3code"]
+	path = t3code
+	url = git@github.com:semistrict/t3code.git
+	branch = semistrict/dago-workflows

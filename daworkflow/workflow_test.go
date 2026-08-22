@@ -305,6 +305,56 @@ return agent('wait')`})
 	t.Fatalf("workflow did not become cancelled: %#v", manager.List())
 }
 
+func TestManagerPublishesWorkflowLifecycleSnapshots(t *testing.T) {
+	started := make(chan struct{})
+	runner := AgentFunc(func(ctx context.Context, _ AgentRequest) (AgentResponse, error) {
+		close(started)
+		<-ctx.Done()
+		return AgentResponse{}, ctx.Err()
+	})
+	manager := NewManager(runner, Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	updates, unsubscribe := manager.Subscribe()
+	t.Cleanup(unsubscribe)
+
+	status, err := manager.Start(t.Context(), StartRequest{Script: `export const meta = {name: 'observable', description: 'publish state'}
+return agent('wait')`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case update := <-updates:
+		if update.RunID != status.RunID || update.Status != "running" {
+			t.Fatalf("initial workflow update = %#v", update)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("initial workflow update was not published")
+	}
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("workflow agent did not start")
+	}
+	if !manager.Cancel(status.RunID) {
+		t.Fatal("cancel returned false")
+	}
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case update := <-updates:
+			if update.RunID == status.RunID && update.Status == "cancelled" {
+				unsubscribe()
+				if _, open := <-updates; open {
+					t.Fatal("subscription remained open after unsubscribe")
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("terminal workflow update was not published")
+		}
+	}
+}
+
 func TestWorkflowToolDescriptionDocumentsAuthoringContract(t *testing.T) {
 	manager := NewManager(AgentFunc(func(context.Context, AgentRequest) (AgentResponse, error) {
 		return AgentResponse{}, nil
